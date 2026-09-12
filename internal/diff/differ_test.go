@@ -219,11 +219,11 @@ func TestComputeFileDiff_NoHeadAddedAndModified(t *testing.T) {
 		t.Fatalf("ComputeFileDiff failed on AM file: %v", err)
 	}
 
-	if len(report.Lines) != 2 {
-		t.Errorf("expected 2 lines in diff report for AM file, got %d", len(report.Lines))
+	if len(report.Lines) != 3 {
+		t.Errorf("expected 3 lines in diff report for AM file, got %d", len(report.Lines))
 	}
-	if !strings.Contains(report.Stats, "新文件") {
-		t.Errorf("expected stats to indicate new file, got %s", report.Stats)
+	if !strings.Contains(report.Stats, "1 行新增") {
+		t.Errorf("expected stats to indicate 1 line added, got %s", report.Stats)
 	}
 }
 

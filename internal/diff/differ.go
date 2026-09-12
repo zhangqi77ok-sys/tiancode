@@ -95,8 +95,6 @@ func ComputeFileDiff(workspaceRoot, relPath string) (DiffReport, error) {
 		return report, err
 	}
 
-	hasHead := hasGitHead(workspaceRoot)
-
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		// 检查是否在 Git 状态中有删除或暂存记录
 		statusCmd := gitCmd(workspaceRoot, "status", "--porcelain", "--", relPath)
@@ -119,14 +117,12 @@ func ComputeFileDiff(workspaceRoot, relPath string) (DiffReport, error) {
 	}
 
 	diffOut := ""
-	if hasHead {
-		cmd := gitCmd(workspaceRoot, "diff", "HEAD", "--", relPath)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		_ = cmd.Run()
-		diffOut = strings.TrimSpace(stdout.String())
-	}
+	cmd := gitCmd(workspaceRoot, "diff", "--", relPath)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	_ = cmd.Run()
+	diffOut = strings.TrimSpace(stdout.String())
 	if diffOut == "" {
 		// 检查是否为未追踪新文件或暂存区新文件 (Untracked / Added)
 		statusCmd := gitCmd(workspaceRoot, "status", "--porcelain", "--", relPath)
@@ -148,8 +144,8 @@ func ComputeFileDiff(workspaceRoot, relPath string) (DiffReport, error) {
 				lines = []string{}
 			}
 
-			// 如果是未追踪新文件 (??) 或新增暂存文件 (A / AM)
-			if strings.HasPrefix(statusStr, "??") || strings.HasPrefix(statusStr, "A") {
+			// 只有完全未追踪的新文件才呈现为全新增文件，如果是已暂存的新文件 (A) 则呈现为干净
+			if strings.HasPrefix(statusStr, "??") {
 				if len(lines) == 0 {
 					report.Stats = "+0 行 (新文件)"
 					report.Header = "@@ 新增空文件 @@"

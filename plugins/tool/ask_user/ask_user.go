@@ -20,7 +20,7 @@ func (t *Tool) Type() v1.PluginType { return v1.TypeTool }
 func (t *Tool) Init(ctx context.Context, config json.RawMessage) error { return nil }
 func (t *Tool) Start(ctx context.Context) error { return nil }
 func (t *Tool) Stop(ctx context.Context) error  { return nil }
-func (t *Tool) Health() error                   { return nil }
+func (t *Tool) Health(ctx context.Context) v1.HealthStatus { return v1.HealthStatus{Healthy: true} }
 
 func (t *Tool) Definition() v1.ToolDefinition {
 	return v1.ToolDefinition{
