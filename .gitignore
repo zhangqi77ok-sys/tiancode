@@ -39,3 +39,5 @@ smoke-*/
 coverage/
 .tcode/
 .codemind/
+testrepo*
+testrepo*/

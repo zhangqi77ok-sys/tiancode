@@ -6,8 +6,10 @@ export interface ChannelConfig {
   primary: boolean
   status: string
   auth_type: string
+  protocol?: string
   endpoint: string
   api_key?: string
+  extra_config?: Record<string, string>
   model: string
   extra_models?: string[]
   latency: string
@@ -279,13 +281,28 @@ export const wailsBridge = {
     return null
   },
 
-  async saveSession(sess: ChatSession): Promise<void> {
+  async updateSessionTag(id: string, tag: string): Promise<void> {
     const app = getApp()
-    if (app?.SaveSession) {
-      await app.SaveSession(sess)
+    if (app?.UpdateSessionTag) {
+      await app.UpdateSessionTag(id, tag)
       return
     }
-    throw new Error('microkernel not connected: SaveSession unavailable')
+  },
+
+  async appendSystemMessage(id: string, content: string): Promise<void> {
+    const app = getApp()
+    if (app?.AppendSystemMessage) {
+      await app.AppendSystemMessage(id, content)
+      return
+    }
+  },
+
+  async updateTaskStatus(id: string, status: string): Promise<void> {
+    const app = getApp()
+    if (app?.UpdateTaskStatus) {
+      await app.UpdateTaskStatus(id, status)
+      return
+    }
   },
 
   async deleteSession(id: string): Promise<void> {

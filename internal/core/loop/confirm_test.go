@@ -91,8 +91,9 @@ func TestEngine_ConfirmPausesUntilResume_Allow(t *testing.T) {
 		t.Fatalf("failed to register mock tool: %v", err)
 	}
 
-	engine := NewExecutionEngine(reg)
 	eventChan := make(chan EngineEvent, 100)
+	gw := newMockGateway(eventChan)
+	engine := NewExecutionEngine(reg, gw)
 	
 	req := &EngineRequest{
 		SessionID: "sess_confirm_1",
@@ -120,7 +121,7 @@ func TestEngine_ConfirmPausesUntilResume_Allow(t *testing.T) {
 		t.Fatalf("expected EventConfirm, got nil")
 	}
 	
-	engine.DeliverHumanReply("sess_confirm_1", HumanReply{
+	gw.DeliverHumanReply(confirmEvent.RequestID, HumanReply{
 		Allow: true,
 	})
 	
@@ -143,8 +144,9 @@ func TestEngine_ConfirmPausesUntilResume_Deny(t *testing.T) {
 	_ = reg.Register(&confirmMockRail{})
 	_ = reg.Register(&mockTool{name: "exec_command", output: "success rm"})
 
-	engine := NewExecutionEngine(reg)
 	eventChan := make(chan EngineEvent, 100)
+	gw := newMockGateway(eventChan)
+	engine := NewExecutionEngine(reg, gw)
 	
 	req := &EngineRequest{
 		SessionID: "sess_confirm_2",
@@ -162,7 +164,7 @@ func TestEngine_ConfirmPausesUntilResume_Deny(t *testing.T) {
 	
 	for ev := range eventChan {
 		if ev.Type == EventConfirm {
-			engine.DeliverHumanReply("sess_confirm_2", HumanReply{
+			gw.DeliverHumanReply(ev.Confirm.RequestID, HumanReply{
 				Allow: false,
 			})
 			break
@@ -180,3 +182,4 @@ func TestEngine_ConfirmPausesUntilResume_Deny(t *testing.T) {
 		t.Fatalf("expected tool output to contain user deny, got: %s", toolOut)
 	}
 }
+

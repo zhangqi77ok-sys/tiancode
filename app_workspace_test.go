@@ -293,6 +293,64 @@ func TestApp_GitUnstage_NoHeadRepo(t *testing.T) {
 	}
 }
 
+func TestApp_GitStage_TrailingSlashAndNestedRepo(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tcode_stage_robust_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	runCmd := func(name string, args ...string) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = tmpDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("command %s %v failed: %s", name, args, string(out))
+		}
+	}
+	runCmd("git", "init")
+	runCmd("git", "config", "user.name", "testuser")
+	runCmd("git", "config", "user.email", "test@test.com")
+
+	app := NewApp()
+	if err := app.SetWorkspace(tmpDir); err != nil {
+		t.Fatalf("SetWorkspace failed: %v", err)
+	}
+
+	// 1. 空路径校验
+	if err := app.GitStage("   "); err == nil {
+		t.Errorf("expected error for empty file path in GitStage, got nil")
+	}
+
+	// 2. 带尾部斜杠的合法文件
+	normalFile := filepath.Join(tmpDir, "robust_test.txt")
+	if err := os.WriteFile(normalFile, []byte("robust file content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.GitStage("robust_test.txt/ "); err != nil {
+		t.Fatalf("GitStage failed on normal file with trailing slash: %v", err)
+	}
+
+	// 3. 嵌入式空 Git 仓库
+	subDir := filepath.Join(tmpDir, "empty_embedded_repo")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	subCmd := exec.Command("git", "init")
+	subCmd.Dir = subDir
+	if err := subCmd.Run(); err != nil {
+		t.Fatalf("failed to init embedded repo: %v", err)
+	}
+
+	// 期望报错为明确的无 commit 提示，而非致命崩溃
+	err = app.GitStage("empty_embedded_repo/")
+	if err == nil {
+		t.Errorf("expected GitStage on empty embedded repo to return error, got nil")
+	} else if !strings.Contains(err.Error(), "no commit") {
+		t.Errorf("expected error to mention 'no commit', got: %v", err)
+	}
+}
+
 func TestApp_SearchWorkspace(t *testing.T) {
 	// 创建第 1 个临时工作区并写入深层文件
 	tmp1, err := os.MkdirTemp("", "tcode_search_ws1_*")

@@ -422,3 +422,77 @@ func (s *Store) Delete(id string) error {
 	}
 	return nil
 }
+
+// UpdateTag 增量更新会话标签
+func (s *Store) UpdateTag(sessionID string, tag string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateSessionLocked(sessionID, func(sess *ChatSession) {
+		sess.Tag = tag
+		sess.UpdatedAt = time.Now().Unix()
+	})
+}
+
+// AppendMessage 增量追加消息
+func (s *Store) AppendMessage(sessionID string, msg SessionMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateSessionLocked(sessionID, func(sess *ChatSession) {
+		sess.Messages = append(sess.Messages, msg)
+		sess.UpdatedAt = time.Now().Unix()
+	})
+}
+
+// UpdateTask 增量更新任务状态
+func (s *Store) UpdateTask(sessionID string, updater func(task *TaskModel)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateSessionLocked(sessionID, func(sess *ChatSession) {
+		if sess.Task == nil {
+			sess.Task = &TaskModel{
+				Goal:   "",
+				Status: TaskStatusIdle,
+			}
+		}
+		updater(sess.Task)
+		sess.UpdatedAt = time.Now().Unix()
+	})
+}
+
+func (s *Store) updateSessionLocked(sessionID string, mutator func(*ChatSession)) error {
+	safeID, err := sanitizeID(sessionID)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.baseDir, safeID+".json")
+	
+	// 读取当前状态
+	data, err := os.ReadFile(path)
+	var sess ChatSession
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		// 新建
+		sess = ChatSession{
+			ID:        safeID,
+			Messages:  make([]SessionMessage, 0),
+			CreatedAt: time.Now().Unix(),
+		}
+	} else {
+		if err := json.Unmarshal(data, &sess); err != nil {
+			return err
+		}
+	}
+	
+	// 突变
+	mutator(&sess)
+	sess.Title = TitleFromFirstMessage(sess)
+	
+	// 写回
+	out, err := json.MarshalIndent(sess, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteSession(path, out)
+}

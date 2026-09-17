@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"tiancode/internal/config"
@@ -30,26 +31,37 @@ type ChatRequest struct {
 	StrategyNote string `json:"strategy_note"`
 }
 
-func resolveChatCredentials(primary *config.ChannelConfig, reqModel string) (endpoint, apiKey, model string, err error) {
-	if primary == nil {
-		return "", "", "", fmt.Errorf("未配置任何模型渠道。请在设置中添加真实 endpoint 与 API Key，禁止使用内置假地址")
+type ChannelResolver interface {
+	GetChannelForModel(reqModel string) *config.ChannelConfig
+}
+
+func resolveChatCredentials(store ChannelResolver, reqModel string) (endpoint, apiKey, model, authType string, err error) {
+	if store == nil {
+		return "", "", "", "", fmt.Errorf("渠道存储器未初始化")
 	}
-	endpoint = strings.TrimSpace(primary.Endpoint)
-	apiKey = strings.TrimSpace(primary.APIKey)
+	ch := store.GetChannelForModel(reqModel)
+	if ch == nil {
+		return "", "", "", "", fmt.Errorf("未配置任何模型渠道。请在设置中添加真实 endpoint 与 API Key，禁止使用内置假地址")
+	}
 	model = strings.TrimSpace(reqModel)
 	if model == "" {
-		model = strings.TrimSpace(primary.Model)
-	}
-	if endpoint == "" {
-		return "", "", "", fmt.Errorf("主渠道未填写 endpoint")
-	}
-	if apiKey == "" {
-		return "", "", "", fmt.Errorf("主渠道未填写 API Key")
+		model = strings.TrimSpace(ch.Model)
 	}
 	if model == "" {
-		return "", "", "", fmt.Errorf("未指定模型：请在对话顶栏选择，或在渠道中填写 model")
+		return "", "", "", "", fmt.Errorf("未指定模型：请在渠道中填写 model")
 	}
-	return endpoint, apiKey, model, nil
+
+	var cs *config.ChannelStore
+	if concrete, ok := store.(*config.ChannelStore); ok {
+		cs = concrete
+	}
+
+	key, ep, prov, err := config.ResolveChannelCredentials(context.Background(), cs, ch)
+	if err != nil {
+		return "", "", "", "", err
+	}
+
+	return ep, key, model, prov, nil
 }
 
 func appendEnabledPolicies(base string, skills []config.SkillConfig, rules []config.RuleConfig) string {
@@ -115,7 +127,7 @@ func expandMentionedFiles(workspace string, sb *sandbox.Sandbox, prompt string) 
 }
 
 func (a *App) ResumeAgentChoice(sessionID string, requestID string, optionID string, customNote string) bool {
-	return a.engine.DeliverHumanReply(sessionID, loop.HumanReply{
+	return a.gateway.DeliverReply(requestID, loop.HumanReply{
 		OptionID:   optionID,
 		CustomNote: customNote,
 		Allow:      true,
@@ -123,7 +135,7 @@ func (a *App) ResumeAgentChoice(sessionID string, requestID string, optionID str
 }
 
 func (a *App) ResumeAgentConfirm(sessionID string, requestID string, allow bool) bool {
-	return a.engine.DeliverHumanReply(sessionID, loop.HumanReply{
+	return a.gateway.DeliverReply(requestID, loop.HumanReply{
 		OptionID:   "",
 		CustomNote: "",
 		Allow:      allow,
@@ -155,11 +167,7 @@ func (a *App) SendMessage(req ChatRequest) error {
 			a.agentMu.Unlock()
 		}()
 
-		var primary *config.ChannelConfig
-		if a.channelStore != nil {
-			primary = a.channelStore.GetPrimary()
-		}
-		endpoint, apiKey, model, credErr := resolveChatCredentials(primary, req.Model)
+		endpoint, apiKey, model, authType, credErr := resolveChatCredentials(a.channelStore, req.Model)
 		if credErr != nil {
 			errMsg := "\n\n[配置错误] " + credErr.Error()
 			runtime.EventsEmit(a.ctx, "agent:start", map[string]any{
@@ -187,7 +195,7 @@ func (a *App) SendMessage(req ChatRequest) error {
 			currentSession = session.ChatSession{
 				ID:        req.SessionID,
 				Title:     "",
-				Model:     model,
+				Model:        model,
 				Workspace: a.workspace,
 				CreatedAt: time.Now().Unix(),
 				UpdatedAt: time.Now().Unix(),
@@ -207,9 +215,7 @@ func (a *App) SendMessage(req ChatRequest) error {
 			Time:    time.Now().Format("15:04"),
 		}
 		currentSession.Messages = append(currentSession.Messages, userMsg)
-		currentSession.Title = session.TitleFromFirstMessage(currentSession)
-		currentSession.UpdatedAt = time.Now().Unix()
-		_ = a.sessionStore.Save(currentSession)
+		_ = a.sessionStore.AppendMessage(req.SessionID, userMsg)
 
 		// 3. 发送开始事件
 		runtime.EventsEmit(a.ctx, "agent:start", map[string]any{
@@ -265,6 +271,7 @@ func (a *App) SendMessage(req ChatRequest) error {
 		go func() {
 			_ = a.engine.Execute(agentCtx, &loop.EngineRequest{
 				Model:        model,
+				Provider:     authType,
 				Prompt:       req.Prompt,
 				SessionID:    req.SessionID,
 				Endpoint:     endpoint,
@@ -442,7 +449,12 @@ func (a *App) SendMessage(req ChatRequest) error {
 		}
 		currentSession.Messages = append(currentSession.Messages, asstMsg)
 		currentSession.UpdatedAt = time.Now().Unix()
-		_ = a.sessionStore.Save(currentSession)
+		_ = a.sessionStore.AppendMessage(req.SessionID, asstMsg)
+		if currentSession.Task != nil {
+			_ = a.sessionStore.UpdateTask(req.SessionID, func(t *session.TaskModel) {
+				*t = *currentSession.Task
+			})
+		}
 
 		finalStatus := ""
 		if currentSession.Task != nil {
@@ -456,3 +468,92 @@ func (a *App) SendMessage(req ChatRequest) error {
 
 	return nil
 }
+
+type WailsInteractionGateway struct {
+	app     *App
+	pending map[string]chan loop.HumanReply
+	mu      sync.Mutex
+}
+
+func NewWailsInteractionGateway(a *App) *WailsInteractionGateway {
+	return &WailsInteractionGateway{
+		app:     a,
+		pending: make(map[string]chan loop.HumanReply),
+	}
+}
+
+func (w *WailsInteractionGateway) RequestConfirm(ctx context.Context, sessionID, requestID, toolName, argsPreview, reason string) (bool, error) {
+	w.mu.Lock()
+	ch := make(chan loop.HumanReply, 1)
+	w.pending[requestID] = ch
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		delete(w.pending, requestID)
+		w.mu.Unlock()
+	}()
+
+	runtime.EventsEmit(w.app.ctx, "agent:confirm", &loop.ConfirmPayload{
+		SessionID:   sessionID,
+		RequestID:   requestID,
+		Tool:        toolName,
+		ArgsPreview: argsPreview,
+		Reason:      reason,
+	})
+
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(5 * time.Minute):
+		return false, fmt.Errorf("timeout waiting for user confirmation")
+	case reply := <-ch:
+		if reply.Timeout {
+			return false, fmt.Errorf("timeout waiting for user confirmation")
+		}
+		return reply.Allow, nil
+	}
+}
+
+func (w *WailsInteractionGateway) RequestChoice(ctx context.Context, sessionID, requestID, question string, options []loop.ChoiceOption) (loop.HumanReply, error) {
+	w.mu.Lock()
+	ch := make(chan loop.HumanReply, 1)
+	w.pending[requestID] = ch
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		delete(w.pending, requestID)
+		w.mu.Unlock()
+	}()
+
+	runtime.EventsEmit(w.app.ctx, "agent:choice", &loop.ChoicePayload{
+		SessionID:   sessionID,
+		RequestID:   requestID,
+		Question:    question,
+		Options:     options,
+		AllowCustom: true,
+	})
+
+	select {
+	case <-ctx.Done():
+		return loop.HumanReply{}, ctx.Err()
+	case <-time.After(5 * time.Minute):
+		return loop.HumanReply{Timeout: true}, nil
+	case reply := <-ch:
+		return reply, nil
+	}
+}
+
+func (w *WailsInteractionGateway) DeliverReply(requestID string, reply loop.HumanReply) bool {
+	w.mu.Lock()
+	ch, ok := w.pending[requestID]
+	w.mu.Unlock()
+	if ok {
+		select {
+		case ch <- reply:
+			return true
+		default:
+		}
+	}
+	return false
+}
+

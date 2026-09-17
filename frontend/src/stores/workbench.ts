@@ -56,7 +56,6 @@ const isCommandPaletteOpen = ref(false)
 const commandPaletteQuery = ref('')
 const commandPaletteIndex = ref(0)
 const isConstitutionModalOpen = ref(false)
-const pendingDiffFiles = ref<string[]>([])
 
 const activeConstitution = computed(() => {
   const activeRules = rules.value.filter(r => r.enabled)
@@ -392,14 +391,15 @@ const commitMessage = ref('')
 
 const stagedTreeFiles = computed(() => {
   const list: { path: string; type: string; color: string }[] = []
+  const seen = new Set<string>()
   if (gitStatus.value?.staged && Array.isArray(gitStatus.value.staged)) {
     for (const f of gitStatus.value.staged) {
-      if (typeof f === 'string') {
-        list.push({ path: f, type: 'M', color: 'text-[#10A37F]' })
-      } else if (f && typeof f === 'object') {
-        const type = f.staged_code || f.index_code || 'M'
+      const p = typeof f === 'string' ? f.trim() : (f?.path || '').trim()
+      if (p && !seen.has(p)) {
+        seen.add(p)
+        const type = typeof f === 'object' ? (f.staged_code || f.index_code || 'M') : 'M'
         list.push({
-          path: f.path || '',
+          path: p,
           type: type,
           color: type === 'D' ? 'text-red-500' : 'text-[#10A37F]'
         })
@@ -411,30 +411,38 @@ const stagedTreeFiles = computed(() => {
 
 const workingTreeFiles = computed(() => {
   const list: { path: string; type: string; color: string }[] = []
+  const seen = new Set<string>()
   if (gitStatus.value?.working && Array.isArray(gitStatus.value.working)) {
     for (const f of gitStatus.value.working) {
-      if (typeof f === 'string') {
-        list.push({ path: f, type: 'M', color: 'text-amber-600' })
-      } else if (f && typeof f === 'object') {
+      const p = typeof f === 'string' ? f.trim() : (f?.path || '').trim()
+      if (p && !seen.has(p)) {
+        seen.add(p)
+        const workCode = typeof f === 'object' ? (f.work_code || 'M') : 'M'
         list.push({
-          path: f.path || '',
-          type: f.work_code || 'M',
-          color: f.work_code === 'D' ? 'text-red-500' : 'text-amber-600'
+          path: p,
+          type: workCode,
+          color: workCode === 'D' ? 'text-red-500' : 'text-amber-600'
         })
       }
     }
   }
   if (gitStatus.value?.untracked && Array.isArray(gitStatus.value.untracked)) {
     for (const p of gitStatus.value.untracked) {
-      list.push({
-        path: typeof p === 'string' ? p : (p as any)?.path || '',
-        type: 'U',
-        color: 'text-emerald-600'
-      })
+      const pathStr = (typeof p === 'string' ? p : (p as any)?.path || '').trim()
+      if (pathStr && !seen.has(pathStr)) {
+        seen.add(pathStr)
+        list.push({
+          path: pathStr,
+          type: 'U',
+          color: 'text-emerald-600'
+        })
+      }
     }
   }
   return list
 })
+const pendingDiffFiles = computed(() => [...new Set(workingTreeFiles.value.map(f => f.path.trim()).filter(p => p && !p.endsWith('/')))])
+watch(pendingDiffFiles, (newVal) => { if (newVal.length === 0 && isDiffOpen.value) isDiffOpen.value = false })
 
 async function loadFileTree() {
   try {
@@ -555,7 +563,7 @@ async function setSessionTag(id: string, tag: string) {
     const sess = await wailsBridge.getSession(id)
     if (!sess) return
     sess.tag = tag.trim()
-    await wailsBridge.saveSession(sess)
+    await wailsBridge.updateSessionTag(sess.id, sess.tag)
     await loadSessionsList()
     if (currentSessionId.value === id) currentSession.value.tag = sess.tag
   } catch (err) {
@@ -1006,13 +1014,12 @@ async function revertFileAction() {
   const target = activeDiffFile.value
   try {
     await wailsBridge.revertFile(target)
-    pendingDiffFiles.value = pendingDiffFiles.value.filter(f => f !== target)
     if (currentSession.value?.task) {
       currentSession.value.task.pending_diff_files = [...pendingDiffFiles.value]
       if (pendingDiffFiles.value.length === 0 && currentSession.value.task.status === 'pending_diff') {
         currentSession.value.task.status = 'completed'
+        void wailsBridge.updateTaskStatus(currentSession.value.id, 'completed')
       }
-      void wailsBridge.saveSession(currentSession.value)
     }
     await loadDiff()
     await loadGitStatus()
@@ -1030,13 +1037,12 @@ async function stageFileAction() {
   const target = activeDiffFile.value
   try {
     await wailsBridge.gitStage(target)
-    pendingDiffFiles.value = pendingDiffFiles.value.filter(f => f !== target)
     if (currentSession.value?.task) {
       currentSession.value.task.pending_diff_files = [...pendingDiffFiles.value]
       if (pendingDiffFiles.value.length === 0 && currentSession.value.task.status === 'pending_diff') {
         currentSession.value.task.status = 'completed'
+        void wailsBridge.updateTaskStatus(currentSession.value.id, 'completed')
       }
-      void wailsBridge.saveSession(currentSession.value)
     }
     showToast(`✓ 已成功采纳并暂存变更: ${target}`)
     await loadDiff()
@@ -1051,28 +1057,27 @@ async function stageFileAction() {
 
 async function revertAllPendingDiffFilesAction() {
   if (pendingDiffFiles.value.length === 0) return
-  const filesToRevert = [...pendingDiffFiles.value]
+  const filesToRevert = [...new Set(pendingDiffFiles.value.map(f => f.trim()).filter(Boolean))]
   const failedFiles: string[] = []
 
   for (const f of filesToRevert) {
     try {
       await wailsBridge.revertFile(f)
-      pendingDiffFiles.value = pendingDiffFiles.value.filter(x => x !== f)
     } catch (err) {
       failedFiles.push(`${f}: ${err}`)
     }
   }
 
+  await loadDiff()
+  await loadGitStatus()
+
   if (currentSession.value?.task) {
     currentSession.value.task.pending_diff_files = [...pendingDiffFiles.value]
     if (pendingDiffFiles.value.length === 0 && currentSession.value.task.status === 'pending_diff') {
       currentSession.value.task.status = 'completed'
+      void wailsBridge.updateTaskStatus(currentSession.value.id, 'completed')
     }
-    void wailsBridge.saveSession(currentSession.value)
   }
-
-  await loadDiff()
-  await loadGitStatus()
 
   if (failedFiles.length > 0) {
     showToast(`⚠️ 部分文件撤回失败: ${failedFiles.join('; ')}`)
@@ -1084,28 +1089,27 @@ async function revertAllPendingDiffFilesAction() {
 
 async function stageAllPendingDiffFilesAction() {
   if (pendingDiffFiles.value.length === 0) return
-  const filesToStage = [...pendingDiffFiles.value]
+  const filesToStage = [...new Set(pendingDiffFiles.value.map(f => f.trim()).filter(Boolean))]
   const failedFiles: string[] = []
 
   for (const f of filesToStage) {
     try {
       await wailsBridge.gitStage(f)
-      pendingDiffFiles.value = pendingDiffFiles.value.filter(x => x !== f)
     } catch (err) {
       failedFiles.push(`${f}: ${err}`)
     }
   }
 
+  await loadDiff()
+  await loadGitStatus()
+
   if (currentSession.value?.task) {
     currentSession.value.task.pending_diff_files = [...pendingDiffFiles.value]
     if (pendingDiffFiles.value.length === 0 && currentSession.value.task.status === 'pending_diff') {
       currentSession.value.task.status = 'completed'
+      void wailsBridge.updateTaskStatus(currentSession.value.id, 'completed')
     }
-    void wailsBridge.saveSession(currentSession.value)
   }
-
-  await loadDiff()
-  await loadGitStatus()
 
   if (failedFiles.length > 0) {
     showToast(`⚠️ 部分文件采纳失败: ${failedFiles.join('; ')}`)
@@ -1465,23 +1469,13 @@ async function handleSend() {
       }
       
       const tddMsgId = 'msg_tdd_' + Date.now()
-      currentSession.value.messages.push({
-        id: tddMsgId,
-        role: 'system',
-        content: `**[系统工具 TDD 自动化验证]**\n\n状态：${report.status === 'PASS' ? '✅ 通过 (PASS)' : '❌ 失败 (FAIL)'}\n耗时：${report.duration}\n\n\`\`\`text\n${report.output || '无输出'}\n\`\`\``,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      })
-      await wailsBridge.saveSession(currentSession.value)
+      currentSession.value.messages.push({ id: 'sys_'+Date.now(), role: 'system', content: `**[系统工具 TDD 自动化验证]**\n\n状态：${report.status === 'PASS' ? '✅ 通过 (PASS)' : '❌ 失败 (FAIL)'}\n耗时：${report.duration}\n\n\`\`\`text\n${report.output || '无输出'}\n\`\`\``, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
+        await wailsBridge.appendSystemMessage(currentSession.value.id, `**[系统工具 TDD 自动化验证]**\n\n状态：${report.status === 'PASS' ? '✅ 通过 (PASS)' : '❌ 失败 (FAIL)'}\n耗时：${report.duration}\n\n\`\`\`text\n${report.output || '无输出'}\n\`\`\``)
       scrollChatToLatest()
     } catch (err) {
       showToast('TDD 无法执行: ' + err)
-      currentSession.value.messages.push({
-        id: 'msg_tdd_err_' + Date.now(),
-        role: 'system',
-        content: `**[系统工具 TDD 自动化验证]**\n\n❌ 执行异常\n\n\`\`\`text\n${err}\n\`\`\``,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      })
-      await wailsBridge.saveSession(currentSession.value)
+      currentSession.value.messages.push({ id: 'sys_'+Date.now(), role: 'system', content: `**[系统工具 TDD 自动化验证]**\n\n❌ 执行异常\n\n\`\`\`text\n${err}\n\`\`\``, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
+        await wailsBridge.appendSystemMessage(currentSession.value.id, `**[系统工具 TDD 自动化验证]**\n\n❌ 执行异常\n\n\`\`\`text\n${err}\n\`\`\``)
       scrollChatToLatest()
     }
     return
@@ -1638,9 +1632,6 @@ async function handleSend() {
         },
         onFilesChanged(file) {
           pushAgentTrace('file', `changed: ${file}`)
-          if (!pendingDiffFiles.value.includes(file)) {
-            pendingDiffFiles.value.push(file)
-          }
           openEditorTab(file, 'diff')
           void loadGitStatus()
           showToast(`已写入工作区，请审查 Diff：${file}`)
@@ -1658,7 +1649,7 @@ async function handleSend() {
             currentSession.value.task.status = 'pending_diff'
             currentSession.value.task.pending_diff_files = [...pendingDiffFiles.value]
           }
-          wailsBridge.saveSession(currentSession.value)
+          // Removed whole-session save. UI relies on incremental state now.
           void loadSessionsList()
           ensureSessionTab(currentSessionId.value, currentSession.value.title)
           if (activeDiffFile.value) void refreshDiagnostics(activeDiffFile.value)
@@ -1677,7 +1668,7 @@ async function stopGenerationAction() {
   isStreaming.value = false
   if (currentSession.value && currentSession.value.id) {
     try {
-      await wailsBridge.saveSession(currentSession.value)
+      // await wailsBridge.saveSession(...) removed
     } catch (_) {}
   }
   showToast('已中断本次推理并保存当前内容')
@@ -1743,9 +1734,15 @@ const modelHealthStatus = computed<{
 const channelForm = reactive({
   id: '',
   name: '',
+  protocol: 'openai',
+  auth_type: 'api_key',
   endpoint: '',
   api_key: '',
-  extra_models: ''
+  extra_models: '',
+  api_version: '2024-02-15-preview',
+  token_endpoint: '',
+  client_id: '',
+  client_secret: ''
 })
 
 async function loadSettingsData() {
@@ -1809,18 +1806,30 @@ function setPrimaryChannel(id: string) {
 function openAddChannelModal() {
   channelForm.id = ''
   channelForm.name = ''
+  channelForm.protocol = 'openai'
+  channelForm.auth_type = 'api_key'
   channelForm.endpoint = ''
   channelForm.api_key = ''
   channelForm.extra_models = ''
+  channelForm.api_version = '2024-02-15-preview'
+  channelForm.token_endpoint = ''
+  channelForm.client_id = ''
+  channelForm.client_secret = ''
   isChannelModalOpen.value = true
 }
 
 function editChannel(ch: ChannelConfig) {
   channelForm.id = ch.id
   channelForm.name = ch.name
+  channelForm.protocol = ch.protocol || ch.auth_type || 'openai'
+  channelForm.auth_type = ch.auth_type || (channelForm.protocol === 'ollama' ? 'none' : 'api_key')
   channelForm.endpoint = ch.endpoint
   channelForm.api_key = ch.api_key || ''
   channelForm.extra_models = (ch.extra_models || []).join(', ')
+  channelForm.api_version = ch.extra_config?.api_version || '2024-02-15-preview'
+  channelForm.token_endpoint = ch.extra_config?.token_endpoint || ''
+  channelForm.client_id = ch.extra_config?.client_id || ''
+  channelForm.client_secret = ch.extra_config?.client_secret || ''
   isChannelModalOpen.value = true
 }
 
@@ -1840,6 +1849,9 @@ async function fetchModelsAction() {
     const models = await wailsBridge.fetchUpstreamModels(channelForm.endpoint, channelForm.api_key)
     if (models && models.length > 0) {
       upstreamFetchedModels.value = models
+      if (!channelForm.extra_models) {
+        channelForm.extra_models = models.join(', ')
+      }
       showToast(`✓ 成功从上游网关探测到 ${models.length} 个真实在线模型！`)
     } else {
       showToast('未探测到可用模型列表')
@@ -1850,14 +1862,22 @@ async function fetchModelsAction() {
 }
 
 async function saveChannelAction() {
+  const extraConfig: Record<string, string> = {}
+  if (channelForm.api_version) extraConfig.api_version = channelForm.api_version
+  if (channelForm.token_endpoint) extraConfig.token_endpoint = channelForm.token_endpoint
+  if (channelForm.client_id) extraConfig.client_id = channelForm.client_id
+  if (channelForm.client_secret) extraConfig.client_secret = channelForm.client_secret
+
   await wailsBridge.saveChannel({
     id: channelForm.id || 'ch_' + Date.now(),
     name: channelForm.name,
     primary: false,
     status: 'standby',
-    auth_type: 'bearer_token',
+    protocol: channelForm.protocol || 'openai',
+    auth_type: channelForm.auth_type || 'api_key',
     endpoint: channelForm.endpoint,
     api_key: channelForm.api_key,
+    extra_config: extraConfig,
     model: selectedModel.value,
     extra_models: channelForm.extra_models.split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean),
     latency: '未测速',
@@ -2637,3 +2657,7 @@ function initWorkbench() {
     searchFromFilter
   }
 })
+
+
+
+

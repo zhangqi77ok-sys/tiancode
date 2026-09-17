@@ -11,18 +11,20 @@ import (
 
 // ChannelConfig 真实的渠道配置结构体
 type ChannelConfig struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Primary   bool   `json:"primary"`
-	Status    string `json:"status"`    // "online", "standby", "error"
-	AuthType  string `json:"auth_type"` // "codex_session", "sub2_relay", "bearer_token"
-	Endpoint  string `json:"endpoint"`
-	APIKey    string `json:"api_key,omitempty"`
-	APIKeyEnc string `json:"api_key_enc,omitempty"`
-	Model     string `json:"model"`
-	Latency     string   `json:"latency"` // e.g. "85ms"
-	ExtraModels []string `json:"extra_models,omitempty"`
-	UpdatedAt   int64    `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Primary     bool              `json:"primary"`
+	Status      string            `json:"status"` // "online", "standby", "error"
+	AuthType    string            `json:"auth_type"` // "api_key", "refresh_token", "azure", "none"
+	Protocol    string            `json:"protocol,omitempty"` // "openai", "anthropic", "gemini", "ollama", "azure"
+	Endpoint    string            `json:"endpoint"`
+	APIKey      string            `json:"api_key,omitempty"`
+	APIKeyEnc   string            `json:"api_key_enc,omitempty"`
+	Model       string            `json:"model"`
+	Latency     string            `json:"latency"` // e.g. "85ms"
+	ExtraModels []string          `json:"extra_models,omitempty"`
+	UpdatedAt   int64             `json:"updated_at"`
+	ExtraConfig map[string]string `json:"extra_config,omitempty"`
 }
 
 // ChannelStore 真实的渠道磁盘存储管理器
@@ -63,6 +65,30 @@ func (s *ChannelStore) load() error {
 	}
 
 	for i := range list {
+		// 历史老数据平滑迁移兼容
+		if list[i].Protocol == "" {
+			switch list[i].AuthType {
+			case "anthropic", "gemini", "ollama", "azure":
+				list[i].Protocol = list[i].AuthType
+				if list[i].AuthType == "ollama" {
+					list[i].AuthType = "none"
+				} else {
+					list[i].AuthType = "api_key"
+				}
+			default:
+				list[i].Protocol = "openai"
+				if list[i].AuthType == "bearer_token" || list[i].AuthType == "" {
+					list[i].AuthType = "api_key"
+				}
+			}
+		}
+		if list[i].AuthType == "" {
+			list[i].AuthType = "api_key"
+		}
+		if list[i].ExtraConfig == nil {
+			list[i].ExtraConfig = make(map[string]string)
+		}
+
 		if list[i].APIKeyEnc != "" {
 			plain, err := UnprotectSecret(list[i].APIKeyEnc)
 			if err == nil && plain != "" {
@@ -112,6 +138,16 @@ func (s *ChannelStore) Save(ch ChannelConfig) error {
 	if ch.ID == "" {
 		ch.ID = fmt.Sprintf("ch_%d", time.Now().UnixNano())
 	}
+	if ch.Protocol == "" {
+		ch.Protocol = "openai"
+	}
+	if ch.AuthType == "" {
+		ch.AuthType = "api_key"
+	}
+	if ch.ExtraConfig == nil {
+		ch.ExtraConfig = make(map[string]string)
+	}
+
 	if IsMaskedAPIKey(ch.APIKey) {
 		for _, item := range s.channels {
 			if item.ID == ch.ID {
@@ -159,11 +195,38 @@ func (s *ChannelStore) Delete(id string) error {
 	return s.save()
 }
 
-// GetPrimary 获取当前主用渠道
-func (s *ChannelStore) GetPrimary() *ChannelConfig {
+// GetChannelForModel 根据请求的模型名称路由最匹配的渠道
+func (s *ChannelStore) GetChannelForModel(reqModel string) *ChannelConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if reqModel == "" {
+		return s.getPrimaryLocked()
+	}
+
+	// 1. 精确匹配主模型
+	for _, ch := range s.channels {
+		if ch.Status != "error" && ch.Model == reqModel {
+			c := ch
+			return &c
+		}
+	}
+	// 2. 匹配备用模型列表 (ExtraModels)
+	for _, ch := range s.channels {
+		if ch.Status != "error" {
+			for _, em := range ch.ExtraModels {
+				if em == reqModel {
+					c := ch
+					return &c
+				}
+			}
+		}
+	}
+	// 3. Fallback 到主渠道
+	return s.getPrimaryLocked()
+}
+
+func (s *ChannelStore) getPrimaryLocked() *ChannelConfig {
 	for _, ch := range s.channels {
 		if ch.Primary {
 			c := ch
@@ -175,6 +238,13 @@ func (s *ChannelStore) GetPrimary() *ChannelConfig {
 		return &c
 	}
 	return nil
+}
+
+// GetPrimary 获取当前主用渠道
+func (s *ChannelStore) GetPrimary() *ChannelConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getPrimaryLocked()
 }
 
 // Get 按 ID 取完整凭据（内存明文）。
@@ -194,7 +264,9 @@ func (s *ChannelStore) Get(id string) *ChannelConfig {
 func (s *ChannelStore) ListMasked() []ChannelConfig {
 	list := s.List()
 	for i := range list {
-		list[i].APIKey = MaskAPIKey(list[i].APIKey)
+		if list[i].AuthType != "none" {
+			list[i].APIKey = MaskAPIKey(list[i].APIKey)
+		}
 		list[i].APIKeyEnc = ""
 	}
 	return list

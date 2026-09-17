@@ -81,6 +81,15 @@ type DiffReport struct {
 
 // ComputeFileDiff 计算指定文件相对于 Git HEAD 的真实行级差异，并分块 (Hunks) 提取
 func ComputeFileDiff(workspaceRoot, relPath string) (DiffReport, error) {
+	if filepath.IsAbs(relPath) {
+		if r, err := filepath.Rel(workspaceRoot, relPath); err == nil {
+			relPath = filepath.ToSlash(r)
+		}
+	} else {
+		relPath = filepath.ToSlash(relPath)
+	}
+	absPath := filepath.Join(workspaceRoot, relPath)
+
 	report := DiffReport{
 		FilePath: relPath,
 		Lang:     detectLanguage(relPath),
@@ -93,6 +102,10 @@ func ComputeFileDiff(workspaceRoot, relPath string) (DiffReport, error) {
 	absPath, err := validateRelPath(workspaceRoot, relPath)
 	if err != nil {
 		return report, err
+	}
+
+	if fi, statErr := os.Stat(absPath); statErr == nil && fi.IsDir() {
+		return report, fmt.Errorf("[%s] is a directory, not a diffable file", relPath)
 	}
 
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {

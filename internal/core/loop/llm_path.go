@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"tiancode/internal/llm"
 	v1 "tiancode/pkg/plugin/v1"
@@ -43,16 +42,6 @@ func (e *ExecutionEngine) executeDirectLLM(ctx context.Context, req *EngineReque
 		eventChan <- EngineEvent{Type: EventError, ErrorMessage: err.Error()}
 		return err
 	}
-
-	e.mu.Lock()
-	humanChan := make(chan HumanReply, 1)
-	e.pendingHuman[req.SessionID] = humanChan
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.pendingHuman, req.SessionID)
-		e.mu.Unlock()
-	}()
 
 	conversation := req.Messages
 	if len(conversation) == 0 {
@@ -240,21 +229,14 @@ func (e *ExecutionEngine) executeDirectLLM(ctx context.Context, req *EngineReque
 					output = "ask_user 需要 question 以及 2~5 个 options"
 					isErr = true
 				} else {
-					askPayload.SessionID = req.SessionID
-					askPayload.RequestID = tc.ID // use ToolCallID as RequestID
-					eventChan <- EngineEvent{
-						Type:   EventChoice,
-						Choice: &askPayload,
-					}
-					
-					// Block until resume or timeout
-					select {
-					case <-ctx.Done():
-						output = "已跳过（会话中断），请采用推荐选项。"
-					case <-time.After(5 * time.Minute):
-						output = "已跳过（等待超时），请采用推荐选项，结果注明 skipped_default=true。"
-					case reply := <-humanChan:
-						if reply.Timeout || !reply.Allow {
+					if e.gateway == nil {
+						output = "缺少审批网关，自动跳过用户选择。"
+						isErr = true
+					} else {
+						reply, err := e.gateway.RequestChoice(ctx, req.SessionID, tc.ID, askPayload.Question, askPayload.Options)
+						if err != nil {
+							output = fmt.Sprintf("已跳过（中断或错误）：%v", err)
+						} else if reply.Timeout || !reply.Allow {
 							output = "已跳过（用户跳过），请采用推荐选项，结果注明 skipped_default=true。"
 						} else {
 							var label string
@@ -269,7 +251,7 @@ func (e *ExecutionEngine) executeDirectLLM(ctx context.Context, req *EngineReque
 					}
 				}
 			} else {
-				output, isErr, written, tddPass = e.runTool(ctx, req.SessionID, tc.ID, tc.Function.Name, rawArgs, req.Strategy, turn, req.LLMTools, eventChan, humanChan)
+				output, isErr, written, tddPass = e.runTool(ctx, req.SessionID, tc.ID, tc.Function.Name, rawArgs, req.Strategy, turn, req.LLMTools, eventChan)
 			}
 			eventChan <- EngineEvent{
 				Type:       EventToolEnd,

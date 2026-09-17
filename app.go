@@ -21,6 +21,11 @@ import (
 	"tiancode/internal/llm"
 	"tiancode/internal/session"
 	"tiancode/plugins/provider/openai"
+	"tiancode/plugins/provider/anthropic"
+	"tiancode/plugins/provider/azure"
+	"tiancode/plugins/provider/gemini"
+	"tiancode/plugins/provider/grok"
+	"tiancode/plugins/provider/ollama"
 	safetyrail "tiancode/plugins/rail/safety"
 	fstool "tiancode/plugins/tool/fs"
 	gittool "tiancode/plugins/tool/git"
@@ -171,6 +176,7 @@ type App struct {
 	agentCancel      context.CancelFunc
 	agentMu          sync.Mutex
 	agentTaskID      int64
+	gateway          *WailsInteractionGateway
 	currentSessionID string
 }
 
@@ -183,6 +189,11 @@ func NewApp() *App {
 	reg := host.NewRegistry()
 
 	_ = reg.Register(openai.NewProvider())
+	_ = reg.Register(anthropic.NewProvider())
+	_ = reg.Register(gemini.NewProvider())
+	_ = reg.Register(grok.NewProvider())
+	_ = reg.Register(ollama.NewProvider())
+	_ = reg.Register(azure.NewProvider())
 	_ = reg.Register(gittool.NewTool(wd))
 	_ = reg.Register(fstool.NewTool(sb, sm))
 	_ = reg.Register(searchtool.NewTool(sb))
@@ -199,7 +210,7 @@ func NewApp() *App {
 	}
 
 	mcpMgr := mcp.NewManager(wd)
-	eng := loop.NewExecutionEngine(reg)
+	eng := loop.NewExecutionEngine(reg, nil)
 	eng.MCPCall = func(ctx context.Context, name string, args map[string]any) (string, error) {
 		return mcpMgr.CallTool(ctx, name, args)
 	}
@@ -233,6 +244,11 @@ func NewApp() *App {
 		}
 		return out, report.Status == "PASS"
 	}
+
+	app.gateway = NewWailsInteractionGateway(app)
+	app.engine = loop.NewExecutionEngine(reg, app.gateway)
+	app.engine.MCPCall = eng.MCPCall
+	app.engine.Verify = eng.Verify
 
 	return app
 }
@@ -368,7 +384,7 @@ func (a *App) SetWorkspace(dir string) error {
 	}
 	a.mcpManager = mcp.NewManager(absDir)
 	if a.registry != nil {
-		a.engine = loop.NewExecutionEngine(a.registry)
+		a.engine = loop.NewExecutionEngine(a.registry, a.gateway)
 		a.engine.MCPCall = func(ctx context.Context, name string, args map[string]any) (string, error) {
 			return a.mcpManager.CallTool(ctx, name, args)
 		}

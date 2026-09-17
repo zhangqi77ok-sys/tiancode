@@ -169,7 +169,8 @@
                         >
                           {{ ch.status === 'online' ? '在线' : ch.status === 'offline' ? '离线' : '未测速' }}
                         </span>
-                        <span class="text-[9px] bg-black/[0.04] text-[#52525B] px-1.5 py-0.2 rounded font-mono">Bearer Token</span>
+                        <span class="text-[9px] bg-[#D96B27]/10 text-[#D96B27] px-1.5 py-0.2 rounded font-mono font-bold">{{ ch.protocol || 'openai' }}</span>
+                        <span class="text-[9px] bg-black/[0.04] text-[#52525B] px-1.5 py-0.2 rounded font-mono">{{ ch.auth_type === 'refresh_token' ? 'RT / OAuth' : (ch.auth_type === 'azure' ? 'Azure Key' : (ch.auth_type === 'none' ? '免鉴权' : 'API Key')) }}</span>
                       </div>
                       <div class="text-[11px] text-[#71717A] mt-0.5 font-mono">
                         {{ ch.endpoint }} · 延迟: <strong :class="s.pingLoadingMap[ch.id] ? 'text-amber-500 animate-pulse' : 'text-[#10A37F]'">{{ s.pingLoadingMap[ch.id] ? '测速中...' : ch.latency }}</strong>
@@ -578,38 +579,189 @@
     <!-- 渠道编辑弹窗 -->
     <div
       v-if="s.isChannelModalOpen"
+      @keydown.esc="s.isChannelModalOpen = false"
+      tabindex="-1"
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-xs font-sans"
     >
-      <div class="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-black/[0.1] p-5 space-y-4">
+      <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-black/[0.1] p-5 space-y-4 max-h-[90vh] overflow-y-auto">
         <div class="flex items-center justify-between pb-2 border-b border-black/[0.06]">
-          <h4 class="text-sm font-bold text-[#18181B]">渠道配置管理</h4>
+          <h4 class="text-sm font-bold text-[#18181B] flex items-center gap-1.5">
+            <span>🌐</span><span>模型渠道与网关接入配置</span>
+          </h4>
           <button @click="s.isChannelModalOpen = false" class="text-[#71717A] hover:text-[#18181B] p-1 rounded-md cursor-pointer" title="关闭弹窗 (Esc)">✕</button>
         </div>
         <div class="space-y-3 text-xs">
           <div>
             <label class="block font-medium text-[#71717A] mb-1">渠道名称</label>
-            <input v-model="s.channelForm.name" type="text" class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]">
+            <input v-model="s.channelForm.name" placeholder="如 Claude-3.5-Sonnet 或 本地Qwen" type="text" class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]">
           </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block font-medium text-[#71717A] mb-1">接入协议 (Protocol)</label>
+              <select
+                v-model="s.channelForm.protocol"
+                @change="() => {
+                  if (s.channelForm.protocol === 'ollama') s.channelForm.auth_type = 'none'
+                  else if (s.channelForm.protocol === 'azure') s.channelForm.auth_type = 'azure'
+                  else if (s.channelForm.auth_type === 'none' || s.channelForm.auth_type === 'azure') s.channelForm.auth_type = 'api_key'
+                  if (s.channelForm.protocol === 'grok' && !s.channelForm.extra_models) s.channelForm.extra_models = 'grok-4.6'
+                }"
+                class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]"
+              >
+                <option value="openai">OpenAI (含兼容模型/中转)</option>
+                <option value="anthropic">Anthropic Claude (原生)</option>
+                <option value="gemini">Google Gemini (原生兼容)</option>
+                <option value="grok">xAI Grok (4.6 / Grok 系列)</option>
+                <option value="azure">Azure OpenAI (微软云)</option>
+                <option value="ollama">Ollama (本地私有化)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block font-medium text-[#71717A] mb-1">认证模式 (Auth Type)</label>
+              <select v-model="s.channelForm.auth_type" class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]">
+                <option value="api_key">API Key (静态密钥 / 轮询)</option>
+                <option value="refresh_token">Refresh Token (RT / OAuth 保活)</option>
+                <option value="azure" v-if="s.channelForm.protocol === 'azure'">Azure 专有密钥</option>
+                <option value="none">免鉴权 / 本地直连</option>
+              </select>
+            </div>
+          </div>
+
           <div>
             <label class="block font-medium text-[#71717A] mb-1">API Base URL</label>
-            <input v-model="s.channelForm.endpoint" type="text" class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]">
+            <input
+              v-model="s.channelForm.endpoint"
+              type="text"
+              :placeholder="
+                s.channelForm.protocol === 'azure' ? 'https://your-resource.openai.azure.com' :
+                s.channelForm.protocol === 'anthropic' ? '默认: https://api.anthropic.com' :
+                s.channelForm.protocol === 'gemini' ? '默认: https://generativelanguage.googleapis.com/v1beta/openai' :
+                s.channelForm.protocol === 'grok' ? '默认: https://api.x.ai/v1 (或中转站如 https://ss2a.top/v1)' :
+                s.channelForm.protocol === 'ollama' ? '默认: http://localhost:11434' : 'https://api.openai.com/v1'
+              "
+              class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27] font-mono text-[11px]"
+            >
           </div>
-          <div>
-            <label class="block font-medium text-[#71717A] mb-1">API Key</label>
-            <input v-model="s.channelForm.api_key" type="password" class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]">
+
+          <!-- 动态鉴权字段 1: 普通 API Key 模式 -->
+          <div v-if="s.channelForm.auth_type === 'api_key'">
+            <div class="flex items-center justify-between mb-1">
+              <label class="font-medium text-[#71717A]">API Key / 凭据 (支持多 Key 轮询或直粘凭据 JSON)</label>
+              <span class="text-[10px] text-[#A1A1AA]">单 Key 直接粘贴，多 Key 换行</span>
+            </div>
+            <textarea
+              v-model="s.channelForm.api_key"
+              rows="2"
+              :placeholder="
+                s.channelForm.protocol === 'anthropic' ? 'sk-ant-api03-...' :
+                s.channelForm.protocol === 'gemini' ? 'AIzaSy... (Google API Key) 或粘贴完整凭据 JSON' :
+                s.channelForm.protocol === 'grok' ? 'xai-... 或中转站 Key 如 sk-...' : 'sk-... 或粘贴整段凭据 JSON'
+              "
+              class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27] font-mono text-[11px] resize-none"
+            ></textarea>
+            <div class="text-[10px] text-[#A1A1AA] mt-1">
+              💡 对齐 new-api：可直接粘贴 Google ADC JSON、GCP Service Account JSON 或 OpenAI Codex JSON，系统自动提取鉴权。
+            </div>
           </div>
+
+          <!-- 动态鉴权字段 2: Refresh Token (RT) / OAuth 模式 -->
+          <div v-else-if="s.channelForm.auth_type === 'refresh_token'" class="space-y-2 bg-[#FAF8F5] p-3 rounded-xl border border-black/[0.06]">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="font-bold text-[#18181B]">Refresh Token (RT) / 凭据 JSON</label>
+                <span class="text-[10px] text-[#D96B27] font-semibold">自动刷新并缓存 Access Token</span>
+              </div>
+              <textarea
+                v-model="s.channelForm.api_key"
+                rows="2"
+                placeholder="直接粘贴 Refresh Token (如 rt_...) 或 Google / OpenAI OAuth 完整凭据 JSON"
+                class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] bg-white focus:outline-none focus:border-[#D96B27] font-mono text-[11px] resize-none"
+              ></textarea>
+            </div>
+
+            <!-- 可选折叠高级参数 (默认隐藏，与 new-api 体验对齐，无需手动填写) -->
+            <details class="text-[11px] text-[#71717A] pt-1">
+              <summary class="cursor-pointer font-medium hover:text-[#D96B27] select-none flex items-center gap-1">
+                <span>⚙️ 高级 OAuth 覆盖参数 (可选，默认自动识别)</span>
+              </summary>
+              <div class="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-black/[0.06]">
+                <div>
+                  <label class="block text-[10px] text-[#71717A] mb-0.5">Token 端点</label>
+                  <input
+                    v-model="s.channelForm.token_endpoint"
+                    placeholder="自动识别"
+                    type="text"
+                    class="w-full px-2 py-1 rounded-lg border border-black/[0.1] bg-white font-mono text-[10px]"
+                  >
+                </div>
+                <div>
+                  <label class="block text-[10px] text-[#71717A] mb-0.5">Client ID</label>
+                  <input
+                    v-model="s.channelForm.client_id"
+                    placeholder="选填"
+                    type="text"
+                    class="w-full px-2 py-1 rounded-lg border border-black/[0.1] bg-white font-mono text-[10px]"
+                  >
+                </div>
+                <div>
+                  <label class="block text-[10px] text-[#71717A] mb-0.5">Client Secret</label>
+                  <input
+                    v-model="s.channelForm.client_secret"
+                    placeholder="选填"
+                    type="password"
+                    class="w-full px-2 py-1 rounded-lg border border-black/[0.1] bg-white font-mono text-[10px]"
+                  >
+                </div>
+              </div>
+            </details>
+
+            <div class="text-[10px] text-[#71717A] bg-black/[0.02] p-1.5 rounded-lg border border-black/[0.04]">
+              💡 <strong>极速模式</strong>：直接将 Google 凭据 JSON (如 <code>application_default_credentials.json</code>) 完整粘贴于上方主输入框，全自动解析，免填其他项。
+            </div>
+          </div>
+
+          <!-- 动态鉴权字段 3: Azure 模式 -->
+          <div v-else-if="s.channelForm.auth_type === 'azure'" class="space-y-2 bg-[#FAF8F5] p-3 rounded-xl border border-black/[0.06]">
+            <div>
+              <label class="block font-medium text-[#71717A] mb-1">Azure API Key</label>
+              <input
+                v-model="s.channelForm.api_key"
+                type="password"
+                placeholder="Azure 门户中的 32 位 Key"
+                class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] bg-white focus:outline-none focus:border-[#D96B27] font-mono text-[11px]"
+              >
+            </div>
+            <div>
+              <label class="block text-[11px] text-[#71717A] mb-0.5">API Version (版本号)</label>
+              <input
+                v-model="s.channelForm.api_version"
+                type="text"
+                placeholder="例如: 2024-02-15-preview"
+                class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] bg-white font-mono text-[11px]"
+              >
+            </div>
+          </div>
+
+          <!-- 动态鉴权字段 4: 免鉴权模式 -->
+          <div v-else-if="s.channelForm.auth_type === 'none'" class="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
+            <span>🟢</span>
+            <span>已启用免鉴权模式，请求将直接透传至 Base URL，无需验证 API Key。</span>
+          </div>
+
           <div>
             <label class="block font-medium text-[#71717A] mb-1">额外模型标签（逗号分隔，写入渠道 extra_models）</label>
             <input v-model="s.channelForm.extra_models" type="text" class="w-full px-2.5 py-1.5 rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27]" placeholder="deepseek-v4-flash, glm-5.3">
           </div>
+
           <button @click="s.fetchModelsAction" class="w-full py-1.5 rounded-lg border border-[#D96B27] text-[#D96B27] text-xs font-bold hover:bg-[#D96B27]/10 cursor-pointer">
             🔄 真实自动获取上游模型 (/v1/models)
           </button>
         </div>
 
         <div class="flex justify-end gap-2 pt-2 border-t border-black/[0.06]">
-          <button @click="s.isChannelModalOpen = false" class="px-3 py-1 rounded-lg border border-black/[0.1] text-xs">取消</button>
-          <button @click="s.saveChannelAction" class="px-4 py-1 rounded-lg bg-[#D96B27] text-white text-xs font-semibold hover:bg-[#B8551B]">保存至磁盘</button>
+          <button @click="s.isChannelModalOpen = false" class="px-3 py-1 rounded-lg border border-black/[0.1] text-xs cursor-pointer">取消</button>
+          <button @click="s.saveChannelAction" class="px-4 py-1 rounded-lg bg-[#D96B27] text-white text-xs font-semibold hover:bg-[#B8551B] cursor-pointer">保存至磁盘</button>
         </div>
       </div>
     </div>

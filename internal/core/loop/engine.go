@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"tiancode/internal/host"
 	"tiancode/internal/llm"
@@ -99,37 +98,27 @@ type HumanReply struct {
 	Timeout    bool
 }
 
+// InteractionGateway 处理运行时的需要人类介入的操作（如危险命令确认、多项选择题等）
+type InteractionGateway interface {
+	RequestConfirm(ctx context.Context, sessionID, requestID, toolName, argsPreview, reason string) (bool, error)
+	RequestChoice(ctx context.Context, sessionID, requestID, question string, options []ChoiceOption) (HumanReply, error)
+}
+
 // ExecutionEngine ReAct 双环自主执行引擎
 type ExecutionEngine struct {
 	registry   *host.Registry
 	MCPCall    func(ctx context.Context, name string, args map[string]any) (string, error)
 	Verify     func(writtenFile string) (output string, pass bool)
 
-	mu           sync.Mutex
-	pendingHuman map[string]chan HumanReply
+	gateway InteractionGateway
 }
 
 // NewExecutionEngine 构造执行引擎
-func NewExecutionEngine(reg *host.Registry) *ExecutionEngine {
+func NewExecutionEngine(reg *host.Registry, gw InteractionGateway) *ExecutionEngine {
 	return &ExecutionEngine{
-		registry:     reg,
-		pendingHuman: make(map[string]chan HumanReply),
+		registry: reg,
+		gateway:  gw,
 	}
-}
-
-// DeliverHumanReply 递交人类的选择/确认
-func (e *ExecutionEngine) DeliverHumanReply(sessionID string, reply HumanReply) bool {
-	e.mu.Lock()
-	ch, ok := e.pendingHuman[sessionID]
-	e.mu.Unlock()
-	if ok {
-		select {
-		case ch <- reply:
-			return true
-		default:
-		}
-	}
-	return false
 }
 
 // Execute 驱动完整的 ReAct 自主思考与工具调用闭环（统一单核）

@@ -26,6 +26,12 @@ func (a *App) GetStructuredDiff(filePath string) (diff.DiffReport, error) {
 }
 
 func (a *App) RevertFile(filePath string) error {
+	filePath = strings.TrimSpace(filePath)
+	filePath = strings.TrimRight(filePath, "/\\")
+	if filePath == "" {
+		return fmt.Errorf("empty file path")
+	}
+
 	var validPath string
 	var err error
 	if a.sandbox != nil {
@@ -36,6 +42,13 @@ func (a *App) RevertFile(filePath string) error {
 	} else {
 		validPath = filepath.Join(a.workspace, filePath)
 	}
+
+	if filepath.IsAbs(filePath) {
+		if r, err := filepath.Rel(a.workspace, filePath); err == nil {
+			filePath = r
+		}
+	}
+	filePath = filepath.ToSlash(filePath)
 
 	// 1. 先检查该文件在 git 中的真实状态，严禁无条件物理删除
 	statusCmd := exec.Command("git", "status", "--porcelain", "--", filePath)
@@ -153,28 +166,76 @@ func (a *App) GitCommit(msg string) (string, error) {
 	return outStr, nil
 }
 
-// GitStage 真实暂存单个文件
 func (a *App) GitStage(filePath string) error {
+	filePath = strings.TrimSpace(filePath)
+	filePath = strings.TrimRight(filePath, "/\\")
+	if filePath == "" {
+		return fmt.Errorf("empty file path")
+	}
+
 	if a.sandbox != nil {
 		if _, err := a.sandbox.ValidatePath(filePath); err != nil {
 			return fmt.Errorf("security violation: %w", err)
 		}
 	}
+	
+	if filepath.IsAbs(filePath) {
+		if r, err := filepath.Rel(a.workspace, filePath); err == nil {
+			filePath = r
+		}
+	}
+	filePath = filepath.ToSlash(filePath)
+
+	// 针对嵌套 Git 仓库（如子模块或未提交空仓库）的安全防崩溃检测
+	cleanAbs := filepath.Join(a.workspace, filePath)
+	if fi, err := os.Stat(cleanAbs); err == nil && fi.IsDir() {
+		dotGit := filepath.Join(cleanAbs, ".git")
+		if _, dotGitErr := os.Stat(dotGit); dotGitErr == nil {
+			headCheck := exec.Command("git", "-C", cleanAbs, "rev-parse", "--verify", "HEAD")
+			if attr := windowsSysProcAttr(); attr != nil {
+				headCheck.SysProcAttr = attr
+			}
+			if err := headCheck.Run(); err != nil {
+				return fmt.Errorf("nested repository '%s' has no commit checked out", filePath)
+			}
+		}
+	}
+
 	cmd := exec.Command("git", "add", "--", filePath)
 	cmd.Dir = a.workspace
 	if attr := windowsSysProcAttr(); attr != nil {
 		cmd.SysProcAttr = attr
 	}
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := strings.TrimSpace(string(out))
+		if strings.Contains(outStr, "does not have a commit checked out") {
+			return fmt.Errorf("nested repository '%s' has no commit checked out", filePath)
+		}
+		return fmt.Errorf("git add failed: %w (output: %s)", err, outStr)
+	}
+	return nil
 }
 
-// GitUnstage 真实取消暂存单个文件
 func (a *App) GitUnstage(filePath string) error {
+	filePath = strings.TrimSpace(filePath)
+	filePath = strings.TrimRight(filePath, "/\\")
+	if filePath == "" {
+		return fmt.Errorf("empty file path")
+	}
+
 	if a.sandbox != nil {
 		if _, err := a.sandbox.ValidatePath(filePath); err != nil {
 			return fmt.Errorf("security violation: %w", err)
 		}
 	}
+
+	if filepath.IsAbs(filePath) {
+		if r, err := filepath.Rel(a.workspace, filePath); err == nil {
+			filePath = r
+		}
+	}
+	filePath = filepath.ToSlash(filePath)
 
 	// 针对无 HEAD 仓库（刚 git init 尚未提交），git restore --staged 会失败 (could not resolve HEAD)
 	// 此时优先使用 git rm --cached -f
@@ -203,7 +264,11 @@ func (a *App) GitUnstage(filePath string) error {
 	if attr := windowsSysProcAttr(); attr != nil {
 		resetCmd.SysProcAttr = attr
 	}
-	return resetCmd.Run()
+	out, err := resetCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git reset HEAD failed: %w (output: %s)", err, string(out))
+	}
+	return nil
 }
 
 // GitListBranches 列出本地全部分支与当前分支

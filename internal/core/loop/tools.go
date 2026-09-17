@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"tiancode/internal/llm"
 	v1 "tiancode/pkg/plugin/v1"
@@ -22,7 +21,7 @@ func TrimToolOutput(output string, maxChars int) string {
 	return head + fmt.Sprintf("\n\n...[输出过长，中间 %d 字符已截断]...\n\n", len(runes)-maxChars) + tail
 }
 
-func (e *ExecutionEngine) runTool(ctx context.Context, sessionID, toolCallID, toolName string, rawArgs json.RawMessage, strategy string, turn int, allowedTools []llm.ToolDef, eventChan chan<- EngineEvent, humanChan <-chan HumanReply) (output string, isErr bool, written string, tddPass *bool) {
+func (e *ExecutionEngine) runTool(ctx context.Context, sessionID, toolCallID, toolName string, rawArgs json.RawMessage, strategy string, turn int, allowedTools []llm.ToolDef, eventChan chan<- EngineEvent) (output string, isErr bool, written string, tddPass *bool) {
 	if deny, reason := DenyByStrategy(strategy, toolName, rawArgs, turn); deny {
 		return "[策略拦截] " + reason, true, "", nil
 	}
@@ -45,31 +44,19 @@ func (e *ExecutionEngine) runTool(ctx context.Context, sessionID, toolCallID, to
 			}
 
 			// HITL: 危险工具拦截且标记为 NeedsConfirm，交由用户允许一次
-			if decision != nil && decision.NeedsConfirm && eventChan != nil && humanChan != nil {
-				confirmPayload := ConfirmPayload{
-					SessionID:   sessionID,
-					RequestID:   toolCallID,
-					Tool:        toolName,
-					ArgsPreview: string(rawArgs), // TODO: StripSecrets?
-					Reason:      reason,
+			if decision != nil && decision.NeedsConfirm {
+				if e.gateway == nil {
+					return "[安全拦截] 缺少审批网关，拒绝危险操作", true, "", nil
 				}
-				eventChan <- EngineEvent{
-					Type:    EventConfirm,
-					Confirm: &confirmPayload,
+				allow, err := e.gateway.RequestConfirm(ctx, sessionID, toolCallID, toolName, string(rawArgs), reason)
+				if err != nil {
+					return fmt.Sprintf("[安全拦截] 审批中断: %v", err), true, "", nil
 				}
-
-				select {
-				case <-ctx.Done():
-					return "[安全拦截] 已跳过（会话中断）。", true, "", nil
-				case <-time.After(5 * time.Minute):
-					return fmt.Sprintf("[安全拦截] 等待超时（拒绝执行）：%s", reason), true, "", nil
-				case reply := <-humanChan:
-					if reply.Timeout || !reply.Allow {
-						return fmt.Sprintf("[安全拦截] 用户拒绝：%s", reason), true, "", nil
-					}
-					// 用户允许这一次，跳过剩余的拦截，继续往下执行（但是如果被 DenyByStrategy 或路径沙箱拦的，在前面/内部也会报）
-					goto ALLOW_ONCE
+				if !allow {
+					return fmt.Sprintf("[安全拦截] 用户拒绝：%s", reason), true, "", nil
 				}
+				// 放行
+				goto ALLOW_ONCE
 			}
 			return fmt.Sprintf("[安全拦截] 工具 [%s] 被 Rail 阻断: %s", toolName, reason), true, "", nil
 		}

@@ -163,4 +163,71 @@ func TestGitTool_RestoreFile_NoHeadRepo(t *testing.T) {
 	}
 }
 
+func TestGitTool_StageFile_TrailingSlashAndNestedRepo(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tcode_stage_nested_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cmd := gitCmdDir(tempDir, "init")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+
+	testFile := "normal.txt"
+	absFile := filepath.Join(tempDir, testFile)
+	if err := os.WriteFile(absFile, []byte("normal content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewTool(tempDir)
+
+	// 1. 测试普通文件带尾部斜杠/空格能够被正常规整并暂存
+	if err := tool.StageFile("normal.txt/ "); err != nil {
+		t.Fatalf("expected StageFile to handle trailing slash on normal file, got: %v", err)
+	}
+
+	// 2. 创建一个空的嵌入式 git 子仓库（未提交任何 commit）
+	subDir := filepath.Join(tempDir, "empty_subrepo")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	subInit := gitCmdDir(subDir, "init")
+	if err := subInit.Run(); err != nil {
+		t.Fatalf("subrepo git init failed: %v", err)
+	}
+
+	// 3. 尝试 StageFile 该空子仓库，期望优雅返回友好错误而不是未处理的 fatal 崩溃
+	err = tool.StageFile("empty_subrepo/")
+	if err == nil {
+		t.Errorf("expected error when staging empty nested git repo, got nil")
+	}
+}
+
+func TestGitTool_ParsePorcelainV2_FilterEmptyNestedRepo(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tcode_parse_nested_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	subDir := filepath.Join(tempDir, "empty_subrepo")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	subInit := gitCmdDir(subDir, "init")
+	if err := subInit.Run(); err != nil {
+		t.Fatalf("subrepo git init failed: %v", err)
+	}
+
+	rawOutput := "? empty_subrepo/\n? normal_untracked.txt\n"
+	report := parsePorcelainV2(rawOutput, "main", tempDir)
+
+	// 空嵌套仓库应该被自动过滤，而正常的未追踪文件保留
+	if len(report.Untracked) != 1 || report.Untracked[0] != "normal_untracked.txt" {
+		t.Errorf("expected only normal_untracked.txt in Untracked, got: %v", report.Untracked)
+	}
+}
+
 

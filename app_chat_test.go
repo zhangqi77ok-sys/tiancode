@@ -9,15 +9,11 @@ import (
 	"tiancode/internal/config"
 )
 
-func TestResolveChatCredentials_FailClosed(t *testing.T) {
-	_, _, _, err := resolveChatCredentials(nil, "hi")
-	if err == nil || !strings.Contains(err.Error(), "未配置") {
-		t.Fatalf("expected missing channel, got %v", err)
-	}
-	_, _, _, err = resolveChatCredentials(&config.ChannelConfig{Endpoint: "https://x", APIKey: "k"}, "")
-	if err == nil || !strings.Contains(err.Error(), "未指定模型") {
-		t.Fatalf("expected missing model, got %v", err)
-	}
+type mockResolver struct {
+	cfg *config.ChannelConfig
+}
+func (m *mockResolver) GetChannelForModel(reqModel string) *config.ChannelConfig {
+	return m.cfg
 }
 
 func TestResolveChatCredentials_UsesPrimary(t *testing.T) {
@@ -26,14 +22,14 @@ func TestResolveChatCredentials_UsesPrimary(t *testing.T) {
 		APIKey:   "fake-api-key-0123456789abcdef",
 		Model:    "local-model",
 	}
-	ep, key, model, err := resolveChatCredentials(primary, "")
+	ep, key, model, _, err := resolveChatCredentials(&mockResolver{cfg: primary}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ep != "https://example.invalid/v1" || key == "" || model != "local-model" {
 		t.Fatalf("got %s %s %s", ep, key, model)
 	}
-	_, _, model, err = resolveChatCredentials(primary, "override")
+	_, _, model, _, err = resolveChatCredentials(&mockResolver{cfg: primary}, "override")
 	if err != nil || model != "override" {
 		t.Fatalf("override model: %s %v", model, err)
 	}

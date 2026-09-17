@@ -100,15 +100,15 @@ func (t *Tool) GetStatus() (*GitStatusReport, error) {
 		return empty, nil
 	}
 	branch, _ := t.execGit("branch", "--show-current")
-	rawStatus, err := t.execGit("status", "--porcelain=v2")
+	rawStatus, err := t.execGit("status", "--porcelain=v2", "-uall")
 	if err != nil {
 		return empty, nil
 	}
-	return parsePorcelainV2(rawStatus, branch), nil
+	return parsePorcelainV2(rawStatus, branch, t.rootDir), nil
 }
 
-// parsePorcelainV2 解析 git status --porcelain=v2 格式输出并防御带空格的文件路径
-func parsePorcelainV2(rawStatus, branch string) *GitStatusReport {
+// parsePorcelainV2 解析 git status --porcelain=v2 格式输出并防御带空格的文件路径与嵌入式空仓库
+func parsePorcelainV2(rawStatus, branch string, rootDir ...string) *GitStatusReport {
 	report := &GitStatusReport{
 		Branch:    branch,
 		Staged:    make([]GitFileStatus, 0),
@@ -135,6 +135,22 @@ func parsePorcelainV2(rawStatus, branch string) *GitStatusReport {
 				workCode := string(parts[1][1])
 				// 防御文件名含空格: 将索引 8 之后全部字段拼接恢复真实路径
 				filePath := strings.Join(parts[8:], " ")
+
+				// 若为子模块 (160000 / S...)，检测是否为无 HEAD 提交的损坏/空子仓库
+				isSubmodule := (len(parts[2]) > 0 && parts[2][0] == 'S') || parts[4] == "160000" || parts[5] == "160000"
+				if isSubmodule && len(rootDir) > 0 && rootDir[0] != "" {
+					fullPath := filepath.Join(rootDir[0], filePath)
+					if fi, err := os.Stat(fullPath); err == nil && fi.IsDir() {
+						dotGit := filepath.Join(fullPath, ".git")
+						if _, dotGitErr := os.Stat(dotGit); dotGitErr == nil {
+							headCheck := exec.Command("git", "-C", fullPath, "rev-parse", "--verify", "HEAD")
+							if headCheck.Run() != nil {
+								// 没有有效 commit 的嵌套空仓库跳过
+								continue
+							}
+						}
+					}
+				}
 
 				if stagedCode != "." {
 					report.Staged = append(report.Staged, GitFileStatus{
@@ -178,6 +194,21 @@ func parsePorcelainV2(rawStatus, branch string) *GitStatusReport {
 		case "?": // 未跟踪文件: ? <path...>
 			if len(parts) >= 2 {
 				filePath := strings.Join(parts[1:], " ")
+				// 若以 / 结尾说明是目录/子模块候选
+				if strings.HasSuffix(filePath, "/") && len(rootDir) > 0 && rootDir[0] != "" {
+					cleanRel := strings.TrimSuffix(filePath, "/")
+					fullPath := filepath.Join(rootDir[0], cleanRel)
+					if fi, err := os.Stat(fullPath); err == nil && fi.IsDir() {
+						dotGit := filepath.Join(fullPath, ".git")
+						if _, dotGitErr := os.Stat(dotGit); dotGitErr == nil {
+							headCheck := exec.Command("git", "-C", fullPath, "rev-parse", "--verify", "HEAD")
+							if headCheck.Run() != nil {
+								// 没有 commit 的嵌套空仓库无法被 stage，不暴露给单文件 diff
+								continue
+							}
+						}
+					}
+				}
 				report.Untracked = append(report.Untracked, filePath)
 				report.Working = append(report.Working, GitFileStatus{
 					Path:     filePath,
@@ -193,16 +224,36 @@ func parsePorcelainV2(rawStatus, branch string) *GitStatusReport {
 // StageFile 暂存单个文件
 func (t *Tool) StageFile(filePath string) error {
 	trimmed := strings.TrimSpace(filePath)
+	trimmed = strings.TrimRight(trimmed, "/\\")
 	if trimmed == "" {
 		return fmt.Errorf("empty file path")
 	}
-	_, err := t.execGit("add", "--", trimmed)
-	return err
+
+	cleanAbs := filepath.Join(t.rootDir, trimmed)
+	if fi, err := os.Stat(cleanAbs); err == nil && fi.IsDir() {
+		dotGit := filepath.Join(cleanAbs, ".git")
+		if _, dotGitErr := os.Stat(dotGit); dotGitErr == nil {
+			headCheck := exec.Command("git", "-C", cleanAbs, "rev-parse", "--verify", "HEAD")
+			if errHead := headCheck.Run(); errHead != nil {
+				return fmt.Errorf("nested repository '%s' has no commit checked out", trimmed)
+			}
+		}
+	}
+
+	out, err := t.execGit("add", "--", trimmed)
+	if err != nil {
+		if strings.Contains(out, "does not have a commit checked out") {
+			return fmt.Errorf("nested repository '%s' has no commit checked out", trimmed)
+		}
+		return fmt.Errorf("git add failed: %w (output: %s)", err, out)
+	}
+	return nil
 }
 
 // UnstageFile 取消暂存单个文件 (优先 restore，降级 reset 与 rm --cached)
 func (t *Tool) UnstageFile(filePath string) error {
 	trimmed := strings.TrimSpace(filePath)
+	trimmed = strings.TrimRight(trimmed, "/\\")
 	if trimmed == "" {
 		return fmt.Errorf("empty file path")
 	}
@@ -220,6 +271,7 @@ func (t *Tool) UnstageFile(filePath string) error {
 // RestoreFile 放弃工作区更改 (严格限制未追踪或无HEAD暂存文件才回退删除)
 func (t *Tool) RestoreFile(filePath string) error {
 	trimmed := strings.TrimSpace(filePath)
+	trimmed = strings.TrimRight(trimmed, "/\\")
 	if trimmed == "" {
 		return fmt.Errorf("empty file path")
 	}

@@ -22,7 +22,8 @@
 5. **项目宪法透明可见**：顶栏直观展示活跃规约与技能；
 6. **热插拔插件与 MCP stdio**：fs/git/terminal/search 插件、MCP stdio 通道、密钥安全加密、原生 Windows 安装包；
 7. **诚实命名与状态指示**：Git 界面诚实命名为 Stash（储藏），渠道未测速保持琥珀未测指示，杜绝虚假在线与功能暗示；
-8. **全仓文件与内容真检索**：搜索框直连 Go 原生 search 插件，支持脱离文件树状态对全仓文件（find）及文本（grep）进行深层快速定位并直跳 Monaco 编辑器行号。
+8. **全仓文件与内容真检索**：搜索框直连 Go 原生 search 插件，支持脱离文件树状态对全仓文件（find）及文本（grep）进行深层快速定位并直跳 Monaco 编辑器行号；
+9. **多协议与多形态鉴权模型服务网关**：内置热插拔模型驱动体系，原生支持 OpenAI、Anthropic Claude、Google Gemini、xAI Grok (含 4.6 深度思考与 Grok 系列)、Azure OpenAI、Ollama 6 大协议驱动；支持静态多 Key 换行轮询、OAuth / Refresh Token (RT) 全自动保活续期、Azure 专有凭据以及本地免鉴权直连。
 
 **规划中**：MemoryRail、磁盘动态热加载插件、多 Agent 协作流（暂缓待成熟）。
 
@@ -135,10 +136,20 @@
 * **全局快捷唤起**：支持快捷键 **`Ctrl + \``**（反引号）瞬间唤起或隐藏抽屉；
 * **真实 pwsh 命令行终端**：支持开发者直接运行命令，与 Agent 沙箱物理环境同构。
 
-### 3. 模型渠道管理与真实连通性测速
-* **真实端点接入**：支持标准 OpenAI 兼容协议、DeepSeek、Claude 等各大模型端点与本地 Ollama；
-* **安全凭据管理**：API Key 本地加密落盘 `~/.tiancode/channels.json`，支持自定义 Header 与 Proxy 代理端点；
+### 3. 模型渠道管理与极简智能鉴权 (对齐 new-api 体验)
+* **多协议原生接入**：完整内置 OpenAI (含各类中转及兼容端点)、Anthropic Claude (原生 Messages API)、Google Gemini (AI Studio 与兼容端点)、xAI Grok (含 4.6 深度推理思考流与 Grok 系列)、Azure OpenAI (微软云专区) 与 Ollama (本地私有化) 6 大驱动插件；
+* **极简单输入框鉴权体验 (与 new-api 深度对齐)**：
+  - **告别繁琐多表单**：普通用户或导入开发者仅需面对 **单个统一凭据输入框**，无需四处寻找并手动填写 `Token 端点`、`Client ID`、`Client Secret`；
+  - **智能凭据自动嗅探与解构**：
+    - **单 Key / 多 Key 模式**：直接粘贴 `sk-...` 或 `AIzaSy...`，支持换行输入多个 Key 自动轮询调度；
+    - **Google 凭据直贴**：直接将 GCP 凭据 JSON（如 `application_default_credentials.json` 或 Service Account JSON）完整粘贴进密钥框，内核自动解析 `client_id`、`client_secret`、`refresh_token` 并自动换票续期；
+    - **Codex / ChatGPT OAuth**：支持直接粘贴 OAuth JSON 或单行 Refresh Token，内置官方客户端 ID 免填；
+  - **可选高级覆盖抽屉 (Collapsible Overrides)**：对于私有化或企业自建 OAuth 网关，提供轻量折叠抽屉供按需覆写端点与凭据；
+  - **Azure 专有凭据**：支持输入 Azure Key 与 API Version，自动拼装 deployments 端点；
+  - **本地免鉴权**：针对 Ollama 及内网未鉴权服务，直接透传请求，不设多余密钥阻碍；
+* **安全凭据管理**：凭据本地 DPAPI/AES 加密落盘 `~/.tiancode/channels.json`，UI 自动打码防偷窥；
 * **毫秒级真实探活测速**：单渠道与全渠道批量真实网络往返测速，实时展示真实延时与健康状态，杜绝假离线或假在线。
+
 
 ### 4. MCP 协议深度治理中心 (Model Context Protocol)
 * **传输协议双引擎**：完整支持 `stdio`（本地子进程：command、动态参数 args、环境变量 Key-Value 动态表）与 `sse`（远程网络端点 HTTP/SSE 连接）；
@@ -695,6 +706,23 @@
   - 会话 TaskModel 的 `ToolBudget` 设为 0，代表“自主执行模式”，仅由真实调用的 `ToolsUsed` 计数器驱动。
 
 ---
+
+### 52. 嵌套子仓库暂存防崩溃、Git Porcelain 路径清洗、工作区列表去重与采纳健壮性闭环 (Submodule Diff Defense, Empty Repo Stage Guard, Porcelain Path Sanitization & Working Tree Hygiene)
+* **未提交嵌入式 Git 仓库暂存防崩溃熔断 (`app_vcs.go` & `plugins/tool/git/git_tool.go`)**：
+  - 根除由于工作区包含未提交 commit 的临时嵌套 Git 目录（如测试遗留的 `testrepo/`）导致用户点击“全部采纳”执行 `git add -- <subrepo>/` 时触发 Git 致命退出码 128（`error: does not have a commit checked out`）造成批量暂存中断的严重隐患；
+  - 在 `GitStage` 与 `git_tool.StageFile` 中严格注入前置探活：若目标为包含 `.git` 的子目录，前置探测 `git -C <dir> rev-parse --verify HEAD`，若尚未产生有效提交则拒绝盲目 `git add` 并返回明确的友好提示，同时捕获 Git 进程输出中包含的 `does not have a commit checked out` 规整为结构化异常；
+* **Git Porcelain v2 展开与空子仓库自动过滤 (`plugins/tool/git/git_tool.go`)**：
+  - 将 `GetStatus` 的命令行扩展为 `git status --porcelain=v2 -uall`，使未追踪目录自动展开为具体文件的独立条目，杜绝 Monaco 将目录误当作单文件比对的异常；
+  - 在 `parsePorcelainV2` 解析器中传入 `rootDir` 环境变量，自动识别并过滤无 HEAD 提交的嵌入式空 Git 仓库目录，不向待确认改动暴露不可暂存的空目录；
+* **文件路径规范化与尾部斜杠清洗 (`app_vcs.go`, `git_tool.go`, `differ.go`)**：
+  - 在 `GitStage`、`GitUnstage`、`RevertFile` 中全量注入 `strings.TrimRight(path, "/\\")` 与空路径守卫，防止因尾部斜杠导致底层 Git 匹配异常；
+  - 在 `internal/diff/differ.go` 的 `ComputeFileDiff` 中增加目录判定拦截 `os.Stat(absPath).IsDir()`，若为目录则安全返回错误提示，坚决阻断对目录调用 `os.ReadFile` 的 I/O 崩溃；
+* **前端工作区改动列表去重与目录过滤 (`frontend/src/stores/workbench.ts`)**：
+  - 修复此前 `workingTreeFiles` 在同时遍历 `working` 和 `untracked` 时将未追踪项重复显示 2 次的视觉缺陷，引入 `Set<string>` 实施严格去重；
+  - 在 `pendingDiffFiles` 中通过 `!p.endsWith('/')` 过滤所有目录项，确保待审查 Diff 条仅收纳真实可比对、可暂存的物理文件；并在 `stageAllPendingDiffFilesAction` 与 `revertAllPendingDiffFilesAction` 中执行去重与去空清洗。
+
+---
+
 
 
 ## 🎨 四、视觉与人机工程学规范

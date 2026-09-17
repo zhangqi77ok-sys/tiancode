@@ -46,8 +46,9 @@ func TestEngine_AskUserPausesUntilResume(t *testing.T) {
 	reg := host.NewRegistry()
 	reg.Register(&askUserMockProvider{})
 
-	engine := NewExecutionEngine(reg)
 	eventChan := make(chan EngineEvent, 100)
+	gw := newMockGateway(eventChan)
+	engine := NewExecutionEngine(reg, gw)
 	
 	req := &EngineRequest{
 		SessionID: "sess_1",
@@ -83,7 +84,7 @@ func TestEngine_AskUserPausesUntilResume(t *testing.T) {
 		// still blocked, good
 	}
 	
-	engine.DeliverHumanReply("sess_1", HumanReply{
+	gw.DeliverHumanReply(choiceEvent.RequestID, HumanReply{
 		OptionID:   "2",
 		CustomNote: "my note",
 		Allow:      true,
@@ -107,8 +108,9 @@ func TestEngine_AskUserSkipUsesRecommended(t *testing.T) {
 	reg := host.NewRegistry()
 	reg.Register(&askUserMockProvider{})
 
-	engine := NewExecutionEngine(reg)
 	eventChan := make(chan EngineEvent, 100)
+	gw := newMockGateway(eventChan)
+	engine := NewExecutionEngine(reg, gw)
 	
 	req := &EngineRequest{
 		SessionID: "sess_2",
@@ -127,7 +129,7 @@ func TestEngine_AskUserSkipUsesRecommended(t *testing.T) {
 	for ev := range eventChan {
 		if ev.Type == EventChoice {
 			// Skip by sending Allow=false
-			engine.DeliverHumanReply("sess_2", HumanReply{
+			gw.DeliverHumanReply(ev.Choice.RequestID, HumanReply{
 				OptionID: "",
 				Allow:    false,
 			})
@@ -152,8 +154,9 @@ func TestAskUserRejectsFewerThanTwoOptions(t *testing.T) {
 	p := &askUserMockProvider{}
 	reg.Register(p)
 	
-	engine := NewExecutionEngine(reg)
 	eventChan := make(chan EngineEvent, 100)
+	gw := newMockGateway(eventChan)
+	engine := NewExecutionEngine(reg, gw)
 	
 	req := &EngineRequest{
 		SessionID: "sess_3",
@@ -171,4 +174,5 @@ func TestAskUserRejectsFewerThanTwoOptions(t *testing.T) {
 	// We didn't change the mock, wait, we need a separate mock or we can just call runTool... 
 	// But ask_user is intercepted in Execute directly. 
 }
+
 
