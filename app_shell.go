@@ -19,6 +19,14 @@ func (a *App) GetProjectASTGraph() ([]ast.GraphNode, error) {
 	return ast.ScanWorkspaceAST(a.workspace)
 }
 
+func (a *App) GetArchitectureReport() (*ast.ArchitectureReport, error) {
+	return ast.AnalyzeWorkspaceArchitecture(a.workspace)
+}
+
+func (a *App) GetBlastRadiusReport(targetSymbol string) (*ast.BlastRadiusReport, error) {
+	return ast.AnalyzeBlastRadius(a.workspace, targetSymbol)
+}
+
 func (a *App) GetGitStatus() (map[string]any, error) {
 	gitTool, ok := a.registry.GetTool("tool.git")
 	if !ok {

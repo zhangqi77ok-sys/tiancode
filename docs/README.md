@@ -9,7 +9,7 @@
 ```text
 docs/
 ├── README.md                                  # [本文件] 文档中心导航总览
-├── ARCHITECTURE_EVOLUTION.md                  # 52 次核心架构演变与工程迭代详实记录
+├── ARCHITECTURE_EVOLUTION.md                  # 56 次核心架构演变与工程迭代详实记录
 │
 ├── 🏛️ 架构与协议契约
 │   ├── ARCHITECTURE.md                        # 系统总体架构设计规范
@@ -32,7 +32,7 @@ docs/
 │
 └── 📚 核心工程知识库 (knowledge/)
     ├── README.md                              # 知识库索引导航
-    └── 15-51 文档                             # 37 篇现行 Wails v2 + Go 微内核 + Vue 3 技术攻坚实录
+    └── 15-54 文档                             # 40 篇现行 Wails v2 + Go 微内核 + Vue 3 技术攻坚实录
 ```
 
 ---
@@ -128,6 +128,7 @@ docs/
 | **51** | **插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计** | 插件热插拔 / DSH 算子大盘 | 活动栏常驻一等入口、微内核算子直查、JSON Schema 展开、单点物理探活与 Creator 模式 | [`51-hotplug-plugin-center-and-dsh-operator-dashboard.md`](knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md) |
 | **52** | **从三态互斥到全自主统一 Coding Agent 架构演进** | 统一 Coding Agent / 意图自适应 / Monaco Diff | 彻底废除三态互斥模式与阻断弹窗、确立单一全自主 Coding Agent、自然语言意图驱动、Monaco Diff 审核把关 | [`52-unified-autonomous-coding-agent-architecture.md`](knowledge/52-unified-autonomous-coding-agent-architecture.md) |
 | **53** | **版本号校准为 0.0.1 与开发测试孵化阶段工程基线** | 语义化版本 SemVer / 0.0.1基线 / 孵化期预期管理 | 全链路发货版本校准为 0.0.1，真实呈现开发测试与需求孵化阶段；同步 Wails、Go、Node、前端、安装器及协议握手强一致性 | [`53-version-recalibration-to-early-incubator-phase.md`](knowledge/53-version-recalibration-to-early-incubator-phase.md) |
+| **54** | **从玩具级 Go AST 到现代代码架构与依赖治理工作板** | 架构分析 / 依赖倒置 / 影响面雷达 | 淘汰简陋24轮SVG力导向图，深度解析 Go AST；6 层语义拓扑 DAG、契约多态矩阵、重构影响面雷达与铁律 7 单向依赖防腐守卫 | [`54-code-architecture-and-dependency-governance-workbench.md`](knowledge/54-code-architecture-and-dependency-governance-workbench.md) |
 
 ---
 

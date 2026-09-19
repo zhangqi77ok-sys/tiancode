@@ -9,8 +9,8 @@
 ## 🧭 项目导航与核心入口
 
 * **项目仓库**：[https://github.com/zhangqi77ok-sys/tiancode](https://github.com/zhangqi77ok-sys/tiancode)
-* **工程文档与 50 篇知识库总览**：[`docs/README.md`](docs/README.md)
-* **52 次核心架构演变与工程迭代详实记录**：[`docs/ARCHITECTURE_EVOLUTION.md`](docs/ARCHITECTURE_EVOLUTION.md)
+* **工程文档与 54 篇知识库总览**：[`docs/README.md`](docs/README.md)
+* **56 次核心架构演变与工程迭代详实记录**：[`docs/ARCHITECTURE_EVOLUTION.md`](docs/ARCHITECTURE_EVOLUTION.md)
 * **底层工程知识与疑难解决方案速查**：[`docs/knowledge/README.md`](docs/knowledge/README.md)
 * **AI 交付实现唯一施工合同**：[`docs/AI_IMPLEMENTATION_CONTRACT.md`](docs/AI_IMPLEMENTATION_CONTRACT.md)
 * **特性边界矩阵与交付状态**：[`docs/V1_FEATURE_BOUNDARY_MATRIX.md`](docs/V1_FEATURE_BOUNDARY_MATRIX.md)
@@ -117,6 +117,14 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 * **单点探活与即时健康探针**：支持针对任意算子、协议驱动或 MCP 外部进程发起物理探活，真实测量首字延时 (TTFT) 与状态，严格 Fail-Closed；
 * **SafetyRail 核心防线大盘**：透明可视化呈现 P-100 终极阻断权防线机制（危险命令拦截、目录逃逸沙箱防护与 API Key 凭据脱敏）；
 * **动态热重载与 DSH 技能造物主 (Creator Mode)**：支持一键重新挂载与同步外部 MCP 进程与算子；集成 PRD §4.14 DSH 技能造物主模式，支持现场快捷定义新技能 (Skill)、追加工程规则 (Rule) 与热挂载外部算子，实现真正意义上的插件热插拔闭环。
+
+### 8. 代码架构与依赖治理工作板 (Code Architecture & Dependency Workbench)
+* **从玩具级 AST 到现代化架构治理**：彻底淘汰旧版 24 轮前端力导向随机排布，基于 Go 官方编译前端（`go/parser`, `go/token`, `go/ast`）全量分析工作区 AST 语法树，`<30ms` 极速完成代码分层与依赖提取；
+* **六层语义拓扑 DAG (Layered DAG)**：根据微内核架构自动划分为 `entry`、`host`、`core`、`bus`、`spec`、`tool` 六层，真实呈现包间 `import` 引用流向；
+* **隐式接口契约多态矩阵 (Contract Matrix)**：基于 Duck Typing 签名匹配算法，自动将所有抽象接口（Interface）与具体实现结构体（Struct）进行多态匹配与覆盖率透视，呈现 100% 依赖倒置原则；
+* **重构影响面毫秒级雷达 (Blast Radius)**：输入任意核心结构体或方法，秒级测算直接调用者 (Direct Callers)、间接传递波及包 (Indirect Packages) 以及关联需要回归的 `*_test.go` 测试用例清单，提供风险分级与重构建议；
+* **铁律 7 架构防腐守卫 (Architecture Rail)**：实时扫描依赖关系并对违规导入（如插件反向依赖 core）进行危险红线告警，支持“仅看违规”一键过滤；
+* **Agent 上下文双向飞轮**：活动栏（`🏛️`）与对话顶栏常驻入口，支持一键将当前架构分层、依赖关系与 ADR 规范格式化注入 AI Agent 提示词，实现由架构指导开发、由测试保障发货的正向闭环。
 
 ---
 

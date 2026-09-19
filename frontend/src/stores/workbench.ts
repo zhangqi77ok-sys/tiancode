@@ -1978,65 +1978,76 @@ async function deleteRuleAction(id: string) {
 const astNodes = ref<GraphNode[]>([])
 const selectedAstNode = ref<GraphNode | null>(null)
 
-function openKnowledgeGraphModal() {
+// =========================================================================
+// 5. 架构透视与依赖治理工作板 (Architecture & Dependency Workbench)
+// =========================================================================
+const architectureReport = ref<ArchitectureReport | null>(null)
+const isArchitectureLoading = ref(false)
+const selectedArchitectureNode = ref<PackageNode | null>(null)
+const activeArchitectureView = ref<'dag' | 'matrix' | 'blast'>('dag')
+const architectureFilterViolationsOnly = ref(false)
+const architectureSearchQuery = ref('')
+const blastRadiusReport = ref<BlastRadiusReport | null>(null)
+const isBlastRadiusLoading = ref(false)
+
+function openArchitectureModal() {
   isKnowledgeGraphOpen.value = true
-  if (astNodes.value.length === 0 && !isGraphLoading.value) {
-    scanASTGraph()
+  if (!architectureReport.value && !isArchitectureLoading.value) {
+    scanArchitecture()
   }
 }
 
-async function scanASTGraph() {
-  isGraphLoading.value = true
+const openKnowledgeGraphModal = openArchitectureModal
+
+async function scanArchitecture() {
+  isArchitectureLoading.value = true
   try {
-    const nodes = await wailsBridge.getProjectASTGraph()
-    astNodes.value = nodes || []
-    if (astNodes.value.length > 0) selectedAstNode.value = astNodes.value[0]
-  } catch (err) {
-    showToast('AST 扫描失败: ' + err)
-  } finally {
-    isGraphLoading.value = false
-  }
-}
-
-const astGraph = computed(() => {
-  const nodes = astNodes.value.slice(0, 80)
-  const byId = new Map(nodes.map((n, i) => [n.id, i]))
-  const pos = nodes.map((n, i) => ({
-    id: n.id,
-    name: n.name,
-    type: n.type,
-    x: 70 + (i % 7) * 110,
-    y: 50 + Math.floor(i / 7) * 80
-  }))
-  for (let k = 0; k < 24; k++) {
-    for (const n of nodes) {
-      for (const cid of n.children || []) {
-        const ai = byId.get(n.id)
-        const bi = byId.get(cid)
-        if (ai == null || bi == null) continue
-        const a = pos[ai]
-        const b = pos[bi]
-        const dx = b.x - a.x - 90
-        const dy = b.y - a.y
-        b.x -= dx * 0.12
-        b.y -= dy * 0.12
-        a.x += dx * 0.04
+    const report = await wailsBridge.getArchitectureReport()
+    architectureReport.value = report
+    if (report.packages && report.packages.length > 0) {
+      if (!selectedArchitectureNode.value || !report.packages.some(p => p.id === selectedArchitectureNode.value?.id)) {
+        selectedArchitectureNode.value = report.packages[0]
       }
     }
+  } catch (err) {
+    showToast('架构拓扑扫描失败: ' + err)
+  } finally {
+    isArchitectureLoading.value = false
   }
-  const edges: { x1: number; y1: number; x2: number; y2: number }[] = []
-  for (const n of nodes) {
-    const ai = byId.get(n.id)
-    if (ai == null) continue
-    for (const cid of n.children || []) {
-      const bi = byId.get(cid)
-      if (bi == null) continue
-      edges.push({ x1: pos[ai].x, y1: pos[ai].y, x2: pos[bi].x, y2: pos[bi].y })
-    }
+}
+
+const scanASTGraph = scanArchitecture
+
+async function runBlastRadiusAnalysis(symbol: string) {
+  if (!symbol) return
+  isBlastRadiusLoading.value = true
+  try {
+    const res = await wailsBridge.getBlastRadiusReport(symbol)
+    blastRadiusReport.value = res
+  } catch (err) {
+    showToast('影响面分析失败: ' + err)
+  } finally {
+    isBlastRadiusLoading.value = false
   }
-  const maxX = Math.max(400, ...pos.map((p) => p.x + 80))
-  const maxY = Math.max(240, ...pos.map((p) => p.y + 40))
-  return { pos, edges, maxX, maxY }
+}
+
+function injectArchitectureContext(node?: PackageNode | null) {
+  const target = node || selectedArchitectureNode.value
+  let text = ''
+  if (target) {
+    text = `\n> 架构模块拓扑约束: \`${target.name}\` [${target.layer_name}]\n> 物理路径: \`${target.path}\`\n> 核心导出: ${target.symbols.map(s => s.name).join(', ') || '无'}\n> 内部依赖: ${target.imports.join(', ') || '无'}\n`
+  } else if (architectureReport.value) {
+    text = `\n> 工程全局架构概览: 共 ${architectureReport.value.total_packages} 个模块，${architectureReport.value.total_symbols} 个导出符号，架构违规数: ${architectureReport.value.violation_count}\n`
+  }
+  if (text) {
+    inputPrompt.value = inputPrompt.value ? inputPrompt.value + text : text
+    showToast(`✓ 已将架构约束注入 Agent 提示词`)
+  }
+}
+
+// 兼容旧接口
+const astGraph = computed(() => {
+  return { pos: [], edges: [], maxX: 400, maxY: 240 }
 })
 
 watch(selectedAstNode, async (node) => {
@@ -2062,13 +2073,7 @@ async function saveAdrNote() {
 }
 
 function injectNodeToPrompt() {
-  if (!selectedAstNode.value) return
-  const node = selectedAstNode.value
-  const adr = adrNote.value.trim()
-  const quoteText = `\n> 架构拓扑实体引用: \`${node.name}\` [${node.type}]\n> 声明路径: \`${node.file}\`\n> 关联说明: ${node.details}${adr ? '\n> ADR: ' + adr : ''}\n`
-  inputPrompt.value = inputPrompt.value ? inputPrompt.value + quoteText : quoteText
-  isKnowledgeGraphOpen.value = false
-  showToast(`✓ 已引用 AST 节点 [${node.name}] 架构约束至输入框`)
+  injectArchitectureContext()
 }
 
 // =========================================================================
@@ -2499,6 +2504,18 @@ function initWorkbench() {
     isGitLoading,
     isGraphLoading,
     isKnowledgeGraphOpen,
+    architectureReport,
+    isArchitectureLoading,
+    selectedArchitectureNode,
+    activeArchitectureView,
+    architectureFilterViolationsOnly,
+    architectureSearchQuery,
+    blastRadiusReport,
+    isBlastRadiusLoading,
+    openArchitectureModal,
+    scanArchitecture,
+    runBlastRadiusAnalysis,
+    injectArchitectureContext,
     isHotplugDashboardOpen,
     hotplugReport,
     isHotplugLoading,

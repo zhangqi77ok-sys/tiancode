@@ -85,6 +85,71 @@ export interface GraphNode {
   children?: string[]
 }
 
+export interface SymbolItem {
+  name: string
+  kind: 'struct' | 'interface' | 'func' | 'type'
+  file: string
+  line: number
+  doc?: string
+  methods?: string[]
+}
+
+export interface PackageNode {
+  id: string
+  name: string
+  path: string
+  layer: string
+  layer_name: string
+  files: number
+  symbols: SymbolItem[]
+  imports: string[]
+  imported_by: string[]
+}
+
+export interface ArchitectureEdge {
+  from: string
+  to: string
+  is_violation: boolean
+  violation_reason?: string
+}
+
+export interface ContractImpl {
+  struct_name: string
+  package: string
+  file: string
+  status: 'compliant' | 'partial'
+}
+
+export interface ContractItem {
+  interface_name: string
+  package: string
+  file: string
+  methods: string[]
+  implementations: ContractImpl[]
+}
+
+export interface BlastRadiusReport {
+  target_symbol: string
+  target_package: string
+  risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  direct_callers: string[]
+  indirect_callers: string[]
+  affected_tests: string[]
+  suggestion: string
+}
+
+export interface ArchitectureReport {
+  workspace: string
+  module_path: string
+  total_packages: number
+  total_files: number
+  total_symbols: number
+  violation_count: number
+  packages: PackageNode[]
+  edges: ArchitectureEdge[]
+  contracts: ContractItem[]
+}
+
 export interface FileNode {
   name: string
   path: string
@@ -861,6 +926,18 @@ export const wailsBridge = {
     const app = getApp()
     if (app?.GetProjectASTGraph) return await app.GetProjectASTGraph()
     return []
+  },
+
+  async getArchitectureReport(): Promise<ArchitectureReport> {
+    const app = getApp()
+    if (app?.GetArchitectureReport) return await app.GetArchitectureReport()
+    throw new Error('microkernel not connected: GetArchitectureReport unavailable')
+  },
+
+  async getBlastRadiusReport(targetSymbol: string): Promise<BlastRadiusReport> {
+    const app = getApp()
+    if (app?.GetBlastRadiusReport) return await app.GetBlastRadiusReport(targetSymbol)
+    throw new Error('microkernel not connected: GetBlastRadiusReport unavailable')
   },
 
   async readFile(relPath: string): Promise<string> {

@@ -428,14 +428,14 @@
               <div class="p-4 rounded-xl bg-[#FAF8F5] border border-black/[0.08] space-y-4 text-xs">
                 <div class="flex items-center justify-between gap-4">
                   <div>
-                    <div class="font-bold text-[#18181B]">Go AST 代码架构拓扑</div>
-                    <div class="text-[11px] text-[#71717A] mt-0.5">解析工作区内 Go 源码语法树并渲染包调用关系拓扑图（仅限 Go 工程，非通用代码地图）。</div>
+                    <div class="font-bold text-[#18181B]">代码架构与依赖治理工作板</div>
+                    <div class="text-[11px] text-[#71717A] mt-0.5">解析工作区源码语法树、分层 DAG 依赖拓扑、接口契约多态矩阵、重构影响面雷达与单向依赖守卫。</div>
                   </div>
                   <button
-                    @click="s.openKnowledgeGraphModal"
+                    @click="s.openArchitectureModal"
                     class="px-3 py-1.5 rounded-lg bg-white border border-black/[0.1] text-xs font-medium hover:bg-black/[0.02] cursor-pointer shrink-0 shadow-2xs"
                   >
-                    打开 AST 拓扑
+                    打开架构工作板
                   </button>
                 </div>
 
@@ -457,124 +457,9 @@
     </div>
 
     <!-- ========================================================================= -->
-    <!-- 4. 项目知识图谱模态窗 (Knowledge Graph Modal) -->
+    <!-- 4. 代码架构与依赖治理工作板 (Architecture & Dependency Workbench) -->
     <!-- ========================================================================= -->
-    <div
-      v-if="s.isKnowledgeGraphOpen"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-xs animate-in fade-in duration-150 font-sans"
-    >
-      <div class="w-[92vw] max-w-[1200px] h-[86vh] bg-white rounded-2xl shadow-2xl border border-black/[0.1] flex flex-col overflow-hidden relative">
-        <header class="h-12 bg-[#FAF8F5] border-b border-black/[0.08] flex items-center justify-between px-5 select-none shrink-0">
-          <div class="flex items-center gap-3">
-            <span class="text-base">🕸️</span>
-            <span class="font-bold text-sm text-[#18181B]">工作区 Go AST 拓扑</span>
-          </div>
-
-          <div class="flex items-center gap-2">
-            <button
-              @click="s.scanASTGraph"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#D96B27] text-white text-xs font-bold shadow-xs hover:bg-[#B8551B] cursor-pointer"
-            >
-              <span>🔄</span><span>代码扫描与图谱重建</span>
-            </button>
-            <button @click="s.isKnowledgeGraphOpen = false" class="p-1.5 rounded-lg text-[#71717A] hover:bg-black/[0.05] cursor-pointer">✕</button>
-          </div>
-        </header>
-
-        <div class="flex-1 flex overflow-hidden">
-          <!-- 拓扑节点列表 -->
-          <div class="flex-1 p-5 overflow-y-auto bg-[#FAF8F5] space-y-3">
-            <div v-if="s.isGraphLoading" class="p-12 text-center text-[#71717A] text-xs flex flex-col items-center justify-center gap-3 mt-12">
-              <span class="animate-spin text-3xl">⏳</span>
-              <span class="font-bold text-[#18181B] text-sm">正在深度解析工作区 Go AST 语法拓扑树...</span>
-              <p class="text-[11px] text-[#A1A1AA]">提取代码包、结构体、接口与依赖实体，请稍候</p>
-            </div>
-            <div v-else-if="s.astNodes.length === 0" class="p-12 text-center text-[#71717A] text-xs flex flex-col items-center justify-center gap-2 mt-12">
-              <span class="text-3xl">🕸️</span>
-              <span class="font-bold text-[#18181B]">暂无代码拓扑节点</span>
-              <p class="text-[11px] text-[#A1A1AA]">点击右上角【代码扫描与图谱重建】即可扫描当前工作区</p>
-            </div>
-            <div v-else>
-              <div class="text-xs font-bold text-[#71717A] uppercase mb-2">AST 拓扑 ({{ s.astNodes.length }} 节点，图中最多 80)</div>
-              <div class="mb-3 overflow-auto rounded-xl border border-black/[0.08] bg-[#18181B] max-h-[48vh]">
-                <svg :width="s.astGraph.maxX" :height="s.astGraph.maxY">
-                  <line
-                    v-for="(e, i) in s.astGraph.edges"
-                    :key="'e'+i"
-                    :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
-                    stroke="#D96B27" stroke-opacity="0.45"
-                  />
-                  <g
-                    v-for="p in s.astGraph.pos"
-                    :key="p.id"
-                    @click="s.selectedAstNode = s.astNodes.find(n => n.id === p.id) || s.selectedAstNode"
-                    class="cursor-pointer"
-                  >
-                    <circle :cx="p.x" :cy="p.y" r="10" :fill="s.selectedAstNode?.id === p.id ? '#D96B27' : '#FAF8F5'" />
-                    <text :x="p.x + 14" :y="p.y + 4" fill="#F4F4F5" font-size="10">{{ p.name }}</text>
-                  </g>
-                </svg>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div
-                  v-for="node in s.astNodes"
-                  :key="node.id"
-                  @click="s.selectedAstNode = node"
-                  :class="[
-                    'p-3.5 rounded-2xl border bg-white shadow-2xs flex items-center justify-between cursor-pointer transition-all',
-                    s.selectedAstNode?.id === node.id ? 'border-2 border-[#D96B27] ring-2 ring-[#D96B27]/20' : 'border-black/[0.08] hover:border-[#D96B27]/40'
-                  ]"
-                >
-                  <div>
-                    <div class="flex items-center gap-2">
-                      <span class="text-sm">{{ node.type === 'package' ? '📦' : (node.type === 'struct' ? '🏛️' : '📄') }}</span>
-                      <span class="text-xs font-bold text-[#18181B] font-mono">{{ node.name }}</span>
-                      <span class="text-[9px] bg-[#D96B27]/10 text-[#D96B27] px-1.5 py-0.2 rounded font-mono font-bold">{{ node.type }}</span>
-                    </div>
-                    <div class="text-[11px] text-[#71717A] mt-1 font-mono">{{ node.file }}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-
-          <!-- 实体详情侧板 -->
-          <aside class="w-80 border-l border-black/[0.08] bg-white p-5 flex flex-col justify-between overflow-y-auto">
-            <div v-if="s.selectedAstNode" class="space-y-4 text-xs">
-              <div class="flex items-center gap-2 pb-3 border-b border-black/[0.06]">
-                <span class="text-xl">🏛️</span>
-                <div>
-                  <h4 class="font-bold text-sm text-[#18181B]">{{ s.selectedAstNode.name }}</h4>
-                  <span class="text-[10px] text-[#D96B27] bg-[#D96B27]/10 px-1.5 py-0.2 rounded font-mono">{{ s.selectedAstNode.type }}</span>
-                </div>
-              </div>
-              <div>
-                <span class="font-bold text-[#71717A]">源文件位置</span>
-                <p class="font-mono text-[11px] text-[#18181B] mt-1 bg-[#FAF8F5] p-2 rounded border border-black/[0.04]">{{ s.selectedAstNode.file }}</p>
-              </div>
-              <div>
-                <span class="font-bold text-[#71717A]">拓扑摘要</span>
-                <p class="text-[11px] text-[#52525B] leading-relaxed mt-1">{{ s.selectedAstNode.details }}</p>
-              </div>
-              <div>
-                <span class="font-bold text-[#71717A]">架构决策 (写入 ~/.tiancode/adr.json)</span>
-                <textarea v-model="s.adrNote" rows="4" class="w-full mt-1 px-2 py-1.5 rounded-lg border border-black/[0.08] text-[11px] font-mono" placeholder="这条约束会随节点引用进对话"></textarea>
-                <button class="mt-1 px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-[11px] cursor-pointer" @click="s.saveAdrNote">保存 ADR</button>
-              </div>
-            </div>
-
-            <button
-              v-if="s.selectedAstNode"
-              @click="s.injectNodeToPrompt"
-              class="w-full py-2 rounded-xl bg-[#D96B27] text-white text-xs font-bold shadow-xs hover:bg-[#B8551B] cursor-pointer flex items-center justify-center gap-1.5 mt-4"
-            >
-              <span>📌</span><span>引用该节点架构约束至对话</span>
-            </button>
-          </aside>
-        </div>
-      </div>
-    </div>
+    <ArchitectureModal v-if="s.isKnowledgeGraphOpen" />
 
     <!-- 渠道编辑弹窗 -->
     <div
@@ -932,6 +817,9 @@
 
     <!-- 插件热插拔中心与 DSH 算子大盘 -->
     <HotplugDashboardModal />
+
+    <!-- 代码架构与依赖治理工作板 -->
+    <ArchitectureModal v-if="s.isKnowledgeGraphOpen" />
   </div>
 </template>
 
@@ -945,6 +833,7 @@ import ChatCockpit from './components/ChatCockpit.vue'
 import DiffWorkspace from './components/DiffWorkspace.vue'
 import TerminalDrawer from './components/TerminalDrawer.vue'
 import HotplugDashboardModal from './components/HotplugDashboardModal.vue'
+import ArchitectureModal from './components/ArchitectureModal.vue'
 
 const s = useWorkbenchStore()
 let stop: (() => void) | undefined

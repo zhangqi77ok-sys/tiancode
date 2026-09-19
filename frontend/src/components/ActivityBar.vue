@@ -39,6 +39,14 @@
             <span>🧩</span>
             <span v-if="s.isHotplugDashboardOpen" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
           </button>
+          <button
+            @click="s.openArchitectureModal()"
+            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer text-base', s.isKnowledgeGraphOpen ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
+            title="代码架构与依赖治理工作板"
+          >
+            <span>🏛️</span>
+            <span v-if="s.isKnowledgeGraphOpen" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
+          </button>
         </div>
 
         <div class="flex flex-col items-center gap-2 w-full">

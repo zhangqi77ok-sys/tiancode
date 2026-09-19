@@ -47,6 +47,7 @@
 | **51** | **插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计** | 插件热插拔 / DSH Harness 大盘 / host.Registry 契约 / JSON Schema 查看器 / 动态热重载 | 活动栏与顶栏新增一等常驻入口、微内核底层算子直查与只读/写盘徽章标记、大模型参数 JSON Schema 契约在线展开、单点物理探活与 TTFT 测速、SafetyRail 防线可视化与现场创建 Skill/Rule 的 Creator 模式闭环 | [51-hotplug-plugin-center-and-dsh-operator-dashboard.md](./51-hotplug-plugin-center-and-dsh-operator-dashboard.md) |
 | **52** | **从三态互斥到全自主统一 Coding Agent 架构演进** | 统一Coding Agent / 范畴错误剖析 / 意图自适应 / Monaco Diff / 极简底栏 | 深刻复盘并彻底废除三态互斥模式与阻断弹窗；确立单一全自主统一 Coding Agent 架构；自然语言意图驱动只读分析与代码编写；Monaco Diff 审查把关变更；SafetyRail 守卫高危命令；底栏极致收敛零心智负担 | [52-unified-autonomous-coding-agent-architecture.md](./52-unified-autonomous-coding-agent-architecture.md) |
 | **53** | **版本号校准为 0.0.1 与开发测试孵化阶段工程基线** | 语义化版本 SemVer / 0.0.1基线 / 跨层版本一致性 / 孵化期预期管理 | 全链路将发货版本号校准为 0.0.1，真实呈现当前处于开发测试、架构加固与需求孵化阶段；同步 Wails、Go 微内核、Node生态、前端状态、Windows 安装器与注册表、User-Agent 以及 MCP 协议握手报头，确保单点版本强一致性 | [53-version-recalibration-to-early-incubator-phase.md](./53-version-recalibration-to-early-incubator-phase.md) |
+| **54** | **从玩具级 Go AST 到现代代码架构与依赖治理工作板** | 代码架构分析 / 依赖倒置 / 影响面雷达 / 架构防腐守卫 / Agent上下文双向飞轮 | 淘汰简陋24轮SVG力导向图，基于 Go 编译前端深度解析工作区；实现 6 层语义分层拓扑 DAG、隐式接口契约多态匹配矩阵、重构影响面毫秒级雷达与铁律 7 单向依赖防腐守卫，支持一键注入 Agent 提示词闭环 | [54-code-architecture-and-dependency-governance-workbench.md](./54-code-architecture-and-dependency-governance-workbench.md) |
 
 ---
 

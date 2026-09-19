@@ -88,3 +88,152 @@ func TestScanWorkspaceAST_NonExistentDir(t *testing.T) {
 		t.Errorf("expected error for non-existent rootDir [%s], got nil", nonExistent)
 	}
 }
+
+func TestAnalyzeWorkspaceArchitecture_FullDAGAndContracts(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "arch_analyzer_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 写入 go.mod
+	_ = os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module testarch\n\ngo 1.21\n"), 0644)
+
+	// 写入 pkg/plugin/v1/tool.go
+	pkgDir := filepath.Join(tempDir, "pkg", "plugin", "v1")
+	_ = os.MkdirAll(pkgDir, 0755)
+	pkgCode := `package v1
+
+type ToolPlugin interface {
+	ID() string
+	Execute() error
+}
+`
+	_ = os.WriteFile(filepath.Join(pkgDir, "tool.go"), []byte(pkgCode), 0644)
+
+	// 写入 internal/core/loop/engine.go
+	coreDir := filepath.Join(tempDir, "internal", "core", "loop")
+	_ = os.MkdirAll(coreDir, 0755)
+	coreCode := `package loop
+
+import (
+	_ "testarch/pkg/plugin/v1"
+)
+
+type Engine struct {
+	MaxTurns int
+}
+
+func (e *Engine) Run() error {
+	return nil
+}
+`
+	_ = os.WriteFile(filepath.Join(coreDir, "engine.go"), []byte(coreCode), 0644)
+
+	// 写入 plugins/tool/fs/fs.go (合规插件，实现 ToolPlugin 契约)
+	fsDir := filepath.Join(tempDir, "plugins", "tool", "fs")
+	_ = os.MkdirAll(fsDir, 0755)
+	fsCode := `package fs
+
+import (
+	_ "testarch/pkg/plugin/v1"
+)
+
+type FSTool struct{}
+
+func (f *FSTool) ID() string {
+	return "tool.fs"
+}
+
+func (f *FSTool) Execute() error {
+	return nil
+}
+`
+	_ = os.WriteFile(filepath.Join(fsDir, "fs.go"), []byte(fsCode), 0644)
+
+	// 写入 plugins/tool/bad/bad.go (违规插件，非法反向引用 internal/core/loop)
+	badDir := filepath.Join(tempDir, "plugins", "tool", "bad")
+	_ = os.MkdirAll(badDir, 0755)
+	badCode := `package bad
+
+import (
+	_ "testarch/internal/core/loop"
+)
+
+type BadTool struct{}
+`
+	_ = os.WriteFile(filepath.Join(badDir, "bad.go"), []byte(badCode), 0644)
+
+	// 执行分析
+	report, err := AnalyzeWorkspaceArchitecture(tempDir)
+	if err != nil {
+		t.Fatalf("AnalyzeWorkspaceArchitecture failed: %v", err)
+	}
+
+	if report.TotalPackages < 4 {
+		t.Errorf("expected at least 4 packages, got %d", report.TotalPackages)
+	}
+
+	// 验证层级判定
+	foundCore := false
+	foundSpec := false
+	foundTool := false
+	for _, p := range report.Packages {
+		if p.ID == "internal/core/loop" && p.Layer == "core" {
+			foundCore = true
+		}
+		if p.ID == "pkg/plugin/v1" && p.Layer == "spec" {
+			foundSpec = true
+		}
+		if p.ID == "plugins/tool/fs" && p.Layer == "tool" {
+			foundTool = true
+		}
+	}
+	if !foundCore || !foundSpec || !foundTool {
+		t.Errorf("expected layers classification to be accurate: core=%v, spec=%v, tool=%v", foundCore, foundSpec, foundTool)
+	}
+
+	// 验证契约多态匹配 (FSTool 实现 ToolPlugin)
+	foundContract := false
+	for _, c := range report.Contracts {
+		if c.InterfaceName == "ToolPlugin" {
+			for _, impl := range c.Implementations {
+				if impl.StructName == "FSTool" && impl.Status == "compliant" {
+					foundContract = true
+					break
+				}
+			}
+		}
+	}
+	if !foundContract {
+		t.Errorf("expected FSTool to be detected as implementing ToolPlugin contract")
+	}
+
+	// 验证违规检测 (bad -> internal/core/loop)
+	foundViolation := false
+	for _, e := range report.Edges {
+		if e.From == "plugins/tool/bad" && e.To == "internal/core/loop" && e.IsViolation {
+			foundViolation = true
+			if !strings.Contains(e.ViolationReason, "铁律 7") {
+				t.Errorf("expected violation reason to mention 铁律 7, got %s", e.ViolationReason)
+			}
+			break
+		}
+	}
+	if !foundViolation {
+		t.Errorf("expected illegal reverse dependency plugins/tool/bad -> internal/core/loop to be caught as violation")
+	}
+
+	// 测试影响面分析 (Blast Radius)
+	blast, err := AnalyzeBlastRadius(tempDir, "pkg/plugin/v1.ToolPlugin")
+	if err != nil {
+		t.Fatalf("AnalyzeBlastRadius failed: %v", err)
+	}
+	if blast.RiskLevel == "" {
+		t.Errorf("expected risk level to be computed")
+	}
+	if len(blast.DirectCallers) == 0 {
+		t.Errorf("expected direct callers to be found for ToolPlugin package")
+	}
+}
+

@@ -74,6 +74,14 @@
 
           <div class="flex items-center gap-1.5 shrink-0">
             <button
+              @click="s.openArchitectureModal()"
+              class="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-xs font-medium text-[#52525B] hover:text-[#D96B27] hover:border-[#D96B27]/30 shadow-2xs transition-all cursor-pointer"
+              title="打开代码架构与依赖治理工作板"
+            >
+              <span>🏛️</span>
+              <span>架构工作板</span>
+            </button>
+            <button
               @click="s.openHotplugDashboard()"
               class="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-xs font-medium text-[#52525B] hover:text-[#D96B27] hover:border-[#D96B27]/30 shadow-2xs transition-all cursor-pointer"
               title="打开插件热插拔中心与 DSH 算子大盘"
