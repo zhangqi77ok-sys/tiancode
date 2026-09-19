@@ -150,6 +150,15 @@ export interface ArchitectureReport {
   contracts: ContractItem[]
 }
 
+export interface GoModuleInfo {
+  name: string
+  path: string
+  rel_path: string
+  type: string
+  is_root: boolean
+  is_external: boolean
+}
+
 export interface FileNode {
   name: string
   path: string
@@ -928,16 +937,22 @@ export const wailsBridge = {
     return []
   },
 
-  async getArchitectureReport(): Promise<ArchitectureReport> {
+  async getArchitectureReport(customPath?: string): Promise<ArchitectureReport> {
     const app = getApp()
-    if (app?.GetArchitectureReport) return await app.GetArchitectureReport()
+    if (app?.GetArchitectureReport) return await app.GetArchitectureReport(customPath || '')
     throw new Error('microkernel not connected: GetArchitectureReport unavailable')
   },
 
-  async getBlastRadiusReport(targetSymbol: string): Promise<BlastRadiusReport> {
+  async getBlastRadiusReport(customPath: string, targetSymbol: string): Promise<BlastRadiusReport> {
     const app = getApp()
-    if (app?.GetBlastRadiusReport) return await app.GetBlastRadiusReport(targetSymbol)
+    if (app?.GetBlastRadiusReport) return await app.GetBlastRadiusReport(customPath || '', targetSymbol)
     throw new Error('microkernel not connected: GetBlastRadiusReport unavailable')
+  },
+
+  async discoverWorkspaceGoModules(): Promise<GoModuleInfo[]> {
+    const app = getApp()
+    if (app?.DiscoverWorkspaceGoModules) return await app.DiscoverWorkspaceGoModules()
+    return []
   },
 
   async readFile(relPath: string): Promise<string> {

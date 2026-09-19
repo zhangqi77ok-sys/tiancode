@@ -14,7 +14,11 @@ import {
   type DiagnosticItem,
   type SearchMatch,
   type HotplugItemInfo,
-  type HotplugDashboardReport
+  type HotplugDashboardReport,
+  type ArchitectureReport,
+  type PackageNode,
+  type BlastRadiusReport,
+  type GoModuleInfo
 } from '../core/wailsBridge'
 import { renderMarkdown } from '../core/markdown'
 
@@ -1990,19 +1994,47 @@ const architectureSearchQuery = ref('')
 const blastRadiusReport = ref<BlastRadiusReport | null>(null)
 const isBlastRadiusLoading = ref(false)
 
+// 多项目与子模块状态
+const architectureCurrentPath = ref('')
+const availableGoModules = ref<GoModuleInfo[]>([])
+const recentAnalysisProjects = ref<string[]>(JSON.parse(localStorage.getItem('tiancode:recent_analysis_projects') || '[]'))
+
+// 计算当前是否处于非主工作区的外部/子模块参考模式
+const isExternalArchitectureProject = computed(() => {
+  if (!architectureCurrentPath.value) return false
+  const normCurrent = architectureCurrentPath.value.replace(/\\/g, '/').toLowerCase()
+  const normWorkspace = workspacePath.value.replace(/\\/g, '/').toLowerCase()
+  return normCurrent !== normWorkspace
+})
+
+async function loadWorkspaceGoModules() {
+  try {
+    const mods = await wailsBridge.discoverWorkspaceGoModules()
+    availableGoModules.value = mods
+  } catch (err) {
+    console.warn('探测工作区模块失败:', err)
+  }
+}
+
 function openArchitectureModal() {
   isKnowledgeGraphOpen.value = true
+  if (!architectureCurrentPath.value) {
+    architectureCurrentPath.value = workspacePath.value
+  }
+  loadWorkspaceGoModules()
   if (!architectureReport.value && !isArchitectureLoading.value) {
-    scanArchitecture()
+    scanArchitecture(architectureCurrentPath.value)
   }
 }
 
 const openKnowledgeGraphModal = openArchitectureModal
 
-async function scanArchitecture() {
+async function scanArchitecture(customPath?: string) {
+  const targetPath = customPath || architectureCurrentPath.value || workspacePath.value
+  architectureCurrentPath.value = targetPath
   isArchitectureLoading.value = true
   try {
-    const report = await wailsBridge.getArchitectureReport()
+    const report = await wailsBridge.getArchitectureReport(targetPath)
     architectureReport.value = report
     if (report.packages && report.packages.length > 0) {
       if (!selectedArchitectureNode.value || !report.packages.some(p => p.id === selectedArchitectureNode.value?.id)) {
@@ -2018,11 +2050,50 @@ async function scanArchitecture() {
 
 const scanASTGraph = scanArchitecture
 
+async function switchArchitectureProject(targetPath: string) {
+  if (!targetPath) return
+  architectureCurrentPath.value = targetPath
+  selectedArchitectureNode.value = null
+  blastRadiusReport.value = null
+  await scanArchitecture(targetPath)
+}
+
+async function pickExternalArchitectureProject() {
+  try {
+    const dir = await wailsBridge.openDirectoryDialog()
+    if (!dir) return
+    const list = recentAnalysisProjects.value.filter(p => p !== dir)
+    list.unshift(dir)
+    if (list.length > 5) list.length = 5
+    recentAnalysisProjects.value = list
+    localStorage.setItem('tiancode:recent_analysis_projects', JSON.stringify(list))
+
+    await switchArchitectureProject(dir)
+    showToast(`✓ 已切换至外部参考项目: ${dir}`)
+  } catch (err) {
+    showToast('选择外部项目失败: ' + err)
+  }
+}
+
+function resetArchitectureToWorkspace() {
+  architectureCurrentPath.value = workspacePath.value
+  selectedArchitectureNode.value = null
+  blastRadiusReport.value = null
+  scanArchitecture(workspacePath.value)
+  showToast('✓ 已切回当前活动工作区')
+}
+
+function closeArchitectureModal() {
+  isKnowledgeGraphOpen.value = false
+  architectureCurrentPath.value = workspacePath.value
+  blastRadiusReport.value = null
+}
+
 async function runBlastRadiusAnalysis(symbol: string) {
   if (!symbol) return
   isBlastRadiusLoading.value = true
   try {
-    const res = await wailsBridge.getBlastRadiusReport(symbol)
+    const res = await wailsBridge.getBlastRadiusReport(architectureCurrentPath.value || workspacePath.value, symbol)
     blastRadiusReport.value = res
   } catch (err) {
     showToast('影响面分析失败: ' + err)
@@ -2032,6 +2103,12 @@ async function runBlastRadiusAnalysis(symbol: string) {
 }
 
 function injectArchitectureContext(node?: PackageNode | null) {
+  // 防投毒物理阻断
+  if (isExternalArchitectureProject.value) {
+    showToast('⚠️ 当前为外部参考项目，仅当前活动工作区支持注入 Agent 会话，防止上下文投毒！')
+    return
+  }
+
   const target = node || selectedArchitectureNode.value
   let text = ''
   if (target) {
@@ -2512,8 +2589,16 @@ function initWorkbench() {
     architectureSearchQuery,
     blastRadiusReport,
     isBlastRadiusLoading,
+    architectureCurrentPath,
+    availableGoModules,
+    recentAnalysisProjects,
+    isExternalArchitectureProject,
     openArchitectureModal,
     scanArchitecture,
+    switchArchitectureProject,
+    pickExternalArchitectureProject,
+    resetArchitectureToWorkspace,
+    closeArchitectureModal,
     runBlastRadiusAnalysis,
     injectArchitectureContext,
     isHotplugDashboardOpen,

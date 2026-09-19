@@ -196,9 +196,43 @@ function handleBlastTargetChange(e: Event) {
   s.runBlastRadiusAnalysis(target)
 }
 
+// 模块与项目选择菜单状态
+const isProjectMenuOpen = ref(false)
+
+const currentProjectDisplayName = computed(() => {
+  if (s.isExternalArchitectureProject) {
+    const p = (s.architectureCurrentPath || '').replace(/\\/g, '/')
+    const parts = p.split('/').filter(Boolean)
+    return parts[parts.length - 1] || '外部项目'
+  }
+  const current = (s.architectureCurrentPath || '').replace(/\\/g, '/').toLowerCase()
+  const mod = s.availableGoModules.find((m) => m.path.replace(/\\/g, '/').toLowerCase() === current)
+  if (mod) return mod.name
+  return s.workspaceName || '当前工作区'
+})
+
+function onSelectModule(modPath: string) {
+  isProjectMenuOpen.value = false
+  s.switchArchitectureProject(modPath)
+}
+
+async function onPickExternal() {
+  isProjectMenuOpen.value = false
+  await s.pickExternalArchitectureProject()
+}
+
+function onResetWorkspace() {
+  isProjectMenuOpen.value = false
+  s.resetArchitectureToWorkspace()
+}
+
 onMounted(() => {
+  if (!s.architectureCurrentPath) {
+    s.architectureCurrentPath = s.workspacePath
+  }
+  s.loadWorkspaceGoModules()
   if (!s.architectureReport && !s.isArchitectureLoading) {
-    s.scanArchitecture()
+    s.scanArchitecture(s.architectureCurrentPath)
   }
 })
 </script>
@@ -206,7 +240,8 @@ onMounted(() => {
 <template>
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs font-sans select-none animate-in fade-in duration-150"
-    @keydown.esc="s.isKnowledgeGraphOpen = false"
+    @keydown.esc="s.closeArchitectureModal()"
+    @click.self="s.closeArchitectureModal()"
     tabindex="-1"
   >
     <!-- 模态主窗体 (94vw x 88vh, 暖色基底) -->
@@ -214,18 +249,123 @@ onMounted(() => {
 
       <!-- ================= 顶栏：视图切换与工具组 ================= -->
       <header class="h-13 bg-[#FAF8F5] border-b border-black/[0.08] px-5 flex items-center justify-between shrink-0 z-30">
-        <!-- 左侧标题 -->
+        <!-- 左侧标题与模块选择器 -->
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 rounded-xl bg-[#D96B27]/10 flex items-center justify-center text-[#D96B27] font-bold text-sm border border-[#D96B27]/20">
             🏛️
           </div>
           <div>
-            <div class="flex items-center gap-2">
-              <h2 class="font-bold text-sm text-[#18181B] tracking-tight">代码架构与依赖治理工作板</h2>
-              <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-[#10B981]/10 text-[#059669] font-mono font-medium border border-[#10B981]/20">
-                微内核 DAG 契约分析
+            <div class="flex items-center gap-2 relative">
+              <h2 class="font-bold text-sm text-[#18181B] tracking-tight">代码架构与依赖治理</h2>
+
+              <!-- 项目 / 模块选择器下拉开关 -->
+              <div class="relative">
+                <button
+                  @click="isProjectMenuOpen = !isProjectMenuOpen"
+                  :class="[
+                    'px-2 py-0.5 rounded-lg border text-xs font-mono flex items-center gap-1.5 cursor-pointer transition-all',
+                    s.isExternalArchitectureProject
+                      ? 'bg-amber-50 border-amber-300 text-amber-800 font-bold shadow-2xs'
+                      : 'bg-white border-black/[0.1] text-[#18181B] hover:bg-black/[0.02]'
+                  ]"
+                  title="切换工作区子模块或打开外部项目"
+                >
+                  <span v-if="s.isExternalArchitectureProject">📂 外部:</span>
+                  <span v-else>📍</span>
+                  <span class="max-w-40 truncate">{{ currentProjectDisplayName }}</span>
+                  <span class="text-[10px] text-[#71717A]">▾</span>
+                </button>
+
+                <!-- 下拉菜单 -->
+                <div
+                  v-if="isProjectMenuOpen"
+                  class="absolute left-0 top-full mt-1.5 w-76 bg-white rounded-xl border border-black/[0.1] shadow-xl py-1.5 z-50 text-xs"
+                >
+                  <!-- 外部模式重置快捷按钮 -->
+                  <div v-if="s.isExternalArchitectureProject" class="px-2 pb-1.5 mb-1.5 border-b border-black/[0.06]">
+                    <button
+                      @click="onResetWorkspace"
+                      class="w-full text-left px-2.5 py-1.5 rounded-lg bg-amber-100/70 hover:bg-amber-100 text-amber-900 font-bold flex items-center justify-between cursor-pointer"
+                    >
+                      <span>↩ 切回当前活动工作区</span>
+                      <span class="text-[10px] text-amber-700 font-mono">{{ s.workspaceName }}</span>
+                    </button>
+                  </div>
+
+                  <!-- 工作区内部模块 (Monorepo) -->
+                  <div class="px-3 py-1 text-[10px] font-bold text-[#A1A1AA] uppercase tracking-wider">
+                    📦 工作区内部模块 (Monorepo)
+                  </div>
+                  <div class="max-h-40 overflow-y-auto space-y-0.5 px-1">
+                    <div
+                      v-for="mod in s.availableGoModules"
+                      :key="mod.path"
+                      @click="onSelectModule(mod.path)"
+                      :class="[
+                        'px-2.5 py-1.5 rounded-lg flex items-center justify-between cursor-pointer transition-all font-mono',
+                        (s.architectureCurrentPath.replace(/\\/g, '/').toLowerCase() === mod.path.replace(/\\/g, '/').toLowerCase())
+                          ? 'bg-[#D96B27]/10 text-[#D96B27] font-bold'
+                          : 'hover:bg-black/[0.04] text-[#27272A]'
+                      ]"
+                    >
+                      <span class="truncate">{{ mod.name }}</span>
+                      <span v-if="mod.is_root" class="text-[9px] px-1 py-0.2 rounded bg-black/[0.06] text-[#71717A]">根</span>
+                    </div>
+                  </div>
+
+                  <div class="my-1 border-t border-black/[0.06]"></div>
+
+                  <!-- 浏览外部独立项目 -->
+                  <div class="px-1">
+                    <button
+                      @click="onPickExternal"
+                      class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-black/[0.04] text-[#18181B] font-medium flex items-center gap-2 cursor-pointer"
+                    >
+                      <span class="text-sm">📁</span>
+                      <span>浏览选取本地其他 Go 项目...</span>
+                    </button>
+                  </div>
+
+                  <!-- 最近分析历史 -->
+                  <div v-if="s.recentAnalysisProjects && s.recentAnalysisProjects.length > 0" class="mt-1 pt-1 border-t border-black/[0.06]">
+                    <div class="px-3 py-1 text-[10px] font-bold text-[#A1A1AA] uppercase tracking-wider">
+                      🕒 最近参考项目
+                    </div>
+                    <div class="max-h-28 overflow-y-auto space-y-0.5 px-1">
+                      <div
+                        v-for="proj in s.recentAnalysisProjects"
+                        :key="proj"
+                        @click="onSelectModule(proj)"
+                        :class="[
+                          'px-2.5 py-1 rounded-lg truncate text-[11px] font-mono cursor-pointer transition-all',
+                          (s.architectureCurrentPath.replace(/\\/g, '/').toLowerCase() === proj.replace(/\\/g, '/').toLowerCase())
+                            ? 'bg-amber-100/70 text-amber-900 font-bold'
+                            : 'hover:bg-black/[0.04] text-[#52525B]'
+                        ]"
+                        :title="proj"
+                      >
+                        {{ proj }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 外部模式指示标签 -->
+              <span
+                v-if="s.isExternalArchitectureProject"
+                class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-mono font-bold border border-amber-300 flex items-center gap-1"
+              >
+                <span>⚠️ 外部参考模式</span>
+                <button
+                  @click="s.resetArchitectureToWorkspace"
+                  class="ml-1 text-amber-900 hover:underline cursor-pointer font-normal"
+                  title="切回当前工作区"
+                >
+                  [↩ 切回当前工程]
+                </button>
               </span>
-              <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-black/[0.05] text-[#71717A] font-mono">
+              <span v-else class="text-[10px] px-1.5 py-0.2 rounded-full bg-black/[0.05] text-[#71717A] font-mono">
                 {{ s.architectureReport?.total_packages || 0 }} 模块 / {{ s.architectureReport?.total_symbols || 0 }} 符号
               </span>
             </div>
@@ -266,12 +406,12 @@ onMounted(() => {
         <!-- 右侧：工具按钮与关闭 -->
         <div class="flex items-center gap-2">
           <!-- 搜索输入框 -->
-          <div class="relative w-44">
+          <div class="relative w-36">
             <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-[#A1A1AA]">🔍</span>
             <input
               v-model="s.architectureSearchQuery"
               type="text"
-              placeholder="过滤模块或符号..."
+              placeholder="过滤模块/符号..."
               class="w-full pl-7 pr-2.5 py-1 text-xs bg-white rounded-lg border border-black/[0.1] focus:outline-none focus:border-[#D96B27] focus:ring-1 focus:ring-[#D96B27]/20 transition-all font-mono"
             />
           </div>
@@ -299,11 +439,28 @@ onMounted(() => {
             </span>
           </button>
 
+          <!-- 注入 Agent 按钮 (防投毒物理守卫) -->
+          <button
+            @click="s.injectArchitectureContext(null)"
+            :disabled="s.isExternalArchitectureProject"
+            :class="[
+              'px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1 transition-all',
+              s.isExternalArchitectureProject
+                ? 'bg-black/[0.04] text-[#A1A1AA] border border-black/[0.06] cursor-not-allowed opacity-60'
+                : 'bg-[#D96B27]/10 hover:bg-[#D96B27]/20 border border-[#D96B27]/30 text-[#D96B27] cursor-pointer font-bold'
+            ]"
+            :title="s.isExternalArchitectureProject ? '当前为外部参考项目，已物理禁用注入 Agent，防止上下文投毒' : '将工程全局架构拓扑注入 Agent 提示词'"
+          >
+            <span>🤖</span>
+            <span>注入 Agent</span>
+          </button>
+
           <!-- 扫描与重建 -->
           <button
-            @click="s.scanArchitecture"
+            @click="() => s.scanArchitecture(s.architectureCurrentPath)"
             :disabled="s.isArchitectureLoading"
             class="px-2.5 py-1 rounded-lg bg-white border border-black/[0.1] text-xs font-medium text-[#18181B] hover:bg-black/[0.02] cursor-pointer flex items-center gap-1"
+            title="重新扫描当前项目 AST"
           >
             <span :class="{ 'animate-spin': s.isArchitectureLoading }">🔄</span>
             <span>扫描</span>
@@ -311,9 +468,9 @@ onMounted(() => {
 
           <!-- 显式关闭按钮 [X] (铁律 5) -->
           <button
-            @click="s.isKnowledgeGraphOpen = false"
+            @click="s.closeArchitectureModal()"
             class="p-1 rounded-lg text-[#71717A] hover:bg-black/[0.05] hover:text-[#18181B] cursor-pointer transition-colors"
-            title="关闭 (Esc)"
+            title="关闭并重置回主工作区 (Esc)"
           >
             ✕
           </button>
@@ -714,10 +871,21 @@ onMounted(() => {
           <div class="p-4 border-t border-black/[0.08] bg-[#FAF8F5] space-y-2">
             <button
               @click="s.injectArchitectureContext(s.selectedArchitectureNode)"
-              class="w-full py-2 px-3 rounded-xl bg-[#D96B27] hover:bg-[#B8551B] text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-all"
+              :disabled="s.isExternalArchitectureProject"
+              :class="[
+                'w-full py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all',
+                s.isExternalArchitectureProject
+                  ? 'bg-black/[0.08] text-[#A1A1AA] cursor-not-allowed border border-black/[0.05]'
+                  : 'bg-[#D96B27] hover:bg-[#B8551B] text-white cursor-pointer shadow-xs'
+              ]"
+              :title="s.isExternalArchitectureProject ? '当前为外部参考项目，仅活动工作区支持注入 Agent 会话，防止上下文投毒' : '将本模块架构约束注入对话'"
             >
-              <span>💬</span><span>将本模块架构约束注入对话</span>
+              <span>{{ s.isExternalArchitectureProject ? '🛡️' : '💬' }}</span>
+              <span>{{ s.isExternalArchitectureProject ? '外部项目模式 (已阻断注入)' : '将本模块架构约束注入对话' }}</span>
             </button>
+            <div v-if="s.isExternalArchitectureProject" class="text-[10px] text-amber-600/90 text-center font-mono">
+              ⚠️ 防投毒守卫已激活：禁止跨工程注入
+            </div>
           </div>
         </aside>
       </div>

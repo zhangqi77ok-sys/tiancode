@@ -237,3 +237,61 @@ type BadTool struct{}
 	}
 }
 
+func TestDiscoverGoModules_MonorepoAndSubApps(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "mod_discovery_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 1. 根模块 go.mod
+	_ = os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module myroot\n\ngo 1.22\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main\nfunc main(){}"), 0644)
+
+	// 2. 子模块 sub/go.mod
+	subDir := filepath.Join(tempDir, "subpkg")
+	_ = os.MkdirAll(subDir, 0755)
+	_ = os.WriteFile(filepath.Join(subDir, "go.mod"), []byte("module subpkg\n\ngo 1.22\n"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "sub.go"), []byte("package subpkg\n"), 0644)
+
+	// 3. cmd/installer 子应用
+	cmdDir := filepath.Join(tempDir, "cmd", "installer")
+	_ = os.MkdirAll(cmdDir, 0755)
+	_ = os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte("package main\nfunc main(){}"), 0644)
+
+	modules, err := DiscoverGoModules(tempDir)
+	if err != nil {
+		t.Fatalf("DiscoverGoModules failed: %v", err)
+	}
+
+	if len(modules) < 3 {
+		t.Fatalf("expected at least 3 modules, got %d: %+v", len(modules), modules)
+	}
+
+	foundRoot := false
+	foundSub := false
+	foundCmd := false
+	for _, m := range modules {
+		if m.IsRoot {
+			foundRoot = true
+		}
+		if m.Type == "sub_module" && m.RelPath == "subpkg" {
+			foundSub = true
+		}
+		if m.Type == "cmd_app" && m.RelPath == "cmd/installer" {
+			foundCmd = true
+		}
+	}
+
+	if !foundRoot {
+		t.Errorf("expected root module to be discovered")
+	}
+	if !foundSub {
+		t.Errorf("expected sub_module 'subpkg' to be discovered")
+	}
+	if !foundCmd {
+		t.Errorf("expected cmd_app 'cmd/installer' to be discovered")
+	}
+}
+
+

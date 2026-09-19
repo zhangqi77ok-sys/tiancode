@@ -19,13 +19,26 @@ func (a *App) GetProjectASTGraph() ([]ast.GraphNode, error) {
 	return ast.ScanWorkspaceAST(a.workspace)
 }
 
-func (a *App) GetArchitectureReport() (*ast.ArchitectureReport, error) {
-	return ast.AnalyzeWorkspaceArchitecture(a.workspace)
+func (a *App) GetArchitectureReport(customPath string) (*ast.ArchitectureReport, error) {
+	target := a.workspace
+	if strings.TrimSpace(customPath) != "" {
+		target = customPath
+	}
+	return ast.AnalyzeWorkspaceArchitecture(target)
 }
 
-func (a *App) GetBlastRadiusReport(targetSymbol string) (*ast.BlastRadiusReport, error) {
-	return ast.AnalyzeBlastRadius(a.workspace, targetSymbol)
+func (a *App) GetBlastRadiusReport(customPath string, targetSymbol string) (*ast.BlastRadiusReport, error) {
+	target := a.workspace
+	if strings.TrimSpace(customPath) != "" {
+		target = customPath
+	}
+	return ast.AnalyzeBlastRadius(target, targetSymbol)
 }
+
+func (a *App) DiscoverWorkspaceGoModules() ([]ast.GoModuleInfo, error) {
+	return ast.DiscoverGoModules(a.workspace)
+}
+
 
 func (a *App) GetGitStatus() (map[string]any, error) {
 	gitTool, ok := a.registry.GetTool("tool.git")

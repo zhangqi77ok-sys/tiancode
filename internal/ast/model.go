@@ -71,3 +71,14 @@ type ArchitectureReport struct {
 	Edges          []ArchitectureEdge `json:"edges"`
 	Contracts      []ContractItem     `json:"contracts"`
 }
+
+// GoModuleInfo 工作区或项目中的 Go 模块/子应用信息
+type GoModuleInfo struct {
+	Name       string `json:"name"`        // 显示名称，例如 "tiancode (根模块)" 或 "cmd/installer (安装程序)"
+	Path       string `json:"path"`        // 绝对路径
+	RelPath    string `json:"rel_path"`    // 相对工作区路径，如 "." 或 "cmd/installer"
+	Type       string `json:"type"`        // "root_module", "sub_module", "cmd_app", "external"
+	IsRoot     bool   `json:"is_root"`     // 是否为根项目
+	IsExternal bool   `json:"is_external"` // 是否为外部参考目录
+}
+

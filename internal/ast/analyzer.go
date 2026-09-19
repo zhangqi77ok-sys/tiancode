@@ -509,24 +509,147 @@ func checkArchitectureViolation(fromPkg, toPkg string) (bool, string) {
 }
 
 func detectModulePath(rootDir string) string {
-	goModPath := filepath.Join(rootDir, "go.mod")
-	f, err := os.Open(goModPath)
-	if err != nil {
-		return "tiancode"
+	curr := rootDir
+	for i := 0; i < 5; i++ {
+		goModPath := filepath.Join(curr, "go.mod")
+		if f, err := os.Open(goModPath); err == nil {
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if strings.HasPrefix(line, "module ") {
+					parts := strings.Fields(line)
+					if len(parts) >= 2 {
+						_ = f.Close()
+						return parts[1]
+					}
+				}
+			}
+			_ = f.Close()
+		}
+		parent := filepath.Dir(curr)
+		if parent == curr || parent == "" {
+			break
+		}
+		curr = parent
 	}
-	defer f.Close()
+	base := filepath.Base(rootDir)
+	if base == "." || base == "/" || base == "\\" {
+		return "module"
+	}
+	return base
+}
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				return parts[1]
+// DiscoverGoModules 自动探测工作区中的根 Go 模块、子模块 (go.mod) 与 cmd/ 入口子应用
+func DiscoverGoModules(workspace string) ([]GoModuleInfo, error) {
+	trimmed := strings.TrimSpace(workspace)
+	if trimmed == "" {
+		return nil, fmt.Errorf("workspace path cannot be empty")
+	}
+	stat, err := os.Stat(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("workspace [%s] does not exist: %w", trimmed, err)
+	}
+	if !stat.IsDir() {
+		return nil, fmt.Errorf("workspace [%s] is not a directory", trimmed)
+	}
+
+	norm := normalizeWindowsPath(filepath.Clean(trimmed))
+	modules := make([]GoModuleInfo, 0)
+	visited := make(map[string]bool)
+
+	// 1. 探测根模块
+	rootModName := detectModulePath(norm)
+	rootDisplayName := fmt.Sprintf("%s (根模块)", filepath.Base(norm))
+	if rootModName != "" && rootModName != "module" {
+		rootDisplayName = fmt.Sprintf("%s (根项目)", rootModName)
+	}
+	modules = append(modules, GoModuleInfo{
+		Name:       rootDisplayName,
+		Path:       norm,
+		RelPath:    ".",
+		Type:       "root_module",
+		IsRoot:     true,
+		IsExternal: false,
+	})
+	visited[norm] = true
+
+	// 2. 扫描工作区子目录中的独立 go.mod
+	_ = filepath.Walk(norm, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			base := strings.ToLower(info.Name())
+			if strings.HasPrefix(base, ".") || base == "node_modules" || base == "vendor" ||
+				base == "dist" || base == "bin" || base == "build" || base == "target" ||
+				base == "release" || base == "archive" {
+				return filepath.SkipDir
+			}
+			// 限制层级防深层遍历
+			rel, _ := filepath.Rel(norm, path)
+			if strings.Count(filepath.ToSlash(rel), "/") > 3 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if info.Name() == "go.mod" {
+			dir := filepath.Dir(path)
+			normDir := normalizeWindowsPath(dir)
+			if !visited[normDir] {
+				visited[normDir] = true
+				rel, _ := filepath.Rel(norm, normDir)
+				rel = filepath.ToSlash(rel)
+				subModName := detectModulePath(normDir)
+				modules = append(modules, GoModuleInfo{
+					Name:       fmt.Sprintf("%s (独立模块: %s)", rel, subModName),
+					Path:       normDir,
+					RelPath:    rel,
+					Type:       "sub_module",
+					IsRoot:     false,
+					IsExternal: false,
+				})
+			}
+		}
+		return nil
+	})
+
+	// 3. 扫描 cmd/ 目录下的独立可执行程序
+	cmdDir := filepath.Join(norm, "cmd")
+	if entries, err := os.ReadDir(cmdDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				subPath := filepath.Join(cmdDir, e.Name())
+				normSub := normalizeWindowsPath(subPath)
+				if !visited[normSub] {
+					hasGo := false
+					if subFiles, readErr := os.ReadDir(subPath); readErr == nil {
+						for _, sf := range subFiles {
+							if !sf.IsDir() && strings.HasSuffix(sf.Name(), ".go") {
+								hasGo = true
+								break
+							}
+						}
+					}
+					if hasGo {
+						visited[normSub] = true
+						rel, _ := filepath.Rel(norm, normSub)
+						rel = filepath.ToSlash(rel)
+						modules = append(modules, GoModuleInfo{
+							Name:       fmt.Sprintf("%s (入口程序)", rel),
+							Path:       normSub,
+							RelPath:    rel,
+							Type:       "cmd_app",
+							IsRoot:     false,
+							IsExternal: false,
+						})
+					}
+				}
 			}
 		}
 	}
-	return "tiancode"
+
+	return modules, nil
 }
 
 func getReceiverTypeName(expr ast.Expr) string {
@@ -540,3 +663,4 @@ func getReceiverTypeName(expr ast.Expr) string {
 	}
 	return ""
 }
+
