@@ -13,6 +13,7 @@
 * **56 次核心架构演变与工程迭代详实记录**：[`docs/ARCHITECTURE_EVOLUTION.md`](docs/ARCHITECTURE_EVOLUTION.md)
 * **底层工程知识与疑难解决方案速查**：[`docs/knowledge/README.md`](docs/knowledge/README.md)
 * **AI 交付实现唯一施工合同**：[`docs/AI_IMPLEMENTATION_CONTRACT.md`](docs/AI_IMPLEMENTATION_CONTRACT.md)
+* **确定性前缀与 KV Cache 技术规约**：[`docs/PROMPT_CACHING_SPEC.md`](docs/PROMPT_CACHING_SPEC.md)
 * **特性边界矩阵与交付状态**：[`docs/V1_FEATURE_BOUNDARY_MATRIX.md`](docs/V1_FEATURE_BOUNDARY_MATRIX.md)
 
 ---

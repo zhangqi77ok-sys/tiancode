@@ -18,6 +18,7 @@ docs/
 │   ├── AI_IMPLEMENTATION_CONTRACT.md          # AI 实现工作包唯一施工契约 (WP-1 ~ WP-10)
 │   ├── HITL_CONTRACT.md                       # 人机协同决策门禁 (Human-In-The-Loop) 契约
 │   ├── REVIEW_REMEDIATION_HANDOFF.md          # 审查缺陷整改契约 (WP-R1 ~ WP-R6)
+│   ├── PROMPT_CACHING_SPEC.md                 # 确定性前缀冻结与 KV Cache / Prompt Caching 技术规约
 │   └── EXCEPTION_HANDLING_SPEC.md             # 异常流转与错误码规约
 │
 ├── 📋 产品需求与功能矩阵
@@ -47,6 +48,7 @@ docs/
 | [`AI_IMPLEMENTATION_CONTRACT.md`](./AI_IMPLEMENTATION_CONTRACT.md) | AI 施工合同 | 编码工作包 (WP-1 ~ WP-10) 的唯一交付标准与完成度定义 |
 | [`HITL_CONTRACT.md`](./HITL_CONTRACT.md) | 人机决策门禁 | 关键改动审查、文件采纳、高危命令授权的阻断契约 |
 | [`REVIEW_REMEDIATION_HANDOFF.md`](./REVIEW_REMEDIATION_HANDOFF.md) | 缺陷整改合同 | 针对安全、进程生命周期与协议一致性的专项整改方案 |
+| [`PROMPT_CACHING_SPEC.md`](./PROMPT_CACHING_SPEC.md) | KV 缓存规约 | 确定性前缀冻结、主流厂商 Prompt Caching 协议适配与真实遥测 |
 | [`EXCEPTION_HANDLING_SPEC.md`](./EXCEPTION_HANDLING_SPEC.md) | 异常流转规范 | 四维人话收尾机制、Fail-Closed 与错误码分类规约 |
 
 ---
