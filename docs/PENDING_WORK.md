@@ -29,7 +29,7 @@
 | WP-R6 降级清理 | 主体完成，CI 有残留 | `b3ba3f5`（`toolMap` / `maxSteps` 已从代码消失，仅剩 docs） |
 | WP-H1 选择题 `ask_user` | 已完成 | `33d3043`；`app_chat.go:117 ResumeAgentChoice` |
 | WP-H2 危险命令一次授权 | 已完成 | `fad1c72`；`app_chat.go:125 ResumeAgentConfirm`、`app_chat.go:303` 事件 `agent:confirm` |
-| F7 发版流水线 | **实际已完成** | `.github/workflows/release.yml`（tag `v*` 触发，产出 `Tiancode_Setup_v2.0.0.exe`）—— 但 ROADMAP 未记录 |
+| F7 发版流水线 | **实际已完成** | `.github/workflows/release.yml`（tag `v*` 触发，产出 `Tiancode_Setup_v0.0.1.exe`）—— 但 ROADMAP 未记录 |
 
 **真正的欠债只有 3 项 + 3 份误导文档。** 详见下文。
 

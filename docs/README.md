@@ -127,6 +127,7 @@ docs/
 | **50** | **嵌套子仓库暂存防崩溃、Git Porcelain 清洗与去重健壮性** | GitOps / Submodule防崩溃 | 嵌套未提交 Git 目录 Exit 128 熔断、Porcelain v2 尾斜杠清洗与去重 | [`50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md`](knowledge/50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md) |
 | **51** | **插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计** | 插件热插拔 / DSH 算子大盘 | 活动栏常驻一等入口、微内核算子直查、JSON Schema 展开、单点物理探活与 Creator 模式 | [`51-hotplug-plugin-center-and-dsh-operator-dashboard.md`](knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md) |
 | **52** | **从三态互斥到全自主统一 Coding Agent 架构演进** | 统一 Coding Agent / 意图自适应 / Monaco Diff | 彻底废除三态互斥模式与阻断弹窗、确立单一全自主 Coding Agent、自然语言意图驱动、Monaco Diff 审核把关 | [`52-unified-autonomous-coding-agent-architecture.md`](knowledge/52-unified-autonomous-coding-agent-architecture.md) |
+| **53** | **版本号校准为 0.0.1 与开发测试孵化阶段工程基线** | 语义化版本 SemVer / 0.0.1基线 / 孵化期预期管理 | 全链路发货版本校准为 0.0.1，真实呈现开发测试与需求孵化阶段；同步 Wails、Go、Node、前端、安装器及协议握手强一致性 | [`53-version-recalibration-to-early-incubator-phase.md`](knowledge/53-version-recalibration-to-early-incubator-phase.md) |
 
 ---
 

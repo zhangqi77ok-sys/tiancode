@@ -137,7 +137,7 @@ func main() {
 				defaultInstallDir,
 			)
 
-			ans := messageBox("湉码 v2.0 安装向导", welcomeText, MB_YESNOCANCEL|MB_ICONQUESTION)
+			ans := messageBox("湉码 v0.0.1 安装向导", welcomeText, MB_YESNOCANCEL|MB_ICONQUESTION)
 			if ans == IDCANCEL {
 				return
 			} else if ans == IDNO {
@@ -226,8 +226,8 @@ func main() {
 		k, _, err := registry.CreateKey(registry.CURRENT_USER, regPath, registry.ALL_ACCESS)
 		if err == nil {
 			defer k.Close()
-			_ = k.SetStringValue("DisplayName", "湉码 tiancode v2.0")
-			_ = k.SetStringValue("DisplayVersion", "2.0.0")
+			_ = k.SetStringValue("DisplayName", "湉码 tiancode v0.0.1")
+			_ = k.SetStringValue("DisplayVersion", "0.0.1")
 			_ = k.SetStringValue("Publisher", "tiancode")
 			_ = k.SetStringValue("DisplayIcon", targetExe+",0")
 			_ = k.SetStringValue("InstallLocation", installDir)
@@ -241,7 +241,7 @@ func main() {
 	if !isSilent {
 		launchAns := messageBox(
 			"安装成功",
-			fmt.Sprintf("✓ 湉码 v2.0.0 已成功安装到：\n%s\n\n桌面与开始菜单已生成快捷方式。\n\n是否立即启动应用程序？", installDir),
+			fmt.Sprintf("✓ 湉码 v0.0.1 已成功安装到：\n%s\n\n桌面与开始菜单已生成快捷方式。\n\n是否立即启动应用程序？", installDir),
 			MB_YESNO|MB_ICONINFO,
 		)
 

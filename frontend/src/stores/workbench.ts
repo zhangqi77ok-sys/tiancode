@@ -188,7 +188,7 @@ const availableModels = computed(() => {
 
 const uiPrefs = reactive({ theme: 'warm', monaco_font: 'JetBrains Mono', monaco_size: 14 })
 const sandboxStatus = reactive({ path_isolation: false, dangerous_command: true, secret_strip: true, workspace: '' })
-const runtimeInfo = reactive({ product: '湉码', version: '2.0.0', os: '', arch: '', go_version: '', workspace: '', data_dir: '', webview: '' })
+const runtimeInfo = reactive({ product: '湉码', version: '0.0.1', os: '', arch: '', go_version: '', workspace: '', data_dir: '', webview: '' })
 const skillTemplates = ref<SkillConfig[]>([])
 const extraModelsInput = ref('')
 

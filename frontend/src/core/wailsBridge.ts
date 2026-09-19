@@ -803,7 +803,7 @@ export const wailsBridge = {
   async getRuntimeInfo(): Promise<{ product: string; version: string; os: string; arch: string; go_version: string; workspace: string; data_dir: string; webview: string }> {
     const app = getApp()
     if (app?.GetRuntimeInfo) return await app.GetRuntimeInfo()
-    return { product: '湉码', version: '2.0.0', os: '', arch: '', go_version: '', workspace: '', data_dir: '', webview: '' }
+    return { product: '湉码', version: '0.0.1', os: '', arch: '', go_version: '', workspace: '', data_dir: '', webview: '' }
   },
 
   async exportDiagnostics(): Promise<string> {

@@ -110,7 +110,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	res := map[string]any{
 		"status":    "ok",
-		"version":   "2.0.0-PROD",
+		"version":   "0.0.1-DEV",
 		"timestamp": time.Now().Unix(),
 	}
 	_ = json.NewEncoder(w).Encode(res)

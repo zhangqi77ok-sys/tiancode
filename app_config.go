@@ -388,7 +388,7 @@ func (a *App) GetSandboxStatus() SandboxStatus {
 func (a *App) GetRuntimeInfo() RuntimeInfo {
 	return RuntimeInfo{
 		Product:   "湉码 / tiancode",
-		Version:   "2.0.0",
+		Version:   "0.0.1",
 		OS:        goruntime.GOOS,
 		Arch:      goruntime.GOARCH,
 		GoVersion: goruntime.Version(),
@@ -448,7 +448,7 @@ func (a *App) CheckForUpdates() (string, error) {
 		return "", err
 	}
 	if data.TagName == "" {
-		return "仓库尚无 GitHub Release；当前发货版本 2.0.0", nil
+		return "仓库尚无 GitHub Release；当前发货版本 0.0.1", nil
 	}
 	return fmt.Sprintf("最新 Release: %s %s", data.TagName, data.HTMLURL), nil
 }

@@ -148,7 +148,7 @@ func (c *StdioClient) Start(ctx context.Context) error {
 		},
 		ClientInfo: ClientInfo{
 			Name:    "tcode-studio",
-			Version: "2.0.0",
+			Version: "0.0.1",
 		},
 	}
 

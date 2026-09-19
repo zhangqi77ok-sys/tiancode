@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	Version = "2.0.0-PROD"
+	Version = "0.0.1-DEV"
 	Banner  = `
  _____               _        ____                                   
 |_   _|__ ___   __| | ___  |  _ \  __ _  ___ _ __ ___   ___  _ __  

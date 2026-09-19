@@ -666,3 +666,24 @@
 * **单点物理探活与动态热重载闭环**：
   - 支持无需重启客户端即可执行 `ReloadHotplugRegistry()`，实时同步配置并重新探测外部算子；支持对单个 Tool、Provider 或 MCP 服务发起物理探活与时延（TTFT）测量；
   - 集成 PRD §4.14 DSH 技能造物主工作台（Creator Mode），提供现场新建 Skill、编写 Rule 与挂载 MCP 的沉浸式操作闭环。
+
+### 54. 废除三态互斥模式与进化为全自主统一 Coding Agent (Unified Autonomous Coding Agent Architecture)
+* **消除范畴错误与模式选择心智摩擦**：
+  - 彻底废除 `analyze`（只读）、`implement`（改代码）、`tdd`（测试）三态机械互斥单选；
+  - 阐明核心架构哲学：权限控制（只读 vs 改写）与工程方法（TDD）属于正交维度，强行做成三选一导致心智割裂与体验臃肿；
+  - 移除前端底部模式选择胶囊与策略切换拦截弹窗，恢复最符合开发者本能的自然语言纯净输入与全自主 Agent 执行流。
+* **三层安全底座协同护航**：
+  - 前置 SafetyRail 零信任拦截高危命令；
+  - 写入瞬间轻量 Git 影子快照支持秒级撤销；
+  - 后置 Monaco Diff 强交互视窗，由开发者通过行级分块审查牢牢掌控最终发货采纳权。
+
+### 55. 版本号统一定标为 0.0.1 与开发测试孵化阶段工程基线 (Version Recalibration to 0.0.1 for Early Incubator Phase)
+* **语义化版本 SemVer 实事求是定标**：
+  - 纠正过早标记 `2.0.0` 的误导性预期，将全链路发货版本重置校准为 `0.0.1`（标识系统正处于极早期开发测试、架构加固与需求孵化阶段）；
+* **跨层级强一致性全域同步**：
+  - 同步 Go 微内核 `RuntimeInfo.Version` 与 Release 检查回退文本；
+  - 同步 `wails.json` 的 `productVersion`、根目录与前端 `package.json` 的 `version`；
+  - 同步前端 Pinia 状态 `runtimeInfo` 与 `wailsBridge` 离线兜底运行时；
+  - 同步 Windows 安装向导标题、注册表 `DisplayName` / `DisplayVersion` 及打包流水线二进制产物 `Tiancode_Setup_v0.0.1.exe`；
+  - 同步网络层 OAuth 刷新 `User-Agent: tiancode/0.0.1` 与 MCP 握手 `clientInfo.version`，确保整机单点版本严格一致。
+

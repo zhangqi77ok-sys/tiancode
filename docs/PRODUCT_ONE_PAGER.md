@@ -64,4 +64,4 @@
   4. 改文件默认带出 Diff，人点接受才算完成；
   5. TDD 策略下测试失败则任务状态绝不是完成；
   6. 项目宪法（生效规约与技能）在对话顶栏显式可见。
-- **Windows 安装包构建**：`powershell -File scripts/build-windows.ps1` 产出 `bin/Tiancode_Setup_v2.0.0.exe`。
+- **Windows 安装包构建**：`powershell -File scripts/build-windows.ps1` 产出 `bin/Tiancode_Setup_v0.0.1.exe`。

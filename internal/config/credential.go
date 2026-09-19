@@ -57,7 +57,7 @@ func RefreshOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret, re
 		return nil, fmt.Errorf("构建 token 刷新请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "tiancode/2.0.0")
+	req.Header.Set("User-Agent", "tiancode/0.0.1")
 
 	resp, err := defaultOAuthHTTPClient.Do(req)
 	if err != nil {

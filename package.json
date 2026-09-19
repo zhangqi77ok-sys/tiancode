@@ -1,6 +1,6 @@
 {
   "name": "tiancode",
-  "version": "2.0.0",
+  "version": "0.0.1",
   "description": "湉码 / tiancode — 热插拔插件化 AI Coding 工作台",
   "private": true,
   "scripts": {

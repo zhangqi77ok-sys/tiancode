@@ -1,6 +1,7 @@
 # 湉码 / tiancode
 
 > **热插拔插件化桌面 AI Coding 工作台**。名字来自 **湉**：水面平静、水流安稳。  
+> **当前版本**：`v0.0.1 (Alpha)` — 核心处于早期开发测试、架构加固与需求孵化阶段。  
 > 基于 **Wails v2 + Go 原生微内核 + Vue 3 + TypeScript**，采用 **收敛单执行回路内核**、**Rail 物理安全防线** 与 **热插拔工具注册表**。对标专业级桌面 coding agent，提供透明、可控、高可靠的智能编程交互体验。
 
 ---
@@ -137,7 +138,7 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 ## 📖 四、快速上手与使用指南
 
 ### 1. 安装与启动
-* **Windows 单文件安装**：直接运行 `湉码Studio_Setup_v2.0.0.exe`，支持图形向导与静默安装参数（`-silent`，`-dir "D:\MyStudio"`）；
+* **Windows 单文件安装**：直接运行 `Tiancode_Setup_v0.0.1.exe`，支持图形向导与静默安装参数（`-silent`，`-dir "D:\MyStudio"`）；
 * **免安装绿色运行**：直接双击 `bin/tiancode.exe` 启动。
 
 ### 2. 配置模型渠道
@@ -218,7 +219,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
 ## 📚 六、核心工程知识沉淀 (docs/knowledge/)
 
-本项目严格遵守知识点沉淀规约，在 `docs/knowledge/` 下归档了 38 篇专注于现行 Wails v2 + Go 微内核 + Vue 3 架构的底层核心机制剖析与实战解决方案：
+本项目严格遵守知识点沉淀规约，在 `docs/knowledge/` 下归档了 39 篇专注于现行 Wails v2 + Go 微内核 + Vue 3 架构的底层核心机制剖析与实战解决方案：
 
 * [15 - Wails v2 生产级 Desktop 标签编译、Frameless 沉浸式窗体与纯 Go 原生安装向导封装](docs/knowledge/15-wails-v2-production-build-and-frameless-installer.md)
 * [16 - Git 行级 Unified Diff 结构化解析、Hunk 分块与单块 Cherry-Pick 采纳/逆向丢弃实现机制](docs/knowledge/16-monaco-unified-diff-and-hunk-cherry-pick.md)
@@ -231,8 +232,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 * [50 - 嵌套子仓库暂存防崩溃、Git Porcelain 路径清洗、工作区列表去重与采纳健壮性闭环](docs/knowledge/50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md)
 * [51 - 插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计](docs/knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md)
 * [52 - 从三态互斥到全自主统一 Coding Agent 架构演进](docs/knowledge/52-unified-autonomous-coding-agent-architecture.md)
+* [53 - 版本号校准为 0.0.1 与开发测试孵化阶段工程基线](docs/knowledge/53-version-recalibration-to-early-incubator-phase.md)
 
-完整 38 篇现行文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
+完整 39 篇现行文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
 
 ---
 

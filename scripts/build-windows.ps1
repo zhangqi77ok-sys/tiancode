@@ -34,7 +34,7 @@ Copy-Item bin\tiancode.exe cmd\installer\assets\tiancode.exe -Force
 Copy-Item bin\uninstall.exe cmd\installer\assets\uninstall.exe -Force
 
 Write-Host "==> Tiancode_Setup"
-& $Go build -ldflags="-H windowsgui -s -w" -o bin\Tiancode_Setup_v2.0.0.exe .\cmd\installer
+& $Go build -ldflags="-H windowsgui -s -w" -o bin\Tiancode_Setup_v0.0.1.exe .\cmd\installer
 
-Get-ChildItem bin\tiancode.exe, bin\uninstall.exe, bin\Tiancode_Setup_v2.0.0.exe | Format-Table Name, Length
+Get-ChildItem bin\tiancode.exe, bin\uninstall.exe, bin\Tiancode_Setup_v0.0.1.exe | Format-Table Name, Length
 Write-Host "done. binaries are gitignored (*.exe)."
