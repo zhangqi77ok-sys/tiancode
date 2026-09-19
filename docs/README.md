@@ -24,18 +24,15 @@ docs/
 │   ├── PRODUCT_REQUIREMENTS_DOCUMENT.md       # 完整产品需求文档 (PRD)
 │   ├── PRODUCT_ONE_PAGER.md                   # 产品一页纸愿景与核心价值
 │   ├── V1_FEATURE_BOUNDARY_MATRIX.md          # V1 版本特性边界与交付验收矩阵
-│   ├── ROADMAP.md                             # 迭代演化路线图
-│   ├── PRD_TCODE_MODEL_GATEWAY.md             # 多协议模型网关需求文档
-│   ├── PRD_TCODE_DYNAMIC_GATEWAY_MCP_SKILLS.md# 动态模型网关、MCP 与技能规约
-│   └── PRD_TCODE_NEXTGEN_RAIL_ARCHITECTURE.md # 次世代 Rail 物理安全防线规范
+│   └── ROADMAP.md                             # 迭代演化路线图
 │
 ├── 🎨 视觉与人机工程学
 │   ├── UI_DESIGN_SPEC.md                      # Warm Minimalist 视觉体系与配色规范
-│   └── UI_UX_DESIGN_SPEC_NEXTGEN.md           # 16:9 人工工学工作台与单焦点切换规范
+│   └── UI_UX_DESIGN_SPEC_NEXTGEN.md           # 16:9 人机工学工作台与单焦点切换规范
 │
 └── 📚 核心工程知识库 (knowledge/)
     ├── README.md                              # 知识库索引导航
-    └── 01-50 文档                             # 50 篇底层技术攻坚与疑难问题解决方案
+    └── 15-51 文档                             # 37 篇现行 Wails v2 + Go 微内核 + Vue 3 技术攻坚实录
 ```
 
 ---
@@ -61,8 +58,7 @@ docs/
 | [`PRODUCT_REQUIREMENTS_DOCUMENT.md`](./PRODUCT_REQUIREMENTS_DOCUMENT.md) | 完整 PRD | 详细阐述产品愿景、交互逻辑、功能定义与业务边界 |
 | [`V1_FEATURE_BOUNDARY_MATRIX.md`](./V1_FEATURE_BOUNDARY_MATRIX.md) | 特性边界矩阵 | 诚实界定可用（🟢）、半成品（🟡）与实验特性（🔴），拒绝假交付 |
 | [`ROADMAP.md`](./ROADMAP.md) | 路线演进图 | 版本迭代计划与长期规划（多 Agent 协作流、磁盘动态插件等） |
-| [`PRD_TCODE_MODEL_GATEWAY.md`](./PRD_TCODE_MODEL_GATEWAY.md) | 多协议模型网关 | OpenAI / Claude / Gemini / Grok / Azure / Ollama 6 大驱动架构 |
-| [`PRD_TCODE_NEXTGEN_RAIL_ARCHITECTURE.md`](./PRD_TCODE_NEXTGEN_RAIL_ARCHITECTURE.md) | 次世代 Rail 防线 | `OnBeforeAct` 越界拦截与 `OnAfterAct` 物理快照审计 |
+| [`TECHNICAL_AND_PRD_REPORT.md`](./TECHNICAL_AND_PRD_REPORT.md) | 架构与 PRD 报告 | 详实梳理前后端职责边界与生产级功能落地标准 |
 
 ---
 
@@ -93,20 +89,6 @@ docs/
 
 | 序号 | 知识点 / 技术议题 | 领域分类 | 核心关注点 | 知识点文档 |
 | :---: | :--- | :--- | :--- | :--- |
-| **01** | **Windows 环境下 Tauri 2.0 (Rust) 编译与打包解析** | 桌面内核 / 构建 | MSVC 链接器、`cargo-xwin` 符号链接（error 1314）与打包方案 | [`01-windows-tauri2-msvc-packaging.md`](knowledge/01-windows-tauri2-msvc-packaging.md) |
-| **02** | **AI Agent 跨会话长期工程记忆层与提示词动态注入** | 认知架构 / 记忆 | 用户纠偏规约提取、长期记忆本地化持久存储、Token 预算平衡 | [`02-cross-session-memory-vault.md`](knowledge/02-cross-session-memory-vault.md) |
-| **03** | **LSP 编译器诊断与代码自愈闭环设计** | 编译器 / 自愈循环 | 文件落盘触发式语法诊断（TSC/Python/Go）、报错结构化注入下轮推理 | [`03-lsp-compiler-diagnostics-loop.md`](knowledge/03-lsp-compiler-diagnostics-loop.md) |
-| **04** | **执行模式拓扑与双环/SwarmFlow 内部逻辑设计** | 执行内核 / 拓扑 | 单 Agent 极速闭环 vs SwarmFlow 多算子流、胶囊收敛契约 | [`04-execution-modes-and-swarm-topology.md`](knowledge/04-execution-modes-and-swarm-topology.md) |
-| **05** | **桌面端 WebView2 与 IPC 双轨兼容适配网桥设计** | 桌面架构 / IPC | `Cannot read properties of undefined (reading 'invoke')` 根因、网桥映射 | [`05-desktop-webview-tauri-ipc-bridge.md`](knowledge/05-desktop-webview-tauri-ipc-bridge.md) |
-| **06** | **多模型网关对接、真实测速拉取与模型选择器设计** | 模型网关 / 路由 | 渠道保存即时关联、401 `unauthorized client` 防御与毫秒级探活 | [`06-agentrouter-gateway-models-and-channel-sync.md`](knowledge/06-agentrouter-gateway-models-and-channel-sync.md) |
-| **07** | **客户端白屏根因防御与全功能状态记忆体系** | UI 架构 / 容错 | 渲染层属性链防御、顶层 ErrorBoundary、锚定弹窗与状态生命周期 | [`07-workbench-white-screen-prevention-and-full-state-memory.md`](knowledge/07-workbench-white-screen-prevention-and-full-state-memory.md) |
-| **08** | **系统日志追踪与 7 天自动清理定时任务设计** | 系统运维 / 日志 | `toUpperCase` 空指针拦截、全量日志收集、24h 守护与滑动保留算法 | [`08-system-logger-and-7-day-auto-cleanup-daemon.md`](knowledge/08-system-logger-and-7-day-auto-cleanup-daemon.md) |
-| **09** | **会话消息持久化存盘与时间戳防御性渲染** | 数据持久化 / 会话 | 异步落盘存盘、`updated_at` 刷新与 `NaN:NaN` 防御格式化 | [`09-session-message-persistence-and-timestamp-formatting.md`](knowledge/09-session-message-persistence-and-timestamp-formatting.md) |
-| **10** | **自主 Agent 多轮工具闭环与 DSML 工具调用解析** | Agent 认知 / 工具 | DSML XML 工具指令正则提取、本地执行网桥与多轮自动协作 | [`10-autonomous-agent-multi-turn-loop-and-dsml-tool-calling.md`](knowledge/10-autonomous-agent-multi-turn-loop-and-dsml-tool-calling.md) |
-| **11** | **OpenAI/Claude 双上游协议适配与流式渲染引擎** | 多协议 / 渲染 | OpenAI vs Anthropic 协议抹平、流式 chunk 零裁剪与 Markdown 渲染器 | [`11-upstream-protocols-and-markdown-rendering.md`](knowledge/11-upstream-protocols-and-markdown-rendering.md) |
-| **12** | **WAF 穿透指纹、SSE Native Thinking 与凭据纪律** | 安全防御 / 推理流 | 客户端标头特征绕过、`reasoning_content` 原生深度心智思考流提取 | [`12-agentrouter-waf-penetration-and-sse-native-thinking.md`](knowledge/12-agentrouter-waf-penetration-and-sse-native-thinking.md) |
-| **13** | **ReAct 自主自愈循环、物理算子沙箱与静默 Shell** | 执行引擎 / 进程控制 | `CREATE_NO_WINDOW` (0x08000000) 零黑框、受控路径与影子快照 | [`13-react-autonomous-loop-and-silent-sandbox-execution.md`](knowledge/13-react-autonomous-loop-and-silent-sandbox-execution.md) |
-| **14** | **Windows 单文件安装向导构建与验证闭环** | 桌面分发 / 构建 | 双阶段安装包架构、`--silent-install-dir` 静默安装与探活闭环 | [`14-windows-standalone-installer-and-e2e-verification-pipeline.md`](knowledge/14-windows-standalone-installer-and-e2e-verification-pipeline.md) |
 | **15** | **Wails v2 生产级编译、沉浸窗体与纯 Go 安装向导** | 桌面内核 / 原生分发 | `-tags "desktop,production"` 编译、无边框沉浸窗口、纯 Go 资源内嵌向导 | [`15-wails-v2-production-build-and-frameless-installer.md`](knowledge/15-wails-v2-production-build-and-frameless-installer.md) |
 | **16** | **Git 行级 Unified Diff 解析与 Hunk Cherry-Pick 采纳** | 代码审查 / GitOps | Unified Diff 状态机分块、`git apply --cached` 暂存与反向还原 | [`16-monaco-unified-diff-and-hunk-cherry-pick.md`](knowledge/16-monaco-unified-diff-and-hunk-cherry-pick.md) |
 | **17** | **Windows CREATE_NO_WINDOW 流式终端管道与事件流** | 进程控制 / 终端 | `0x08000000` 零黑框、并发双管道非阻塞流式推流与进程取消 | [`17-controlled-streaming-terminal-and-no-window-pty.md`](knowledge/17-controlled-streaming-terminal-and-no-window-pty.md) |

@@ -216,20 +216,20 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
 ## 📚 六、核心工程知识沉淀 (docs/knowledge/)
 
-本项目严格遵守知识点沉淀规约，在 `docs/knowledge/` 下归档了 50 篇底层核心机制剖析与实战解决方案：
+本项目严格遵守知识点沉淀规约，在 `docs/knowledge/` 下归档了 37 篇专注于现行 Wails v2 + Go 微内核 + Vue 3 架构的底层核心机制剖析与实战解决方案：
 
-* [01 - Windows 环境下 Tauri 2.0 (Rust) 编译与安装包打包全解析](docs/knowledge/01-windows-tauri2-msvc-packaging.md)
-* [06 - AgentRouter 多模型网关对接、真实测速拉取与模型选择器设计](docs/knowledge/06-agentrouter-gateway-models-and-channel-sync.md)
-* [13 - ReAct 自主智能体多轮自愈循环、物理算子沙箱与 Windows 静默 Shell 规范](docs/knowledge/13-react-autonomous-loop-and-silent-sandbox-execution.md)
+* [15 - Wails v2 生产级 Desktop 标签编译、Frameless 沉浸式窗体与纯 Go 原生安装向导封装](docs/knowledge/15-wails-v2-production-build-and-frameless-installer.md)
 * [16 - Git 行级 Unified Diff 结构化解析、Hunk 分块与单块 Cherry-Pick 采纳/逆向丢弃实现机制](docs/knowledge/16-monaco-unified-diff-and-hunk-cherry-pick.md)
+* [17 - Windows CREATE_NO_WINDOW 受控流式终端管道、命令中断与前后端双向事件流设计](docs/knowledge/17-controlled-streaming-terminal-and-no-window-pty.md)
 * [18 - MCP 跨进程 Stdio 协议传输、生命周期管理与 ReAct 算子动态调度机制](docs/knowledge/18-mcp-protocol-stdio-lifecycle-and-react-dispatch.md)
 * [20 - 跨语言工作区技术栈自适应探测与多轮自主 ReAct 自然收敛自愈状态机](docs/knowledge/20-language-agnostic-stack-detection-and-natural-react-loop.md)
 * [24 - 核心系统前十大关键缺陷全域歼灭与桌面微内核工程加固指南](docs/knowledge/24-top-10-critical-bugs-eradication-and-architecture-hardening.md)
 * [48 - 控件错名治理、防脱缰智能熔断器与 TDD 结构化失败提取](docs/knowledge/48-control-naming-honesty-and-runaway-circuit-breakers.md)
 * [49 - 多协议网关、OAuth 2.0 刷新机制与 new-api 极简单输入框鉴权体验对齐](docs/knowledge/49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md)
 * [50 - 嵌套子仓库暂存防崩溃、Git Porcelain 路径清洗、工作区列表去重与采纳健壮性闭环](docs/knowledge/50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md)
+* [51 - 插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计](docs/knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md)
 
-完整 50 篇文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
+完整 37 篇现行文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
 
 ---
 

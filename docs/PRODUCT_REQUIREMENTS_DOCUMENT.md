@@ -873,7 +873,7 @@ ModelRef
 - `actions.length === 0` 不代表任务完成；完成状态必须有真实终止事件和验收证据；
 - HTTP、流解析、工具执行和审批错误必须向用户展示阶段、原因和可重试性。
 
-实现契约详见 [`docs/technical_reviews/opencode-provider-model-routing-contract.md`](technical_reviews/opencode-provider-model-routing-contract.md)。
+实现规约遵循统一模型网关多协议适配原则。
 
 
 ### 4.43.5 内置目录真实性与默认模型门禁
@@ -1421,7 +1421,7 @@ Agent 执行请求 ➔ SecurityShield (脱敏) ➔ SandboxGuard (分类) ➔ Hos
 
 - 上下文百分比严格以当前模型 `contextLimit` 为分母并封顶为 100%；接近上限时按非破坏性的压缩请求副本计算有效占用。累计 Token 仅用于会话账单，不等于当前上下文窗口水位。
 - HUD 必须通过 tooltip 说明实际估算 Token、模型窗口上限、对话/工具/系统规则分项占比，避免把“原始历史水位”和“压缩后请求水位”混为一谈。
-- 详细契约见 `docs/technical_reviews/CONTEXT_TELEMETRY_SPEC.md`。
+- 遵循上下文动态估算与非破坏性副本压缩规范。
 
 
 ---
@@ -1429,9 +1429,6 @@ Agent 执行请求 ➔ SecurityShield (脱敏) ➔ SandboxGuard (分类) ➔ Hos
 ## 4.45 工作流 Provider 发现与用户确认规约
 
 Tcode 必须区分“环境中发现了工作流工具”和“用户选择并启用了工作流”。Superspec、SpecKit、OpenSpec、企业内部流程或用户自定义 Skill 均通过统一 Provider 发现契约接入；已安装或已发现的 Provider 不得自动成为当前任务的工作流。
-
-详细需求与验收标准见：`docs/PRD_WORKFLOW_PROVIDER_DISCOVERY.md`。
-技术契约见：`docs/technical_reviews/workflow-provider-discovery-contract.md`。
 
 核心规则：
 
@@ -1463,7 +1460,7 @@ Tcode 必须区分“环境中发现了工作流工具”和“用户选择并�
 - **动态 Placeholder**：根据激活模式即时更新输入引导词；
 - **技能选择器**：底栏 `@ 技能引用` 弹窗内置丰富的前沿开源范式技能，支持单选与一键检索引用。
 
-技术契约见：`docs/technical_reviews/agent-loop-contract.md`。
+执行模式与状态契约遵循微内核统一调度规约。
 
 
 ## 4.48 本轮真实验收与配置阻塞边界（2026-08-30）
@@ -1492,7 +1489,7 @@ Tcode 必须区分“环境中发现了工作流工具”和“用户选择并�
 - XML、fenced、JSON 和原生 tool call 必须进入统一动作/审批链；`read_file` 仅允许作为受控只读查看动作，不能借模型输出越权读写任意路径。
 - 没有可执行动作、验收项未全部通过、等待审批、凭据缺失、工具失败和异常中断都必须保持非 `completed` 状态，并展示原因。
 
-对应交互原型位于 `prototype/src/services/modelGateway.ts`、`prototype/src/services/agentLoop.ts`、`prototype/src/components/ChatColumn.tsx` 和 `prototype/src/components/SettingsModal.tsx`；执行契约见 [`docs/technical_reviews/opencode-provider-model-routing-contract.md`](technical_reviews/opencode-provider-model-routing-contract.md)。
+对应交互规范已全面固化为 Go 微内核与 Vue 3 前端现行发货标准。
 
 ### 4.48.4 默认凭据与健康状态门禁
 
@@ -1509,7 +1506,7 @@ Tcode 必须区分“环境中发现了工作流工具”和“用户选择并�
 3. **凭据卫生**：源码静态扫描（`tests/credentialHygiene.test.ts`）禁止真实 `sk-` 字面量；Settings 新通道不注入假 Key（`apiKey:''` + `status:'untested'`）；
 4. **UI 呈现**：`model_claimed` 以 Sparkles 区分展示，与 `passed`（CheckCircle）视觉可辨。
 
-执行契约见 [`docs/technical_reviews/runengine-p0-hardening-contract.md`](technical_reviews/runengine-p0-hardening-contract.md)。
+终态分类与物理证据要求已固化为 AI 施工合同与微内核主循环铁律。
 
 ### 4.48.6 全流式契约：所有模型调用必须流式（2026-08-30）
 
@@ -1521,7 +1518,7 @@ Tcode 必须区分“环境中发现了工作流工具”和“用户选择并�
 4. **回归守卫**：tests/streamOnly.test.ts 静态扫描 prototype/src，禁止 stream: false 字面量与 buildGatewayRequestBody 布尔实参；
 5. **真实验证**：Fresh 安装桌面端经 /api/proxy 对 OpenCode Zen mimo-v2.5-free 发送 stream:true，HTTP 200 text/event-stream，12 data 事件 + [DONE]，真实流式内容 STREAM_OK。
 
-契约见 [`docs/technical_reviews/stream-only-contract.md`](technical_reviews/stream-only-contract.md)。
+全流式要求已固化为 Go 模型网关恒 stream: true 传输规范。
 
 ### 4.48.7 模型服务商控制台 v2（三栏 Master-Detail + 自动探测 + 概率调度，2026-08-30）
 
@@ -1534,15 +1531,15 @@ Tcode 必须区分“环境中发现了工作流工具”和“用户选择并�
 5. **5 分钟周期刷新**：`AccountProbeScheduler` 定时重探启用账号（`onRound` 持久化 + 刷新 UI），stop 后停止；
 6. **下游 Key**：`DownstreamKeyStore.update` 支持启停/改名/白名单修改。
 
-契约见 [`docs/technical_reviews/provider-console-redesign-contract.md`](technical_reviews/provider-console-redesign-contract.md)。
+已固化为当前设置中心模型渠道管理与动态探测规范。
 
 ### 4.48.8 平台增补：OpenCode 独立服务商（2026-08-30）
 
-按用户要求新增独立平台 `opencode`：平台导航出现「OpenCode ⚡」，默认 Base URL 为 `https://opencode.ai/zen/v1`，走 OpenAI 兼容 chat_completions 协议 + Bearer 认证，默认模型 mimo-v2.5-free / deepseek-v4-flash / nemotron-3.5-lightning-free；`platformForProvider` 将 opencode 类 provider 路由到该平台。契约见 provider-console-redesign-contract.md §4。
+按用户要求新增独立平台 `opencode`：平台导航出现「OpenCode ⚡」，默认 Base URL 为 `https://opencode.ai/zen/v1`，走 OpenAI 兼容 chat_completions 协议 + Bearer 认证，默认模型 mimo-v2.5-free / deepseek-v4-flash / nemotron-3.5-lightning-free；`platformForProvider` 将 opencode 类 provider 路由到该平台。详见当前模型网关独立平台规约。
 
 ### 4.48.9 动态平台配置 Schema（每服务商独立配置项，2026-08-30）
 
-按用户要求，每个服务商的配置项必须动态、彼此独立（opencode 只有 API Key，没有其他）。新增 `providerSchema.ts`：每平台定义独立鉴权方式集合与凭据字段，表单按所选平台动态渲染。平台矩阵：opencode（仅 API Key）、codex（API Key/OAuth/RT）、claude（API Key/OAuth+OrgID/Setup Token）、grok（API Key/OAuth/RT）、gemini/openai（API Key/OAuth）、deepseek/openai-compatible（仅 API Key）、local（免 Key）。契约见 provider-console-redesign-contract.md §5。
+按用户要求，每个服务商的配置项必须动态、彼此独立（opencode 只有 API Key，没有其他）。新增 `providerSchema.ts`：每平台定义独立鉴权方式集合与凭据字段，表单按所选平台动态渲染。平台矩阵：opencode（仅 API Key）、codex（API Key/OAuth/RT）、claude（API Key/OAuth+OrgID/Setup Token）、grok（API Key/OAuth/RT）、gemini/openai（API Key/OAuth）、deepseek/openai-compatible（仅 API Key）、local（免 Key）。详见当前服务商独立动态表单规范。
 
 ### 4.48.10 模型服务商初始状态与统一删除确认规范（2026-08-31）
 

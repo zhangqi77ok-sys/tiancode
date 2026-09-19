@@ -65,7 +65,7 @@
 - `archive/src-desktop/checkpoint_service.py`（Python 服务）
 
 活路径（`app*.go` / `internal/` / `plugins/` / `frontend/src/`）**无任何实现**。
-**性质**：`docs/features/checkpoint-and-lsp.md` 提了该需求（Draft v0.1），但 `docs/V1_FEATURE_BOUNDARY_MATRIX.md` 的「明确排除」清单**既未列入也未排除** → **悬空**，需人类拍板「做」或「明确标记延后」。
+**性质**：历史草案曾提该需求，但当前 `docs/V1_FEATURE_BOUNDARY_MATRIX.md` 明确以 Git 影子快照与 RevertFile 为准，历史草案 PRD 已清理。
 
 ---
 
@@ -74,8 +74,8 @@
 | 项 | 声明处 | 现状 |
 |----|--------|------|
 | LSP 全量语言服务器集群 | 矩阵「明确排除」+「v1.2 规划」 | `internal/lsp/` 仅 `diagnostics.go`：**正则解析 `go vet` / `tsc` / `py_compile` 输出**，**非 LSP client**（全库无 `Content-Length` / JSON-RPC 帧） |
-| LSP 语义索引器（SQLite FTS5 + 调用图） | `docs/features/wp-h-lsp-semantic-indexer.md` | 未实现（且该文档栈已作废，见 §3） |
-| AI 代码血缘 / 合规审计链 | `docs/features/wp-i-code-graph-and-ai-lineage.md` | 检索 `lineage` **仅命中该文档自身** → 未实现 |
+| LSP 语义索引器（SQLite FTS5 + 调用图） | 历史探索草案 | 未实现（且历史文档栈已全域清理，见 §3） |
+| AI 代码血缘 / 合规审计链 | 历史探索草案 | 未实现（历史草案已清理） |
 | Swarm 多智能体 / PTY 多终端 / Air-Gap / OAuth 矩阵 / 技能市场 | 矩阵「明确排除」、合同「非目标」 | 不做，且**禁止**画空算子 |
 | 知识图谱 / 遥测大盘 | 矩阵标实验特性 | `internal/ast/scanner.go` 存在，界面标 `[实验]` |
 
@@ -88,15 +88,9 @@
 - **F7 发版流水线**只在「下一波」，但 `release.yml` 已实现 → **已完成却未记录**。
 - 建议：把 F1 至 F7 全部移入完成记录，并补 F7 证据。
 
-### 3.2 `docs/features/` 三份 PRD 全部基于**已作废栈**
+### 3.2 `docs/features/` 遗留作废 PRD 已彻底清理 [已完成]
 
-| 文档 | 自标状态 | 致命问题 |
-|------|---------|---------|
-| `checkpoint-and-lsp.md` | Draft v0.1 | 引用 `prototype/`、`pytest`、`vitest`、`/api/checkpoints`、`SessionActorManager`、`Stage Gate` |
-| `wp-h-lsp-semantic-indexer.md` | 标 Ready for Implementation (v1.0) | 引用 `127.0.0.1:8010` REST、SQLite FTS5 |
-| `wp-i-code-graph-and-ai-lineage.md` | 标 Ready for Implementation (v1.0) | 引用 `/api/lineage/*`、`127.0.0.1:8010` |
-
-这些都是 **Tauri / Python / HTTP 宿主**架构产物，与合同「活路径只认 Wails + Go + Vue」**直接冲突**，且与矩阵「LSP 排除在 v1.0 外」互相矛盾。**建议：移入 `docs/archive/` 或加醒目「已作废」横幅**，否则下一个 AI 可能照它去接第二套 REST 服务（违反铁律 A1）。
+原 `checkpoint-and-lsp.md`、`wp-h-lsp-semantic-indexer.md`、`wp-i-code-graph-and-ai-lineage.md` 等基于已废弃 Tauri / Python / HTTP 宿主架构的 PRD 与历史技术契约（`docs/features/`、`docs/superpowers/`、`docs/technical_reviews/`）已全域物理删除，工程文档纯净收敛于 Wails v2 + Go + Vue 3 现行发货技术栈。
 
 ---
 

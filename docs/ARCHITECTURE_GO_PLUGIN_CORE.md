@@ -27,7 +27,7 @@
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                     前端表现层 (Tauri v2 + React 19 + Monaco Editor)                     │
+│                     前端表现层 (Wails v2 + Vue 3 + Pinia + Monaco Editor)                │
 │   [ 单焦点主工作区 | 集成终端抽屉 | Git 控制中枢 | 模型监控大盘 | 暖色极简 UI ]           │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │ Local IPC / HTTP SSE / WebSocket
@@ -305,7 +305,7 @@ agent-learning/
 │   │   ├── loader_inproc.go       # 内置插件装载器
 │   │   ├── loader_mcp.go          # 外部进程 MCP (stdio/sse) 适配装载器
 │   │   └── guard.go               # Panic 隔离与超时看门狗
-│   └── transport/                 # 表现层适配 (Tauri IPC / SSE / WebSocket)
+│   └── transport/                 # 表现层适配 (Wails IPC / Events / Stdio)
 ├── pkg/
 │   ├── plugin/                    # 核心 SPI 接口契约定义 (公共只读)
 │   │   ├── spi.go                 # Plugin / Provider / Tool / Rail 接口
@@ -332,7 +332,7 @@ agent-learning/
 
 1. **Phase 1 (契约先行与骨架就绪)**：
    - 确立 `pkg/plugin/spi.go` 接口定义，实现 `internal/host/registry.go`；
-   - 接入现有 Python 宿主/Tauri 前端作为临时适配层。
+   - Wails v2 原生双向 IPC 绑定与事件流。
 2. **Phase 2 (官方核心插件内置化)**：
    - 将 `DeepSeek`、`Anthropic`、`Git 暂存控制`、`pwsh 终端管道` 作为原生 In-Process 插件挂载；
    - 接入 MCP 外部进程管理器 (`loader_mcp.go`)。
