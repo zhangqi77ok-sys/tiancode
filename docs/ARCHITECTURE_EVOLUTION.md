@@ -652,3 +652,17 @@
 * **前端工作区改动列表去重与目录过滤 (`frontend/src/stores/workbench.ts`)**：
   - 修复此前 `workingTreeFiles` 在同时遍历 `working` 和 `untracked` 时将未追踪项重复显示 2 次的视觉缺陷，引入 `Set<string>` 实施严格去重；
   - 在 `pendingDiffFiles` 中通过 `!p.endsWith('/')` 过滤所有目录项，确保待审查 Diff 条仅收纳真实可比对、可暂存的物理文件；并在 `stageAllPendingDiffFilesAction` 与 `revertAllPendingDiffFilesAction` 中执行去重与去空清洗。
+
+### 53. 插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计 (Hotplug Plugin Center & DeepSeek Harness Dashboard)
+* **一等公民常驻工作台入口 (`ActivityBar.vue` & `ChatCockpit.vue`)**：
+  - 彻底解决主工作区缺乏热插拔算子可视化入口的架构痛点，在左侧活动栏配置专用 `🧩` 入口按钮，并联动当前开启状态；
+  - 在对话顶栏右侧部署 `🧩 算子大盘 (N)` 快捷指示胶囊，与全局命令面板 `Ctrl + K`（`/hotplug`）全面贯通，支持全键盘与高频一键直达；
+* **微内核算子全景大盘与大模型参数契约下钻 (`app_hotplug.go` & `HotplugDashboardModal.vue`)**：
+  - 严格遵循依赖倒置与架构守卫规则，通过 `a.registry.GetTools()` 动态汇总微内核底层已装载的算子（`tool.fs`、`tool.git`、`tool.terminal`、`tool.search`、`tool.ask_user`）以及外部动态加载的 MCP 算子；
+  - 提供参数契约折叠面板，直接格式化呈现算子的 JSON Schema 大模型 Function Calling 契约定义与 Mutating（写盘/执行 vs 只读）属性；
+* **MCP 动态服务与 SafetyRail 防线透视**：
+  - 实时反映 `mcp.Manager` 管理的 stdio / sse 活跃服务进程、算子总数与握手状态；
+  - 透明化呈现 P-100 终极阻断权防线（危险系统命令拦截、工作区沙箱目录穿越隔离、API Key 凭据脱敏清洗）；
+* **单点物理探活与动态热重载闭环**：
+  - 支持无需重启客户端即可执行 `ReloadHotplugRegistry()`，实时同步配置并重新探测外部算子；支持对单个 Tool、Provider 或 MCP 服务发起物理探活与时延（TTFT）测量；
+  - 集成 PRD §4.14 DSH 技能造物主工作台（Creator Mode），提供现场新建 Skill、编写 Rule 与挂载 MCP 的沉浸式操作闭环。

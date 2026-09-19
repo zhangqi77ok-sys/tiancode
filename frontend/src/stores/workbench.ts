@@ -12,7 +12,9 @@ import {
   type RuleConfig,
   type GraphNode,
   type DiagnosticItem,
-  type SearchMatch
+  type SearchMatch,
+  type HotplugItemInfo,
+  type HotplugDashboardReport
 } from '../core/wailsBridge'
 import { renderMarkdown } from '../core/markdown'
 
@@ -56,6 +58,12 @@ const isCommandPaletteOpen = ref(false)
 const commandPaletteQuery = ref('')
 const commandPaletteIndex = ref(0)
 const isConstitutionModalOpen = ref(false)
+const isHotplugDashboardOpen = ref(false)
+const hotplugReport = ref<HotplugDashboardReport | null>(null)
+const isHotplugLoading = ref(false)
+const hotplugActiveTab = ref<'overview' | 'tools' | 'mcps' | 'rails' | 'providers' | 'creator'>('tools')
+const hotplugSearchQuery = ref('')
+const probedItems = reactive<Record<string, HotplugItemInfo>>({})
 
 const activeConstitution = computed(() => {
   const activeRules = rules.value.filter(r => r.enabled)
@@ -2190,6 +2198,7 @@ const commandPaletteItems = computed(() => {
   const q = commandPaletteQuery.value.trim().toLowerCase()
   const items: PaletteItem[] = [
     { id: 'settings', kind: '设置', label: '打开设置', hint: '渠道 / MCP / 技能', run: () => { isSettingsOpen.value = true } },
+    { id: 'hotplug', kind: '算子', label: '热插拔插件中心与 DSH 算子大盘', hint: '微内核算子 / MCP / SafetyRail / 协议驱动', run: () => { void openHotplugDashboard() } },
     { id: 'terminal', kind: '终端', label: '打开终端', hint: 'Ctrl+`', run: () => toggleTerminalDrawer(true) },
     { id: 'git', kind: 'Git', label: '源代码管理', hint: gitBranchLabel.value, run: () => switchToGitActivity() },
     { id: 'project', kind: '项目', label: '打开项目文件夹', hint: workspaceName.value, run: () => { void openProjectFolder() } }
@@ -2236,6 +2245,82 @@ function runCommandPaletteItem(item: PaletteItem) {
 function confirmCommandPalette() {
   const item = commandPaletteItems.value[commandPaletteIndex.value]
   if (item) runCommandPaletteItem(item)
+}
+
+async function loadHotplugReport() {
+  isHotplugLoading.value = true
+  try {
+    const report = await wailsBridge.getHotplugDashboard()
+    hotplugReport.value = report
+  } catch (err) {
+    showToast('获取算子大盘失败: ' + err)
+  } finally {
+    isHotplugLoading.value = false
+  }
+}
+
+async function openHotplugDashboard(initialTab?: 'overview' | 'tools' | 'mcps' | 'rails' | 'providers' | 'creator') {
+  if (initialTab) {
+    hotplugActiveTab.value = initialTab
+  }
+  isHotplugDashboardOpen.value = true
+  await loadHotplugReport()
+}
+
+function closeHotplugDashboard() {
+  isHotplugDashboardOpen.value = false
+}
+
+async function reloadHotplugRegistryAction() {
+  isHotplugLoading.value = true
+  try {
+    const rep = await wailsBridge.reloadHotplugRegistry()
+    hotplugReport.value = rep
+    showToast('✓ 插件中心与算子大盘已动态热重载并同步')
+  } catch (err) {
+    showToast('热重载失败: ' + err)
+  } finally {
+    isHotplugLoading.value = false
+  }
+}
+
+async function probeHotplugItemAction(itemId: string, itemType: string) {
+  try {
+    const res = await wailsBridge.probeHotplugItem(itemId, itemType)
+    probedItems[itemId] = res
+    if (hotplugReport.value) {
+      if (itemType === 'tool') {
+        const idx = hotplugReport.value.tools.findIndex(t => t.id === itemId)
+        if (idx !== -1) hotplugReport.value.tools[idx] = res
+      } else if (itemType === 'provider') {
+        const idx = hotplugReport.value.providers.findIndex(p => p.id === itemId)
+        if (idx !== -1) hotplugReport.value.providers[idx] = res
+      } else if (itemType === 'rail') {
+        const idx = hotplugReport.value.rails.findIndex(r => r.id === itemId)
+        if (idx !== -1) hotplugReport.value.rails[idx] = res
+      } else if (itemType === 'mcp') {
+        const idx = hotplugReport.value.mcps.findIndex(m => m.id === itemId)
+        if (idx !== -1) hotplugReport.value.mcps[idx] = res
+      }
+    }
+    showToast(`✓ [${res.name}] 探活成功 (${res.latency_ms}ms)`)
+  } catch (err) {
+    showToast('探活失败: ' + err)
+  }
+}
+
+async function exportHotplugManifestAction() {
+  try {
+    const jsonStr = await wailsBridge.exportHotplugManifest()
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(jsonStr)
+      showToast('✓ 已将 DSH 算子清单 JSON 复制到剪贴板')
+    } else {
+      showToast('✓ 已生成清单 (长度: ' + jsonStr.length + ' 字符)')
+    }
+  } catch (err) {
+    showToast('导出失败: ' + err)
+  }
 }
 
 function toggleTerminalDrawer(forceState?: boolean) {
@@ -2371,7 +2456,8 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     if (isStrategyPickerOpen.value) { isStrategyPickerOpen.value = false; return }
     if (isPendingDiffPromptOpen.value) { isPendingDiffPromptOpen.value = false; return }
 
-    // 优先级 3: 设置/图谱等一级面板
+    // 优先级 3: 设置/图谱/算子大盘等一级面板
+    if (isHotplugDashboardOpen.value) { isHotplugDashboardOpen.value = false; return }
     if (isSettingsOpen.value) { isSettingsOpen.value = false; return }
     if (isKnowledgeGraphOpen.value) { isKnowledgeGraphOpen.value = false; return }
     if (isTerminalOpen.value) { isTerminalOpen.value = false; return }
@@ -2396,6 +2482,7 @@ function initWorkbench() {
   void loadSettingsData()
   void loadProjects()
   void loadUsageMetrics()
+  void loadHotplugReport()
   void wailsBridge.getWorkspace().then(async (ws) => {
     if (!ws) return
     workspacePath.value = ws
@@ -2497,6 +2584,18 @@ function initWorkbench() {
     isGitLoading,
     isGraphLoading,
     isKnowledgeGraphOpen,
+    isHotplugDashboardOpen,
+    hotplugReport,
+    isHotplugLoading,
+    hotplugActiveTab,
+    hotplugSearchQuery,
+    probedItems,
+    openHotplugDashboard,
+    closeHotplugDashboard,
+    loadHotplugReport,
+    reloadHotplugRegistryAction,
+    probeHotplugItemAction,
+    exportHotplugManifestAction,
     isMcpModalOpen,
     isRuleModalOpen,
     isSettingsOpen,

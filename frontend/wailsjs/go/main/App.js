@@ -257,3 +257,19 @@ export function ToggleMaximizeWindow() {
 export function WriteFile(arg1, arg2) {
   return window['go']['main']['App']['WriteFile'](arg1, arg2);
 }
+
+export function GetHotplugDashboard() {
+  return window['go']['main']['App']['GetHotplugDashboard']();
+}
+
+export function ReloadHotplugRegistry() {
+  return window['go']['main']['App']['ReloadHotplugRegistry']();
+}
+
+export function ProbeHotplugItem(arg1, arg2) {
+  return window['go']['main']['App']['ProbeHotplugItem'](arg1, arg2);
+}
+
+export function ExportHotplugManifest() {
+  return window['go']['main']['App']['ExportHotplugManifest']();
+}

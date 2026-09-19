@@ -129,3 +129,11 @@ export function TestMCPServer(arg1:string):Promise<mcp.MCPTestResult>;
 export function ToggleMaximizeWindow():Promise<void>;
 
 export function WriteFile(arg1:string,arg2:string):Promise<void>;
+
+export function GetHotplugDashboard():Promise<any>;
+
+export function ReloadHotplugRegistry():Promise<any>;
+
+export function ProbeHotplugItem(arg1:string,arg2:string):Promise<any>;
+
+export function ExportHotplugManifest():Promise<string>;

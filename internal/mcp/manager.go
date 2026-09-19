@@ -284,3 +284,28 @@ func (m *Manager) CallTool(ctx context.Context, name string, args map[string]any
 
 	return client.CallTool(ctx, name, args)
 }
+
+// IsRunning 检查指定 MCP 服务当前是否运行中
+func (m *Manager) IsRunning(srvID string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, running := m.clients[srvID]
+	return running
+}
+
+// GetRunningServerIDs 返回当前处于活跃连接状态的 MCP 服务 ID 列表
+func (m *Manager) GetRunningServerIDs() []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.clients))
+	for id := range m.clients {
+		ids = append(ids, id)
+	}
+	return ids
+}

@@ -977,6 +977,9 @@
     >
       <span>{{ s.toastMessage }}</span>
     </div>
+
+    <!-- 插件热插拔中心与 DSH 算子大盘 -->
+    <HotplugDashboardModal />
   </div>
 </template>
 
@@ -989,6 +992,7 @@ import LeftDrawer from './components/LeftDrawer.vue'
 import ChatCockpit from './components/ChatCockpit.vue'
 import DiffWorkspace from './components/DiffWorkspace.vue'
 import TerminalDrawer from './components/TerminalDrawer.vue'
+import HotplugDashboardModal from './components/HotplugDashboardModal.vue'
 
 const s = useWorkbenchStore()
 let stop: (() => void) | undefined

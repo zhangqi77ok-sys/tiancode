@@ -72,12 +72,25 @@
             </div>
           </div>
 
-          <button
-            @click="s.setWorkspaceView(s.isDiffOpen ? 'chat' : 'split')"
-            class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-black/[0.08] text-xs text-[#52525B] hover:text-[#18181B] hover:bg-black/[0.02] shadow-2xs transition-all cursor-pointer"
-          >
-            <span>{{ s.isDiffOpen ? '收起代码面板' : '💻 代码面板' }}</span>
-          </button>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              @click="s.openHotplugDashboard()"
+              class="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-xs font-medium text-[#52525B] hover:text-[#D96B27] hover:border-[#D96B27]/30 shadow-2xs transition-all cursor-pointer"
+              title="打开插件热插拔中心与 DSH 算子大盘"
+            >
+              <span>🧩</span>
+              <span>算子大盘</span>
+              <span v-if="s.hotplugReport" class="text-[10px] font-mono px-1 rounded bg-[#D96B27]/10 text-[#D96B27]">
+                {{ s.hotplugReport.summary.total_tools }}
+              </span>
+            </button>
+            <button
+              @click="s.setWorkspaceView(s.isDiffOpen ? 'chat' : 'split')"
+              class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-black/[0.08] text-xs text-[#52525B] hover:text-[#18181B] hover:bg-black/[0.02] shadow-2xs transition-all cursor-pointer"
+            >
+              <span>{{ s.isDiffOpen ? '收起代码面板' : '💻 代码面板' }}</span>
+            </button>
+          </div>
         </header>
 
         <!-- 待采纳代码变更提示条 (已写入工作区，请审查 Diff，人点接受才算完成) -->

@@ -62,6 +62,7 @@
 | **48** | **控件错名治理、防脱缰智能熔断器与 TDD 结构化失败提取** | 控件诚实正名 / 智能熔断器 / 防死循环 / TDD失败清单提取 | 将「微内核快照」正名为「Git 暂存储藏 (Stash)」、将「代码工作区」正名为「文件与编辑器」、顶栏模型就绪绿灯强绑定网络真实探活、渠道移除虚假auth_type、策略切换升级为原生防误触安全选择器；loop内核落地20轮硬上限+连续3次相同工具重复调用硬熔断+连续3次工具执行报错熔断；提取并置顶双栈TDD失败用例清单 | [48-control-naming-honesty-and-runaway-circuit-breakers.md](./48-control-naming-honesty-and-runaway-circuit-breakers.md) |
 | **49** | **多协议网关、OAuth 2.0 刷新机制与 new-api 极简单输入框鉴权体验对齐** | 模型网关 / OAuth 2.0 鉴权 / Google RFC 6749 规范 / 凭据治理 / UI人机工程学 | Google RT 严格绑定 client_id 原理剖析（401 unauthorized_client 实测）、new-api 源码架构解密（Vertex/Codex 单框接纳 JSON 凭据）、Tiancode 增强 ExtractedOAuthCredentials 自动嗅探与前端单输入框加可折叠高级覆盖设计 | [49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md](./49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md) |
 | **50** | **嵌套子仓库暂存防崩溃、Git Porcelain 路径清洗、工作区列表去重与采纳健壮性闭环** | GitOps / Submodule防崩溃 / 索引约束 / Porcelain清洗 / 状态去重 | 嵌套未提交 Git 仓库引发 Exit 128 致命退出根因剖析、Porcelain v2 尾部斜杠与空仓库自动过滤、GitStage 与 git_tool 目录防崩溃熔断、Diff 文本比较器目录拦截与前端 workingTreeFiles 去重 | [50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md](./50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md) |
+| **51** | **插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计** | 插件热插拔 / DSH Harness 大盘 / host.Registry 契约 / JSON Schema 查看器 / 动态热重载 | 活动栏与顶栏新增一等常驻入口、微内核底层算子直查与只读/写盘徽章标记、大模型参数 JSON Schema 契约在线展开、单点物理探活与 TTFT 测速、SafetyRail 防线可视化与现场创建 Skill/Rule 的 Creator 模式闭环 | [51-hotplug-plugin-center-and-dsh-operator-dashboard.md](./51-hotplug-plugin-center-and-dsh-operator-dashboard.md) |
 
 ---
 

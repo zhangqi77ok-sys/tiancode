@@ -100,6 +100,37 @@ export interface SearchMatch {
   content?: string
 }
 
+export interface HotplugItemInfo {
+  id: string
+  name: string
+  version: string
+  type: string
+  category: string
+  description: string
+  healthy: boolean
+  latency_ms: number
+  message: string
+  parameters?: Record<string, any>
+  mutating?: boolean
+  priority?: number
+  metadata?: Record<string, string>
+}
+
+export interface HotplugDashboardReport {
+  summary: {
+    total_tools: number
+    active_mcps: number
+    active_rails: number
+    active_providers: number
+    healthy_count: number
+  }
+  tools: HotplugItemInfo[]
+  mcps: HotplugItemInfo[]
+  rails: HotplugItemInfo[]
+  providers: HotplugItemInfo[]
+  updated_at: number
+}
+
 export interface TaskModel {
   goal: string
   status: 'idle' | 'running' | 'completed' | 'capped' | 'interrupted' | 'failed' | 'pending_diff' | 'tdd_failed'
@@ -700,6 +731,52 @@ export const wailsBridge = {
     const app = getApp()
     if (app?.GetUIPrefs) return await app.GetUIPrefs()
     return { theme: 'warm', monaco_font: 'JetBrains Mono', monaco_size: 14 }
+  },
+
+  // 5. 热插拔插件中心与 DSH 算子大盘
+  async getHotplugDashboard(): Promise<HotplugDashboardReport> {
+    const app = getApp()
+    if (app?.GetHotplugDashboard) {
+      return await app.GetHotplugDashboard()
+    }
+    return {
+      summary: {
+        total_tools: 0,
+        active_mcps: 0,
+        active_rails: 0,
+        active_providers: 0,
+        healthy_count: 0
+      },
+      tools: [],
+      mcps: [],
+      rails: [],
+      providers: [],
+      updated_at: Date.now()
+    }
+  },
+
+  async reloadHotplugRegistry(): Promise<HotplugDashboardReport> {
+    const app = getApp()
+    if (app?.ReloadHotplugRegistry) {
+      return await app.ReloadHotplugRegistry()
+    }
+    return await this.getHotplugDashboard()
+  },
+
+  async probeHotplugItem(itemId: string, itemType: string): Promise<HotplugItemInfo> {
+    const app = getApp()
+    if (app?.ProbeHotplugItem) {
+      return await app.ProbeHotplugItem(itemId, itemType)
+    }
+    throw new Error('microkernel not connected: ProbeHotplugItem unavailable')
+  },
+
+  async exportHotplugManifest(): Promise<string> {
+    const app = getApp()
+    if (app?.ExportHotplugManifest) {
+      return await app.ExportHotplugManifest()
+    }
+    throw new Error('microkernel not connected: ExportHotplugManifest unavailable')
   },
 
   async saveUIPrefs(p: { theme: string; monaco_font: string; monaco_size: number }): Promise<void> {
