@@ -126,6 +126,7 @@ docs/
 | **49** | **多协议网关、OAuth 2.0 刷新机制与 new-api 单框体验对齐** | 模型网关 / OAuth 2.0 | Google RT 绑定 client_id 原理、new-api 单框接纳 JSON、自动嗅探解构 | [`49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md`](knowledge/49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md) |
 | **50** | **嵌套子仓库暂存防崩溃、Git Porcelain 清洗与去重健壮性** | GitOps / Submodule防崩溃 | 嵌套未提交 Git 目录 Exit 128 熔断、Porcelain v2 尾斜杠清洗与去重 | [`50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md`](knowledge/50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md) |
 | **51** | **插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计** | 插件热插拔 / DSH 算子大盘 | 活动栏常驻一等入口、微内核算子直查、JSON Schema 展开、单点物理探活与 Creator 模式 | [`51-hotplug-plugin-center-and-dsh-operator-dashboard.md`](knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md) |
+| **52** | **会话级粘性执行策略胶囊架构与免拦截即发交互演进** | 会话粘性 / 策略胶囊 / 免拦截即发 | 移除每次发送全屏阻塞弹窗、驾驶舱常驻粘性策略胶囊、一键轮转切换、Action-Time 微内核硬闸 | [`52-session-sticky-execution-strategy-pill.md`](knowledge/52-session-sticky-execution-strategy-pill.md) |
 
 ---
 

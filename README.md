@@ -155,10 +155,11 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 2. 左侧侧边栏自动加载文件树（支持 1 层受控异步懒加载，防超大项目卡顿）与 Git 变更状态。
 
 ### 4. 智能对话与任务接续
-1. **选择执行策略**：
-   - **`只读审查 (analyze)`**（默认）：只读探测，强制拦截代码写盘与深层目录漫游；
-   - **`编码实现 (implement)`**：放行写盘与工具调用，先检索后改写；
-   - **`测试驱动 (tdd)`**：实施红绿重构自愈循环，测试未通过阻断交付；
+1. **执行策略底栏一键轮转（免弹窗即发）**：
+   - **`⚡ 直接改代码 (implement)`**（默认）：放行写盘与工具调用，先检索后改写，改动带出 Monaco Diff 待审核；
+   - **`🛡️ 只读审查 (analyze)`**：只读探测，微内核坚决拦截写盘与外部高危命令；
+   - **`🧪 TDD 闭环 (tdd)`**：实施红绿重构自愈循环，自动化测试未通过阻断声称交付；
+   - 点击底栏策略胶囊直接一键轮转切换，会话级持久记忆；点击齿轮图标可配置附加约束；敲回车即刻发起流式推理，告别阻断弹窗打断思路；
 2. **长任务无损接续**：输入「继续」、「continue」或「接着做」，内核直接复用历史既定目标与未完成清单接续执行，不推翻重来；
 3. **查看执行过程**：AI 推理过程中的心智思维链（ThinkingBlock）与工具调用（ToolCard）均支持折叠展开，输入区支持 `■ 终止` 即时中断。
 
@@ -216,7 +217,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
 ## 📚 六、核心工程知识沉淀 (docs/knowledge/)
 
-本项目严格遵守知识点沉淀规约，在 `docs/knowledge/` 下归档了 37 篇专注于现行 Wails v2 + Go 微内核 + Vue 3 架构的底层核心机制剖析与实战解决方案：
+本项目严格遵守知识点沉淀规约，在 `docs/knowledge/` 下归档了 38 篇专注于现行 Wails v2 + Go 微内核 + Vue 3 架构的底层核心机制剖析与实战解决方案：
 
 * [15 - Wails v2 生产级 Desktop 标签编译、Frameless 沉浸式窗体与纯 Go 原生安装向导封装](docs/knowledge/15-wails-v2-production-build-and-frameless-installer.md)
 * [16 - Git 行级 Unified Diff 结构化解析、Hunk 分块与单块 Cherry-Pick 采纳/逆向丢弃实现机制](docs/knowledge/16-monaco-unified-diff-and-hunk-cherry-pick.md)
@@ -228,8 +229,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 * [49 - 多协议网关、OAuth 2.0 刷新机制与 new-api 极简单输入框鉴权体验对齐](docs/knowledge/49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md)
 * [50 - 嵌套子仓库暂存防崩溃、Git Porcelain 路径清洗、工作区列表去重与采纳健壮性闭环](docs/knowledge/50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md)
 * [51 - 插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计](docs/knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md)
+* [52 - 会话级粘性执行策略胶囊架构与免拦截即发交互演进](docs/knowledge/52-session-sticky-execution-strategy-pill.md)
 
-完整 37 篇现行文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
+完整 38 篇现行文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
 
 ---
 

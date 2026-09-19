@@ -341,8 +341,10 @@ async function createNewSession() {
   currentSessionId.value = ''
   currentSession.value = emptyDraft()
   showFullHistory.value = false
-  executionStrategy.value = 'analyze'
-  strategyPickerArmed.value = false
+  const saved = localStorage.getItem('tiancode_execution_strategy') as 'analyze' | 'implement' | 'tdd' | null
+  if (saved && ['analyze', 'implement', 'tdd'].includes(saved)) {
+    executionStrategy.value = saved
+  }
 }
 
 async function deleteSession(id: string) {
@@ -1367,12 +1369,27 @@ const executionStrategies = [
   }
 ] as const
 
-const executionStrategy = ref<'analyze' | 'implement' | 'tdd'>('analyze')
-const selectedStrategyDraft = ref<'analyze' | 'implement' | 'tdd'>('analyze')
+const initialStrategy = (localStorage.getItem('tiancode_execution_strategy') as any) || 'implement'
+const executionStrategy = ref<'analyze' | 'implement' | 'tdd'>(['analyze', 'implement', 'tdd'].includes(initialStrategy) ? initialStrategy : 'implement')
+const selectedStrategyDraft = ref<'analyze' | 'implement' | 'tdd'>(executionStrategy.value)
 const strategyNote = ref('')
 const isStrategyPickerOpen = ref(false)
-const strategyPickerArmed = ref(false)
-const pendingSendPrompt = ref('')
+
+function setExecutionStrategy(strat: 'analyze' | 'implement' | 'tdd') {
+  executionStrategy.value = strat
+  try {
+    localStorage.setItem('tiancode_execution_strategy', strat)
+  } catch {}
+}
+
+function cycleExecutionStrategy() {
+  const order: ('implement' | 'analyze' | 'tdd')[] = ['implement', 'analyze', 'tdd']
+  const idx = order.indexOf(executionStrategy.value)
+  const next = order[(idx + 1) % order.length]
+  setExecutionStrategy(next)
+  const label = next === 'analyze' ? '🛡️ 只读审查' : next === 'tdd' ? '🧪 TDD 闭环' : '⚡ 直接改代码'
+  showToast(`已切换执行策略为：${label}`)
+}
 
 function openStrategyPicker() {
   selectedStrategyDraft.value = executionStrategy.value
@@ -1381,31 +1398,24 @@ function openStrategyPicker() {
 
 function closeStrategyPicker() {
   isStrategyPickerOpen.value = false
-  pendingSendPrompt.value = ''
   selectedStrategyDraft.value = executionStrategy.value
 }
 
 function skipStrategyChoice() {
-  selectedStrategyDraft.value = 'analyze'
-  executionStrategy.value = 'analyze'
-  strategyPickerArmed.value = true
+  setExecutionStrategy('analyze')
   isStrategyPickerOpen.value = false
-  if (pendingSendPrompt.value) {
-    inputPrompt.value = pendingSendPrompt.value
-    pendingSendPrompt.value = ''
-    void handleSend()
-  }
+  showToast('已切换为只读审查 (analyze)')
+}
+
+function confirmStrategyConfig() {
+  setExecutionStrategy(selectedStrategyDraft.value)
+  isStrategyPickerOpen.value = false
+  const label = executionStrategy.value === 'analyze' ? '🛡️ 只读审查' : executionStrategy.value === 'tdd' ? '🧪 TDD 闭环' : '⚡ 直接改代码'
+  showToast(`执行策略已设为：${label}`)
 }
 
 function confirmStrategyAndSend() {
-  executionStrategy.value = selectedStrategyDraft.value
-  strategyPickerArmed.value = true
-  isStrategyPickerOpen.value = false
-  if (pendingSendPrompt.value) {
-    inputPrompt.value = pendingSendPrompt.value
-    pendingSendPrompt.value = ''
-    void handleSend()
-  }
+  confirmStrategyConfig()
 }
 
 async function submitAgentChoice(optionID: string, customNote: string = '') {
@@ -1443,12 +1453,6 @@ async function handleSend() {
     showToast('已取消当前等待项并中断旧任务。')
   }
 
-  if (!strategyPickerArmed.value) {
-    pendingSendPrompt.value = prompt
-    isStrategyPickerOpen.value = true
-    return
-  }
-  strategyPickerArmed.value = false
   const slash = prompt.split(/\s+/)[0]
   if (slash === '/test' || slash === '/tdd') {
     inputPrompt.value = ''
@@ -2512,6 +2516,9 @@ function initWorkbench() {
     commandPaletteQuery,
     confirmCommandPalette,
     confirmStrategyAndSend,
+    confirmStrategyConfig,
+    cycleExecutionStrategy,
+    setExecutionStrategy,
     applyHunkAction,
     applyMention,
     astGraph,

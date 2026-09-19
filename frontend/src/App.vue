@@ -919,11 +919,11 @@
       <div class="w-[min(720px,92vw)] bg-white rounded-2xl border border-black/[0.1] shadow-2xl p-4 space-y-3">
         <div class="flex items-center justify-between">
           <div>
-            <h4 class="text-sm font-bold text-[#18181B]">架构执行策略确认</h4>
-            <p class="text-[11px] text-[#71717A]">选择会改内核工具权限：只读拦写盘；TDD 写后跑测试；直接改代码会写磁盘。</p>
+            <h4 class="text-sm font-bold text-[#18181B]">执行策略与约束配置</h4>
+            <p class="text-[11px] text-[#71717A]">会话级生效：只读审查拦截写盘；TDD 写后自动化测试；直接改代码允许写盘。</p>
           </div>
           <div class="flex items-center gap-2">
-            <span class="text-[9px] text-[#D96B27] bg-[#D96B27]/10 px-1.5 py-0.5 rounded font-mono font-bold">待用户决策</span>
+            <span class="text-[9px] text-[#D96B27] bg-[#D96B27]/10 px-1.5 py-0.5 rounded font-mono font-bold">策略配置</span>
             <button @click="s.closeStrategyPicker" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
           </div>
         </div>
@@ -953,8 +953,8 @@
           class="w-full h-8 px-2.5 rounded-lg border border-black/[0.08] text-xs"
         />
         <div class="flex justify-end gap-2 pt-1 border-t border-black/[0.06]">
-          <button class="px-3 py-1 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.04] cursor-pointer" @click="s.skipStrategyChoice">保持默认只读审查 (analyze)</button>
-          <button class="px-4 py-1 rounded-lg bg-[#D96B27] text-white text-xs font-semibold cursor-pointer shadow-2xs hover:bg-[#B8551B]" @click="s.confirmStrategyAndSend">确定提交选择</button>
+          <button class="px-3 py-1 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.04] cursor-pointer" @click="s.closeStrategyPicker">取消</button>
+          <button class="px-4 py-1 rounded-lg bg-[#D96B27] text-white text-xs font-semibold cursor-pointer shadow-2xs hover:bg-[#B8551B]" @click="s.confirmStrategyAndSend">保存配置</button>
         </div>
       </div>
     </div>
