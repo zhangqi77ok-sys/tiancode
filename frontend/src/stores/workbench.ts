@@ -2417,6 +2417,14 @@ async function cancelTerminalAction() {
   }
 }
 
+async function runTerminalCommand(cmd: string) {
+  const c = cmd.trim()
+  if (!c) return
+  isTerminalOpen.value = true
+  terminalInputCmd.value = c
+  await submitTerminalCommand()
+}
+
 function handleGlobalKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
@@ -2701,6 +2709,7 @@ function initWorkbench() {
     stopGenerationAction,
     suggestCommitMessage,
     submitTerminalCommand,
+    runTerminalCommand,
     testMcpAction,
     tabContextMenu,
     switchToFileActivity,

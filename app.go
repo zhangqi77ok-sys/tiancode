@@ -31,6 +31,7 @@ import (
 	gittool "tiancode/plugins/tool/git"
 	searchtool "tiancode/plugins/tool/search"
 	terminaltool "tiancode/plugins/tool/terminal"
+	archtool "tiancode/plugins/tool/arch"
 	"tiancode/plugins/tool/ask_user"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -198,6 +199,7 @@ func NewApp() *App {
 	_ = reg.Register(fstool.NewTool(sb, sm))
 	_ = reg.Register(searchtool.NewTool(sb))
 	_ = reg.Register(terminaltool.NewTool(wd))
+	_ = reg.Register(archtool.NewTool(wd))
 	_ = reg.Register(ask_user.NewTool())
 	_ = reg.Register(safetyrail.New())
 
@@ -376,6 +378,7 @@ func (a *App) SetWorkspace(dir string) error {
 		_ = a.registry.RegisterOrReplace(fstool.NewTool(sb, a.snapshotMgr))
 		_ = a.registry.RegisterOrReplace(terminaltool.NewTool(absDir))
 		_ = a.registry.RegisterOrReplace(searchtool.NewTool(sb))
+		_ = a.registry.RegisterOrReplace(archtool.NewTool(absDir))
 	}
 
 	// 重新初始化智能体自主执行引擎，绑定新工作区的插件执行链

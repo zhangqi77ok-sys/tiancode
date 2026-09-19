@@ -146,4 +146,17 @@ func (a *App) GetBlastRadiusReport(targetSymbol string) (*ast.BlastRadiusReport,
    - 严禁允许跨项目注入架构上下文到 Agent 会话；外部参考项目必须在关闭或退出时清空瞬态状态，杜绝全局持久化混乱。
 6. **铁律 0.5 实践：零假数据原则**：
    - 前端空状态必须诚实展示“未打开有效 Go 工作区或未探测到 Go 模块”，严禁展示硬编码的假架构图或假节点。
+7. **符号级影响面精准雷达 (Symbol-level Call Sites)**：
+   - 利用 `ast.Inspect` 结合 `ast.SelectorExpr` 与 `ast.Ident` 精准搜寻具体调用点；
+   - 提取包含相对路径、函数作用域、行号与精炼源码切片（Snippet）的强类型 `CallSite` 列表，为重构提供外科手术级的精准视野；
+8. **微内核 `tool.arch` 算子闭环 (Agent Autonomous Architecture Tool)**：
+   - 实现符合 `pkg/plugin/v1.ToolPlugin` 标准接口的 `tool.arch` 插件；
+   - 暴露 `code_architecture` 算子（动作：`inspect`、`blast_radius`、`discover_modules`），彻底赋能自主智能体在重构前自发调用评估，零 hardcode 路由，100% 铁律 7 合规；
+9. **符号与契约源码穿梭 (Click-to-Source in Monaco)**：
+   - 抽象接口契约、结构体实现、抽屉导出符号、影响面调用点支持一键单击直跳 Monaco 编辑器对应代码文件与行号高亮；
+10. **影响面回归测试一键执行 (In-Place Regression Test Runner)**：
+    - 雷达看板列出的推荐回归测试条目支持 `[▶ 运行]` 按钮，直接调度底层终端抽屉实时流式执行 `go test -v ./<pkg>/...` 并查看即时结果；
+11. **SVG 画布自适应 4 列流式折行与动态层高 (Multi-row Flow Layout per Layer)**：
+    - 废弃单行无限水平外延卡片，按层采用 4 列网格自适应折行；
+    - 基于各层实际模块数量与行数动态计算层高与 Y 轴偏移，保证 16:9 画布内高密度展示且无交叉重叠。
 

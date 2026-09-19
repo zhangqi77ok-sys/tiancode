@@ -712,5 +712,24 @@
   - **Agent 防投毒物理守卫 (Context Poisoning Defense)**：在外部参考模式下，顶栏与抽屉底部的“注入 Agent”按钮自动物理禁用并提示防投毒，严禁跨项目污染主会话；
   - **瞬态自愈重置**：关闭工作板自动重置为当前主工作区，杜绝全局状态漂移。
 
+### 57. 架构工作板 5 大核心进阶与微内核自主算子闭环 (Symbol-level Blast Radius, Autonomous Arch Tool, Click-to-Source, Test Runner & Flow Layout)
+* **符号级精准影响面雷达 (AST Symbol-level Call Sites)**：
+  - 打破此前仅分析包级引用的粗粒度局限，深入 AST `SelectorExpr` 与 `Ident` 语法节点分析具体函数、方法和接口符号的精确调用位置；
+  - 输出包含文件相对路径、所在函数/方法作用域、源码行号与上下文代码切片（`Snippet`）的强类型 `CallSite` 清单，为改动评估提供外科手术级的精准洞察；
+* **微内核 `tool.arch` 算子插件 (Agent Autonomous Architecture Tool)**：
+  - 严格遵循 `AGENTS.md`【铁律 7】（插件热插拔架构），在 `plugins/tool/arch/` 中实现标准的 `pkg/plugin/v1.ToolPlugin` 接口（`ID: tool.arch`）；
+  - 向大模型声明 `code_architecture` 算子（动作支持 `inspect`、`blast_radius`、`discover_modules`），在 `app.go` 中通过 `registry.Register` 装载；
+  - 彻底赋予 Coding Agent 自主在修改或重构核心代码前，主动调用算子评估影响面与检查依赖防腐规范的能力，零 hardcode 路由；
+* **符号与契约全链路单击直跳 Monaco (Click-to-Source in Monaco)**：
+  - 工作板全链路打通源码跳转能力：接口契约卡片、结构体实现类、右侧抽屉导出 AST 实体以及影响面雷达的具体调用点均支持一键单击直跳；
+  - 自动打开对应文件编辑器页签，切换至双栏协同视图（`split`），并精准定位高亮代码所在行号；
+* **影响面回归测试一键执行 (In-Place Regression Test Runner)**：
+  - 影响面雷达中推荐的受波及测试套件新增 `[▶ 运行]` 按钮；
+  - 单击后自动呼出底层集成终端抽屉，调度 `CREATE_NO_WINDOW` 终端引擎实时流式运行 `go test -v ./<pkg>/...`，实现“评估影响面 ➔ 查看调用点 ➔ 一键运行验证”的端到端交互闭环；
+* **SVG 拓扑画布自适应 4 列多行流式折行 (Multi-row Flow Layout per Layer)**：
+  - 彻底根除同层模块较多时单行无限向右水平延伸导致无法看全的布局缺陷；
+  - 引入 4 列网格自适应折行算法，并根据各层实际模块数量与行数动态计算每层的绝对高度与 Y 轴偏移量，保证不同规模的 Go 仓库在 16:9 画布内均紧凑、优雅、无重叠排布。
+
+
 
 

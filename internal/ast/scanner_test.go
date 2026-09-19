@@ -294,4 +294,106 @@ func TestDiscoverGoModules_MonorepoAndSubApps(t *testing.T) {
 	}
 }
 
+func TestAnalyzeBlastRadius_CallSites(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "blast_callsites_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// go.mod
+	_ = os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module testcalls\n\ngo 1.21\n"), 0644)
+
+	// pkg/calc/calc.go
+	calcDir := filepath.Join(tempDir, "pkg", "calc")
+	_ = os.MkdirAll(calcDir, 0755)
+	calcCode := `package calc
+
+func Add(a, b int) int {
+	return a + b
+}
+`
+	_ = os.WriteFile(filepath.Join(calcDir, "calc.go"), []byte(calcCode), 0644)
+
+	// cmd/app/main.go
+	cmdDir := filepath.Join(tempDir, "cmd", "app")
+	_ = os.MkdirAll(cmdDir, 0755)
+	mainCode := `package main
+
+import "testcalls/pkg/calc"
+
+func doCompute() int {
+	res := calc.Add(10, 20)
+	return res
+}
+
+func main() {
+	_ = doCompute()
+}
+`
+	_ = os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte(mainCode), 0644)
+
+	// cmd/app/main_test.go
+	testCode := `package main
+
+import (
+	"testing"
+	"testcalls/pkg/calc"
+)
+
+func TestAdd(t *testing.T) {
+	if calc.Add(1, 2) != 3 {
+		t.Fail()
+	}
+}
+`
+	_ = os.WriteFile(filepath.Join(cmdDir, "main_test.go"), []byte(testCode), 0644)
+
+	// Analyze blast radius for pkg/calc.Add
+	blast, err := AnalyzeBlastRadius(tempDir, "pkg/calc.Add")
+	if err != nil {
+		t.Fatalf("AnalyzeBlastRadius failed: %v", err)
+	}
+
+	if len(blast.CallSites) < 2 {
+		t.Fatalf("expected at least 2 call sites, got %d: %+v", len(blast.CallSites), blast.CallSites)
+	}
+
+	foundMainCall := false
+	foundTestCall := false
+	for _, cs := range blast.CallSites {
+		if strings.Contains(cs.File, "main.go") && cs.Function == "doCompute" {
+			foundMainCall = true
+			if !strings.Contains(cs.Snippet, "calc.Add(10, 20)") {
+				t.Errorf("expected snippet to contain 'calc.Add(10, 20)', got: %s", cs.Snippet)
+			}
+			if cs.Line <= 0 {
+				t.Errorf("expected valid line number, got %d", cs.Line)
+			}
+		}
+		if strings.Contains(cs.File, "main_test.go") && cs.Function == "TestAdd" {
+			foundTestCall = true
+		}
+	}
+
+	if !foundMainCall {
+		t.Errorf("expected main.go doCompute call site to be captured")
+	}
+	if !foundTestCall {
+		t.Errorf("expected main_test.go TestAdd call site to be captured")
+	}
+
+	// Verify affected tests list includes cmd/app
+	foundAffectedTest := false
+	for _, at := range blast.AffectedTests {
+		if strings.Contains(at, "cmd/app") {
+			foundAffectedTest = true
+			break
+		}
+	}
+	if !foundAffectedTest {
+		t.Errorf("expected cmd/app to be in AffectedTests, got %+v", blast.AffectedTests)
+	}
+}
+
 

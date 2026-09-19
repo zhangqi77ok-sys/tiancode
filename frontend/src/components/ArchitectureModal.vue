@@ -18,13 +18,13 @@ const selectedBlastSymbol = ref('host.Registry.GetTool')
 
 // 层级元数据
 const layerDefinitions = [
-  { id: 'entry', name: '应用入口层 (Entry & Launcher)', y: 60 },
-  { id: 'host', name: '宿主中枢与事件分发 (Host & Transport)', y: 190 },
-  { id: 'core', name: '业务微内核与回路 (Core Engine & Loop)', y: 320 },
-  { id: 'bus', name: '抽象总线与安全防线 (Registry & Safety Rail)', y: 450 },
-  { id: 'spec', name: '插件契约与协议 (Plugin Spec & V1)', y: 580 },
-  { id: 'tool', name: '热插拔工具实现 (Hotplug Operators)', y: 710 },
-  { id: 'other', name: '通用支撑组件 (Supporting Utilities)', y: 840 }
+  { id: 'entry', name: '应用入口层 (Entry & Launcher)' },
+  { id: 'host', name: '宿主中枢与事件分发 (Host & Transport)' },
+  { id: 'core', name: '业务微内核与回路 (Core Engine & Loop)' },
+  { id: 'bus', name: '抽象总线与安全防线 (Registry & Safety Rail)' },
+  { id: 'spec', name: '插件契约与协议 (Plugin Spec & V1)' },
+  { id: 'tool', name: '热插拔工具实现 (Hotplug Operators)' },
+  { id: 'other', name: '通用支撑组件 (Supporting Utilities)' }
 ]
 
 // 过滤后的包列表
@@ -52,7 +52,7 @@ const filteredPackages = computed(() => {
   })
 })
 
-// 计算节点在画布上的网格坐标 (按层级自顶向下分列排布)
+// 计算节点在画布上的多列自适应流式排布 (4 列折行与动态层高)
 interface NodePosition {
   pkg: PackageNode
   x: number
@@ -61,8 +61,27 @@ interface NodePosition {
   h: number
 }
 
-const nodePositions = computed<Record<string, NodePosition>>(() => {
+interface ComputedLayer {
+  id: string
+  name: string
+  y: number
+  height: number
+  count: number
+}
+
+const COLS = 4
+const CARD_W = 230
+const CARD_H = 86
+const GAP_X = 28
+const GAP_Y = 16
+const LAYER_HEADER_H = 34
+const LAYER_MARGIN_BOTTOM = 28
+const PADDING_LEFT = 60
+const START_TOP = 40
+
+const computedLayout = computed(() => {
   const map: Record<string, NodePosition> = {}
+  const layerLayouts: ComputedLayer[] = []
   const layerBuckets: Record<string, PackageNode[]> = {}
 
   layerDefinitions.forEach((l) => {
@@ -75,21 +94,50 @@ const nodePositions = computed<Record<string, NodePosition>>(() => {
     layerBuckets[lId].push(pkg)
   })
 
-  const cardW = 220
-  const cardH = 86
-  const gapX = 40
+  let currentY = START_TOP
 
   layerDefinitions.forEach((layer) => {
     const pkgs = layerBuckets[layer.id] || []
-    pkgs.forEach((pkg, index) => {
-      const x = 70 + index * (cardW + gapX)
-      const y = layer.y
-      map[pkg.id] = { pkg, x, y, w: cardW, h: cardH }
+    const count = pkgs.length
+    const rows = Math.max(1, Math.ceil(count / COLS))
+    const layerHeight = LAYER_HEADER_H + (count > 0 ? rows * CARD_H + (rows - 1) * GAP_Y : 20)
+
+    layerLayouts.push({
+      id: layer.id,
+      name: layer.name,
+      y: currentY,
+      height: layerHeight,
+      count
     })
+
+    const cardsStartY = currentY + LAYER_HEADER_H
+
+    pkgs.forEach((pkg, index) => {
+      const col = index % COLS
+      const row = Math.floor(index / COLS)
+      const x = PADDING_LEFT + col * (CARD_W + GAP_X)
+      const y = cardsStartY + row * (CARD_H + GAP_Y)
+      map[pkg.id] = { pkg, x, y, w: CARD_W, h: CARD_H }
+    })
+
+    currentY += layerHeight + LAYER_MARGIN_BOTTOM
   })
 
-  return map
+  const totalHeight = Math.max(1200, currentY + 120)
+  const totalWidth = Math.max(1400, PADDING_LEFT + COLS * (CARD_W + GAP_X) + 120)
+
+  return {
+    nodePositions: map,
+    layerLayouts,
+    totalHeight,
+    totalWidth
+  }
 })
+
+const nodePositions = computed(() => computedLayout.value.nodePositions)
+const computedLayers = computed(() => computedLayout.value.layerLayouts)
+const svgCanvasWidth = computed(() => computedLayout.value.totalWidth)
+const svgCanvasHeight = computed(() => computedLayout.value.totalHeight)
 
 // 计算 SVG 贝塞尔曲线边
 interface RenderEdge {
@@ -194,6 +242,33 @@ function handleBlastTargetChange(e: Event) {
   const target = (e.target as HTMLSelectElement).value
   selectedBlastSymbol.value = target
   s.runBlastRadiusAnalysis(target)
+}
+
+function resolveTargetFilePath(relOrAbs: string): string {
+  if (!relOrAbs) return ''
+  const norm = relOrAbs.replace(/\\/g, '/')
+  if (norm.startsWith('/') || /^[a-zA-Z]:\//.test(norm)) {
+    return norm
+  }
+  const base = (s.architectureCurrentPath || s.workspacePath || '').replace(/\\/g, '/').replace(/\/+$/, '')
+  return base ? `${base}/${norm}` : norm
+}
+
+// 符号与契约单击直跳 Monaco 并高亮定位行号
+function jumpToSource(filePath: string, line?: number) {
+  if (!filePath) return
+  const fullPath = resolveTargetFilePath(filePath)
+  s.openEditorTab(fullPath, 'edit', line)
+  s.setWorkspaceView('split')
+  s.closeArchitectureModal()
+}
+
+// 推荐回归单测一键拉起并实时流式运行
+async function runAffectedTest(testPkg: string) {
+  const cleanPkg = testPkg.replace(/^\.\//, '').replace(/\/$/, '')
+  const cmd = `go test -v ./${cleanPkg}/...`
+  s.closeArchitectureModal()
+  await s.runTerminalCommand(cmd)
 }
 
 // 模块与项目选择菜单状态
@@ -510,19 +585,27 @@ onMounted(() => {
             class="absolute inset-0 w-full h-full origin-top-left"
             :style="{ transform: `translate(${panX}px, ${panY}px) scale(${zoomScale})` }"
           >
-            <!-- 背景层级分割基准线 -->
+            <!-- 背景层级分割基准线与自适应高度 -->
             <div
-              v-for="(layer, idx) in layerDefinitions"
+              v-for="(layer, idx) in computedLayers"
               :key="layer.id"
-              class="absolute left-6 right-6 border-b border-black/[0.04] pointer-events-none flex items-center justify-between text-[10px] font-mono text-[#A1A1AA] pt-1"
-              :style="{ top: (layer.y - 18) + 'px' }"
+              class="absolute left-6 right-6 border-b border-black/[0.06] pointer-events-none flex items-center justify-between text-[11px] font-mono text-[#71717A] pt-1 pb-0.5"
+              :style="{ top: layer.y + 'px' }"
             >
-              <span>{{ layer.name }}</span>
-              <span class="text-black/[0.15]">Layer {{ idx + 1 }}</span>
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-[#18181B]">{{ layer.name }}</span>
+                <span class="px-1.5 py-0.2 rounded-full bg-black/[0.05] text-[9px] font-bold text-[#71717A]">
+                  {{ layer.count }} 模块
+                </span>
+              </div>
+              <span class="text-black/[0.2] font-semibold">Layer {{ idx + 1 }}</span>
             </div>
 
-            <!-- SVG 贝塞尔依赖连线 -->
-            <svg class="absolute inset-0 w-[2400px] h-[1200px] pointer-events-none z-0">
+            <!-- SVG 贝塞尔依赖连线 (动态自适应宽高) -->
+            <svg
+              class="absolute inset-0 pointer-events-none z-0"
+              :style="{ width: svgCanvasWidth + 'px', height: svgCanvasHeight + 'px' }"
+            >
               <defs>
                 <marker id="dag-arrow-normal" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
                   <polygon points="0 1, 7 3.5, 0 6" fill="#A1A1AA" opacity="0.6" />
@@ -635,10 +718,20 @@ onMounted(() => {
                       {{ contract.implementations.length }} 处多态实现
                     </span>
                   </div>
-                  <h4 class="text-xs font-bold text-[#18181B] font-mono mt-1">
-                    {{ contract.package }}.{{ contract.interface_name }}
+                  <h4
+                    @click="jumpToSource(contract.file)"
+                    class="text-xs font-bold text-[#18181B] hover:text-[#D96B27] font-mono mt-1 cursor-pointer flex items-center gap-1.5 group"
+                    title="单击跳转到接口定义源码"
+                  >
+                    <span>{{ contract.package }}.{{ contract.interface_name }}</span>
+                    <span class="text-[10px] text-[#A1A1AA] group-hover:text-[#D96B27]">↗</span>
                   </h4>
-                  <div class="text-[10px] text-[#A1A1AA] font-mono mt-0.5">{{ contract.file }}</div>
+                  <div
+                    @click="jumpToSource(contract.file)"
+                    class="text-[10px] text-[#A1A1AA] hover:text-[#D96B27] font-mono mt-0.5 cursor-pointer"
+                  >
+                    📄 {{ contract.file }}
+                  </div>
                 </div>
 
                 <!-- 方法集 -->
@@ -651,7 +744,7 @@ onMounted(() => {
                   </div>
                 </div>
 
-                <!-- 实现者列表 -->
+                <!-- 实现者列表 (支持单击直跳源码) -->
                 <div class="space-y-1">
                   <span class="text-[11px] font-bold text-[#71717A]">结构体实现绑定:</span>
                   <div v-if="contract.implementations.length === 0" class="text-[11px] text-[#A1A1AA] italic">
@@ -661,10 +754,15 @@ onMounted(() => {
                     <div
                       v-for="impl in contract.implementations"
                       :key="impl.package + '::' + impl.struct_name"
-                      class="p-1.5 rounded-lg bg-[#FAF8F5] border border-black/[0.04] flex items-center justify-between text-xs font-mono"
+                      @click="jumpToSource(impl.file)"
+                      class="p-1.5 rounded-lg bg-[#FAF8F5] hover:bg-[#D96B27]/10 hover:border-[#D96B27]/30 border border-black/[0.04] flex items-center justify-between text-xs font-mono cursor-pointer group transition-all"
+                      :title="'单击直达 ' + impl.file + ' 源码实现'"
                     >
-                      <span class="font-bold text-[#18181B]">{{ impl.package }}.{{ impl.struct_name }}</span>
-                      <span class="text-[9px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-700 font-bold">
+                      <div class="flex items-center gap-1.5 truncate">
+                        <span class="font-bold text-[#18181B] group-hover:text-[#D96B27]">{{ impl.package }}.{{ impl.struct_name }}</span>
+                        <span v-if="impl.file" class="text-[10px] text-[#A1A1AA] group-hover:text-[#D96B27]">({{ impl.file.split('/').pop() }}) ↗</span>
+                      </div>
+                      <span class="text-[9px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-700 font-bold shrink-0">
                         {{ impl.status === 'compliant' ? '🟢 100% 遵从' : '🟡 部分实现' }}
                       </span>
                     </div>
@@ -724,15 +822,54 @@ onMounted(() => {
                   <span class="text-xl">⚠️</span>
                 </div>
 
+                <!-- 符号级精准调用点雷达 (Call Sites) -->
+                <div class="p-3.5 rounded-xl bg-[#FAF8F5] border border-black/[0.06] space-y-2.5">
+                  <div class="flex items-center justify-between">
+                    <span class="font-bold text-xs text-[#71717A] flex items-center gap-1.5">
+                      <span>🎯</span>
+                      <span>符号引用与精准调用点 ({{ s.blastRadiusReport.call_sites?.length || 0 }} 处定位):</span>
+                    </span>
+                    <span class="text-[10px] font-mono text-[#A1A1AA]">AST Selector & Ident</span>
+                  </div>
+
+                  <div v-if="!s.blastRadiusReport.call_sites || s.blastRadiusReport.call_sites.length === 0" class="text-[#A1A1AA] text-xs italic py-2">
+                    暂未在工作区内扫描到该符号的具体调用语句或实例化点
+                  </div>
+                  <div v-else class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                    <div
+                      v-for="(cs, idx) in s.blastRadiusReport.call_sites"
+                      :key="cs.file + ':' + cs.line + ':' + idx"
+                      @click="jumpToSource(cs.file, cs.line)"
+                      class="p-2 rounded-xl bg-white border border-black/[0.06] hover:border-[#D96B27]/40 hover:shadow-2xs cursor-pointer group transition-all font-mono text-xs flex flex-col gap-1"
+                      title="单击直达代码调用行"
+                    >
+                      <div class="flex items-center justify-between text-[11px]">
+                        <div class="flex items-center gap-1.5 truncate">
+                          <span class="text-[#D96B27] font-bold">📄 {{ cs.file }}</span>
+                          <span class="text-[#A1A1AA]">in</span>
+                          <span class="text-[#18181B] font-semibold">{{ cs.function }}()</span>
+                        </div>
+                        <span class="px-1.5 py-0.2 rounded bg-black/[0.04] text-[#71717A] font-bold group-hover:text-[#D96B27] group-hover:bg-[#D96B27]/10 shrink-0">
+                          Line {{ cs.line }} ↗
+                        </span>
+                      </div>
+                      <div v-if="cs.snippet" class="text-[11px] text-[#52525B] bg-[#FAF8F5] p-1.5 rounded-md border border-black/[0.03] truncate font-mono">
+                        {{ cs.snippet }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="grid grid-cols-2 gap-4 text-xs font-mono">
                   <div class="p-3 rounded-xl bg-[#FAF8F5] border border-black/[0.06] space-y-2">
-                    <span class="font-bold text-[#71717A]">直接调用方 (Direct Callers):</span>
+                    <span class="font-bold text-[#71717A]">直接引入包 (Direct Callers):</span>
                     <div v-if="s.blastRadiusReport.direct_callers.length === 0" class="text-[#A1A1AA] text-[11px]">无直接上游引入</div>
-                    <div v-else class="space-y-1">
+                    <div v-else class="space-y-1 max-h-48 overflow-y-auto pr-1">
                       <div
                         v-for="c in s.blastRadiusReport.direct_callers"
                         :key="c"
-                        class="p-1.5 rounded bg-white border border-black/[0.04] text-[#18181B]"
+                        class="p-1.5 rounded bg-white border border-black/[0.04] text-[#18181B] truncate"
+                        :title="c"
                       >
                         ↳ {{ c }}
                       </div>
@@ -740,15 +877,28 @@ onMounted(() => {
                   </div>
 
                   <div class="p-3 rounded-xl bg-[#FAF8F5] border border-black/[0.06] space-y-2">
-                    <span class="font-bold text-[#71717A]">推荐必跑回归测试:</span>
+                    <div class="flex items-center justify-between">
+                      <span class="font-bold text-[#71717A]">推荐必跑回归测试:</span>
+                      <span class="text-[10px] text-[#A1A1AA] font-mono">一键运行</span>
+                    </div>
                     <div v-if="s.blastRadiusReport.affected_tests.length === 0" class="text-[#A1A1AA] text-[11px]">无对应单测</div>
-                    <div v-else class="space-y-1">
+                    <div v-else class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                       <div
                         v-for="t in s.blastRadiusReport.affected_tests"
                         :key="t"
-                        class="p-1.5 rounded bg-white border border-black/[0.04] text-[#059669]"
+                        class="p-2 rounded-xl bg-white border border-black/[0.06] flex items-center justify-between gap-2 shadow-2xs"
                       >
-                        ✓ go test ./{{ t }}
+                        <span class="text-xs font-mono text-[#059669] truncate font-bold" :title="'go test -v ./' + t + '/...'">
+                          go test ./{{ t }}/...
+                        </span>
+                        <button
+                          @click="runAffectedTest(t)"
+                          class="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-mono font-bold flex items-center gap-1 cursor-pointer transition-all shrink-0"
+                          title="在底层终端抽屉立即执行该包的单元测试"
+                        >
+                          <span>▶</span>
+                          <span>运行</span>
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -795,23 +945,25 @@ onMounted(() => {
               </div>
             </div>
 
-            <!-- 导出的符号列表 -->
+            <!-- 导出的符号列表 (支持单击直达 Monaco 编辑器) -->
             <div>
               <div class="text-xs font-bold text-[#71717A] mb-1.5 flex items-center justify-between">
                 <span>AST 导出实体 ({{ s.selectedArchitectureNode?.symbols.length || 0 }})</span>
-                <span class="text-[9px] font-mono text-[#A1A1AA]">go/parser</span>
+                <span class="text-[9px] font-mono text-[#A1A1AA]">单击直跳 Monaco</span>
               </div>
-              <div class="space-y-1 max-h-36 overflow-y-auto pr-1">
+              <div class="space-y-1 max-h-40 overflow-y-auto pr-1">
                 <div
                   v-for="sym in s.selectedArchitectureNode?.symbols"
-                  :key="sym.name"
-                  class="p-1.5 rounded bg-[#FAF8F5] border border-black/[0.04] text-xs font-mono flex items-center justify-between"
+                  :key="sym.name + ':' + sym.line"
+                  @click="jumpToSource(sym.file || (s.selectedArchitectureNode?.path + '/' + sym.name + '.go'), sym.line)"
+                  class="p-1.5 rounded bg-[#FAF8F5] hover:bg-[#D96B27]/10 hover:border-[#D96B27]/30 border border-black/[0.04] text-xs font-mono flex items-center justify-between cursor-pointer group transition-all"
+                  :title="'单击直跳 ' + sym.file + ' 第 ' + sym.line + ' 行'"
                 >
                   <div class="flex items-center gap-1 truncate">
                     <span class="text-[9px] text-[#D96B27] uppercase">{{ sym.kind }}</span>
-                    <span class="font-bold text-[#18181B]">{{ sym.name }}</span>
+                    <span class="font-bold text-[#18181B] group-hover:text-[#D96B27]">{{ sym.name }}</span>
                   </div>
-                  <span class="text-[9px] text-[#A1A1AA]">L{{ sym.line }}</span>
+                  <span class="text-[9px] text-[#A1A1AA] group-hover:text-[#D96B27] font-bold">L{{ sym.line }} ↗</span>
                 </div>
               </div>
             </div>

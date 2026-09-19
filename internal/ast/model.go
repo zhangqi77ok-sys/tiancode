@@ -48,15 +48,24 @@ type ContractItem struct {
 	Implementations []ContractImpl `json:"implementations"`
 }
 
+// CallSite 精准符号调用与引用代码点
+type CallSite struct {
+	File     string `json:"file"`               // 相对文件路径
+	Line     int    `json:"line"`               // 行号
+	Function string `json:"function,omitempty"` // 所属函数或方法名
+	Snippet  string `json:"snippet,omitempty"`  // 代码行内容
+}
+
 // BlastRadiusReport 符号改动影响面雷达报告
 type BlastRadiusReport struct {
-	TargetSymbol    string   `json:"target_symbol"`
-	TargetPackage   string   `json:"target_package"`
-	RiskLevel       string   `json:"risk_level"` // "LOW", "MEDIUM", "HIGH", "CRITICAL"
-	DirectCallers   []string `json:"direct_callers"`
-	IndirectCallers []string `json:"indirect_callers"`
-	AffectedTests   []string `json:"affected_tests"`
-	Suggestion      string   `json:"suggestion"`
+	TargetSymbol    string     `json:"target_symbol"`
+	TargetPackage   string     `json:"target_package"`
+	RiskLevel       string     `json:"risk_level"` // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+	DirectCallers   []string   `json:"direct_callers"`
+	CallSites       []CallSite `json:"call_sites"` // 符号级精准引用点
+	IndirectCallers []string   `json:"indirect_callers"`
+	AffectedTests   []string   `json:"affected_tests"`
+	Suggestion      string     `json:"suggestion"`
 }
 
 // ArchitectureReport 整体架构与依赖分析报告

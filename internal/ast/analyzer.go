@@ -390,8 +390,18 @@ func AnalyzeBlastRadius(rootDir, targetSymbol string) (*BlastRadiusReport, error
 	directCallers := make([]string, 0)
 	indirectMap := make(map[string]bool)
 
+	candidateDirs := make([]string, 0)
+	normRoot := normalizeWindowsPath(filepath.Clean(rootDir))
+
 	if matchedPkg != nil {
 		directCallers = append(directCallers, matchedPkg.ImportedBy...)
+
+		// 收集待扫描的物理目录
+		if matchedPkg.Path == "root" || matchedPkg.Path == "." {
+			candidateDirs = append(candidateDirs, normRoot)
+		} else {
+			candidateDirs = append(candidateDirs, filepath.Join(normRoot, filepath.FromSlash(matchedPkg.Path)))
+		}
 
 		pkgMap := make(map[string]*PackageNode)
 		for i := range report.Packages {
@@ -400,6 +410,11 @@ func AnalyzeBlastRadius(rootDir, targetSymbol string) (*BlastRadiusReport, error
 
 		for _, direct := range directCallers {
 			if dp, ok := pkgMap[direct]; ok {
+				if dp.Path == "root" || dp.Path == "." {
+					candidateDirs = append(candidateDirs, normRoot)
+				} else {
+					candidateDirs = append(candidateDirs, filepath.Join(normRoot, filepath.FromSlash(dp.Path)))
+				}
 				for _, ind := range dp.ImportedBy {
 					if ind != matchedPkg.ID && !containsStr(directCallers, ind) {
 						indirectMap[ind] = true
@@ -409,6 +424,32 @@ func AnalyzeBlastRadius(rootDir, targetSymbol string) (*BlastRadiusReport, error
 		}
 	}
 
+	// 若无显式导入者，默认全工作区探测引用点
+	if len(candidateDirs) == 0 {
+		candidateDirs = append(candidateDirs, normRoot)
+	}
+
+	// 深入 AST 扫描具体的符号引用代码行 (CallSite)
+	callSites := findSymbolCallSites(normRoot, symName, candidateDirs)
+
+	// 如果找到了精准调用点，把调用点格式化合入 DirectCallers 便于老视图展示，并丰富提示
+	formattedCallers := make([]string, 0)
+	if len(callSites) > 0 {
+		for _, cs := range callSites {
+			item := fmt.Sprintf("%s:%d", cs.File, cs.Line)
+			if cs.Function != "" {
+				item += fmt.Sprintf(" [%s()]", cs.Function)
+			}
+			if cs.Snippet != "" {
+				item += fmt.Sprintf(" › %s", cs.Snippet)
+			}
+			formattedCallers = append(formattedCallers, item)
+		}
+	} else {
+		// 回退显示包级调用方
+		formattedCallers = directCallers
+	}
+
 	indirectCallers := make([]string, 0, len(indirectMap))
 	for ind := range indirectMap {
 		indirectCallers = append(indirectCallers, ind)
@@ -416,14 +457,14 @@ func AnalyzeBlastRadius(rootDir, targetSymbol string) (*BlastRadiusReport, error
 	sort.Strings(directCallers)
 	sort.Strings(indirectCallers)
 
-	// 计算风险等级
-	totalAffected := len(directCallers) + len(indirectCallers)
+	// 计算风险等级 (基于真实调用点数 + 波及包数)
+	totalPoints := len(callSites) + len(directCallers) + len(indirectCallers)
 	riskLevel := "LOW"
-	if totalAffected >= 6 {
+	if totalPoints >= 10 || len(indirectCallers) >= 4 {
 		riskLevel = "CRITICAL"
-	} else if totalAffected >= 4 {
+	} else if totalPoints >= 5 || len(indirectCallers) >= 2 {
 		riskLevel = "HIGH"
-	} else if totalAffected >= 2 {
+	} else if totalPoints >= 2 {
 		riskLevel = "MEDIUM"
 	}
 
@@ -435,7 +476,7 @@ func AnalyzeBlastRadius(rootDir, targetSymbol string) (*BlastRadiusReport, error
 		affectedTests = append(affectedTests, c+"_test.go")
 	}
 
-	suggestion := fmt.Sprintf("改动符号 [%s] 将直接波及 %d 个模块，间接影响 %d 个上游。建议优先运行针对性测试验证。", symName, len(directCallers), len(indirectCallers))
+	suggestion := fmt.Sprintf("改动符号 [%s] 已精准定位到 %d 处源码引用点，波及 %d 个下游模块。建议修改后优先运行关联单测。", symName, len(callSites), len(directCallers))
 
 	targetPkgName := ""
 	if matchedPkg != nil {
@@ -446,11 +487,102 @@ func AnalyzeBlastRadius(rootDir, targetSymbol string) (*BlastRadiusReport, error
 		TargetSymbol:    symName,
 		TargetPackage:   targetPkgName,
 		RiskLevel:       riskLevel,
-		DirectCallers:   directCallers,
+		DirectCallers:   formattedCallers,
+		CallSites:       callSites,
 		IndirectCallers: indirectCallers,
 		AffectedTests:   affectedTests,
 		Suggestion:      suggestion,
 	}, nil
+}
+
+// findSymbolCallSites 深入 AST 语法树识别指定符号引用的精准行号与代码摘要
+func findSymbolCallSites(rootDir, symName string, candidateDirs []string) []CallSite {
+	fset := token.NewFileSet()
+	callSites := make([]CallSite, 0)
+	visitedSite := make(map[string]bool)
+
+	for _, dir := range candidateDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+				continue
+			}
+			filePath := filepath.Join(dir, e.Name())
+			fileContentBytes, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+			fileLines := strings.Split(string(fileContentBytes), "\n")
+
+			node, err := parser.ParseFile(fset, filePath, fileContentBytes, 0)
+			if err != nil || node == nil {
+				continue
+			}
+
+			relFile, _ := filepath.Rel(rootDir, filePath)
+			relFile = filepath.ToSlash(relFile)
+
+			var currentFunc string
+			ast.Inspect(node, func(n ast.Node) bool {
+				if n == nil {
+					return true
+				}
+				switch x := n.(type) {
+				case *ast.FuncDecl:
+					currentFunc = x.Name.Name
+				case *ast.SelectorExpr:
+					if x.Sel != nil && x.Sel.Name == symName {
+						pos := fset.Position(x.Pos())
+						siteKey := fmt.Sprintf("%s:%d", relFile, pos.Line)
+						if !visitedSite[siteKey] {
+							visitedSite[siteKey] = true
+							snippet := ""
+							if pos.Line > 0 && pos.Line <= len(fileLines) {
+								snippet = strings.TrimSpace(fileLines[pos.Line-1])
+							}
+							callSites = append(callSites, CallSite{
+								File:     relFile,
+								Line:     pos.Line,
+								Function: currentFunc,
+								Snippet:  snippet,
+							})
+						}
+					}
+				case *ast.Ident:
+					if x.Name == symName {
+						pos := fset.Position(x.Pos())
+						siteKey := fmt.Sprintf("%s:%d", relFile, pos.Line)
+						if !visitedSite[siteKey] {
+							visitedSite[siteKey] = true
+							snippet := ""
+							if pos.Line > 0 && pos.Line <= len(fileLines) {
+								snippet = strings.TrimSpace(fileLines[pos.Line-1])
+							}
+							callSites = append(callSites, CallSite{
+								File:     relFile,
+								Line:     pos.Line,
+								Function: currentFunc,
+								Snippet:  snippet,
+							})
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+
+	sort.Slice(callSites, func(i, j int) bool {
+		if callSites[i].File == callSites[j].File {
+			return callSites[i].Line < callSites[j].Line
+		}
+		return callSites[i].File < callSites[j].File
+	})
+
+	return callSites
 }
 
 func containsStr(arr []string, s string) bool {

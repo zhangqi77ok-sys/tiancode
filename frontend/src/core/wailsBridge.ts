@@ -128,6 +128,13 @@ export interface ContractItem {
   implementations: ContractImpl[]
 }
 
+export interface CallSite {
+  file: string
+  line: number
+  function: string
+  snippet: string
+}
+
 export interface BlastRadiusReport {
   target_symbol: string
   target_package: string
@@ -136,6 +143,7 @@ export interface BlastRadiusReport {
   indirect_callers: string[]
   affected_tests: string[]
   suggestion: string
+  call_sites?: CallSite[]
 }
 
 export interface ArchitectureReport {

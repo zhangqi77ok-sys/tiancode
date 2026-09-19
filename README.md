@@ -120,9 +120,12 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 
 ### 8. 代码架构与依赖治理工作板 (Code Architecture & Dependency Workbench)
 * **从玩具级 AST 到现代化架构治理**：彻底淘汰旧版 24 轮前端力导向随机排布，基于 Go 官方编译前端（`go/parser`, `go/token`, `go/ast`）全量分析工作区 AST 语法树，`<30ms` 极速完成代码分层与依赖提取；
-* **六层语义拓扑 DAG (Layered DAG)**：根据微内核架构自动划分为 `entry`、`host`、`core`、`bus`、`spec`、`tool` 六层，真实呈现包间 `import` 引用流向；
+* **六层语义拓扑 DAG 与 4 列流式折行 (Layered DAG & Adaptive Flow)**：根据微内核架构自动划分为 `entry`、`host`、`core`、`bus`、`spec`、`tool`、`other` 七大层级，采用 4 列网格自适应多行流式折行与动态层高排布，彻底杜绝单行无限向右延伸，自适应 16:9 原生工作台；
 * **隐式接口契约多态矩阵 (Contract Matrix)**：基于 Duck Typing 签名匹配算法，自动将所有抽象接口（Interface）与具体实现结构体（Struct）进行多态匹配与覆盖率透视，呈现 100% 依赖倒置原则；
-* **重构影响面毫秒级雷达 (Blast Radius)**：输入任意核心结构体或方法，秒级测算直接调用者 (Direct Callers)、间接传递波及包 (Indirect Packages) 以及关联需要回归的 `*_test.go` 测试用例清单，提供风险分级与重构建议；
+* **符号级影响面精准雷达 (Symbol-level Blast Radius & Call Sites)**：输入任意核心结构体、方法或接口，深入 AST SelectorExpr 与 Ident 解析直接调用者、精确到文件行号与上下文代码切片（CallSites）、间接传递波及包以及关联需要回归的单测清单；
+* **影响面回归测试一键执行 (In-Place Test Runner)**：雷达看板中推荐的测试用例支持 `[▶ 运行]` 按钮，一键调度底层终端抽屉以 `CREATE_NO_WINDOW` 实时流式运行 `go test -v ./<pkg>/...` 并即时呈现通过状态；
+* **符号与契约单击直跳 Monaco (Click-to-Source in Monaco)**：接口契约、实现类、抽屉导出符号、影响面调用点全链路支持一键单击直跳 Monaco 编辑器，毫秒级定位对应代码文件与行号高亮；
+* **微内核 `tool.arch` 算子闭环 (Agent Autonomous Architecture Tool)**：实现标准的 `pkg/plugin/v1.ToolPlugin` 插件，向大模型自动暴露 `code_architecture` 算子（`inspect`、`blast_radius`、`discover_modules`），彻底赋能自主 Coding Agent 在代码修改或重构前自发调用评估；
 * **铁律 7 架构防腐守卫 (Architecture Rail)**：实时扫描依赖关系并对违规导入（如插件反向依赖 core）进行危险红线告警，支持“仅看违规”一键过滤；
 * **Agent 上下文双向飞轮**：活动栏（`🏛️`）与对话顶栏常驻入口，支持一键将当前架构分层、依赖关系与 ADR 规范格式化注入 AI Agent 提示词，实现由架构指导开发、由测试保障发货的正向闭环；
 * **Monorepo 多子模块与外部项目独立探查 (含防投毒守卫)**：顶栏集成模块选择器，自动探测工作区内部所有独立 `go.mod` 模块与 `cmd/` 入口程序；支持通过原生文件夹选择框独立解析任意外部本地 Go 仓库；在外部模式下自动物理禁用“注入 Agent”功能，防止上下文投毒，关闭弹窗时自动瞬态重置回主工作区。
