@@ -341,10 +341,6 @@ async function createNewSession() {
   currentSessionId.value = ''
   currentSession.value = emptyDraft()
   showFullHistory.value = false
-  const saved = localStorage.getItem('tiancode_execution_strategy') as 'analyze' | 'implement' | 'tdd' | null
-  if (saved && ['analyze', 'implement', 'tdd'].includes(saved)) {
-    executionStrategy.value = saved
-  }
 }
 
 async function deleteSession(id: string) {
@@ -1345,78 +1341,7 @@ async function triggerUpload() {
   }
 }
 
-const executionStrategies = [
-  {
-    id: 'analyze',
-    letter: 'A',
-    title: '只读审查（拦截写盘）',
-    badge: '只读·硬闸',
-    desc: '只读拦写盘；首轮硬闸引导先检索或看根清单；全程阻断写盘与命令执行。'
-  },
-  {
-    id: 'implement',
-    letter: 'B',
-    title: '直接改代码（会写磁盘）',
-    badge: '可写',
-    desc: '直接改代码会写磁盘；允许读写工作区并执行必要命令；首轮硬闸引导先定位再深钻。'
-  },
-  {
-    id: 'tdd',
-    letter: 'C',
-    title: 'TDD 闭环（写后跑测试）',
-    badge: '测试',
-    desc: 'TDD 写后跑测试；修改后自动触发工作区测试，测试未全绿阻断宣称完成。'
-  }
-] as const
 
-const initialStrategy = (localStorage.getItem('tiancode_execution_strategy') as any) || 'implement'
-const executionStrategy = ref<'analyze' | 'implement' | 'tdd'>(['analyze', 'implement', 'tdd'].includes(initialStrategy) ? initialStrategy : 'implement')
-const selectedStrategyDraft = ref<'analyze' | 'implement' | 'tdd'>(executionStrategy.value)
-const strategyNote = ref('')
-const isStrategyPickerOpen = ref(false)
-
-function setExecutionStrategy(strat: 'analyze' | 'implement' | 'tdd') {
-  executionStrategy.value = strat
-  try {
-    localStorage.setItem('tiancode_execution_strategy', strat)
-  } catch {}
-}
-
-function cycleExecutionStrategy() {
-  const order: ('implement' | 'analyze' | 'tdd')[] = ['implement', 'analyze', 'tdd']
-  const idx = order.indexOf(executionStrategy.value)
-  const next = order[(idx + 1) % order.length]
-  setExecutionStrategy(next)
-  const label = next === 'analyze' ? '🛡️ 只读审查' : next === 'tdd' ? '🧪 TDD 闭环' : '⚡ 直接改代码'
-  showToast(`已切换执行策略为：${label}`)
-}
-
-function openStrategyPicker() {
-  selectedStrategyDraft.value = executionStrategy.value
-  isStrategyPickerOpen.value = true
-}
-
-function closeStrategyPicker() {
-  isStrategyPickerOpen.value = false
-  selectedStrategyDraft.value = executionStrategy.value
-}
-
-function skipStrategyChoice() {
-  setExecutionStrategy('analyze')
-  isStrategyPickerOpen.value = false
-  showToast('已切换为只读审查 (analyze)')
-}
-
-function confirmStrategyConfig() {
-  setExecutionStrategy(selectedStrategyDraft.value)
-  isStrategyPickerOpen.value = false
-  const label = executionStrategy.value === 'analyze' ? '🛡️ 只读审查' : executionStrategy.value === 'tdd' ? '🧪 TDD 闭环' : '⚡ 直接改代码'
-  showToast(`执行策略已设为：${label}`)
-}
-
-function confirmStrategyAndSend() {
-  confirmStrategyConfig()
-}
 
 async function submitAgentChoice(optionID: string, customNote: string = '') {
   if (!pendingChoice.value) return
@@ -1512,14 +1437,6 @@ async function handleSend() {
     return
   }
 
-  const lowerPrompt = prompt.toLowerCase()
-  if (slash === '/review' || lowerPrompt.startsWith('review') || prompt.includes('审查') || prompt.includes('代码分析')) {
-    if (executionStrategy.value === 'implement') {
-      executionStrategy.value = 'analyze'
-      showToast('已自动切换为【只读分析 (Analyze)】审查策略，优先使用地图与检索')
-    }
-  }
-
   if (pendingDiffFiles.value.length > 0 && !forceSendWithPendingDiff.value) {
     isPendingDiffPromptOpen.value = true
     return
@@ -1532,8 +1449,6 @@ async function handleSend() {
   }
 
   let fullPrompt = prompt
-  const stratLabel = executionStrategies.find((x) => x.id === executionStrategy.value)?.title || executionStrategy.value
-  fullPrompt = `[执行策略 ${executionStrategy.value}: ${stratLabel}]${strategyNote.value.trim() ? '\n[附加约束] ' + strategyNote.value.trim() : ''}\n\n` + fullPrompt
   if (attachedFiles.value.length > 0) {
     fullPrompt = `[附加关联文件]\n${attachedFiles.value.map(f => `@${f}`).join('\n')}\n\n${fullPrompt}`
     attachedFiles.value = []
@@ -1579,8 +1494,8 @@ async function handleSend() {
         prompt: fullPrompt,
         model: selectedModel.value,
         is_full_auto: false,
-        strategy: executionStrategy.value,
-        strategy_note: strategyNote.value.trim()
+        strategy: 'implement',
+        strategy_note: ''
       },
       {
         onThinking(thinking) {
@@ -2457,7 +2372,6 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     if (isMcpModalOpen.value) { isMcpModalOpen.value = false; return }
     if (isSkillModalOpen.value) { isSkillModalOpen.value = false; return }
     if (isRuleModalOpen.value) { isRuleModalOpen.value = false; return }
-    if (isStrategyPickerOpen.value) { isStrategyPickerOpen.value = false; return }
     if (isPendingDiffPromptOpen.value) { isPendingDiffPromptOpen.value = false; return }
 
     // 优先级 3: 设置/图谱/算子大盘等一级面板
@@ -2515,10 +2429,6 @@ function initWorkbench() {
     commandPaletteItems,
     commandPaletteQuery,
     confirmCommandPalette,
-    confirmStrategyAndSend,
-    confirmStrategyConfig,
-    cycleExecutionStrategy,
-    setExecutionStrategy,
     applyHunkAction,
     applyMention,
     astGraph,
@@ -2556,8 +2466,6 @@ function initWorkbench() {
     discardHunkAction,
     editorContent,
     editorDirty,
-    executionStrategy,
-    executionStrategies,
     editorDiagnostics,
     editorView,
     editChannel,
@@ -2608,7 +2516,6 @@ function initWorkbench() {
     isSettingsOpen,
     isSkillModalOpen,
     importSkillFileAction,
-    isStrategyPickerOpen,
     isStreaming,
     isTerminalMaximized,
     isTerminalOpen,
@@ -2678,10 +2585,6 @@ function initWorkbench() {
     selectedAstNode,
     selectedModel,
     sessions,
-    selectedStrategyDraft,
-    openStrategyPicker,
-    closeStrategyPicker,
-    skipStrategyChoice,
     setWorkspaceView,
     setSessionTag,
     setPrimaryChannel,
@@ -2692,7 +2595,6 @@ function initWorkbench() {
     stageFileAction,
     stageAllPendingDiffFilesAction,
     stagePath,
-    strategyNote,
     stagedTreeFiles,
     stopGenerationAction,
     suggestCommitMessage,

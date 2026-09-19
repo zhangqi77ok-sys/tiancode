@@ -342,37 +342,8 @@
                   <span>📎</span><span>上传</span>
                 </button>
                 <div class="h-3.5 w-px bg-black/[0.1] mx-0.5 shrink-0"></div>
-
-                <!-- 明确策略选择胶囊（点击快速轮转切换策略，齿轮打开附加约束） -->
-                <div
-                  class="inline-flex items-center rounded-full border shadow-2xs shrink-0 transition-colors"
-                  :class="[
-                    s.executionStrategy === 'analyze' ? 'bg-amber-500/10 text-amber-700 border-amber-500/30' :
-                    s.executionStrategy === 'tdd' ? 'bg-emerald-500/10 text-emerald-700 border-emerald-500/30' :
-                    'bg-[#D96B27]/10 text-[#D96B27] border-[#D96B27]/30'
-                  ]"
-                >
-                  <button
-                    type="button"
-                    @click="s.cycleExecutionStrategy"
-                    class="text-xs font-semibold pl-2.5 pr-1.5 py-1 cursor-pointer outline-none hover:opacity-80 transition-opacity flex items-center gap-1"
-                    title="点击快速轮转切换执行策略：改代码 ➔ 只读审查 ➔ TDD 闭环"
-                  >
-                    <span>{{ s.executionStrategy === 'analyze' ? '🛡️ 只读审查' : s.executionStrategy === 'tdd' ? '🧪 TDD 闭环' : '⚡ 直接改代码' }}</span>
-                  </button>
-                  <button
-                    type="button"
-                    @click.stop="s.openStrategyPicker"
-                    class="pr-2 pl-0.5 py-1 text-[10px] text-black/40 hover:text-black/80 cursor-pointer outline-none transition-colors"
-                    title="配置策略高级附加约束与说明 (⚙️)"
-                  >
-                    ⚙️
-                  </button>
-                </div>
-
-                <!-- 当前策略拦截规则实时指示 -->
-                <span class="text-[10px] text-[#71717A] truncate font-mono hidden sm:inline-block">
-                  {{ s.executionStrategy === 'analyze' ? '🛡️ 只读拦写盘（先看地图）' : s.executionStrategy === 'tdd' ? '🧪 TDD 写后跑测试' : '⚡ 直接改代码会写磁盘' }}
+                <span class="text-[11px] text-[#71717A] truncate font-sans hidden sm:inline-block">
+                  💡 输入 @ 关联文件，/ 查看指令，自然语言自由对话与改码
                 </span>
               </div>
 

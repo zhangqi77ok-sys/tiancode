@@ -154,12 +154,13 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 1. 点击顶栏活动目录名称，调用系统原生资源管理器拾取工作区文件夹；
 2. 左侧侧边栏自动加载文件树（支持 1 层受控异步懒加载，防超大项目卡顿）与 Git 变更状态。
 
-### 4. 智能对话与任务接续
-1. **执行策略底栏一键轮转（免弹窗即发）**：
-   - **`⚡ 直接改代码 (implement)`**（默认）：放行写盘与工具调用，先检索后改写，改动带出 Monaco Diff 待审核；
-   - **`🛡️ 只读审查 (analyze)`**：只读探测，微内核坚决拦截写盘与外部高危命令；
-   - **`🧪 TDD 闭环 (tdd)`**：实施红绿重构自愈循环，自动化测试未通过阻断声称交付；
-   - 点击底栏策略胶囊直接一键轮转切换，会话级持久记忆；点击齿轮图标可配置附加约束；敲回车即刻发起流式推理，告别阻断弹窗打断思路；
+### 4. 智能对话与全自主任务接续
+1. **全自主统一 Coding Agent（自然语言驱动）**：
+   - 彻底废除割裂的多模式选择器，全面进化为全自主统一 Coding Agent 架构（对齐 Cursor Composer 与 Claude Code 哲学）；
+   - **问答与审查**：输入“解释代码”、“查某函数”或“审查代码”，AI 自主通过检索与读取完成分析，绝不擅动文件；
+   - **代码修改**：输入“修复 Bug”、“实现某接口”，AI 精准改动并自动带出 Monaco Diff 视窗待审核采纳；
+   - **测试驱动**：输入“写测试验证”或“按 TDD 规范”，AI 自主补齐测试用例并级联调用真实测试套件验证；
+   - 敲回车直接发起推理，彻底消除模态弹窗与模式切换心智摩擦；
 2. **长任务无损接续**：输入「继续」、「continue」或「接着做」，内核直接复用历史既定目标与未完成清单接续执行，不推翻重来；
 3. **查看执行过程**：AI 推理过程中的心智思维链（ThinkingBlock）与工具调用（ToolCard）均支持折叠展开，输入区支持 `■ 终止` 即时中断。
 
@@ -229,7 +230,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 * [49 - 多协议网关、OAuth 2.0 刷新机制与 new-api 极简单输入框鉴权体验对齐](docs/knowledge/49-multi-protocol-gateway-oauth-refresh-and-newapi-alignment.md)
 * [50 - 嵌套子仓库暂存防崩溃、Git Porcelain 路径清洗、工作区列表去重与采纳健壮性闭环](docs/knowledge/50-submodule-diff-defense-empty-repo-stage-guard-and-git-porcelain-hygiene.md)
 * [51 - 插件热插拔中心、DSH 算子大盘与微内核动态拓扑一等入口设计](docs/knowledge/51-hotplug-plugin-center-and-dsh-operator-dashboard.md)
-* [52 - 会话级粘性执行策略胶囊架构与免拦截即发交互演进](docs/knowledge/52-session-sticky-execution-strategy-pill.md)
+* [52 - 从三态互斥到全自主统一 Coding Agent 架构演进](docs/knowledge/52-unified-autonomous-coding-agent-architecture.md)
 
 完整 38 篇现行文档目录索引请参阅 [`docs/README.md`](docs/README.md) 与 [`docs/knowledge/README.md`](docs/knowledge/README.md)。
 

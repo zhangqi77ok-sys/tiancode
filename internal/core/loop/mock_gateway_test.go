@@ -48,7 +48,7 @@ func (m *mockInteractionGateway) RequestConfirm(ctx context.Context, sessionID, 
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
-	case <-time.After(5 * time.Minute):
+	case <-time.After(200 * time.Millisecond):
 		return false, fmt.Errorf("timeout")
 	case reply := <-ch:
 		return reply.Allow, nil
@@ -83,7 +83,7 @@ func (m *mockInteractionGateway) RequestChoice(ctx context.Context, sessionID, r
 	select {
 	case <-ctx.Done():
 		return HumanReply{}, ctx.Err()
-	case <-time.After(5 * time.Minute):
+	case <-time.After(200 * time.Millisecond):
 		return HumanReply{Timeout: true}, nil
 	case reply := <-ch:
 		return reply, nil

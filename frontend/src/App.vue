@@ -909,55 +909,7 @@
       </div>
     </div>
 
-    <div
-      v-if="s.isStrategyPickerOpen"
-      class="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 backdrop-blur-xs font-sans"
-      @keydown.esc="s.closeStrategyPicker"
-      @click.self="s.closeStrategyPicker"
-      tabindex="-1"
-    >
-      <div class="w-[min(720px,92vw)] bg-white rounded-2xl border border-black/[0.1] shadow-2xl p-4 space-y-3">
-        <div class="flex items-center justify-between">
-          <div>
-            <h4 class="text-sm font-bold text-[#18181B]">执行策略与约束配置</h4>
-            <p class="text-[11px] text-[#71717A]">会话级生效：只读审查拦截写盘；TDD 写后自动化测试；直接改代码允许写盘。</p>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="text-[9px] text-[#D96B27] bg-[#D96B27]/10 px-1.5 py-0.5 rounded font-mono font-bold">策略配置</span>
-            <button @click="s.closeStrategyPicker" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-          <button
-            v-for="opt in s.executionStrategies"
-            :key="opt.id"
-            type="button"
-            class="text-left p-3 rounded-xl cursor-pointer transition-all"
-            :class="s.selectedStrategyDraft === opt.id ? 'border-2 border-[#D96B27] bg-white shadow-xs ring-2 ring-[#D96B27]/15' : 'border border-black/[0.08] opacity-85 hover:opacity-100'"
-            @click="s.selectedStrategyDraft = opt.id"
-          >
-            <div class="flex items-center justify-between gap-1">
-              <div class="flex items-center gap-1.5 font-bold text-xs text-[#18181B]">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#D96B27] text-white flex items-center justify-center text-[9px]">{{ opt.letter }}</span>
-                <span>{{ opt.title }}</span>
-              </div>
-              <span class="text-[9px] font-mono font-bold text-[#10A37F] bg-emerald-50 px-1.5 py-0.2 rounded">{{ opt.badge }}</span>
-            </div>
-            <p class="text-[11px] text-[#71717A] mt-1.5 leading-relaxed">{{ opt.desc }}</p>
-          </button>
-        </div>
-        <input
-          v-model="s.strategyNote"
-          type="text"
-          placeholder="补充约束（可选，会写入系统提示并随策略一起生效）"
-          class="w-full h-8 px-2.5 rounded-lg border border-black/[0.08] text-xs"
-        />
-        <div class="flex justify-end gap-2 pt-1 border-t border-black/[0.06]">
-          <button class="px-3 py-1 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.04] cursor-pointer" @click="s.closeStrategyPicker">取消</button>
-          <button class="px-4 py-1 rounded-lg bg-[#D96B27] text-white text-xs font-semibold cursor-pointer shadow-2xs hover:bg-[#B8551B]" @click="s.confirmStrategyAndSend">保存配置</button>
-        </div>
-      </div>
-    </div>
+
 
     <div
       v-if="s.tabContextMenu"
