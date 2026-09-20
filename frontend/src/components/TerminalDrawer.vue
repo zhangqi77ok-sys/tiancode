@@ -1,10 +1,21 @@
 <template>
 <div
-          v-show="s.isTerminalOpen"
-          :style="{ height: s.isTerminalMaximized ? '60vh' : `${s.terminalHeight}px` }"
-          class="min-h-[160px] max-h-[70vh] bg-[#161412] text-white flex flex-col border-t border-black/[0.3] shadow-2xl transition-all duration-150 z-30 shrink-0 select-none font-sans"
-        >
-          <!-- 终端控制顶栏 -->
+  v-show="s.isTerminalOpen"
+  :style="{ height: s.isTerminalMaximized ? '60vh' : `${s.terminalHeight}px` }"
+  class="min-h-[140px] max-h-[75vh] bg-[#161412] text-white flex flex-col border-t border-black/[0.3] shadow-2xl transition-all duration-150 z-30 shrink-0 select-none font-sans relative"
+>
+  <!-- 终端顶部可拖拽调节手柄 (Horizontal Resize Sash) -->
+  <div
+    v-if="!s.isTerminalMaximized"
+    @mousedown="s.startTerminalResize($event)"
+    @dblclick="s.resetTerminalHeight()"
+    class="absolute left-0 right-0 -top-1.5 h-3 cursor-row-resize hover:bg-[#D96B27]/40 active:bg-[#D96B27] transition-colors z-40 select-none group flex items-center justify-center"
+    title="双击恢复默认高度 (240px)，按住上下拖拽调整终端高度"
+  >
+    <div class="h-0.5 w-12 rounded-full bg-white/20 group-hover:bg-[#D96B27] transition-colors"></div>
+  </div>
+
+  <!-- 终端控制顶栏 -->
           <div class="h-8 bg-[#1E1C1A] border-b border-white/[0.08] px-3 flex items-center justify-between select-none shrink-0">
             <div class="flex items-center gap-2 text-xs">
               <span class="text-[#D96B27] font-bold font-mono">$_</span>

@@ -50,6 +50,7 @@
 | **54** | **从玩具级 Go AST 到现代代码架构与依赖治理工作板** | 代码架构分析 / 依赖倒置 / 影响面雷达 / 架构防腐守卫 / Agent上下文双向飞轮 | 淘汰简陋24轮SVG力导向图，基于 Go 编译前端深度解析工作区；实现 6 层语义分层拓扑 DAG、隐式接口契约多态匹配矩阵、重构影响面毫秒级雷达与铁律 7 单向依赖防腐守卫，支持一键注入 Agent 提示词闭环 | [54-code-architecture-and-dependency-governance-workbench.md](./54-code-architecture-and-dependency-governance-workbench.md) |
 | **55** | **确定性前缀冻结、KV Cache / Prompt Caching 与真实遥测闭环** | 大模型工程 / 推理成本优化 / 确定性序列化 / 遥测核算 / UI人机工程学 | 7 层确定性 Token 流水线、Layer 0-1 字典序系统提示词冻结、Canonical JSON 递归键排序、双阈值历史工具输出原位折叠修剪、动态上下文物理沉底至 User 尾部、OpenAI/DeepSeek cached_tokens 流式提取、Anthropic 双断点与 beta header 注入、真实遥测计算与顶栏微型指示胶囊 | [55-prompt-caching-kv-cache-prefix-freezing-and-real-telemetry.md](./55-prompt-caching-kv-cache-prefix-freezing-and-real-telemetry.md) |
 | **56** | **现代 AI IDE 双主轴一体化工作台与高人机工程学视口流转** | UI/UX 人机工程学 / 桌面端布局架构 / 单向数据流 / 性能优化 | 彻底纠正内容实体与布局形态混淆、消灭编辑器内嵌 240px 冗余文件树（归拢至左侧 LeftDrawer）、双栏可拖拽手柄 Sash (20%-80% 范围约束与 50/50 双击复位)、代码全屏防失联 AI Mini-Cockpit 呼吸徽章、快捷键 Ctrl+B / Ctrl+\\ / Alt+F 闭环 | [56-dual-loop-integrated-workbench-and-ergonomic-viewports.md](./56-dual-loop-integrated-workbench-and-ergonomic-viewports.md) |
+| **57** | **手术级精准局部补丁算子、Monaco 原生 Diff 审查与全域人机工程学工作台演进** | Coding Agent 底座 / Monaco Diff / 进程控制 / 语法高亮 / UI人机工程学 | 终结 100% 全量覆写风险之 `fs_control(replace)` 局部算子、终端守护任务 (`is_daemon: true`) 与生命周期管理、中文无空格 `@` 引用精准提取、Token-Safe 裁剪防 API 400 崩溃、原生 Monaco Diff 双模高保真审查、代码块语法高亮及一键复制/应用、左栏与终端无级拖拽手柄 | [57-surgical-code-patching-monaco-diff-and-ergonomic-workbench.md](./57-surgical-code-patching-monaco-diff-and-ergonomic-workbench.md) |
 
 ---
 

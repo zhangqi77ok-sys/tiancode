@@ -1,5 +1,9 @@
 <template>
-<aside v-show="s.isLeftDrawerOpen" class="w-[270px] min-w-[230px] bg-[#F4EFEA] border-r border-black/[0.08] flex flex-col justify-between select-none z-10 shrink-0 font-sans">
+<aside
+  v-show="s.isLeftDrawerOpen"
+  :style="{ width: `${s.leftDrawerWidth}px` }"
+  class="min-w-[200px] max-w-[550px] bg-[#F4EFEA] border-r border-black/[0.08] flex flex-col justify-between select-none z-10 shrink-0 font-sans relative"
+>
         <!-- 抽屉视图 1: 真实会话列表 (Chat Sessions) -->
         <div v-if="s.activeActivity === 'chat'" class="flex flex-col h-full overflow-hidden">
           <div class="p-3 border-b border-black/[0.06] flex items-center justify-between gap-2">
@@ -357,6 +361,16 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- 左侧抽屉可拖拽调节手柄 (Vertical Resize Sash) -->
+        <div
+          @mousedown="s.startLeftDrawerResize($event)"
+          @dblclick="s.resetLeftDrawerWidth()"
+          class="absolute -right-1 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-[#D96B27]/40 active:bg-[#D96B27] transition-colors z-20 select-none group flex items-center justify-center"
+          title="双击恢复默认宽度 (270px)，按住左右拖拽调整抽屉宽度"
+        >
+          <div class="w-0.5 h-8 rounded-full bg-black/15 group-hover:bg-[#D96B27] transition-colors"></div>
         </div>
       </aside>
 </template>

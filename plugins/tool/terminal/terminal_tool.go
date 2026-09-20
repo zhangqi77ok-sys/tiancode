@@ -17,11 +17,28 @@ import (
 )
 
 // Tool 受控终端执行算子插件
+// DaemonTask 后台常驻守护进程与长耗时任务状态
+type DaemonTask struct {
+	ID        string
+	Command   string
+	PID       int
+	StartTime time.Time
+	Cmd       *exec.Cmd
+	Cancel    context.CancelFunc
+	LogBuf    *bytes.Buffer
+	Mu        sync.RWMutex
+	Done      bool
+	ExitCode  int
+	Killed    bool
+	Err       error
+}
+
 type Tool struct {
 	id            string
 	name          string
 	version       string
 	workspaceRoot string
+	daemons       sync.Map
 }
 
 // NewTool 构造受控终端算子
@@ -50,18 +67,34 @@ func (t *Tool) Definition() v1.ToolDefinition {
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"enum":        []string{"run", "status", "kill"},
+				"description": "终端动作: run (执行命令，默认), status (查询后台守护任务状态), kill (终止后台守护任务)",
+			},
 			"command": map[string]any{
 				"type":        "string",
-				"description": "要执行的 Shell/CMD 命令，例如 'git status'、'npm test' 或 'dir'",
+				"description": "要执行的 Shell/CMD 命令，例如 'git status'、'npm test' 或 'dir' (action=run 时必填)",
+			},
+			"is_daemon": map[string]any{
+				"type":        "boolean",
+				"description": "是否以异步后台守护进程方式运行 (适用于长时间运行的服务，如 npm run dev、go run 等，立即返回 task_id)",
+			},
+			"background": map[string]any{
+				"type":        "boolean",
+				"description": "is_daemon 的别名",
+			},
+			"task_id": map[string]any{
+				"type":        "string",
+				"description": "目标后台任务标识符 (action=status 或 action=kill 时必填)",
 			},
 		},
-		"required": []string{"command"},
 	}
 	schemaBytes, _ := json.Marshal(schema)
 
 	return v1.ToolDefinition{
 		Name:        "exec_command",
-		Description: "在沙箱工作区根目录下受控静默执行一条命令行脚本，并返回 stdout 和 stderr。严禁阻塞运行长服务。",
+		Description: "在沙箱工作区根目录下受控静默执行命令行脚本，支持同步等待执行与后台常驻守护任务 (is_daemon: true)",
 		Mutating:    true,
 		Parameters:  schemaBytes,
 	}
@@ -70,19 +103,143 @@ func (t *Tool) Definition() v1.ToolDefinition {
 // Execute 物理执行命令 (严格注入 CREATE_NO_WINDOW 杜绝弹窗)
 func (t *Tool) Execute(ctx context.Context, rawArgs json.RawMessage) (*v1.ToolResult, error) {
 	var args struct {
-		Command string `json:"command"`
+		Action     string `json:"action"`
+		Command    string `json:"command"`
+		IsDaemon   bool   `json:"is_daemon"`
+		Background bool   `json:"background"`
+		TaskID     string `json:"task_id"`
 	}
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return &v1.ToolResult{Content: fmt.Sprintf("invalid args: %v", err), IsError: true}, nil
 	}
 
-	cmdStr := strings.TrimSpace(args.Command)
-	if cmdStr == "" {
-		return &v1.ToolResult{Content: "command is required", IsError: true}, nil
+	act := strings.ToLower(strings.TrimSpace(args.Action))
+	if act == "" {
+		act = "run"
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
+	switch act {
+	case "kill":
+		taskID := strings.TrimSpace(args.TaskID)
+		if taskID == "" {
+			return &v1.ToolResult{Content: "kill error: task_id is required", IsError: true}, nil
+		}
+		val, ok := t.daemons.Load(taskID)
+		if !ok {
+			return &v1.ToolResult{Content: fmt.Sprintf("kill error: task [%s] not found", taskID), IsError: true}, nil
+		}
+		task := val.(*DaemonTask)
+		task.Mu.Lock()
+		task.Killed = true
+		if task.Cancel != nil {
+			task.Cancel()
+		}
+		if task.Cmd != nil && task.Cmd.Process != nil && task.Cmd.Process.Pid > 0 {
+			if runtime.GOOS == "windows" {
+				killCmd := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", task.Cmd.Process.Pid))
+				killCmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000, HideWindow: true}
+				_ = killCmd.Run()
+			} else {
+				_ = task.Cmd.Process.Kill()
+			}
+		}
+		task.Done = true
+		task.Mu.Unlock()
+		return &v1.ToolResult{Content: fmt.Sprintf("daemon task [%s] (PID %d) terminated successfully", taskID, task.PID), IsError: false}, nil
+
+	case "status":
+		taskID := strings.TrimSpace(args.TaskID)
+		if taskID == "" {
+			return &v1.ToolResult{Content: "status error: task_id is required", IsError: true}, nil
+		}
+		val, ok := t.daemons.Load(taskID)
+		if !ok {
+			return &v1.ToolResult{Content: fmt.Sprintf("status error: task [%s] not found", taskID), IsError: true}, nil
+		}
+		task := val.(*DaemonTask)
+		task.Mu.RLock()
+		status := "RUNNING"
+		if task.Killed {
+			status = "TERMINATED"
+		} else if task.Done {
+			status = "FINISHED"
+		}
+		elapsed := time.Since(task.StartTime).Round(time.Millisecond)
+		logs := task.LogBuf.String()
+		if len(logs) > 4096 {
+			logs = "...[truncated]...\n" + logs[len(logs)-4096:]
+		}
+		task.Mu.RUnlock()
+		return &v1.ToolResult{
+			Content: fmt.Sprintf("Task ID: %s\nStatus: %s\nPID: %d\nCommand: %s\nElapsed: %v\nRecent Logs:\n%s", task.ID, status, task.PID, task.Command, elapsed, logs),
+			IsError: false,
+		}, nil
+
+	case "run":
+		cmdStr := strings.TrimSpace(args.Command)
+		if cmdStr == "" {
+			return &v1.ToolResult{Content: "command is required", IsError: true}, nil
+		}
+
+		// 后台常驻守护任务支持
+		if args.IsDaemon || args.Background {
+			taskID := fmt.Sprintf("task-%d", time.Now().UnixNano()%10000000)
+			bgCtx, bgCancel := context.WithCancel(context.Background())
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = exec.CommandContext(bgCtx, "cmd", "/d", "/s", "/c", cmdStr)
+				cmd.SysProcAttr = &syscall.SysProcAttr{
+					CreationFlags: 0x08000000,
+					HideWindow:    true,
+				}
+			} else {
+				cmd = exec.CommandContext(bgCtx, "sh", "-c", cmdStr)
+			}
+			cmd.Dir = t.workspaceRoot
+			logBuf := new(bytes.Buffer)
+			cmd.Stdout = logBuf
+			cmd.Stderr = logBuf
+
+			if err := cmd.Start(); err != nil {
+				bgCancel()
+				return &v1.ToolResult{Content: fmt.Sprintf("daemon start error: %v", err), IsError: true}, nil
+			}
+
+			pid := 0
+			if cmd.Process != nil {
+				pid = cmd.Process.Pid
+			}
+
+			task := &DaemonTask{
+				ID:        taskID,
+				Command:   cmdStr,
+				PID:       pid,
+				StartTime: time.Now(),
+				Cmd:       cmd,
+				Cancel:    bgCancel,
+				LogBuf:    logBuf,
+			}
+			t.daemons.Store(taskID, task)
+
+			go func() {
+				err := cmd.Wait()
+				task.Mu.Lock()
+				task.Done = true
+				if cmd.ProcessState != nil {
+					task.ExitCode = cmd.ProcessState.ExitCode()
+				}
+				task.Err = err
+				task.Mu.Unlock()
+			}()
+
+			return &v1.ToolResult{
+				Content: fmt.Sprintf("[Daemon Started]\nTask ID: %s\nPID: %d\nCommand: %s\nStatus: RUNNING\nDescription: Background process is running. Use action='status' to query or action='kill' to terminate.", taskID, pid, cmdStr),
+				IsError: false,
+			}, nil
+		}
+
+		execCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -163,10 +320,14 @@ func (t *Tool) Execute(ctx context.Context, rawArgs json.RawMessage) (*v1.ToolRe
 		}, nil
 	}
 
-	return &v1.ToolResult{
-		Content: output,
-		IsError: false,
-	}, nil
+		return &v1.ToolResult{
+			Content: output,
+			IsError: false,
+		}, nil
+
+	default:
+		return &v1.ToolResult{Content: fmt.Sprintf("unknown action: %s", act), IsError: true}, nil
+	}
 }
 
 // StreamChunkHandler 流式输出回调

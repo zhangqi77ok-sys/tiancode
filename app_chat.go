@@ -21,9 +21,12 @@ import (
 
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var mentionRegex = regexp.MustCompile(`@([a-zA-Z0-9_\-./\\]+)`)
 
 type ChatRequest struct {
 	SessionID    string `json:"session_id"`
@@ -93,22 +96,25 @@ func appendEnabledPolicies(base string, skills []config.SkillConfig, rules []con
 	return protocol.NormalizeNewlines(base)
 }
 
-// expandMentionedFiles 扫描用户 Prompt 中的 @path 标记，若工作区存在对应文件则将其内容安全附入用户消息（最多 8KB/文件）
+// expandMentionedFiles 扫描用户 Prompt 中的 @path 标记（支持中英文混排无空格引用），若工作区存在对应文件则将其内容安全附入用户消息（最多 8KB/文件）
 func expandMentionedFiles(workspace string, sb *sandbox.Sandbox, prompt string) string {
 	if strings.TrimSpace(prompt) == "" {
 		return prompt
 	}
 
-	words := strings.Fields(prompt)
+	matches := mentionRegex.FindAllStringSubmatch(prompt, -1)
+	if len(matches) == 0 {
+		return prompt
+	}
+
 	var appendedFiles []string
 	seen := make(map[string]bool)
 
-	for _, w := range words {
-		if !strings.HasPrefix(w, "@") {
+	for _, m := range matches {
+		if len(m) < 2 {
 			continue
 		}
-		rawPath := strings.TrimPrefix(w, "@")
-		rawPath = strings.TrimRight(rawPath, ",.?!;:'\"，。？！；：")
+		rawPath := strings.TrimRight(m[1], ",.?!;:'\"，。？！；：")
 		if rawPath == "" || seen[rawPath] {
 			continue
 		}
@@ -287,7 +293,7 @@ func (a *App) SendMessage(req ChatRequest) error {
 
 		workspaceTools := a.buildLLMToolsFromRegistry(agentCtx)
 		workspaceTools, systemPrompt = loop.ApplyStrategy(req.Strategy, req.StrategyNote, workspaceTools, systemPrompt)
-		conversation := buildConversationWindow(systemPrompt, currentSession.Messages, 32000)
+		conversation := buildConversationWindow(systemPrompt, currentSession.Messages, 120000)
 		roundStart := time.Now()
 		var hasHitCap bool
 		var hasError bool

@@ -90,11 +90,17 @@ func buildConversationWindow(systemPrompt string, history []session.SessionMessa
 	}
 
 	// 3. 超极端情况（如数十轮巨型上下文），从头部安全削减早期轮次
+	// 严格角色对齐原则：裁剪后首条消息必须是 "user" 角色（杜绝孤立 assistant 或 tool 导致大模型 400 报错）
 	startIndex := 0
 	for startIndex < len(processed)-2 && totalChars > maxHistoryChars {
 		totalChars -= len(processed[startIndex].Content)
 		startIndex++
 	}
+
+	for startIndex < len(processed)-1 && processed[startIndex].Role != "user" {
+		startIndex++
+	}
+
 	conversation = append(conversation, processed[startIndex:]...)
 	return conversation
 }

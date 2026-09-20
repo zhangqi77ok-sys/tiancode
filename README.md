@@ -148,6 +148,29 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 * **代码全屏模式下的防失联 AI 微胶囊 (Zero-Blindspot Floating Mini-Cockpit)**：当用户切入代码全屏专注时，顶栏实时动态挂载微型 AI 状态胶囊，实时感知流式生成进度（`[⚡ AI 生成中... 展开双栏]`）或待确认代码变更（`[📝 待确认变更 (N)]`），点击随时一键切回双栏协同，彻底终结看代码时无法感知 AI 思考的“失联感”；
 * **全局人机工学快捷键闭环**：全面支持 `Ctrl + B`（快速折叠/展开左侧抽屉）、`Ctrl + \`（一键切换协同双栏与纯对话面板）、`Alt + F`（代码全屏与双栏无缝切变），实现全程无鼠标沉浸式编码。
 
+### 11. 手术级精准局部补丁算子、Monaco 原生 Diff 审查与全域人机工程学拖拽分栏 (Surgical Code Patching, Native Monaco Diff & Ergonomic Resizers)
+* **终结 100% 全量覆写风险之 `fs_control(replace)` 局部算子**：
+  * 对齐现代顶级 Coding Agent 标准，彻底终结修改几行代码必须全量输出千行文件的冗余模式；
+  * 支持 `target_content`（精确字符特征块）与 `replacement_content` 原子级替换；支持 `start_line` / `end_line` 局部搜索区间约束，以及多处匹配阻断守卫（`allow_multiple: false`）；
+  * 替换前由 `SnapshotManager` 自动生成影子 Git 快照，并通过临时文件原子落盘，响应效率提升 80% 并杜绝大模型偷懒导致的源码截断损坏；
+* **终端长耗时守护任务支持 (`is_daemon: true`) 与多维生命周期控制**：
+  * `exec_command` 扩展非阻塞异步后台常驻模式，彻底消除 `npm run dev`、`vite`、`go run` 等长期服务卡死 60 秒硬超时的硬伤；
+  * 提供 `action: "run"`（即时返回 `task_id` 与 PID）、`action: "status"`（实时返回运行时长与尾部日志缓冲区）与 `action: "kill"`（在 Windows 上注入 `taskkill /F /T` 强力清理整棵子进程树，防止孤儿进程挂死）；
+* **中文无空格 `@` 引用精准提取与 Token-Safe 上下文对齐裁剪**：
+  * 彻底修复旧版本仅靠空格分词导致“`请看@main.go中的逻辑`”等中文 Prompt 无法解析引用的缺陷，引入精准正则提取全字符集路径并自动附入文件内容；
+  * 会话窗口容量平滑扩容至 120,000 字符；历史截断算法强制实行 **User 角色对齐准则**（`startIndex` 裁剪后首条消息必须是对齐的 `user` 角色），从根源杜绝工具结果脱节引发的 Anthropic/OpenAI `400 Bad Request` 异常；
+* **原生高保真 Monaco Diff Editor 差异对比视窗**：
+  * 废除手写 HTML `<div>` 拼接 Diff 模式，全面接入原生 `monaco.editor.createDiffEditor`；
+  * 完整具备多语言代码语法高亮、细粒度字符级差异着色、未改动行折叠；支持在顶部工具栏实时在 **双栏并排对比 (Side-by-Side)** 与 **单栏内联对比 (Inline)** 之间无缝切换；
+  * 顶部保留轻量 Git Hunk 操作带（`[✓ 采纳块]` / `[✕ 丢弃块]`），实现专业 Monaco 差异审查与敏捷 GitOps 的双重闭环；
+* **聊天 Markdown 语法高亮引擎与代码块双向闭环**：
+  * 集成 `highlight.js` 与 Atom One Dark 深度主题配色，使大模型输出的各类语言代码块均具备高对比度语法着色；
+  * 代码块头部提供一键 `[📋 复制]`（附带视觉反馈）与 `[⚡ 应用至编辑器]`（一键将生成的代码无损注入当前 Monaco 打开的文件中并唤出双栏视口）；
+* **全域人机工程学无级拖拽分栏与尺寸记忆**：
+  * **左侧资源管理器抽屉 (LeftDrawer)**：右侧边框嵌入垂直拖拽手柄，宽度在 200px ~ 550px 范围内随心调节，双击一键复位 (270px)，尺寸持久化至 `localStorage`；
+  * **底部集成终端抽屉 (TerminalDrawer)**：顶部边框嵌入水平拖拽手柄，高度在 140px ~ 75vh 范围内自由拉伸，双击一键复位 (240px)，尺寸持久化至 `localStorage`；
+  * **输入胶囊交互治理**：输入框支持 44px ~ 160px 自适应平滑高度扩展，`@` 提及下拉菜单精准锚定在输入卡片正上方，杜绝附件栏撑高造成的弹窗悬空或内容遮挡。
+
 ---
 
 ## 🎨 三、视觉与人机工程学规范

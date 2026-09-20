@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "highlight.js": "^11.12.0",
     "marked": "^18.0.11",
     "monaco-editor": "^0.45.0",
     "pinia": "^2.2.2",

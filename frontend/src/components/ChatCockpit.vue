@@ -239,8 +239,10 @@
                       class="rounded-xl border border-black/[0.08] bg-white shadow-2xs overflow-hidden"
                     >
                       <div class="p-2 flex items-center justify-between bg-black/[0.02] text-xs font-mono">
-                        <span class="font-bold text-[#18181B]">$_ {{ tItem.name }} {{ typeof tItem.args === 'string' ? tItem.args : JSON.stringify(tItem.args) }}</span>
-                        <span class="text-[10px]" :class="(tItem.output || '').startsWith('[') || (tItem.output || '').includes('error') || (tItem.output || '').includes('拦截') ? 'text-red-500' : ((tItem.output === '正在执行...' || !tItem.output) ? 'text-amber-600' : 'text-[#10A37F]')">
+                        <span class="font-bold text-[#18181B] truncate max-w-[80%]" :title="typeof tItem.args === 'string' ? tItem.args : JSON.stringify(tItem.args)">
+                          {{ formatToolHeader(tItem) }}
+                        </span>
+                        <span class="text-[10px] shrink-0" :class="(tItem.output || '').startsWith('[') || (tItem.output || '').includes('error') || (tItem.output || '').includes('拦截') ? 'text-red-500' : ((tItem.output === '正在执行...' || !tItem.output) ? 'text-amber-600' : 'text-[#10A37F]')">
                           {{ (tItem.output || '').startsWith('[') || (tItem.output || '').includes('拦截') ? '● 已拦截/失败' : ((tItem.output === '正在执行...' || !tItem.output) ? '● 执行中' : '● 完成') }}
                         </span>
                       </div>
@@ -253,10 +255,11 @@
               </div>
 
 
-              <!-- 优雅 Markdown 正文 -->
+              <!-- 优雅 Markdown 正文 (支持代码块高亮、复制与一键应用) -->
               <div
                 class="markdown-body text-xs text-[#27272A] leading-relaxed space-y-2 bg-white/70 p-3.5 rounded-xl border border-black/[0.04] w-full"
                 v-html="s.renderMarkdown(msg.content)"
+                @click="handleMarkdownClick($event)"
               ></div>
               <div class="flex items-center gap-2 text-[10px] text-[#A1A1AA]">
                 <button class="hover:text-[#18181B] cursor-pointer" @click="s.copyMessage(msg.content)">复制</button>
@@ -335,17 +338,11 @@
           </div>
 
           <!-- 输入卡片 -->
-          <div class="rounded-2xl bg-white border border-black/[0.12] shadow-sm focus-within:border-[#D96B27] focus-within:ring-2 focus-within:ring-[#D96B27]/15 transition-all p-2.5 flex flex-col gap-2">
-            <textarea
-              v-model="s.inputPrompt"
-              rows="2"
-              placeholder="给 湉码 Agent 发送指令（@ 引用会话/技能/文件，/ 调起指令，Shift+Enter 换行，拖入文件作为附件）"
-              class="w-full text-xs text-[#18181B] placeholder-[#A1A1AA] bg-transparent focus:outline-none resize-none leading-relaxed"
-              @keydown="s.handleComposerKeydown"
-            ></textarea>
+          <div class="rounded-2xl bg-white border border-black/[0.12] shadow-sm focus-within:border-[#D96B27] focus-within:ring-2 focus-within:ring-[#D96B27]/15 transition-all p-2.5 flex flex-col gap-2 relative">
+            <!-- 自动提及下拉菜单 (精准锚定在输入卡片上方，不再受附件和行高干扰) -->
             <div
               v-if="s.mentionOpen && s.mentionItems.length > 0"
-              class="absolute left-4 right-4 bottom-[7.5rem] z-20 bg-white border border-black/[0.1] rounded-xl shadow-lg max-h-48 overflow-y-auto"
+              class="absolute left-0 right-0 bottom-full mb-2 z-30 bg-white border border-black/[0.1] rounded-xl shadow-xl max-h-48 overflow-y-auto"
             >
               <button
                 v-for="(item, idx) in s.mentionItems"
@@ -354,10 +351,20 @@
                 :class="idx === s.mentionIndex ? 'bg-[#D96B27]/10' : 'hover:bg-black/[0.03]'"
                 @mousedown.prevent="s.applyMention(item)"
               >
-                <span>{{ item.label }}</span>
+                <span class="font-medium text-[#18181B]">{{ item.label }}</span>
                 <span class="text-[10px] text-[#A1A1AA]">{{ item.kind }}</span>
               </button>
             </div>
+
+            <textarea
+              ref="textareaRef"
+              v-model="s.inputPrompt"
+              rows="2"
+              placeholder="给 湉码 Agent 发送指令（@ 引用会话/技能/文件，/ 调起指令，Shift+Enter 换行，拖入文件作为附件）"
+              class="w-full text-xs text-[#18181B] placeholder-[#A1A1AA] bg-transparent focus:outline-none resize-none leading-relaxed min-h-[44px] max-h-[160px] transition-all"
+              @keydown="s.handleComposerKeydown"
+              @input="adjustTextareaHeight"
+            ></textarea>
 
             <div class="flex items-center justify-between border-t border-black/[0.04] pt-2 text-xs">
               <div class="flex items-center gap-1.5 min-w-0 flex-1">
@@ -449,11 +456,95 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkbenchStore } from '../stores/workbench'
 const s = useWorkbenchStore()
 const { messagesContainerRef } = storeToRefs(s)
+
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+
+function adjustTextareaHeight() {
+  const el = textareaRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  const newHeight = Math.min(Math.max(el.scrollHeight, 44), 160)
+  el.style.height = `${newHeight}px`
+}
+
+watch(() => s.inputPrompt, (val) => {
+  if (!val) {
+    if (textareaRef.value) {
+      textareaRef.value.style.height = '44px'
+    }
+  } else {
+    nextTick(() => adjustTextareaHeight())
+  }
+})
+
+function formatToolHeader(item: any): string {
+  if (!item) return '$_ tool'
+  const name = item.name || 'tool'
+  let args = item.args
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args)
+    } catch {
+      return `$_ ${name} ${args.slice(0, 45)}`
+    }
+  }
+  if (!args || typeof args !== 'object') {
+    return `$_ ${name}`
+  }
+
+  if (name === 'fs_control') {
+    const act = args.action || 'op'
+    const target = args.path || args.rel_path || args.file_path || '.'
+    return `$_ fs_control [${act}] ${target}`
+  }
+  if (name === 'exec_command') {
+    const cmd = args.command || ''
+    const shortCmd = cmd.length > 40 ? cmd.slice(0, 37) + '...' : cmd
+    return `$_ exec_command "${shortCmd}"`
+  }
+  if (name === 'code_search' || name === 'file_search') {
+    const q = args.query || args.pattern || ''
+    return `$_ ${name} "${q}"`
+  }
+
+  const entries = Object.entries(args)
+  if (entries.length === 0) return `$_ ${name}`
+  const summary = entries.slice(0, 2).map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 20)}`).join(' ')
+  return `$_ ${name} ${summary}`
+}
+
+function handleMarkdownClick(e: MouseEvent) {
+  const target = (e.target as HTMLElement)?.closest('button')
+  if (!target) return
+  if (target.classList.contains('code-copy-btn')) {
+    const rawCode = decodeURIComponent(target.getAttribute('data-code') || '')
+    if (rawCode) {
+      navigator.clipboard.writeText(rawCode)
+      const origText = target.innerHTML
+      target.innerHTML = '<span>✓</span><span>已复制</span>'
+      setTimeout(() => {
+        target.innerHTML = origText
+      }, 1500)
+    }
+  } else if (target.classList.contains('code-apply-btn')) {
+    const rawCode = decodeURIComponent(target.getAttribute('data-code') || '')
+    if (rawCode) {
+      s.editorContent = rawCode
+      s.markEditorDirty()
+      s.setWorkspaceView('split')
+      const origText = target.innerHTML
+      target.innerHTML = '<span>✓</span><span>已应用</span>'
+      setTimeout(() => {
+        target.innerHTML = origText
+      }, 1500)
+    }
+  }
+}
 
 const dragging = ref(false)
 let dragY = 0

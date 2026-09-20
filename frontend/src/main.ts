@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import './index.css'
+import 'highlight.js/styles/atom-one-dark.css'
 
 let uiMounted = false
 

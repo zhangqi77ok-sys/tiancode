@@ -41,6 +41,38 @@ const savedSplit = localStorage.getItem('tiancode_editor_split_percent')
 const editorSplitPercent = ref<number>(savedSplit ? Math.min(Math.max(Number(savedSplit), 20), 80) : 52)
 const isResizingSplit = ref(false)
 
+// 左侧文件/会话抽屉可拖拽宽度 (200px - 550px，持久化)
+const savedLeftDrawerWidth = localStorage.getItem('tiancode_left_drawer_width')
+const leftDrawerWidth = ref<number>(savedLeftDrawerWidth ? Math.min(Math.max(Number(savedLeftDrawerWidth), 200), 550) : 270)
+const isResizingLeftDrawer = ref(false)
+
+function startLeftDrawerResize(e: MouseEvent) {
+  isResizingLeftDrawer.value = true
+  const startX = e.clientX
+  const startWidth = leftDrawerWidth.value
+
+  const onMouseMove = (ev: MouseEvent) => {
+    const delta = ev.clientX - startX
+    const clamped = Math.min(Math.max(startWidth + delta, 200), 550)
+    leftDrawerWidth.value = clamped
+  }
+
+  const onMouseUp = () => {
+    isResizingLeftDrawer.value = false
+    localStorage.setItem('tiancode_left_drawer_width', String(leftDrawerWidth.value))
+    window.removeEventListener('mousemove', onMouseMove)
+    window.removeEventListener('mouseup', onMouseUp)
+  }
+
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
+}
+
+function resetLeftDrawerWidth() {
+  leftDrawerWidth.value = 270
+  localStorage.setItem('tiancode_left_drawer_width', '270')
+}
+
 function setWorkspaceView(v: 'chat' | 'split' | 'editor') {
   workspaceView.value = v
   isDiffOpen.value = v !== 'chat'
@@ -2280,7 +2312,36 @@ interface TerminalOutputItem {
 
 const isTerminalOpen = ref(false)
 const isTerminalMaximized = ref(false)
-const terminalHeight = ref(240)
+const savedTerminalHeight = localStorage.getItem('tiancode_terminal_height')
+const terminalHeight = ref<number>(savedTerminalHeight ? Math.min(Math.max(Number(savedTerminalHeight), 140), 600) : 240)
+const isResizingTerminal = ref(false)
+
+function startTerminalResize(e: MouseEvent) {
+  isResizingTerminal.value = true
+  const startY = e.clientY
+  const startH = terminalHeight.value
+
+  const onMouseMove = (ev: MouseEvent) => {
+    const delta = startY - ev.clientY
+    const clamped = Math.min(Math.max(startH + delta, 140), Math.floor(window.innerHeight * 0.75))
+    terminalHeight.value = clamped
+  }
+
+  const onMouseUp = () => {
+    isResizingTerminal.value = false
+    localStorage.setItem('tiancode_terminal_height', String(terminalHeight.value))
+    window.removeEventListener('mousemove', onMouseMove)
+    window.removeEventListener('mouseup', onMouseUp)
+  }
+
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
+}
+
+function resetTerminalHeight() {
+  terminalHeight.value = 240
+  localStorage.setItem('tiancode_terminal_height', '240')
+}
 const activeTerminalTab = ref<'shell' | 'logs'>('shell')
 const isTerminalRunning = ref(false)
 const terminalInputCmd = ref('')
@@ -2849,6 +2910,10 @@ function initWorkbench() {
     switchToGitActivity,
     switchToChatActivity,
     isLeftDrawerOpen,
+    leftDrawerWidth,
+    isResizingLeftDrawer,
+    startLeftDrawerResize,
+    resetLeftDrawerWidth,
     editorSplitPercent,
     isResizingSplit,
     toggleLeftDrawer,
@@ -2857,6 +2922,9 @@ function initWorkbench() {
     resetSplitRatio,
     startSplitResize,
     terminalHeight,
+    isResizingTerminal,
+    startTerminalResize,
+    resetTerminalHeight,
     terminalInputCmd,
     terminalOutputs,
     terminalScrollRef,

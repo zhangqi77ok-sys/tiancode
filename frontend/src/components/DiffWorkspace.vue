@@ -97,8 +97,8 @@
           <div v-else class="h-full flex items-center justify-center text-xs text-[#A1A1AA]">从左侧文件树打开文件即可编辑</div>
         </div>
 
-        <!-- 真实物理行级 Diff (Red / Green) -->
-        <div v-else class="flex-1 overflow-y-auto bg-[#18181B] text-[#F4F4F5] font-mono text-[11px] p-2 space-y-2 select-text flex flex-col">
+        <!-- 原生高保真 Monaco Diff 审查引擎 -->
+        <div v-else class="flex-1 min-h-0 flex flex-col bg-[#18181B] relative">
           <div v-if="!s.activeDiffFile || !s.diffReport?.lines || s.diffReport.lines.length === 0" class="flex-1 flex flex-col items-center justify-center p-8 text-center text-[#71717A] my-auto">
             <span class="text-3xl mb-3">📄</span>
             <p class="text-xs font-semibold text-[#A1A1AA]">暂无代码差异对比</p>
@@ -107,71 +107,41 @@
             </p>
           </div>
 
-          <!-- 分块 Hunks 细粒度审查模式 -->
-          <template v-if="s.diffReport?.hunks && s.diffReport.hunks.length > 0">
-            <div
-              v-for="(hunk, hIdx) in s.diffReport.hunks"
-              :key="hIdx"
-              class="p-2.5 rounded-xl bg-black/40 border border-white/[0.08] select-none"
-            >
-              <div class="flex items-center justify-between pb-1.5 mb-1.5 border-b border-white/[0.06] text-[10px]">
-                <div class="flex items-center gap-1.5 font-mono min-w-0">
-                  <span class="text-[#D96B27] font-bold shrink-0">块 #{{ hIdx + 1 }}</span>
-                  <span class="text-white/40 truncate">{{ hunk.header }}</span>
-                  <span v-if="hunk.add_count > 0" class="text-emerald-400 font-bold shrink-0">+{{ hunk.add_count }}</span>
-                  <span v-if="hunk.del_count > 0" class="text-rose-400 font-bold shrink-0">-{{ hunk.del_count }}</span>
-                </div>
-                <div class="flex items-center gap-1.5 shrink-0">
-                  <button
-                    @click="s.applyHunkAction(hunk.index, true)"
-                    title="将此块代码改动暂存入 Git Index (git apply --cached)"
-                    class="px-2 py-0.5 rounded bg-[#10A37F]/20 hover:bg-[#10A37F]/30 text-[#10A37F] font-bold text-[10px] cursor-pointer transition-all active:scale-95"
-                  >
-                    ✓ 采纳块
-                  </button>
-                  <button
-                    @click="s.discardHunkAction(hunk.index)"
-                    title="无损丢弃撤销此块代码改动 (git apply --reverse)"
-                    class="px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 font-bold text-[10px] cursor-pointer transition-all active:scale-95"
-                  >
-                    ✕ 丢弃块
-                  </button>
-                </div>
-              </div>
-              <div class="space-y-0.5 font-mono text-[11px] select-text">
-                <div
-                  v-for="(line, lIdx) in hunk.lines"
-                  :key="lIdx"
-                  :class="[
-                    'px-2 py-0.5 rounded leading-relaxed flex items-center gap-2 whitespace-pre-wrap font-mono transition-colors',
-                    line.type === 'add' ? 'bg-[#10A37F]/15 text-emerald-300 border-l-2 border-emerald-500' : '',
-                    line.type === 'del' ? 'bg-red-500/15 text-rose-300 border-l-2 border-rose-500' : '',
-                    line.type === 'ctx' ? 'text-zinc-400 hover:bg-white/[0.02]' : ''
-                  ]"
-                >
-                  <span class="flex-1">{{ line.text }}</span>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- 备用平铺模式 (Clean 工作区或无 Hunk 分块) -->
           <template v-else>
-            <div v-if="s.diffReport?.header" class="text-white/40 pb-1 mb-1 border-b border-white/[0.06] text-[10px]">
-              {{ s.diffReport.header }}
-            </div>
+            <!-- 顶部轻量 Hunk 分块采纳/丢弃操作带 (如存在 Git Hunk) -->
             <div
-              v-for="(line, idx) in (s.diffReport?.lines || [])"
-              :key="idx"
-              :class="[
-                'px-2 py-0.5 rounded leading-relaxed flex items-center gap-2 whitespace-pre-wrap font-mono transition-colors',
-                line.type === 'add' ? 'bg-[#10A37F]/15 text-emerald-300 border-l-2 border-emerald-500' : '',
-                line.type === 'del' ? 'bg-red-500/15 text-rose-300 border-l-2 border-rose-500' : '',
-                line.type === 'ctx' ? 'text-zinc-400 hover:bg-white/[0.02]' : ''
-              ]"
+              v-if="s.diffReport?.hunks && s.diffReport.hunks.length > 0"
+              class="h-8 bg-[#1F1D1A] border-b border-white/[0.08] px-3 flex items-center gap-2 overflow-x-auto no-scrollbar text-[11px] font-mono shrink-0 select-none z-10"
             >
-              <span class="w-5 text-[10px] select-none opacity-40 font-mono text-right">{{ idx + 1 }}</span>
-              <span class="flex-1">{{ line.text }}</span>
+              <span class="text-[#D96B27] font-bold text-[10px] shrink-0">HUNK 块操作:</span>
+              <div
+                v-for="(hunk, hIdx) in s.diffReport.hunks"
+                :key="hIdx"
+                class="flex items-center gap-1.5 bg-black/40 px-2 py-0.5 rounded-md border border-white/10 shrink-0 text-[10px]"
+              >
+                <span class="text-white/80 font-bold">#{{ hIdx + 1 }}</span>
+                <span v-if="hunk.add_count > 0" class="text-emerald-400 font-semibold">+{{ hunk.add_count }}</span>
+                <span v-if="hunk.del_count > 0" class="text-rose-400 font-semibold">-{{ hunk.del_count }}</span>
+                <button
+                  @click="s.applyHunkAction(hunk.index, true)"
+                  class="text-emerald-400 hover:text-emerald-300 ml-1 px-1 py-0.2 rounded hover:bg-emerald-500/20 cursor-pointer transition-all font-semibold"
+                  title="将此块代码改动暂存入 Git Index"
+                >✓ 采纳</button>
+                <button
+                  @click="s.discardHunkAction(hunk.index)"
+                  class="text-rose-400 hover:text-rose-300 px-1 py-0.2 rounded hover:bg-rose-500/20 cursor-pointer transition-all font-semibold"
+                  title="无损丢弃撤销此块代码改动"
+                >✕ 丢弃</button>
+              </div>
+            </div>
+
+            <!-- Monaco 真实 Diff 视图 -->
+            <div class="flex-1 min-h-0">
+              <MonacoDiffEditor
+                :original="originalDiffText"
+                :modified="modifiedDiffText"
+                :language="s.activeDiffFile || 'plaintext'"
+              />
             </div>
           </template>
         </div>
@@ -226,7 +196,26 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useWorkbenchStore } from '../stores/workbench'
 import MonacoEditor from './MonacoEditor.vue'
+import MonacoDiffEditor from './MonacoDiffEditor.vue'
+
 const s = useWorkbenchStore()
+
+const originalDiffText = computed(() => {
+  if (!s.diffReport?.lines) return ''
+  return s.diffReport.lines
+    .filter(l => l.type === 'ctx' || l.type === 'del')
+    .map(l => l.text)
+    .join('\n')
+})
+
+const modifiedDiffText = computed(() => {
+  if (!s.diffReport?.lines) return ''
+  return s.diffReport.lines
+    .filter(l => l.type === 'ctx' || l.type === 'add')
+    .map(l => l.text)
+    .join('\n')
+})
 </script>
