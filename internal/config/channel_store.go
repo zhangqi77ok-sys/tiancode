@@ -37,7 +37,7 @@ type ChannelStore struct {
 // NewChannelStore 实例化存储，默认保存在用户主目录 ~/.tiancode/channels.json
 func NewChannelStore() (*ChannelStore, error) {
 	dir := UserDataDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("cannot create config dir [%s]: %w", dir, err)
 	}
 

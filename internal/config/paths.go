@@ -13,7 +13,7 @@ func UserDataDir() string {
 		home = "."
 	}
 	dest := filepath.Join(home, ".tiancode")
-	_ = os.MkdirAll(dest, 0755)
+	_ = os.MkdirAll(dest, 0700)
 	legacy := filepath.Join(home, ".tcode")
 	migrateLegacyDir(legacy, dest)
 	return dest
@@ -33,7 +33,7 @@ func migrateLegacyDir(legacy, dest string) {
 	legacySess := filepath.Join(legacy, "sessions")
 	destSess := filepath.Join(dest, "sessions")
 	if st, err := os.Stat(legacySess); err == nil && st.IsDir() {
-		_ = os.MkdirAll(destSess, 0755)
+		_ = os.MkdirAll(destSess, 0700)
 		entries, _ := os.ReadDir(legacySess)
 		for _, e := range entries {
 			if e.IsDir() {
@@ -53,7 +53,7 @@ func copyIfMissing(src, dst string) {
 		return
 	}
 	defer in.Close()
-	_ = os.MkdirAll(filepath.Dir(dst), 0755)
+	_ = os.MkdirAll(filepath.Dir(dst), 0700)
 	out, err := os.Create(dst)
 	if err != nil {
 		return

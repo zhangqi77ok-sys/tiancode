@@ -25,7 +25,7 @@ type ProjectStore struct {
 
 func NewProjectStore() (*ProjectStore, error) {
 	dir := UserDataDir()
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0700)
 	s := &ProjectStore{
 		filePath: filepath.Join(dir, "projects.json"),
 		projects: make([]Project, 0),

@@ -55,7 +55,7 @@ type ExtraStore struct {
 
 func NewExtraStore() (*ExtraStore, error) {
 	dir := UserDataDir()
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0700)
 
 	store := &ExtraStore{
 		baseDir:   dir,
@@ -100,18 +100,18 @@ func (s *ExtraStore) loadAll() error {
 }
 
 func atomicWriteConfig(filePath string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0700); err != nil {
 		return err
 	}
 	tmpPath := fmt.Sprintf("%s.tmp.%d", filePath, time.Now().UnixNano())
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpPath, filePath); err != nil {
 		_ = os.Remove(filePath)
 		if renameErr := os.Rename(tmpPath, filePath); renameErr != nil {
 			_ = os.Remove(tmpPath)
-			return os.WriteFile(filePath, data, 0644)
+			return os.WriteFile(filePath, data, 0600)
 		}
 	}
 	return nil

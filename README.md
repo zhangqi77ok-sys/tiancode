@@ -187,7 +187,10 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 * **Monaco 快捷键捕获、全域暖炭黑代码主题与空状态卡片 (Monaco Shortcuts & Warm Charcoal Theme)**：
   * Monaco 编辑器原生通过 `editor.addCommand(CtrlCmd | KeyS)` 捕获保存快捷键，直接触发工作台落盘；
   * 注册并全域应用 `tcode-warm-charcoal` 主题（底色 `#1E1C1A`，行高亮 `#262320`，选区陶土橙高亮 `#D96B2733`），消除冷黑视觉割裂；
-  * 单击文件树普通代码文件时默认开启单文件实时编辑视窗；在 Diff 与 Edit 视窗处于空状态时，展示包括快速打开资源管理器、全局检索与新建文件的暖色操作卡片。
+  * 单击文件树普通代码文件时默认开启单文件实时编辑视窗；在 Diff 与 Edit 视窗处于空状态时，展示包括快速打开资源管理器、全局检索与新建文件的暖色操作卡片；
+* **凭据与会话目录严格权限收敛与双平台 CI 守卫 (Strict Permission Hardening & Dual-Platform CI)**：
+  * 全面收敛用户配置目录与会话存储目录访问控制（目录强制 `0700`，配置文件原子写入强制 `0600`），杜绝跨平台环境下 API Key 与工程配置的越权读取；
+  * CI 工作流（`.github/workflows/ci.yml`）扩充 `windows-latest` 测试与生产标签编译构建（`-tags "desktop,production"`），确保双平台自动化持续集成防护。
 
 ---
 

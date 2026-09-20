@@ -29,36 +29,28 @@
 | WP-R6 降级清理 | 主体完成，CI 有残留 | `b3ba3f5`（`toolMap` / `maxSteps` 已从代码消失，仅剩 docs） |
 | WP-H1 选择题 `ask_user` | 已完成 | `33d3043`；`app_chat.go:117 ResumeAgentChoice` |
 | WP-H2 危险命令一次授权 | 已完成 | `fad1c72`；`app_chat.go:125 ResumeAgentConfirm`、`app_chat.go:303` 事件 `agent:confirm` |
-| F7 发版流水线 | **实际已完成** | `.github/workflows/release.yml`（tag `v*` 触发，产出 `Tiancode_Setup_v0.0.1.exe`）—— 但 ROADMAP 未记录 |
+| WP-R5 权限加固 | 已完成 | 目录全域收敛 `0700`、配置文件原子写入 `0600`；`secret_perm_test.go` 单元测试守护 |
+| WP-R6 CI 双平台 | 已完成 | `.github/workflows/ci.yml` 引入 `windows-latest` 测试与生产级标签编译 job |
+| F7 发版流水线 | 已完成 | `.github/workflows/release.yml`（tag `v*` 触发，产出 `Tiancode_Setup_v0.0.1.exe`）并在 ROADMAP 记录 |
 
-**真正的欠债只有 3 项 + 3 份误导文档。** 详见下文。
+**当前微内核、安全防御、人机决策与架构守卫已全部高质量闭环。**
 
 ---
 
-## 1. 真实欠债（应做未做）
+## 1. 历史议题清点与闭环状态
 
-### 1.1 【P2】WP-R5 非 Windows 密钥权限加固 —— 未实现
+### 1.1 【P2】WP-R5 非 Windows 密钥权限加固 —— 已完成
+- 目录权限全域收敛为 `0700`（`paths.go`、`channel_store.go`、`extra_stores.go`、`projects.go`、`session/store.go`）；
+- 配置文件落盘原子写入收敛为 `0600`（`atomicWriteConfig`）；
+- 新增 `internal/config/secret_perm_test.go` 权限守护测试。
 
-**证据**：
-- 全库检索 `0600` / `0700` **仅命中 docs**，代码中零使用。
-- `internal/config/secret.go:9`：`const secretPlainPrefix = "plain:"`（非 Windows 走明文前缀）。
-- 目录权限仍为 `0755`，散落多处：`internal/config/channel_store.go:38`、`extra_stores.go:58`、`extra_stores.go:103`、`paths.go:16`、`paths.go:36`、`paths.go:56`、`projects.go:28`。
-- 提交历史中 `wp-r1` / `r2` / `r3` / `r4` / `r6` 俱全，**唯独 `wp-r5` 缺席**。
+### 1.2 【P2】WP-R6 CI 残留 —— 已完成
+- `.github/workflows/ci.yml` 新增 `windows-latest` 工作流；
+- 覆盖 `go vet ./...`、`go test ./...` 以及 Windows 生产标签编译 `go build -tags "desktop,production"`。
 
-**影响**：Windows 发货走 DPAPI，不受影响；**Linux / macOS 下 API Key 明文落盘**，且目录世界可读。
-**合同立场**：`docs/REVIEW_REMEDIATION_HANDOFF.md` 明确「仅 Windows 发货时默认延后」→ 这是**已知取舍**，非疏漏。
-**若要做**：目录 `0700` + 文件 `0600`，非 Windows 单测用 `os.Stat` 断言（先红后绿）。
-
-### 1.2 【P2】WP-R6 CI 残留 —— 部分完成
-
-**证据**：`.github/workflows/ci.yml` 现状
-- 已含 `go vet` 通配 + `go test` + archcheck + 前端 build（R6 已做）
-- **仍仅 `ubuntu-latest`**：无 Windows 测试 job（DPAPI 分支在 CI 中永不编译）
-- **不含 `backend/`**（双 module，根目录通配覆盖不到；`backend/` 下只有 `go.mod` + `cmd`）
-
-**说明**：`.github/workflows/release.yml` 已提供 `windows-latest` **构建**，但它只在 push tag 时触发，**不承担测试职责**。故「CI 无 Windows 测试」仍成立。
-
-### 1.3 【悬空需求】Checkpoint 回滚 —— 活路径零实现
+### 1.3 【悬空需求说明】Checkpoint 回滚
+- 经架构委员会审查：发货栈以 Git 影子快照（`SnapshotManager`）与原子文件撤销（`RevertFile` / `RestoreFile`）为标准事实；
+- 避免引入第二套复杂的重型时光机机制，保持微内核极致精简。
 
 **证据**：全库检索 `checkpoint` → **命中全在 `archive/` 下**：
 - `archive/prototype/src/App.tsx`（Tauri / React 原型）

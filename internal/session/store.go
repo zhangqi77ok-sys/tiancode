@@ -91,7 +91,7 @@ type Store struct {
 // NewStore 初始化会话存储，目录位于 ~/.tiancode/sessions/
 func NewStore() (*Store, error) {
 	dir := filepath.Join(config.UserDataDir(), "sessions")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create sessions dir failed: %w", err)
 	}
 
@@ -368,7 +368,7 @@ func (s *Store) Save(sess ChatSession) error {
 
 func atomicWriteSession(filePath string, data []byte) error {
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 

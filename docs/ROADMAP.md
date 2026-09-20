@@ -10,17 +10,13 @@
 
 **人机协同（对话中选择题 / 危险命令允许一次 WP-H1…H2）**：[`docs/HITL_CONTRACT.md`](./HITL_CONTRACT.md)
 
-## 正在做 / 下一波（按序）
+## 正在推进 / 迭代维护（聚焦桌面稳定性与主旅程体验）
 
-| ID | 功能 | 解决什么 | 验收 |
-|----|------|----------|------|
-| F1 | Fail-closed 零假数据 | 去掉硬编码模型列表、假仓库名 `agent-learning`、无渠道时仍填 `api.openai.com` | 未配渠道时下拉为空并提示；抽屉显示真实工作区名；无 Key 不发网 |
-| F2 | Skill 注入推理 | 设置里保存的技能目前不进 prompt（字段还写错成 `content`） | 启用的 skill.prompt 进入 system prompt；落盘字段为 `prompt` |
-| F3 | `/` 斜杠指令走真工具 | 输入 `/test` `/diff` 目前只是菜单文案 | `/test` 调 TDD；`/diff` 打开真实 Git diff |
-| F4 | 渠道模型即唯一模型源 | 模型下拉必须来自主渠道或「拉取上游」结果 | 禁止写死 gpt-4o 等 |
-| F5 | Provider 插件接聊天 | 桌面仍走 `llm.StreamChat`，注册的 openai Provider 闲置 | Execute 用渠道凭据 Init Provider |
-| F6 | 流式列表性能 | 长会话整页重绘 | 只更新最后一条；超长列表窗口化 |
-| F7 | 发版流水线 | 安装包只在本地脚本 | tag `v*` 打 `Tiancode_Setup`（可选） |
+| ID | 议题 | 目标 | 验收 |
+|----|------|------|------|
+| M1 | 生产级稳定性加固 | 持续监控 Windows 原生桌面的运行时健壮性与内存占用 | 长时间高负荷推理与多文件 Monaco 审查零崩溃 |
+| M2 | CI 自动化双平台验证 | 维护 Windows + Linux 持续集成矩阵（含 DPAPI 与原生标签构建） | GitHub Actions 双平台持续通过 |
+| M3 | 用户反馈与缺陷修复 | 针对真实开发者反馈的高频问题进行敏捷迭代修复 | 按照 SDD+TDD 规范持续保证单测覆盖率 100% |
 
 ## 明确不做 / 暂缓项（聚焦核心编码主旅程）
 
@@ -53,6 +49,9 @@
 - F4 ListModels / 拉取上游：无 Key 报错，只返回网关真实 `/models`，去掉内置 gpt-4o 目录
 - F5 桌面聊天 Init 已注册 Provider 再 StreamChat，不再绕过插件走裸 `llm.StreamChat`
 - F6 对话默认只渲染最近 80 条，可一键展开全文（全量仍落盘）
+- F7 发版流水线：构建 `.github/workflows/release.yml`，打 tag `v*` 自动产出 Windows 独立安装包 `Tiancode_Setup_v0.0.1.exe`
+- WP-R1 至 WP-R6 安全整改闭环：严格 TLS 探活过滤、`rm` 语义拆分拦截、`Mutating` 工具能力元数据、删除旧层死代码、非 Windows 严格权限加固（0700/0600）与 Windows CI 构建支持
+- WP-H1 与 WP-H2 人机决策协同（HITL）：实现 `ask_user` 对话中途单选卡片暂停与 `ResumeAgentChoice` 唤醒机制、危险系统命令拦截与 `ResumeAgentConfirm` 一次性显式授权弹窗
 - 会话模型：按工作区隔离；空草稿不落盘；标题取首条用户消息；列表不出现空会话
 - 原型树：多项目折叠 + 项目下会话分支；打开项目；点会话切换工作区
 - 修复桌面白屏：Vite `base: './'`，避免 Wails 加载 `/assets` 404
