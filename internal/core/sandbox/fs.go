@@ -158,3 +158,47 @@ func (s *Sandbox) ListDir(relPath string) ([]os.DirEntry, error) {
 	}
 	return os.ReadDir(validated)
 }
+
+// SafeCreateDir 在沙箱受控范围内安全创建目录
+func (s *Sandbox) SafeCreateDir(relPath string) error {
+	validated, err := s.ValidatePath(relPath)
+	if err != nil {
+		return err
+	}
+	if validated == s.rootDir {
+		return nil
+	}
+	return os.MkdirAll(validated, 0755)
+}
+
+// SafeDelete 在沙箱受控范围内安全删除文件或目录
+func (s *Sandbox) SafeDelete(relPath string) error {
+	validated, err := s.ValidatePath(relPath)
+	if err != nil {
+		return err
+	}
+	if validated == s.rootDir {
+		return fmt.Errorf("SECURITY: deleting workspace root [%s] is strictly forbidden", s.rootDir)
+	}
+	return os.RemoveAll(validated)
+}
+
+// SafeRename 在沙箱受控范围内安全重命名文件或目录
+func (s *Sandbox) SafeRename(oldRel string, newRel string) error {
+	oldVal, err := s.ValidatePath(oldRel)
+	if err != nil {
+		return fmt.Errorf("invalid source path: %w", err)
+	}
+	newVal, err := s.ValidatePath(newRel)
+	if err != nil {
+		return fmt.Errorf("invalid destination path: %w", err)
+	}
+	if oldVal == s.rootDir || newVal == s.rootDir {
+		return fmt.Errorf("SECURITY: renaming workspace root [%s] is strictly forbidden", s.rootDir)
+	}
+	if err := os.MkdirAll(filepath.Dir(newVal), 0755); err != nil {
+		return err
+	}
+	return os.Rename(oldVal, newVal)
+}
+

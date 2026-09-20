@@ -85,7 +85,7 @@
           </div>
         </header>
 
-        <div v-if="s.editorView === 'edit'" class="flex-1 min-h-0 bg-[#1e1e1e]">
+        <div v-if="s.editorView === 'edit'" class="flex-1 min-h-0 bg-[#1E1C1A]">
           <MonacoEditor
             v-if="s.activeDiffFile"
             v-model="s.editorContent"
@@ -94,17 +94,57 @@
             :line="s.targetEditorLine"
             @update:modelValue="s.markEditorDirty"
           />
-          <div v-else class="h-full flex items-center justify-center text-xs text-[#A1A1AA]">从左侧文件树打开文件即可编辑</div>
+          <div v-else class="h-full flex flex-col items-center justify-center p-8 text-center text-[#71717A]">
+            <span class="text-3xl mb-3">✍️</span>
+            <p class="text-xs font-semibold text-[#D4D4D8]">未选定编辑文件</p>
+            <p class="text-[11px] text-[#A1A1AA] mt-1.5 max-w-sm leading-relaxed">
+              可从左侧文件树点击任意源码文件开启 Monaco 实时编辑，支持实时语法高亮与 Ctrl+S 保存。
+            </p>
+            <div class="flex flex-wrap items-center justify-center gap-2 mt-4 max-w-md">
+              <button
+                @click="s.activeActivity = 'files'; s.isLeftDrawerOpen = true"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] border border-white/10 text-white text-xs font-medium cursor-pointer transition-all shadow-xs"
+              >
+                <span>📂</span><span>浏览文件树</span>
+              </button>
+              <button
+                @click="s.openCreateFileModal('')"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#D96B27]/20 hover:bg-[#D96B27]/30 border border-[#D96B27]/50 text-[#FFA97A] text-xs font-medium cursor-pointer transition-all shadow-xs"
+              >
+                <span>＋📄</span><span>新建空白文件</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- 原生高保真 Monaco Diff 审查引擎 -->
         <div v-else class="flex-1 min-h-0 flex flex-col bg-[#18181B] relative">
           <div v-if="!s.activeDiffFile || !s.diffReport?.lines || s.diffReport.lines.length === 0" class="flex-1 flex flex-col items-center justify-center p-8 text-center text-[#71717A] my-auto">
             <span class="text-3xl mb-3">📄</span>
-            <p class="text-xs font-semibold text-[#A1A1AA]">暂无代码差异对比</p>
-            <p class="text-[11px] text-[#71717A] mt-1.5 max-w-xs leading-relaxed">
-              当前工作区干净，或尚未选定对比文件。可从左侧文件树或 Git 状态点击文件审查。
+            <p class="text-xs font-semibold text-[#D4D4D8]">暂无代码差异对比</p>
+            <p class="text-[11px] text-[#A1A1AA] mt-1.5 max-w-sm leading-relaxed">
+              当前工作区干净，或尚未选定对比文件。可从左侧文件树选择文件进入编辑，或点击 Git 状态审查改动。
             </p>
+            <div class="flex flex-wrap items-center justify-center gap-2 mt-4 max-w-md">
+              <button
+                @click="s.activeActivity = 'files'; s.isLeftDrawerOpen = true"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] border border-white/10 text-white text-xs font-medium cursor-pointer transition-all shadow-xs"
+              >
+                <span>📂</span><span>文件资源管理器</span>
+              </button>
+              <button
+                @click="s.activeActivity = 'files'; s.isLeftDrawerOpen = true; s.explorerTab = 'search'"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] border border-white/10 text-white text-xs font-medium cursor-pointer transition-all shadow-xs"
+              >
+                <span>🔍</span><span>全局代码检索</span>
+              </button>
+              <button
+                @click="s.openCreateFileModal('')"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#D96B27]/20 hover:bg-[#D96B27]/30 border border-[#D96B27]/50 text-[#FFA97A] text-xs font-medium cursor-pointer transition-all shadow-xs"
+              >
+                <span>＋📄</span><span>新建文件</span>
+              </button>
+            </div>
           </div>
 
           <template v-else>

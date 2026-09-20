@@ -171,6 +171,24 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
   * **底部集成终端抽屉 (TerminalDrawer)**：顶部边框嵌入水平拖拽手柄，高度在 140px ~ 75vh 范围内自由拉伸，双击一键复位 (240px)，尺寸持久化至 `localStorage`；
   * **输入胶囊交互治理**：输入框支持 44px ~ 160px 自适应平滑高度扩展，`@` 提及下拉菜单精准锚定在输入卡片正上方，杜绝附件栏撑高造成的弹窗悬空或内容遮挡。
 
+### 12. 后台守护进程管控、受控文件系统 CRUD、会话重命名与暖炭黑 Monaco 编辑器全域治理 (Daemon Task Manager, Sandboxed File System CRUD, Session Renaming & Warm Charcoal Monaco)
+* **后台常驻守护进程可视化管控 (Daemon Task Manager & Kill)**：
+  * 微内核 `terminal_tool` 契约支持 `action: "list"` 结构化检索活跃守护进程，并支持通过 `action: "kill"` 注入 `taskkill /F /T` 强行阻断整个子进程树并释放端口；
+  * 宿主 `app_shell.go` 严格恪守铁律 7 规范，通过 `registry.GetTool("tool.terminal")` 统一派发，无侵入实现守护任务查杀；
+  * 终端抽屉顶栏新增 `$_ 终端控制台` 与 `⚡ 守护进程 (Daemons)` 切换标签页、活跃任务计数徽章、实时监控表格与一键 `[■ 终止]` 强行查杀按键；
+* **沙箱受控文件树 CRUD 全闭环 (Sandboxed File Tree CRUD)**：
+  * 微内核沙箱层 `SafeCreateDir`、`SafeDelete`、`SafeRename` 严格实行盘符大小写归一化与目录越权校验，凡试图使用 `..` 逃逸工作区沙箱的操作一律阻断；
+  * 资源管理器顶部工具栏提供新建文件 `＋📄` 与新建文件夹 `＋📁` 快捷按钮；
+  * 文件树节点全面支持右键上下文菜单（新建文件、新建文件夹、原地重命名、删除确认、复制绝对路径），无需切出 IDE 即可完整操作项目目录；
+* **全域彻底根除原生弹窗与会话原地重命名 (Zero Native Prompt & Session Rename)**：
+  * 彻底清除 `LeftDrawer.vue` 内 `window.prompt`，将标签修改收敛至符合暖米白设计规范的居中模态框；
+  * 支持会话标题原地重命名，底层由 `session.Store.Rename` 支撑原子落盘并强校验会话存在性；
+  * 会话删除引入居中二次确认模态窗，彻底防止误触引发历史会话数据丢失；
+* **Monaco 快捷键捕获、全域暖炭黑代码主题与空状态卡片 (Monaco Shortcuts & Warm Charcoal Theme)**：
+  * Monaco 编辑器原生通过 `editor.addCommand(CtrlCmd | KeyS)` 捕获保存快捷键，直接触发工作台落盘；
+  * 注册并全域应用 `tcode-warm-charcoal` 主题（底色 `#1E1C1A`，行高亮 `#262320`，选区陶土橙高亮 `#D96B2733`），消除冷黑视觉割裂；
+  * 单击文件树普通代码文件时默认开启单文件实时编辑视窗；在 Diff 与 Edit 视窗处于空状态时，展示包括快速打开资源管理器、全局检索与新建文件的暖色操作卡片。
+
 ---
 
 ## 🎨 三、视觉与人机工程学规范

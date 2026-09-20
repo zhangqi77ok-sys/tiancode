@@ -94,13 +94,17 @@
                   ]"
                 >
                   <div class="flex items-center justify-between gap-1">
-                    <span class="text-xs font-semibold text-[#18181B] truncate">{{ sess.title }}</span>
-                    <button @click.stop="s.deleteSession(sess.id)" class="text-[#A1A1AA] hover:text-red-500 text-[10px] cursor-pointer" title="删除会话">🗑</button>
+                    <span class="text-xs font-semibold text-[#18181B] truncate flex-1" :title="sess.title">{{ sess.title }}</span>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <button @click.stop="s.openRenameModal(sess)" class="text-[#A1A1AA] hover:text-[#D96B27] text-[10px] cursor-pointer" title="重命名会话">✏️</button>
+                      <button @click.stop="s.requestDeleteSession(sess.id)" class="text-[#A1A1AA] hover:text-red-500 text-[10px] cursor-pointer" title="删除会话">🗑</button>
+                    </div>
                   </div>
                   <div class="flex items-center gap-1 text-[10px] text-[#71717A]">
                     <button
-                      class="bg-[#D96B27]/10 text-[#D96B27] px-1 py-0.2 rounded cursor-pointer"
-                      @click.stop="s.setSessionTag(sess.id, window.prompt('会话标签（空则清除）', sess.tag || '') ?? sess.tag)"
+                      class="bg-[#D96B27]/10 text-[#D96B27] px-1 py-0.2 rounded cursor-pointer hover:bg-[#D96B27]/20 transition-colors"
+                      @click.stop="s.openTagModal(sess)"
+                      title="编辑会话标签"
                     >{{ sess.tag ? '#' + sess.tag : '#标签' }}</button>
                     <span class="truncate flex-1">{{ sess.desc }}</span>
                     <span class="font-mono text-[#A1A1AA] shrink-0">{{ sess.time }}</span>
@@ -132,12 +136,23 @@
               >
                 检索
               </button>
-              <button
-                v-if="s.explorerTab === 'tree'"
-                class="cursor-pointer text-[#71717A] hover:text-[#18181B] p-1 rounded text-xs ml-0.5"
-                @click="s.loadFileTree"
-                title="刷新文件树"
-              >↻</button>
+              <template v-if="s.explorerTab === 'tree'">
+                <button
+                  @click="s.openCreateFileModal('')"
+                  class="cursor-pointer text-[#71717A] hover:text-[#D96B27] p-1 rounded hover:bg-black/[0.04] text-[11px] transition-colors"
+                  title="在根目录下新建文件"
+                >＋📄</button>
+                <button
+                  @click="s.openCreateFolderModal('')"
+                  class="cursor-pointer text-[#71717A] hover:text-[#D96B27] p-1 rounded hover:bg-black/[0.04] text-[11px] transition-colors"
+                  title="在根目录下新建文件夹"
+                >＋📁</button>
+                <button
+                  class="cursor-pointer text-[#71717A] hover:text-[#18181B] p-1 rounded text-xs ml-0.5"
+                  @click="s.loadFileTree"
+                  title="刷新文件树"
+                >↻</button>
+              </template>
             </div>
           </div>
 
@@ -373,11 +388,277 @@
           <div class="w-0.5 h-8 rounded-full bg-black/15 group-hover:bg-[#D96B27] transition-colors"></div>
         </div>
       </aside>
+
+    <!-- 文件树右键上下文菜单 -->
+    <div
+      v-if="s.fileContextMenu"
+      class="fixed z-[70] bg-white border border-black/[0.1] rounded-xl shadow-xl text-xs py-1.5 min-w-[150px] font-sans animate-in fade-in zoom-in-95 duration-100"
+      :style="{ left: s.fileContextMenu.x + 'px', top: s.fileContextMenu.y + 'px' }"
+      @click.stop
+    >
+      <div class="px-3 py-1 text-[10px] text-[#A1A1AA] border-b border-black/[0.04] truncate max-w-[180px] font-mono">
+        {{ s.fileContextMenu.node.name }}
+      </div>
+      <button
+        v-if="s.fileContextMenu.node.is_dir"
+        class="w-full text-left px-3 py-1.5 hover:bg-black/[0.04] flex items-center gap-2 text-[#18181B] cursor-pointer"
+        @click="s.openCreateFileModal(s.fileContextMenu.node.path)"
+      >
+        <span>＋📄</span><span>新建子文件</span>
+      </button>
+      <button
+        v-if="s.fileContextMenu.node.is_dir"
+        class="w-full text-left px-3 py-1.5 hover:bg-black/[0.04] flex items-center gap-2 text-[#18181B] cursor-pointer"
+        @click="s.openCreateFolderModal(s.fileContextMenu.node.path)"
+      >
+        <span>＋📁</span><span>新建子目录</span>
+      </button>
+      <button
+        class="w-full text-left px-3 py-1.5 hover:bg-black/[0.04] flex items-center gap-2 text-[#18181B] cursor-pointer"
+        @click="s.openRenamePathModal(s.fileContextMenu.node)"
+      >
+        <span>✏️</span><span>重命名</span>
+      </button>
+      <button
+        class="w-full text-left px-3 py-1.5 hover:bg-black/[0.04] flex items-center gap-2 text-[#18181B] cursor-pointer"
+        @click="s.copyRelativePath(s.fileContextMenu.node.path)"
+      >
+        <span>📋</span><span>复制相对路径</span>
+      </button>
+      <div class="h-px bg-black/[0.06] my-1"></div>
+      <button
+        class="w-full text-left px-3 py-1.5 hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer font-medium"
+        @click="s.openDeletePathModal(s.fileContextMenu.node)"
+      >
+        <span>🗑️</span><span>删除</span>
+      </button>
+    </div>
+
+    <!-- 会话标签编辑模态弹窗 (遵循铁律 5: 暖色极简、水平垂直居中、Esc退出、显式[X]关闭) -->
+    <div
+      v-if="s.pendingTagSession"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.cancelTagModal()"
+      @keydown.esc="s.cancelTagModal()"
+    >
+      <div class="w-[380px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-[#D96B27]">🏷️</span>
+            <span class="font-bold text-xs text-[#18181B]">编辑会话标签</span>
+          </div>
+          <button @click="s.cancelTagModal()" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <p class="text-[11px] text-[#71717A]">输入标签分类名称（支持按标签筛选会话，留空则清除标签）</p>
+        <input
+          v-model="s.pendingTagSession.tag"
+          @keydown.enter="s.saveTagModal()"
+          type="text"
+          placeholder="例如: 架构设计, 调试, 核心算法..."
+          class="w-full h-8 px-2.5 rounded-lg bg-white border border-black/[0.1] text-xs text-[#18181B] focus:border-[#D96B27] focus:outline-none"
+          autofocus
+        />
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.cancelTagModal()" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.saveTagModal()" class="px-3.5 py-1.5 rounded-lg bg-[#D96B27] hover:bg-[#C25A1D] text-white text-xs font-semibold shadow-xs cursor-pointer">保存标签</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 会话删除二次确认模态弹窗 (符合铁律 5) -->
+    <div
+      v-if="s.pendingDeleteSessionId"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.cancelDeleteSession()"
+      @keydown.esc="s.cancelDeleteSession()"
+    >
+      <div class="w-[380px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-base text-rose-600">🗑️</span>
+            <span class="font-bold text-xs text-[#18181B]">永久删除会话</span>
+          </div>
+          <button @click="s.cancelDeleteSession()" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <p class="text-xs text-[#52525B] leading-relaxed">
+          确认要永久删除此会话及其全部对话历史吗？此操作不可逆。
+        </p>
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.cancelDeleteSession()" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.confirmDeleteSession()" class="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-xs cursor-pointer">确认删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 会话标题重命名模态弹窗 (符合铁律 5) -->
+    <div
+      v-if="s.pendingRenameSession"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.cancelRenameModal()"
+      @keydown.esc="s.cancelRenameModal()"
+    >
+      <div class="w-[400px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-[#D96B27]">✏️</span>
+            <span class="font-bold text-xs text-[#18181B]">重命名会话标题</span>
+          </div>
+          <button @click="s.cancelRenameModal()" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <input
+          v-model="s.pendingRenameSession.title"
+          @keydown.enter="s.saveRenameModal()"
+          type="text"
+          class="w-full h-8 px-2.5 rounded-lg bg-white border border-black/[0.1] text-xs text-[#18181B] focus:border-[#D96B27] focus:outline-none"
+          autofocus
+        />
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.cancelRenameModal()" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.saveRenameModal()" class="px-3.5 py-1.5 rounded-lg bg-[#D96B27] hover:bg-[#C25A1D] text-white text-xs font-semibold shadow-xs cursor-pointer">保存修改</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新建文件模态弹窗 (符合铁律 5) -->
+    <div
+      v-if="s.pendingCreateFile?.isOpen"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.pendingCreateFile.isOpen = false"
+      @keydown.esc="s.pendingCreateFile.isOpen = false"
+    >
+      <div class="w-[380px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-[#D96B27]">📄</span>
+            <span class="font-bold text-xs text-[#18181B]">新建文件</span>
+          </div>
+          <button @click="s.pendingCreateFile.isOpen = false" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <div class="text-[11px] text-[#71717A] font-mono">
+          位置: {{ s.pendingCreateFile.parentDir || '工作区根目录' }}
+        </div>
+        <input
+          v-model="s.pendingCreateFile.name"
+          @keydown.enter="s.submitCreateFile()"
+          type="text"
+          placeholder="文件名 (例如: main.go, index.html)..."
+          class="w-full h-8 px-2.5 rounded-lg bg-white border border-black/[0.1] text-xs font-mono text-[#18181B] focus:border-[#D96B27] focus:outline-none"
+          autofocus
+        />
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.pendingCreateFile.isOpen = false" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.submitCreateFile()" class="px-3.5 py-1.5 rounded-lg bg-[#D96B27] hover:bg-[#C25A1D] text-white text-xs font-semibold shadow-xs cursor-pointer">创建文件</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新建文件夹模态弹窗 (符合铁律 5) -->
+    <div
+      v-if="s.pendingCreateFolder?.isOpen"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.pendingCreateFolder.isOpen = false"
+      @keydown.esc="s.pendingCreateFolder.isOpen = false"
+    >
+      <div class="w-[380px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-[#D96B27]">📁</span>
+            <span class="font-bold text-xs text-[#18181B]">新建文件夹</span>
+          </div>
+          <button @click="s.pendingCreateFolder.isOpen = false" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <div class="text-[11px] text-[#71717A] font-mono">
+          位置: {{ s.pendingCreateFolder.parentDir || '工作区根目录' }}
+        </div>
+        <input
+          v-model="s.pendingCreateFolder.name"
+          @keydown.enter="s.submitCreateFolder()"
+          type="text"
+          placeholder="目录名 (例如: utils, components)..."
+          class="w-full h-8 px-2.5 rounded-lg bg-white border border-black/[0.1] text-xs font-mono text-[#18181B] focus:border-[#D96B27] focus:outline-none"
+          autofocus
+        />
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.pendingCreateFolder.isOpen = false" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.submitCreateFolder()" class="px-3.5 py-1.5 rounded-lg bg-[#D96B27] hover:bg-[#C25A1D] text-white text-xs font-semibold shadow-xs cursor-pointer">创建目录</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 重命名文件/目录模态弹窗 (符合铁律 5) -->
+    <div
+      v-if="s.pendingRenamePath?.isOpen"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.pendingRenamePath.isOpen = false"
+      @keydown.esc="s.pendingRenamePath.isOpen = false"
+    >
+      <div class="w-[380px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-[#D96B27]">✏️</span>
+            <span class="font-bold text-xs text-[#18181B]">重命名</span>
+          </div>
+          <button @click="s.pendingRenamePath.isOpen = false" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <div class="text-[11px] text-[#71717A] font-mono truncate">
+          原路径: {{ s.pendingRenamePath.oldPath }}
+        </div>
+        <input
+          v-model="s.pendingRenamePath.newName"
+          @keydown.enter="s.submitRenamePath()"
+          type="text"
+          class="w-full h-8 px-2.5 rounded-lg bg-white border border-black/[0.1] text-xs font-mono text-[#18181B] focus:border-[#D96B27] focus:outline-none"
+          autofocus
+        />
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.pendingRenamePath.isOpen = false" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.submitRenamePath()" class="px-3.5 py-1.5 rounded-lg bg-[#D96B27] hover:bg-[#C25A1D] text-white text-xs font-semibold shadow-xs cursor-pointer">保存修改</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除文件/目录二次确认模态弹窗 (符合铁律 5) -->
+    <div
+      v-if="s.pendingDeletePath?.isOpen"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-xs font-sans"
+      @click.self="s.pendingDeletePath.isOpen = false"
+      @keydown.esc="s.pendingDeletePath.isOpen = false"
+    >
+      <div class="w-[380px] bg-[#FAF8F5] border border-black/[0.12] rounded-xl shadow-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-base text-rose-600">🗑️</span>
+            <span class="font-bold text-xs text-[#18181B]">确认删除{{ s.pendingDeletePath.isDir ? '目录' : '文件' }}</span>
+          </div>
+          <button @click="s.pendingDeletePath.isOpen = false" class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer" title="关闭 (Esc)">✕</button>
+        </div>
+        <p class="text-xs text-[#52525B] leading-relaxed">
+          确认从工作区物理删除 <code class="font-mono text-[#D96B27] font-bold">{{ s.pendingDeletePath.path }}</code> 吗？此操作不可逆。
+        </p>
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-black/[0.06]">
+          <button @click="s.pendingDeletePath.isOpen = false" class="px-3 py-1.5 rounded-lg text-xs text-[#71717A] hover:bg-black/[0.05] cursor-pointer">取消</button>
+          <button @click="s.submitDeletePath()" class="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-xs cursor-pointer">确认删除</button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup lang="ts">
+import { onMounted, onBeforeUnmount } from 'vue'
 import { useWorkbenchStore } from '../stores/workbench'
 import FileTreeNode from './FileTreeNode.vue'
 const s = useWorkbenchStore()
+
+const onWindowClick = () => {
+  s.fileContextMenu = null
+}
+
+onMounted(() => {
+  window.addEventListener('click', onWindowClick)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', onWindowClick)
+})
 </script>
 

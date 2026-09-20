@@ -50,7 +50,7 @@ onMounted(() => {
   editor = monaco.editor.create(host.value, {
     value: props.modelValue || '',
     language: langOf(props.language),
-    theme: document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs',
+    theme: 'tcode-warm-charcoal',
     automaticLayout: true,
     minimap: { enabled: false },
     fontSize: bench.uiPrefs.monaco_size || 14,
@@ -58,6 +58,10 @@ onMounted(() => {
     readOnly: !!props.readOnly,
     wordWrap: 'on',
     scrollBeyondLastLine: false
+  })
+  // 绑定 Monaco 内部 Ctrl+S 快捷键保存到磁盘
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+    void bench.saveEditor()
   })
   editor.onDidChangeModelContent(() => {
     if (applying || !editor) return
@@ -108,7 +112,7 @@ watch(() => [bench.uiPrefs.monaco_font, bench.uiPrefs.monaco_size, bench.uiPrefs
     fontSize: bench.uiPrefs.monaco_size || 14,
     fontFamily: `${bench.uiPrefs.monaco_font || 'JetBrains Mono'}, Consolas, monospace`
   })
-  monaco.editor.setTheme(document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs')
+  monaco.editor.setTheme(bench.uiPrefs.theme === 'light' ? 'vs' : 'tcode-warm-charcoal')
 })
 
 onBeforeUnmount(() => {

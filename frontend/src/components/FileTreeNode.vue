@@ -2,6 +2,7 @@
   <div>
     <div
       @click="handleClick"
+      @contextmenu.prevent="s.openFileContextMenu($event, node)"
       :style="{ paddingLeft: `${depth * 10 + 6}px` }"
       :class="[
         'py-1 pr-1.5 rounded hover:bg-white cursor-pointer flex items-center justify-between text-[11px] font-mono group transition-colors',

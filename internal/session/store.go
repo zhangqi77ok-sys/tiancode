@@ -433,6 +433,32 @@ func (s *Store) UpdateTag(sessionID string, tag string) error {
 	})
 }
 
+// Rename 增量更新会话标题
+func (s *Store) Rename(sessionID string, newTitle string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	safeID, err := sanitizeID(sessionID)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.baseDir, safeID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("session %s not found: %w", sessionID, err)
+	}
+	var sess ChatSession
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return err
+	}
+	sess.Title = strings.TrimSpace(newTitle)
+	sess.UpdatedAt = time.Now().Unix()
+	out, err := json.MarshalIndent(sess, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteSession(path, out)
+}
+
 // AppendMessage 增量追加消息
 func (s *Store) AppendMessage(sessionID string, msg SessionMessage) error {
 	s.mu.Lock()

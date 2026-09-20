@@ -39,6 +39,14 @@ export interface MCPTestResult {
   error?: string
 }
 
+export interface DaemonTaskInfo {
+  task_id: string
+  command: string
+  pid: number
+  start_time: string
+  status: string
+}
+
 export interface DiagnosticItem {
   file: string
   line: number
@@ -992,6 +1000,68 @@ export const wailsBridge = {
       return
     }
     throw new Error('microkernel not connected: WriteFile unavailable')
+  },
+
+  async createFile(relPath: string, content: string = ''): Promise<void> {
+    const app = getApp()
+    if (app?.CreateFile) {
+      await app.CreateFile(relPath, content)
+      return
+    }
+    throw new Error('microkernel not connected: CreateFile unavailable')
+  },
+
+  async createDirectory(relPath: string): Promise<void> {
+    const app = getApp()
+    if (app?.CreateDirectory) {
+      await app.CreateDirectory(relPath)
+      return
+    }
+    throw new Error('microkernel not connected: CreateDirectory unavailable')
+  },
+
+  async deletePath(relPath: string): Promise<void> {
+    const app = getApp()
+    if (app?.DeletePath) {
+      await app.DeletePath(relPath)
+      return
+    }
+    throw new Error('microkernel not connected: DeletePath unavailable')
+  },
+
+  async renamePath(oldRel: string, newRel: string): Promise<void> {
+    const app = getApp()
+    if (app?.RenamePath) {
+      await app.RenamePath(oldRel, newRel)
+      return
+    }
+    throw new Error('microkernel not connected: RenamePath unavailable')
+  },
+
+  async renameSession(id: string, newTitle: string): Promise<void> {
+    const app = getApp()
+    if (app?.RenameSession) {
+      await app.RenameSession(id, newTitle)
+      return
+    }
+    throw new Error('microkernel not connected: RenameSession unavailable')
+  },
+
+  async listDaemonTasks(): Promise<DaemonTaskInfo[]> {
+    const app = getApp()
+    if (app?.ListDaemonTasks) {
+      return await app.ListDaemonTasks()
+    }
+    return []
+  },
+
+  async killDaemonTask(taskID: string): Promise<void> {
+    const app = getApp()
+    if (app?.KillDaemonTask) {
+      await app.KillDaemonTask(taskID)
+      return
+    }
+    throw new Error('microkernel not connected: KillDaemonTask unavailable')
   },
 
   // 5. 真实流式对话调用与事件订阅

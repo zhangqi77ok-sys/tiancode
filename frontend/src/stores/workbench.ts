@@ -471,6 +471,65 @@ async function deleteSession(id: string) {
   }
 }
 
+// 会话删除二次确认模态框 (遵循铁律 5: 居中、暖色、Esc退出、无原生confirm)
+const pendingDeleteSessionId = ref<string | null>(null)
+function requestDeleteSession(id: string) {
+  pendingDeleteSessionId.value = id
+}
+function cancelDeleteSession() {
+  pendingDeleteSessionId.value = null
+}
+async function confirmDeleteSession() {
+  if (pendingDeleteSessionId.value) {
+    const id = pendingDeleteSessionId.value
+    pendingDeleteSessionId.value = null
+    await deleteSession(id)
+    showToast('✓ 会话记录已安全删除')
+  }
+}
+
+// 会话标签编辑模态框 (遵循铁律 5: 严禁 window.prompt)
+const pendingTagSession = ref<{ id: string; tag: string } | null>(null)
+function openTagModal(sess: { id: string; tag?: string }) {
+  pendingTagSession.value = { id: sess.id, tag: sess.tag || '' }
+}
+function cancelTagModal() {
+  pendingTagSession.value = null
+}
+async function saveTagModal() {
+  if (pendingTagSession.value) {
+    const { id, tag } = pendingTagSession.value
+    pendingTagSession.value = null
+    await setSessionTag(id, tag.trim())
+    showToast('✓ 会话标签已更新')
+  }
+}
+
+// 会话标题重命名模态框
+const pendingRenameSession = ref<{ id: string; title: string } | null>(null)
+function openRenameModal(sess: { id: string; title: string }) {
+  pendingRenameSession.value = { id: sess.id, title: sess.title }
+}
+function cancelRenameModal() {
+  pendingRenameSession.value = null
+}
+async function saveRenameModal() {
+  if (pendingRenameSession.value && pendingRenameSession.value.title.trim()) {
+    const { id, title } = pendingRenameSession.value
+    pendingRenameSession.value = null
+    try {
+      await wailsBridge.renameSession(id, title.trim())
+      if (currentSessionId.value === id) {
+        currentSession.value.title = title.trim()
+      }
+      await loadSessionsList()
+      showToast('✓ 会话标题已重命名')
+    } catch (err) {
+      showToast('重命名失败: ' + err)
+    }
+  }
+}
+
 // 3. 真实工作区、文件树与 Git 状态
 const workspacePath = ref('')
 
@@ -714,7 +773,7 @@ async function handleFileClick(node: FileNode) {
     }
   } else {
     editorView.value = 'edit'
-    void openFileDiff(node.path)
+    void openEditorTab(node.path, 'edit')
   }
 }
 
@@ -823,6 +882,114 @@ const adrNote = ref('')
 const sessionTabs = ref<{ id: string; title: string }[]>([])
 const tabContextMenu = ref<{ x: number; y: number; id: string } | null>(null)
 const pendingCloseTab = ref<string | null>(null)
+
+// 文件树 CRUD 操作与上下文菜单 (符合铁律 2 暖色极简与铁律 5 弹窗规约)
+const pendingCreateFile = ref<{ isOpen: boolean; parentDir: string; name: string }>({ isOpen: false, parentDir: '', name: '' })
+const pendingCreateFolder = ref<{ isOpen: boolean; parentDir: string; name: string }>({ isOpen: false, parentDir: '', name: '' })
+const pendingRenamePath = ref<{ isOpen: boolean; oldPath: string; newName: string }>({ isOpen: false, oldPath: '', newName: '' })
+const pendingDeletePath = ref<{ isOpen: boolean; path: string; isDir: boolean }>({ isOpen: false, path: '', isDir: false })
+const fileContextMenu = ref<{ x: number; y: number; node: FileNode } | null>(null)
+
+function openCreateFileModal(parentDir: string = '') {
+  pendingCreateFile.value = { isOpen: true, parentDir, name: '' }
+  fileContextMenu.value = null
+}
+
+async function submitCreateFile() {
+  const fileName = pendingCreateFile.value.name.trim()
+  if (!fileName) return
+  const rel = pendingCreateFile.value.parentDir ? `${pendingCreateFile.value.parentDir}/${fileName}` : fileName
+  pendingCreateFile.value.isOpen = false
+  try {
+    await wailsBridge.createFile(rel, '')
+    await loadFileTree()
+    openEditorTab(rel, 'edit')
+    showToast(`✓ 已创建文件: ${rel}`)
+  } catch (err) {
+    showToast('创建文件失败: ' + err)
+  }
+}
+
+function openCreateFolderModal(parentDir: string = '') {
+  pendingCreateFolder.value = { isOpen: true, parentDir, name: '' }
+  fileContextMenu.value = null
+}
+
+async function submitCreateFolder() {
+  const folderName = pendingCreateFolder.value.name.trim()
+  if (!folderName) return
+  const rel = pendingCreateFolder.value.parentDir ? `${pendingCreateFolder.value.parentDir}/${folderName}` : folderName
+  pendingCreateFolder.value.isOpen = false
+  try {
+    await wailsBridge.createDirectory(rel)
+    await loadFileTree()
+    showToast(`✓ 已创建目录: ${rel}`)
+  } catch (err) {
+    showToast('创建目录失败: ' + err)
+  }
+}
+
+function openRenamePathModal(node: FileNode) {
+  pendingRenamePath.value = { isOpen: true, oldPath: node.path, newName: node.name }
+  fileContextMenu.value = null
+}
+
+async function submitRenamePath() {
+  const newName = pendingRenamePath.value.newName.trim()
+  const oldPath = pendingRenamePath.value.oldPath
+  pendingRenamePath.value.isOpen = false
+  if (!newName || !oldPath) return
+  const parent = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : ''
+  const newRel = parent ? `${parent}/${newName}` : newName
+  if (oldPath === newRel) return
+  try {
+    await wailsBridge.renamePath(oldPath, newRel)
+    const tab = openEditorTabs.value.find(t => t.path === oldPath)
+    if (tab) {
+      tab.path = newRel
+      tab.title = newName
+    }
+    if (activeDiffFile.value === oldPath) {
+      activeDiffFile.value = newRel
+    }
+    await loadFileTree()
+    showToast(`✓ 重命名成功: ${newName}`)
+  } catch (err) {
+    showToast('重命名失败: ' + err)
+  }
+}
+
+function openDeletePathModal(node: FileNode) {
+  pendingDeletePath.value = { isOpen: true, path: node.path, isDir: node.is_dir }
+  fileContextMenu.value = null
+}
+
+async function submitDeletePath() {
+  const p = pendingDeletePath.value.path
+  pendingDeletePath.value.isOpen = false
+  if (!p) return
+  try {
+    await wailsBridge.deletePath(p)
+    forceCloseEditorTab(p)
+    await loadFileTree()
+    await loadGitStatus()
+    showToast(`✓ 已安全删除: ${p}`)
+  } catch (err) {
+    showToast('删除失败: ' + err)
+  }
+}
+
+function openFileContextMenu(e: MouseEvent, node: FileNode) {
+  e.preventDefault()
+  e.stopPropagation()
+  fileContextMenu.value = { x: e.clientX, y: e.clientY, node }
+}
+
+function copyRelativePath(path: string) {
+  navigator.clipboard.writeText(path)
+  showToast(`✓ 已复制相对路径: ${path}`)
+  fileContextMenu.value = null
+}
 
 function markEditorDirty() {
   editorDirty.value = true
@@ -2342,7 +2509,27 @@ function resetTerminalHeight() {
   terminalHeight.value = 240
   localStorage.setItem('tiancode_terminal_height', '240')
 }
-const activeTerminalTab = ref<'shell' | 'logs'>('shell')
+
+const activeTerminalTab = ref<'shell' | 'logs' | 'daemon'>('shell')
+const daemonTasks = ref<DaemonTaskInfo[]>([])
+
+async function loadDaemonTasks() {
+  try {
+    daemonTasks.value = await wailsBridge.listDaemonTasks()
+  } catch {
+    daemonTasks.value = []
+  }
+}
+
+async function killDaemonTaskAction(taskID: string) {
+  try {
+    await wailsBridge.killDaemonTask(taskID)
+    showToast(`✓ 守护任务 ${taskID} 已安全终止`)
+    await loadDaemonTasks()
+  } catch (err) {
+    showToast('终止守护任务失败: ' + err)
+  }
+}
 const isTerminalRunning = ref(false)
 const terminalInputCmd = ref('')
 const currentTerminalBuffer = ref('')
@@ -2983,7 +3170,37 @@ function initWorkbench() {
     targetEditorLine,
     isSearching,
     runWorkspaceSearch,
-    searchFromFilter
+    searchFromFilter,
+    pendingDeleteSessionId,
+    requestDeleteSession,
+    cancelDeleteSession,
+    confirmDeleteSession,
+    pendingTagSession,
+    openTagModal,
+    cancelTagModal,
+    saveTagModal,
+    pendingRenameSession,
+    openRenameModal,
+    cancelRenameModal,
+    saveRenameModal,
+    pendingCreateFile,
+    pendingCreateFolder,
+    pendingRenamePath,
+    pendingDeletePath,
+    fileContextMenu,
+    openCreateFileModal,
+    submitCreateFile,
+    openCreateFolderModal,
+    submitCreateFolder,
+    openRenamePathModal,
+    submitRenamePath,
+    openDeletePathModal,
+    submitDeletePath,
+    openFileContextMenu,
+    copyRelativePath,
+    daemonTasks,
+    loadDaemonTasks,
+    killDaemonTaskAction
   }
 })
 

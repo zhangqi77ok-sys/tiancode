@@ -162,6 +162,87 @@ func (a *App) WriteFile(relPath string, content string) error {
 	return a.sandbox.AtomicWriteFile(relPath, []byte(content))
 }
 
+func (a *App) CreateFile(relPath string, content string) error {
+	if a.sandbox == nil {
+		return fmt.Errorf("sandbox not initialized")
+	}
+	return a.sandbox.AtomicWriteFile(relPath, []byte(content))
+}
+
+func (a *App) CreateDirectory(relPath string) error {
+	if a.sandbox == nil {
+		return fmt.Errorf("sandbox not initialized")
+	}
+	return a.sandbox.SafeCreateDir(relPath)
+}
+
+func (a *App) DeletePath(relPath string) error {
+	if a.sandbox == nil {
+		return fmt.Errorf("sandbox not initialized")
+	}
+	return a.sandbox.SafeDelete(relPath)
+}
+
+func (a *App) RenamePath(oldRel string, newRel string) error {
+	if a.sandbox == nil {
+		return fmt.Errorf("sandbox not initialized")
+	}
+	return a.sandbox.SafeRename(oldRel, newRel)
+}
+
+type DaemonTaskInfo struct {
+	TaskID    string `json:"task_id"`
+	Command   string `json:"command"`
+	PID       int    `json:"pid"`
+	StartTime string `json:"start_time"`
+	Status    string `json:"status"`
+}
+
+func (a *App) ListDaemonTasks() ([]DaemonTaskInfo, error) {
+	if a.registry == nil {
+		return []DaemonTaskInfo{}, nil
+	}
+	termTool, ok := a.registry.GetTool("tool.terminal")
+	if !ok {
+		return []DaemonTaskInfo{}, nil
+	}
+	rawArgs, _ := json.Marshal(map[string]string{"action": "list"})
+	res, err := termTool.Execute(a.ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	if res.IsError {
+		return nil, fmt.Errorf("%s", res.Content)
+	}
+	var list []DaemonTaskInfo
+	if err := json.Unmarshal([]byte(res.Content), &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (a *App) KillDaemonTask(taskID string) error {
+	if a.registry == nil {
+		return fmt.Errorf("registry not initialized")
+	}
+	termTool, ok := a.registry.GetTool("tool.terminal")
+	if !ok {
+		return fmt.Errorf("terminal tool not registered in registry")
+	}
+	rawArgs, _ := json.Marshal(map[string]string{
+		"action":  "kill",
+		"task_id": taskID,
+	})
+	res, err := termTool.Execute(a.ctx, rawArgs)
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", res.Content)
+	}
+	return nil
+}
+
 func (a *App) ExecCommand(command string) (string, error) {
 	termTool, ok := a.registry.GetTool("tool.terminal")
 	if !ok {

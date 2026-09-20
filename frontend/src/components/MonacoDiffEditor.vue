@@ -77,7 +77,7 @@ function updateModels() {
 onMounted(() => {
   if (!host.value) return
   diffEditor = monaco.editor.createDiffEditor(host.value, {
-    theme: document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs',
+    theme: 'tcode-warm-charcoal',
     automaticLayout: true,
     readOnly: props.readOnly ?? true,
     renderSideBySide: sideBySide.value,
@@ -101,7 +101,7 @@ watch(() => [bench.uiPrefs.monaco_font, bench.uiPrefs.monaco_size, bench.uiPrefs
     fontSize: bench.uiPrefs.monaco_size || 14,
     fontFamily: `${bench.uiPrefs.monaco_font || 'JetBrains Mono'}, Consolas, monospace`,
   })
-  monaco.editor.setTheme(document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs')
+  monaco.editor.setTheme(bench.uiPrefs.theme === 'light' ? 'vs' : 'tcode-warm-charcoal')
 })
 
 onBeforeUnmount(() => {

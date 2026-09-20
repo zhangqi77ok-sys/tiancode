@@ -69,8 +69,8 @@ func (t *Tool) Definition() v1.ToolDefinition {
 		"properties": map[string]any{
 			"action": map[string]any{
 				"type":        "string",
-				"enum":        []string{"run", "status", "kill"},
-				"description": "终端动作: run (执行命令，默认), status (查询后台守护任务状态), kill (终止后台守护任务)",
+				"enum":        []string{"run", "status", "kill", "list"},
+				"description": "终端动作: run (执行命令，默认), status (查询后台守护任务状态), kill (终止后台守护任务), list (列出所有后台守护任务)",
 			},
 			"command": map[string]any{
 				"type":        "string",
@@ -174,6 +174,37 @@ func (t *Tool) Execute(ctx context.Context, rawArgs json.RawMessage) (*v1.ToolRe
 			Content: fmt.Sprintf("Task ID: %s\nStatus: %s\nPID: %d\nCommand: %s\nElapsed: %v\nRecent Logs:\n%s", task.ID, status, task.PID, task.Command, elapsed, logs),
 			IsError: false,
 		}, nil
+
+	case "list":
+		type taskMeta struct {
+			TaskID    string `json:"task_id"`
+			Command   string `json:"command"`
+			PID       int    `json:"pid"`
+			StartTime string `json:"start_time"`
+			Status    string `json:"status"`
+		}
+		var list []taskMeta
+		t.daemons.Range(func(key, val any) bool {
+			task := val.(*DaemonTask)
+			task.Mu.RLock()
+			st := "running"
+			if task.Killed {
+				st = "killed"
+			} else if task.Done {
+				st = "finished"
+			}
+			list = append(list, taskMeta{
+				TaskID:    task.ID,
+				Command:   task.Command,
+				PID:       task.PID,
+				StartTime: task.StartTime.Format("15:04:05"),
+				Status:    st,
+			})
+			task.Mu.RUnlock()
+			return true
+		})
+		out, _ := json.Marshal(list)
+		return &v1.ToolResult{Content: string(out), IsError: false}, nil
 
 	case "run":
 		cmdStr := strings.TrimSpace(args.Command)

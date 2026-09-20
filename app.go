@@ -504,6 +504,13 @@ func (a *App) DeleteSession(id string) error {
 	return a.sessionStore.Delete(id)
 }
 
+func (a *App) RenameSession(id string, newTitle string) error {
+	if a.sessionStore == nil {
+		return fmt.Errorf("session store not initialized")
+	}
+	return a.sessionStore.Rename(id, newTitle)
+}
+
 // windowsSysProcAttr 返回 Windows 平台隐藏黑框与无窗口标志
 func windowsSysProcAttr() *syscall.SysProcAttr {
 	if goruntime.GOOS == "windows" {
