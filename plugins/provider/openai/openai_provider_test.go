@@ -127,3 +127,48 @@ func TestOpenAIProvider_UpstreamErrorInSSE(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_PromptCachingUsage(t *testing.T) {
+	// 模拟 DeepSeek/OpenAI 返回 cached_tokens
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Answer\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8000,\"completion_tokens\":50,\"total_tokens\":8050,\"prompt_cache_hit_tokens\":7200,\"prompt_tokens_details\":{\"cached_tokens\":7200}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := NewProvider()
+	p.baseURL = server.URL
+	p.apiKey = "test-api-key"
+
+	req := &v1.ChatRequest{
+		Model:  "deepseek-chat",
+		Stream: true,
+	}
+
+	ch, err := p.StreamChat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("StreamChat failed: %v", err)
+	}
+
+	var finalUsage *v1.TokenUsage
+	for chunk := range ch {
+		if chunk.Usage != nil {
+			finalUsage = chunk.Usage
+		}
+	}
+
+	if finalUsage == nil {
+		t.Fatal("Expected usage chunk, got nil")
+	}
+	if finalUsage.CacheReadTokens != 7200 {
+		t.Errorf("Expected 7200 CacheReadTokens, got %d", finalUsage.CacheReadTokens)
+	}
+	if finalUsage.PromptTokens != 8000 {
+		t.Errorf("Expected 8000 PromptTokens, got %d", finalUsage.PromptTokens)
+	}
+}
+
+

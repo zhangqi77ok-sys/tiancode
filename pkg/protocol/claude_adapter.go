@@ -1,7 +1,10 @@
 package protocol
 
 import (
+	"encoding/json"
 	"fmt"
+
+	v1 "tiancode/pkg/plugin/v1"
 )
 
 // ClaudeMessage Anthropic 请求消息
@@ -26,6 +29,56 @@ type ClaudeBlock struct {
 
 type ClaudeCacheCtrl struct {
 	Type string `json:"type"` // "ephemeral"
+}
+
+// ClaudeTool Anthropic 工具定义
+type ClaudeTool struct {
+	Name         string           `json:"name"`
+	Description  string           `json:"description,omitempty"`
+	InputSchema  any              `json:"input_schema"`
+	CacheControl *ClaudeCacheCtrl `json:"cache_control,omitempty"`
+}
+
+// ConvertToolsToClaude 将 ToolDefinition 列表转换为 Claude 格式，并在最后一个工具上挂载 Breakpoint 1
+func ConvertToolsToClaude(tools []v1.ToolDefinition, enableCacheBreakpoint bool) []ClaudeTool {
+	out := make([]ClaudeTool, 0, len(tools))
+	for _, t := range tools {
+		var schema any
+		if len(t.Parameters) > 0 {
+			_ = json.Unmarshal(t.Parameters, &schema)
+		}
+		if schema == nil {
+			schema = map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			}
+		}
+		out = append(out, ClaudeTool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: CanonicalizeValue(schema),
+		})
+	}
+	if enableCacheBreakpoint && len(out) > 0 {
+		out[len(out)-1].CacheControl = &ClaudeCacheCtrl{Type: "ephemeral"}
+	}
+	return out
+}
+
+// InjectClaudeMessageCacheBreakpoint 在倒数第 2 轮历史 User 消息的末尾块挂载 Breakpoint 2
+func InjectClaudeMessageCacheBreakpoint(msgs []ClaudeMessage) {
+	userCount := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			userCount++
+			if userCount == 2 {
+				if len(msgs[i].Content) > 0 {
+					msgs[i].Content[len(msgs[i].Content)-1].CacheControl = &ClaudeCacheCtrl{Type: "ephemeral"}
+				}
+				break
+			}
+		}
+	}
 }
 
 // ConvertCanonicalToClaude 将中立消息列表转换为 Claude 标准请求体

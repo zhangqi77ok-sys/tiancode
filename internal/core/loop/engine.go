@@ -8,6 +8,7 @@ import (
 
 	"tiancode/internal/host"
 	"tiancode/internal/llm"
+	v1 "tiancode/pkg/plugin/v1"
 )
 
 // EventType 引擎向前端派发的事件类型
@@ -24,6 +25,7 @@ const (
 	EventTDDResult    EventType = "tdd_result"
 	EventChoice       EventType = "choice"
 	EventConfirm      EventType = "confirm"
+	EventUsage        EventType = "usage"
 )
 
 // ChoiceOption 用户选择题选项
@@ -66,6 +68,7 @@ type EngineEvent struct {
 	TDDPassed    *bool           `json:"tdd_passed,omitempty"`
 	Choice       *ChoicePayload  `json:"choice,omitempty"`
 	Confirm      *ConfirmPayload `json:"confirm,omitempty"`
+	Usage        *v1.TokenUsage  `json:"usage,omitempty"`
 }
 
 // EngineRequest 用户推理请求

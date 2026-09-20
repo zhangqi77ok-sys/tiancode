@@ -119,6 +119,12 @@ func (e *ExecutionEngine) executeDirectLLM(ctx context.Context, req *EngineReque
 				eventChan <- EngineEvent{Type: EventError, ErrorMessage: humanErr}
 				return chunk.Error
 			}
+			if chunk.Usage != nil {
+				eventChan <- EngineEvent{
+					Type:  EventUsage,
+					Usage: chunk.Usage,
+				}
+			}
 			if chunk.DeltaContent != "" || chunk.Thinking != "" {
 				asstContent.WriteString(chunk.DeltaContent)
 				asstThinking.WriteString(chunk.Thinking)

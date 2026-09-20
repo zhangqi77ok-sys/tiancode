@@ -131,6 +131,18 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 * **Agent 上下文双向飞轮**：活动栏（`🏛️`）与对话顶栏常驻入口，支持一键将当前架构分层、依赖关系与 ADR 规范格式化注入 AI Agent 提示词，实现由架构指导开发、由测试保障发货的正向闭环；
 * **Monorepo 多子模块与外部项目独立探查 (含防投毒守卫)**：顶栏集成模块选择器，自动探测工作区内部所有独立 `go.mod` 模块与 `cmd/` 入口程序；支持通过原生文件夹选择框独立解析任意外部本地 Go 仓库；在外部模式下自动物理禁用“注入 Agent”功能，防止上下文投毒，关闭弹窗时自动瞬态重置回主工作区。
 
+### 9. 确定性前缀冻结、KV Cache / Prompt Caching 与真实遥测大盘 (Deterministic Prefix Freezing & KV Cache Telemetry)
+* **7 层确定性 Token 排布流水线 (The 7-Layer Deterministic Token Pipeline)**：解构大模型推理前缀，将 Token 序列按易变性严格分为 `Layer 0~1 静态基座`、`Layer 2 规范化工具 Schema`、`Layer 3 工作区 AST 架构指纹`、`Layer 4~5 线性历史与修剪块` 以及 `Layer 6 动态瞬态尾部`，实现多轮 Coding 会话中公共前缀 KV Cache 命中率稳定维持在 **85% ~ 95%**；
+* **Canonical JSON 递归键排序与 CRLF 归一化**：提供 `protocol.MarshalCanonical` 与 `protocol.CanonicalizeValue`，消除 Go `map[string]any` 遍历随机哈希与 Windows `\r\n` 跨平台字节差异，确保两次相同请求的 JSON 载荷与 SHA-256 绝对一致；
+* **动态上下文物理沉底隔离 (Zero Prefix Contamination)**：彻底终结将任务接续上下文（`continuationCtx`）、技术栈探测（`stackPrompt`）与待确认文件拼接进 `systemPrompt` 的“缓存杀手”坏味道；将所有易变上下文收拢进 `<dynamic_context>` 标签，严格沉底作为最新一条 User Prompt 附件；前端智能识别并在用户提问气泡中折叠为 `⚡ 运行时上下文快照`，兼顾提示词确定性与界面极简；
+* **双阈值历史工具输出原位折叠修剪 (In-Place Output Pruning)**：彻底废除从头部截断消息的粗暴滑动窗口（防止第 0 个 Token 改变导致全量缓存报废）；当会话轮次 > 3 且单条历史工具输出 > 1,000 字符时，执行原位微创折叠修剪，保持 Message 角色、`tool_call_id` 与时序链路骨架不变，实现 Append-Only 单向正序追加；
+* **头部厂商协议级 Prompt Caching 对齐**：
+  * **Anthropic Claude**：注入 `anthropic-beta: prompt-caching-2024-07-31` 请求头，在工具列表末尾注入 Breakpoint 1，在倒数第 2 轮 User 消息末尾注入 Breakpoint 2；实时捕获 `cache_read_input_tokens` 与 `cache_creation_input_tokens`；
+  * **OpenAI / DeepSeek**：流式请求自动注入 `"stream_options": {"include_usage": true}`，解析 `prompt_tokens_details.cached_tokens` 与 `prompt_cache_hit_tokens`，随 `StreamChunk` 派发；
+* **真实用量遥测大盘与顶栏微型指示胶囊 (Zero Demo Policy)**：
+  * `internal/telemetry` 提供 `RecordWithCache`，严格从模型实际返回的 `usage` 累加核算命中率与预估节省金额（按平均节省 $0.0018 / 1k cached tokens）；
+  * 对话顶栏常驻微型指示胶囊：`[ ⚡ KV Cache 89% · 省 $1.20 ]`，未发生 Token 消耗前保持干净纯净空状态；鼠标悬停即时浮现命中率、读缓存 Tokens、写缓存 Tokens 与累计 Prompt 分布，杜绝任何形式的伪造假数据。
+
 ---
 
 ## 🎨 三、视觉与人机工程学规范

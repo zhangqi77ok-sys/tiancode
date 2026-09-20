@@ -1322,13 +1322,49 @@ function onChatDrop(e: DragEvent) {
   }
 }
 
-const usageMetrics = ref({ total_tokens: 0, total_calls: 0, estimated_cost: '$0', active_sessions: 0, last_updated_time: '' })
+const usageMetrics = ref({
+  total_tokens: 0,
+  total_calls: 0,
+  estimated_cost: '$0.0000',
+  cached_tokens: 0,
+  cache_read_tokens: 0,
+  cache_creation_tokens: 0,
+  cache_hit_rate: 0,
+  cache_savings_usd: '$0.0000',
+  active_sessions: 0,
+  last_updated_time: '',
+})
+
+try {
+  const runtime = (window as any).runtime
+  if (runtime?.EventsOn) {
+    runtime.EventsOn('telemetry:usage', (metrics: any) => {
+      if (metrics) {
+        usageMetrics.value = {
+          ...usageMetrics.value,
+          ...metrics,
+        }
+      }
+    })
+  }
+} catch (_) {}
 
 async function loadUsageMetrics() {
   try {
     usageMetrics.value = await wailsBridge.getUsageMetrics()
   } catch {
-    usageMetrics.value = { total_tokens: 0, total_calls: 0, estimated_cost: '$0', active_sessions: 0, last_updated_time: '' }
+    usageMetrics.value = {
+      total_tokens: 0,
+      total_calls: 0,
+      estimated_cost: '$0.0000',
+      cached_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_hit_rate: 0,
+      cache_savings_usd: '$0.0000',
+      active_sessions: 0,
+      last_updated_time: '',
+    }
   }
 }
 
@@ -1575,6 +1611,7 @@ async function handleSend() {
         onDone() {
           pushAgentTrace('done', 'stream complete')
           isStreaming.value = false
+          void loadUsageMetrics()
           currentSession.value.workspace = workspacePath.value
           if (pendingDiffFiles.value.length > 0 && currentSession.value.task) {
             currentSession.value.task.status = 'pending_diff'

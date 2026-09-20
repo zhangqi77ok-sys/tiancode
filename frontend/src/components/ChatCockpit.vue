@@ -73,6 +73,22 @@
           </div>
 
           <div class="flex items-center gap-1.5 shrink-0">
+            <!-- KV Cache 真实遥测微型指示胶囊 (Zero Demo Policy: 仅在有实际 Token 统计时呈现) -->
+            <div
+              v-if="s.usageMetrics && s.usageMetrics.total_tokens > 0"
+              class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-xs font-mono shadow-2xs select-none transition-all cursor-help hover:border-[#D96B27]/40"
+              :title="`⚡ KV Cache 遥测详情:\n- 缓存命中率: ${(s.usageMetrics.cache_hit_rate || 0).toFixed(1)}%\n- 命中读取缓存: ${s.usageMetrics.cache_read_tokens || 0} Tokens\n- 新写入缓存: ${s.usageMetrics.cache_creation_tokens || 0} Tokens\n- 累计 Prompt: ${s.usageMetrics.total_tokens} Tokens\n- 预估已省费用: ${s.usageMetrics.cache_savings_usd || '$0.0000'}`"
+            >
+              <span class="text-[#D96B27] font-bold">⚡ KV Cache</span>
+              <span class="text-[#10A37F] font-semibold">{{ (s.usageMetrics.cache_hit_rate || 0).toFixed(0) }}%</span>
+              <span
+                v-if="s.usageMetrics.cache_savings_usd && s.usageMetrics.cache_savings_usd !== '$0.0000'"
+                class="text-[#71717A] border-l border-black/[0.08] pl-1.5 text-[11px]"
+              >
+                省 {{ s.usageMetrics.cache_savings_usd }}
+              </span>
+            </div>
+
             <button
               @click="s.openArchitectureModal()"
               class="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-black/[0.08] text-xs font-medium text-[#52525B] hover:text-[#D96B27] hover:border-[#D96B27]/30 shadow-2xs transition-all cursor-pointer"
@@ -179,7 +195,16 @@
             <!-- 用户提问气泡 -->
             <div v-if="msg.role === 'user'" class="flex justify-end">
               <div class="max-w-[80%] bg-[#F4EFEA] text-[#18181B] px-4 py-3 rounded-2xl rounded-tr-sm border border-black/[0.06] shadow-2xs text-xs leading-relaxed whitespace-pre-line">
-                {{ msg.content }}
+                <div>{{ formatUserPrompt(msg.content) }}</div>
+                <div v-if="getDynamicContext(msg.content)" class="mt-2 pt-2 border-t border-black/[0.06] text-[11px] text-[#71717A]">
+                  <div class="flex items-center gap-1 cursor-pointer font-mono select-none" @click="msg._dynamicExpanded = !msg._dynamicExpanded">
+                    <span>⚡ 运行时上下文快照</span>
+                    <span class="text-[10px]">{{ msg._dynamicExpanded ? '▲' : '▼' }}</span>
+                  </div>
+                  <div v-show="msg._dynamicExpanded" class="mt-1 font-mono text-[10px] whitespace-pre-wrap bg-black/[0.03] p-2 rounded-lg">
+                    {{ getDynamicContext(msg.content) }}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -464,6 +489,25 @@ function onTranscriptMove(e: MouseEvent) {
 
 function onTranscriptUp() {
   dragging.value = false
+}
+
+function formatUserPrompt(content: string): string {
+  if (!content) return ''
+  const idx = content.indexOf('<dynamic_context>')
+  if (idx !== -1) {
+    return content.slice(0, idx).trim()
+  }
+  return content
+}
+
+function getDynamicContext(content: string): string {
+  if (!content) return ''
+  const start = content.indexOf('<dynamic_context>')
+  const end = content.indexOf('</dynamic_context>')
+  if (start !== -1 && end !== -1) {
+    return content.slice(start + '<dynamic_context>'.length, end).trim()
+  }
+  return ''
 }
 </script>
 

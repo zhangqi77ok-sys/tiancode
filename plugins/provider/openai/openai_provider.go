@@ -13,6 +13,7 @@ import (
 	"time"
 
 	v1 "tiancode/pkg/plugin/v1"
+	"tiancode/pkg/protocol"
 )
 
 // Provider OpenAI 官方协议驱动插件
@@ -204,7 +205,7 @@ func (p *Provider) StreamChat(ctx context.Context, req *v1.ChatRequest) (<-chan 
 					"function": map[string]any{
 						"name":        t.Name,
 						"description": t.Description,
-						"parameters":  params,
+						"parameters":  protocol.CanonicalizeValue(params),
 					},
 				})
 			}
@@ -298,9 +299,14 @@ func (p *Provider) StreamChat(ctx context.Context, req *v1.ChatRequest) (<-chan 
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
 				Usage *struct {
-					PromptTokens     int64 `json:"prompt_tokens"`
-					CompletionTokens int64 `json:"completion_tokens"`
-					TotalTokens      int64 `json:"total_tokens"`
+					PromptTokens          int64 `json:"prompt_tokens"`
+					CompletionTokens      int64 `json:"completion_tokens"`
+					TotalTokens           int64 `json:"total_tokens"`
+					PromptCacheHitTokens  int64 `json:"prompt_cache_hit_tokens"`
+					PromptCacheMissTokens int64 `json:"prompt_cache_miss_tokens"`
+					PromptTokensDetails   *struct {
+						CachedTokens int64 `json:"cached_tokens"`
+					} `json:"prompt_tokens_details"`
 				} `json:"usage"`
 			}
 
@@ -373,10 +379,15 @@ func (p *Provider) StreamChat(ctx context.Context, req *v1.ChatRequest) (<-chan 
 			}
 
 			if sseChunk.Usage != nil {
+				cached := sseChunk.Usage.PromptCacheHitTokens
+				if cached == 0 && sseChunk.Usage.PromptTokensDetails != nil {
+					cached = sseChunk.Usage.PromptTokensDetails.CachedTokens
+				}
 				chunk.Usage = &v1.TokenUsage{
 					PromptTokens:     sseChunk.Usage.PromptTokens,
 					CompletionTokens: sseChunk.Usage.CompletionTokens,
 					TotalTokens:      sseChunk.Usage.TotalTokens,
+					CacheReadTokens:  cached,
 				}
 			}
 

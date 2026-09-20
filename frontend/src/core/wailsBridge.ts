@@ -649,12 +649,28 @@ export const wailsBridge = {
     total_tokens: number
     total_calls: number
     estimated_cost: string
+    cached_tokens?: number
+    cache_read_tokens?: number
+    cache_creation_tokens?: number
+    cache_hit_rate?: number
+    cache_savings_usd?: string
     active_sessions: number
     last_updated_time: string
   }> {
     const app = getApp()
     if (app?.GetUsageMetrics) return await app.GetUsageMetrics()
-    return { total_tokens: 0, total_calls: 0, estimated_cost: '$0', active_sessions: 0, last_updated_time: '' }
+    return {
+      total_tokens: 0,
+      total_calls: 0,
+      estimated_cost: '$0.0000',
+      cached_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_hit_rate: 0,
+      cache_savings_usd: '$0.0000',
+      active_sessions: 0,
+      last_updated_time: '',
+    }
   },
 
   // 4. 渠道与设置管理

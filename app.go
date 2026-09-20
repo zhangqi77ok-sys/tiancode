@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,8 +40,24 @@ import (
 
 
 
+// pruneHistoricalOutput 对历史冗长工具输出进行原位折叠修剪，保留上下文拓扑与公共前缀哈希
+func pruneHistoricalOutput(content string, maxChars int) string {
+	if len(content) <= maxChars {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) <= 12 {
+		return content[:maxChars] + "...\n[Output pruned for KV cache efficiency]"
+	}
+	// 保留前 8 行与后 2 行关键信息，中间折叠行数
+	head := strings.Join(lines[:8], "\n")
+	tail := strings.Join(lines[len(lines)-2:], "\n")
+	prunedLines := len(lines) - 10
+	return fmt.Sprintf("%s\n\n[... %d lines folded/pruned for KV cache efficiency ...]\n\n%s", head, prunedLines, tail)
+}
+
 // buildConversationWindow 动态构建模型多轮会话上下文窗口
-// 基于 token/字符预算自适应保留多轮对话，避免硬编码消息条数导致失忆或击穿上下文
+// 基于两级微创修剪策略 (In-Place Output Pruning)，维持严格单向追加 (Append-Only) 保证公共前缀 KV Cache
 func buildConversationWindow(systemPrompt string, history []session.SessionMessage, maxHistoryChars int) []llm.Message {
 	conversation := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -50,41 +67,40 @@ func buildConversationWindow(systemPrompt string, history []session.SessionMessa
 		return conversation
 	}
 
+	// 1. 双阈值原位修剪历史冗长输出 (In-Place Output Pruning)
+	// 对倒数 2 条以前的历史消息，单条若超过 1,000 字符原位折叠，保留前后骨架与角色拓扑
+	processed := make([]llm.Message, len(history))
 	totalChars := 0
-	selected := make([]llm.Message, 0, len(history))
-
-	// 从最新消息逆序向前收集，保证最新上下文最完整
-	for i := len(history) - 1; i >= 0; i-- {
-		m := history[i]
+	for i, m := range history {
 		content := m.Content
-		// 历史消息中如果有单条过长，做单条软截断保护（如之前可能未截断的超长输出）
-		if len(content) > 4000 {
-			content = loop.TrimToolOutput(content, 4000)
+		if len(history) > 3 && i < len(history)-2 && len(content) > 1000 {
+			content = pruneHistoricalOutput(content, 1000)
 		}
-
-		msgLen := len(content)
-		// 至少保留最后 1 条（当前用户输入），超过预算则停止向前收集
-		if totalChars+msgLen > maxHistoryChars && len(selected) > 0 {
-			break
-		}
-
-		selected = append(selected, llm.Message{
+		processed[i] = llm.Message{
 			Role:    m.Role,
 			Content: content,
-		})
-		totalChars += msgLen
+		}
+		totalChars += len(content)
 	}
 
-	// 逆序还原为正序时间流
-	for i := len(selected) - 1; i >= 0; i-- {
-		conversation = append(conversation, selected[i])
+	// 2. 若全量历史在预算内，保持严格正序单向追加 (Append-Only，100% 保持前缀 KV Cache)
+	if totalChars <= maxHistoryChars {
+		conversation = append(conversation, processed...)
+		return conversation
 	}
 
+	// 3. 超极端情况（如数十轮巨型上下文），从头部安全削减早期轮次
+	startIndex := 0
+	for startIndex < len(processed)-2 && totalChars > maxHistoryChars {
+		totalChars -= len(processed[startIndex].Content)
+		startIndex++
+	}
+	conversation = append(conversation, processed[startIndex:]...)
 	return conversation
 }
 
 // buildLLMToolsFromRegistry 动态从 Registry 中提取所有已注册插件算子声明，并转换为大模型工具契约格式
-// 保证新增算子“即注册即生效”，彻底替代硬编码 DefaultWorkspaceTools()
+// 保证新增算子“即注册即生效”，并严格按字母升序排序以保证工具前缀 Token 序列绝对恒定
 func (a *App) buildLLMToolsFromRegistry(ctx context.Context) []llm.ToolDef {
 	tools := make([]llm.ToolDef, 0)
 
@@ -120,6 +136,11 @@ func (a *App) buildLLMToolsFromRegistry(ctx context.Context) []llm.ToolDef {
 			tools = append(tools, mcpTools...)
 		}
 	}
+
+	// 严格按工具名称字母升序排序，保证工具列表声明在 Prompt 序列中绝对恒定
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Function.Name < tools[j].Function.Name
+	})
 
 	return tools
 }

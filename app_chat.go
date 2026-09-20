@@ -6,6 +6,7 @@ import (
 
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"tiancode/internal/core/loop"
 	"tiancode/internal/core/sandbox"
 	"tiancode/internal/session"
+	v1 "tiancode/pkg/plugin/v1"
+	"tiancode/pkg/protocol"
 	safetyrail "tiancode/plugins/rail/safety"
 
 	"os"
@@ -65,17 +68,29 @@ func resolveChatCredentials(store ChannelResolver, reqModel string) (endpoint, a
 }
 
 func appendEnabledPolicies(base string, skills []config.SkillConfig, rules []config.RuleConfig) string {
-	for _, sk := range skills {
+	sortedSkills := make([]config.SkillConfig, len(skills))
+	copy(sortedSkills, skills)
+	sort.Slice(sortedSkills, func(i, j int) bool {
+		return sortedSkills[i].Name < sortedSkills[j].Name
+	})
+
+	sortedRules := make([]config.RuleConfig, len(rules))
+	copy(sortedRules, rules)
+	sort.Slice(sortedRules, func(i, j int) bool {
+		return sortedRules[i].Title < sortedRules[j].Title
+	})
+
+	for _, sk := range sortedSkills {
 		if sk.Enabled && strings.TrimSpace(sk.Prompt) != "" {
 			base += "\n[技能 " + sk.Name + "] " + sk.Prompt
 		}
 	}
-	for _, r := range rules {
+	for _, r := range sortedRules {
 		if r.Enabled && strings.TrimSpace(r.Content) != "" {
 			base += "\n[规则规约] " + r.Content
 		}
 	}
-	return base
+	return protocol.NormalizeNewlines(base)
 }
 
 // expandMentionedFiles 扫描用户 Prompt 中的 @path 标记，若工作区存在对应文件则将其内容安全附入用户消息（最多 8KB/文件）
@@ -208,40 +223,29 @@ func (a *App) SendMessage(req ChatRequest) error {
 		// 追加用户消息
 		req.Prompt = safetyrail.StripSecretsFromPrompt(req.Prompt)
 		expandedContent := expandMentionedFiles(a.workspace, a.sandbox, req.Prompt)
-		userMsg := session.SessionMessage{
-			ID:      fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-			Role:    "user",
-			Content: expandedContent,
-			Time:    time.Now().Format("15:04"),
-		}
-		currentSession.Messages = append(currentSession.Messages, userMsg)
-		_ = a.sessionStore.AppendMessage(req.SessionID, userMsg)
 
-		// 3. 发送开始事件
-		runtime.EventsEmit(a.ctx, "agent:start", map[string]any{
-			"session_id": req.SessionID,
-			"model":      model,
-		})
-
-		// 4. 构建提示词体系 (注入规则 + 工作区技术栈感知 + 最近多轮历史 + 任务接续上下文)
+		// 3. 构建提示词体系 (确定性前缀流水线与动态上下文物理隔离)
+		// Layer 0-1: 纯静态系统提示词 (角色基座 + 按字典序排序的 Rules 与 Skills，严禁插入动态时间戳或动态任务信息)
 		systemPrompt := "你是 湉码 / tiancode 纯原生桌面智能体。你有权调用工具来审查、读取、修改工程代码及运行测试命令。请优先利用工具解决问题，并在每次调用后解释原因。"
 		if a.extraStore != nil {
 			systemPrompt = appendEnabledPolicies(systemPrompt, a.extraStore.ListSkills(), a.extraStore.ListRules())
 		}
 		systemPrompt = safetyrail.StripSecretsFromPrompt(systemPrompt)
-		// 动态侦测工作区项目技术栈并注入环境上下文
+		systemPrompt = protocol.NormalizeNewlines(systemPrompt)
+
+		// Layer 6: 动态瞬态上下文 (技术栈、任务接续、待确认文件，严格作为最新 User 消息尾部附件，不污染系统前缀)
+		var dynamicTail strings.Builder
 		stackInfo := sandbox.DetectProjectStack(a.workspace)
 		if stackPrompt := sandbox.FormatStackPrompt(stackInfo); stackPrompt != "" {
-			systemPrompt += "\n" + stackPrompt
+			dynamicTail.WriteString("\n" + stackPrompt)
 		}
 
-		// 检查是否为接续指令（「继续」= 接上一次任务目标，禁止重新勘探）
 		cleanPrompt := session.CleanGoalPrompt(req.Prompt)
 		isContinuation := session.IsContinuationPrompt(req.Prompt)
 		if isContinuation && currentSession.Task != nil && currentSession.Task.Goal != "" {
 			currentSession.Task.Status = session.TaskStatusRunning
 			continuationCtx := session.BuildContinuationContext(currentSession.Task, cleanPrompt)
-			systemPrompt += continuationCtx
+			dynamicTail.WriteString("\n" + continuationCtx)
 		} else {
 			currentSession.Task = &session.TaskModel{
 				Goal:             cleanPrompt,
@@ -252,8 +256,29 @@ func (a *App) SendMessage(req ChatRequest) error {
 			}
 		}
 
-		// 动态上下文窗口：基于预算自适应选择多轮历史，避免截断关键上下文或超出 Token 上限
-		conversation := buildConversationWindow(systemPrompt, currentSession.Messages, 32000)
+		if currentSession.Task != nil && len(currentSession.Task.PendingDiffFiles) > 0 {
+			dynamicTail.WriteString(fmt.Sprintf("\n[待确认修改文件] %s", strings.Join(currentSession.Task.PendingDiffFiles, ", ")))
+		}
+
+		userContentWithDynamic := expandedContent
+		if dynamicTail.Len() > 0 {
+			userContentWithDynamic += fmt.Sprintf("\n\n<dynamic_context>%s\n</dynamic_context>", dynamicTail.String())
+		}
+
+		userMsg := session.SessionMessage{
+			ID:      fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+			Role:    "user",
+			Content: userContentWithDynamic,
+			Time:    time.Now().Format("15:04"),
+		}
+		currentSession.Messages = append(currentSession.Messages, userMsg)
+		_ = a.sessionStore.AppendMessage(req.SessionID, userMsg)
+
+		// 发送开始事件
+		runtime.EventsEmit(a.ctx, "agent:start", map[string]any{
+			"session_id": req.SessionID,
+			"model":      model,
+		})
 
 		var assistantThinking strings.Builder
 		var assistantContent strings.Builder
@@ -262,11 +287,12 @@ func (a *App) SendMessage(req ChatRequest) error {
 
 		workspaceTools := a.buildLLMToolsFromRegistry(agentCtx)
 		workspaceTools, systemPrompt = loop.ApplyStrategy(req.Strategy, req.StrategyNote, workspaceTools, systemPrompt)
-		conversation = buildConversationWindow(systemPrompt, currentSession.Messages, 32000)
+		conversation := buildConversationWindow(systemPrompt, currentSession.Messages, 32000)
 		roundStart := time.Now()
 		var hasHitCap bool
 		var hasError bool
 		var lastTDDPassed *bool
+		var lastUsage *v1.TokenUsage
 		eventChan := make(chan loop.EngineEvent, 64)
 		go func() {
 			_ = a.engine.Execute(agentCtx, &loop.EngineRequest{
@@ -355,6 +381,10 @@ func (a *App) SendMessage(req ChatRequest) error {
 						"errors":     diagReport.Errors,
 					})
 				}
+			case loop.EventUsage:
+				if ev.Usage != nil {
+					lastUsage = ev.Usage
+				}
 			case loop.EventHitCap:
 				hasHitCap = true
 			case loop.EventTDDResult:
@@ -383,10 +413,24 @@ func (a *App) SendMessage(req ChatRequest) error {
 		roundDuration := time.Since(roundStart).Milliseconds()
 		promptTok := (len(req.Prompt) + 300) / 3
 		compTok := (assistantContent.Len() + assistantThinking.Len()) / 3
+		var cacheReadTok, cacheCreateTok int
+		if lastUsage != nil {
+			if lastUsage.PromptTokens > 0 {
+				promptTok = int(lastUsage.PromptTokens)
+			}
+			if lastUsage.CompletionTokens > 0 {
+				compTok = int(lastUsage.CompletionTokens)
+			}
+			cacheReadTok = int(lastUsage.CacheReadTokens)
+			cacheCreateTok = int(lastUsage.CacheCreationTokens)
+		}
 		if compTok < 1 && assistantContent.Len() > 0 {
 			compTok = 1
 		}
-		telemetry.GetTracker().Record(model, promptTok, compTok, roundDuration)
+		telemetry.GetTracker().RecordWithCache(model, promptTok, compTok, cacheReadTok, cacheCreateTok, roundDuration)
+
+		// 派发最新遥测指标，更新微型缓存指示胶囊
+		runtime.EventsEmit(a.ctx, "telemetry:usage", a.GetUsageMetrics())
 
 		// 7. 持久化 Assistant 回复至磁盘与终态流转
 		if agentCtx.Err() != nil {
