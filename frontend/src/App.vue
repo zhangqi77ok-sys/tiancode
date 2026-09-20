@@ -828,19 +828,33 @@
 
     <div
       v-if="s.isCommandPaletteOpen"
-      class="fixed inset-0 z-[60] flex items-start justify-center bg-black/40 pt-[12vh]"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
       @click.self="s.isCommandPaletteOpen = false"
     >
-      <div class="w-[min(640px,90vw)] bg-white rounded-2xl shadow-2xl border border-black/[0.1] overflow-hidden">
+      <div class="w-[min(640px,90vw)] bg-[#FAF8F5] rounded-2xl shadow-2xl border border-black/[0.1] overflow-hidden">
+        <!-- 标题行 (铁律 5: 显式标题 + [X] 按钮) -->
+        <div class="h-10 bg-[#F4EFEA] border-b border-black/[0.08] px-4 flex items-center justify-between select-none shrink-0">
+          <div class="flex items-center gap-2 text-xs font-semibold text-[#18181B]">
+            <svg class="w-3.5 h-3.5 text-[#D96B27]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <span>快速跳转</span>
+            <span class="text-[10px] text-[#A1A1AA] font-normal">设置 · 会话 · 已打开文件</span>
+          </div>
+          <button
+            @click="s.isCommandPaletteOpen = false"
+            class="p-1 rounded-md text-[#71717A] hover:bg-black/[0.05] cursor-pointer"
+            title="关闭 (Esc)"
+          >✕</button>
+        </div>
         <input
           v-model="s.commandPaletteQuery"
           type="text"
           autofocus
-          placeholder="跳转：设置 / 会话 / 已打开文件…"
-          class="w-full px-4 py-3 text-sm border-b border-black/[0.08] focus:outline-none"
+          placeholder="输入关键词跳转…"
+          class="w-full px-4 py-3 text-sm border-b border-black/[0.08] focus:outline-none bg-transparent"
           @keydown.down.prevent="s.moveCommandPalette(1)"
           @keydown.up.prevent="s.moveCommandPalette(-1)"
           @keydown.enter.prevent="s.confirmCommandPalette()"
+          @keydown.esc.prevent="s.isCommandPaletteOpen = false"
         />
         <div class="max-h-[50vh] overflow-y-auto py-1">
           <div v-if="s.commandPaletteItems.length === 0" class="px-4 py-6 text-xs text-[#71717A]">没有匹配项</div>

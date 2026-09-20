@@ -1065,6 +1065,8 @@ async function saveEditor() {
 
 function openEditorTab(filePath: string, viewMode: 'edit' | 'diff' = 'edit', line?: number) {
   if (!filePath) return
+  // 标准化 Windows 反斜杠路径，确保 Tab 标题只显示文件名而非完整路径
+  const normalizedPath = filePath.replace(/\\/g, '/')
   targetEditorLine.value = line
   // 如果切换前已有活动标签页，先将当前缓冲区内容落入该标签页对象，防止切走后未保存改动丢失
   if (activeDiffFile.value) {
@@ -1075,15 +1077,19 @@ function openEditorTab(filePath: string, viewMode: 'edit' | 'diff' = 'edit', lin
     }
   }
 
-  const title = filePath.split('/').pop() || filePath
-  let existing = openEditorTabs.value.find(t => t.path === filePath)
+  const title = normalizedPath.split('/').pop() || normalizedPath
+  let existing = openEditorTabs.value.find(t => t.path === normalizedPath)
   if (!existing) {
-    existing = { path: filePath, title, dirty: false }
+    existing = { path: normalizedPath, title, dirty: false }
     openEditorTabs.value.push(existing)
   }
-  activeDiffFile.value = filePath
+  activeDiffFile.value = normalizedPath
   isDiffOpen.value = true
   editorView.value = viewMode
+  // 缺陷1: 在"对话专注"模式下打开文件，自动切换到双栏协同模式，避免编辑器不可见
+  if (workspaceView.value === 'chat') {
+    workspaceView.value = 'split'
+  }
 
   if (existing.content !== undefined) {
     editorContent.value = existing.content
@@ -2801,6 +2807,17 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     if (mentionOpen.value) { mentionOpen.value = false; return }
     if (isCommandPaletteOpen.value) { isCommandPaletteOpen.value = false; return }
     if (tabContextMenu.value) { tabContextMenu.value = null; return }
+    if (fileContextMenu.value) { fileContextMenu.value = null; return }
+
+    // 优先级 1.5: 文件树 CRUD 弹窗与会话操作弹窗 (铁律 5: Esc 必须能关闭任何模态框)
+    if (pendingCloseTab.value) { pendingCloseTab.value = null; return }
+    if (pendingDeleteSessionId.value) { pendingDeleteSessionId.value = null; return }
+    if (pendingTagSession.value) { pendingTagSession.value = null; return }
+    if (pendingRenameSession.value) { pendingRenameSession.value = null; return }
+    if (pendingCreateFile.value?.isOpen) { pendingCreateFile.value.isOpen = false; return }
+    if (pendingCreateFolder.value?.isOpen) { pendingCreateFolder.value.isOpen = false; return }
+    if (pendingRenamePath.value?.isOpen) { pendingRenamePath.value.isOpen = false; return }
+    if (pendingDeletePath.value?.isOpen) { pendingDeletePath.value.isOpen = false; return }
 
     // 优先级 2: 二级弹窗 (choice/confirm, 渠道/MCP/技能/pending Diff/策略等)
     if (pendingChoice.value) {

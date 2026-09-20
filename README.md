@@ -191,6 +191,12 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
 * **凭据与会话目录严格权限收敛与双平台 CI 守卫 (Strict Permission Hardening & Dual-Platform CI)**：
   * 全面收敛用户配置目录与会话存储目录访问控制（目录强制 `0700`，配置文件原子写入强制 `0600`），杜绝跨平台环境下 API Key 与工程配置的越权读取；
   * CI 工作流（`.github/workflows/ci.yml`）扩充 `windows-latest` 测试与生产标签编译构建（`-tags "desktop,production"`），确保双平台自动化持续集成防护。
+* **视口路由三态精准联动、Windows 路径标准化与全局 Esc 层级闭环 (Viewport Routing & Global Esc Hierarchy)**：
+  * `openEditorTab` 在「对话专注」(chat) 模式下打开任意文件时，自动切换到「双栏协同」(split) 模式，彻底消灭编辑器不可见的静默失败；
+  * 所有路径在进入前端状态前统一 `replace(/\\/g, '/')` 标准化，修复 Windows 反斜杠导致编辑器 Tab 标题显示完整路径的缺陷；
+  * `[⚡ 应用至编辑器]` 按钮：无活动文件时给出 toast 明确引导，有文件但处于 Diff 视图时自动切换到 Edit 视图，彻底消除代码写入后用户看不到的黑洞场景；
+  * `handleGlobalKeydown` 全局 Esc 层级补全 9 个文件操作 pending 弹窗状态（`pendingCloseTab`、`pendingDeleteSessionId`、`pendingTagSession`、`pendingRenameSession`、`pendingCreateFile/Folder`、`pendingRenamePath`、`pendingDeletePath`、`fileContextMenu`），严格符合铁律 5；
+  * Command Palette 增加暖米白标题行（含搜索图标、说明文字）与显式 `[X]` 关闭按钮，背景色对齐 `#FAF8F5`，居中吸附，全面符合铁律 5 弹窗三维规范。
 
 ---
 

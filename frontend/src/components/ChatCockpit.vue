@@ -21,7 +21,6 @@
               <span class="text-[#A1A1AA] hover:text-red-500" @click.stop="s.closeSessionTab(tab.id)">✕</span>
             </button>
             <span v-if="s.sessionTabs.length === 0" class="font-bold text-[#18181B] px-1 truncate">{{ s.currentSession.title }}</span>
-            <span class="text-[10px] text-[#71717A] bg-black/[0.04] px-1.5 py-0.2 rounded font-mono">{{ s.selectedModel || '未配置渠道' }}</span>
 
             <select
               v-if="s.availableModels.length > 0"
@@ -534,8 +533,15 @@ function handleMarkdownClick(e: MouseEvent) {
   } else if (target.classList.contains('code-apply-btn')) {
     const rawCode = decodeURIComponent(target.getAttribute('data-code') || '')
     if (rawCode) {
+      if (!s.activeDiffFile) {
+        // 无活动文件时，引导用户先选择目标文件，而不是静默写入看不见的缓冲区
+        s.showToast('⚠️ 请先从左侧文件树中点击目标文件，再应用代码')
+        return
+      }
       s.editorContent = rawCode
       s.markEditorDirty()
+      // 确保切换到编辑视图，而非 diff 视图（否则应用的代码不可见）
+      s.editorView = 'edit'
       s.setWorkspaceView('split')
       const origText = target.innerHTML
       target.innerHTML = '<span>✓</span><span>已应用</span>'
