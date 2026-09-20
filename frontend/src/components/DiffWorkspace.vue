@@ -1,146 +1,11 @@
 <template>
 <!-- 右侧 Monaco Diff 审查工作区 (Diff Workspace) -->
       <section
-        v-show="s.isDiffOpen"
-        :class="s.workspaceView === 'editor' ? 'flex-1 min-w-0' : 'w-[46vw] min-w-[420px] max-w-[820px]'"
-        class="border-l border-black/[0.08] bg-[#FAF8F5] flex select-none z-10 shrink-0 font-sans"
+        v-show="s.isDiffOpen && s.workspaceView !== 'chat'"
+        :style="s.workspaceView === 'editor' ? { width: '100%', flex: '1 1 0%' } : { width: s.editorSplitPercent + '%', minWidth: '360px', maxWidth: '85%' }"
+        class="border-l border-black/[0.08] bg-[#FAF8F5] flex flex-col select-none z-10 shrink-0 font-sans overflow-hidden"
       >
-        <!-- 左侧工作区文件树与全盘检索面板 (Explorer & Workspace Search) -->
-        <div class="w-60 min-w-[14rem] border-r border-black/[0.08] flex flex-col overflow-hidden bg-[#F4EFEA]">
-          <!-- 顶栏：项目名称 + 视图切换 (目录树 vs 全盘检索) -->
-          <div class="h-10 min-h-[40px] px-2.5 border-b border-black/[0.08] flex items-center justify-between text-[11px] font-bold">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <button
-                @click="s.explorerTab = 'tree'"
-                :class="['px-1.5 py-0.5 rounded text-[10px] cursor-pointer font-medium transition-colors', s.explorerTab === 'tree' ? 'bg-white shadow-2xs text-[#D96B27] font-bold' : 'text-[#71717A] hover:text-[#18181B]']"
-                title="目录文件树"
-              >
-                📁 目录
-              </button>
-              <button
-                @click="s.explorerTab = 'search'"
-                :class="['px-1.5 py-0.5 rounded text-[10px] cursor-pointer font-medium transition-colors', s.explorerTab === 'search' ? 'bg-white shadow-2xs text-[#D96B27] font-bold' : 'text-[#71717A] hover:text-[#18181B]']"
-                title="工作区全盘检索 (grep/find)"
-              >
-                🔍 检索
-              </button>
-            </div>
-            <div class="flex items-center gap-1">
-              <button
-                v-if="s.explorerTab === 'tree'"
-                class="cursor-pointer text-[#71717A] hover:text-[#18181B] p-1 rounded text-xs"
-                @click="s.loadFileTree"
-                title="刷新文件树"
-              >↻</button>
-            </div>
-          </div>
-
-          <!-- 模式一：目录树 -->
-          <template v-if="s.explorerTab === 'tree'">
-            <!-- 文件名快速过滤输入框 -->
-            <div class="p-1.5 border-b border-black/[0.06] bg-[#FAF8F5]">
-              <div class="flex items-center gap-1">
-                <input
-                  v-model="s.fileTreeFilter"
-                  @keydown.enter="s.searchFromFilter"
-                  type="text"
-                  placeholder="过滤已加载节点 / 回车全盘搜..."
-                  class="flex-1 h-6 px-2 rounded-md bg-white text-[10px] font-mono border border-black/[0.08] focus:border-[#D96B27] focus:outline-none placeholder:text-[#A1A1AA]"
-                />
-                <button
-                  v-if="s.fileTreeFilter"
-                  @click="s.searchFromFilter"
-                  class="px-1.5 h-6 rounded bg-[#D96B27] text-white text-[10px] font-medium cursor-pointer shrink-0"
-                  title="在全工程中搜索此关键词"
-                >全盘搜</button>
-              </div>
-            </div>
-            <div class="flex-1 overflow-y-auto p-1 text-[11px] font-mono space-y-0.5">
-              <div v-if="s.displayFileTree.length === 0" class="p-4 text-center text-[#A1A1AA] text-[10px]">
-                <p>{{ s.fileTreeFilter ? '已加载节点中无匹配' : '工作区为空' }}</p>
-                <button
-                  v-if="s.fileTreeFilter"
-                  @click="s.searchFromFilter"
-                  class="mt-2 text-[#D96B27] underline text-[10px] cursor-pointer"
-                >
-                  🔍 在全工程中搜索 "{{ s.fileTreeFilter }}"
-                </button>
-              </div>
-              <FileTreeNode
-                v-for="node in s.displayFileTree"
-                :key="node.path"
-                :node="node"
-                :depth="0"
-              />
-            </div>
-          </template>
-
-          <!-- 模式二：全局代码与文件检索 (Search for Humans) -->
-          <template v-else>
-            <div class="p-2 border-b border-black/[0.06] bg-[#FAF8F5] flex flex-col gap-1.5">
-              <div class="flex items-center gap-1">
-                <input
-                  v-model="s.searchQuery"
-                  @keydown.enter="s.runWorkspaceSearch()"
-                  type="text"
-                  placeholder="输入关键词并回车搜索..."
-                  class="flex-1 h-7 px-2 rounded-md bg-white text-[11px] font-mono border border-black/[0.08] focus:border-[#D96B27] focus:outline-none placeholder:text-[#A1A1AA]"
-                />
-                <button
-                  @click="s.runWorkspaceSearch()"
-                  :disabled="s.isSearching"
-                  class="px-2.5 h-7 rounded-md bg-[#D96B27] hover:bg-[#C25A1D] text-white text-xs font-medium cursor-pointer disabled:opacity-50 shrink-0"
-                >
-                  {{ s.isSearching ? '...' : '搜索' }}
-                </button>
-              </div>
-              <div class="flex items-center gap-2 text-[10px] text-[#71717A]">
-                <span>模式:</span>
-                <label class="flex items-center gap-1 cursor-pointer">
-                  <input type="radio" v-model="s.searchAction" value="find" class="accent-[#D96B27]" />
-                  <span>文件名 (find)</span>
-                </label>
-                <label class="flex items-center gap-1 cursor-pointer">
-                  <input type="radio" v-model="s.searchAction" value="grep" class="accent-[#D96B27]" />
-                  <span>代码内容 (grep)</span>
-                </label>
-              </div>
-            </div>
-
-            <!-- 检索结果列表 -->
-            <div class="flex-1 overflow-y-auto p-1.5 space-y-1 text-xs font-mono">
-              <div v-if="s.isSearching" class="p-6 text-center text-[#71717A] text-[11px]">
-                🔍 正在检索工作区...
-              </div>
-              <div v-else-if="s.searchResults.length === 0" class="p-6 text-center text-[11px]">
-                <div v-if="s.searchError" class="text-red-500 font-semibold mb-1">
-                  ⚠️ 检索异常: {{ s.searchError }}
-                </div>
-                <div v-else class="text-[#A1A1AA]">
-                  {{ s.searchQuery ? `未找到匹配项: "${s.searchQuery}"` : '输入关键词检索全工程' }}
-                </div>
-              </div>
-              <div
-                v-else
-                v-for="(res, idx) in s.searchResults"
-                :key="idx"
-                @click="s.openEditorTab(res.path, 'edit', res.line)"
-                class="p-1.5 rounded hover:bg-white cursor-pointer border border-transparent hover:border-black/[0.06] transition-colors group"
-                :title="res.path + (res.line ? ':' + res.line : '')"
-              >
-                <div class="flex items-center justify-between gap-1 text-[11px]">
-                  <span class="font-bold text-[#18181B] truncate group-hover:text-[#D96B27]">{{ res.path }}</span>
-                  <span v-if="res.line" class="text-[10px] text-[#71717A] font-mono shrink-0">L{{ res.line }}</span>
-                </div>
-                <div v-if="res.content" class="text-[10px] text-[#71717A] font-mono truncate mt-0.5 opacity-90 pl-1 border-l border-black/[0.1]">
-                  {{ res.content }}
-                </div>
-              </div>
-            </div>
-          </template>
-        </div>
-
-        <div class="flex-1 flex flex-col justify-between min-w-0">
+        <div class="flex-1 flex flex-col justify-between min-w-0 overflow-hidden">
         <!-- 多文件标签页栏 (Editor Tab Bar) -->
         <div v-if="s.openEditorTabs.length > 0" class="h-8 bg-[#F4EFEA] border-b border-black/[0.08] flex items-center px-2 gap-1 overflow-x-auto no-scrollbar shrink-0 select-none">
           <div
@@ -204,7 +69,19 @@
             >
               <span>✓</span><span>采纳变更</span>
             </button>
-            <button @click="s.isDiffOpen = false" class="text-[#71717A] hover:text-[#18181B] p-1 rounded-md hover:bg-black/[0.05] cursor-pointer ml-1">✕</button>
+            <button
+              @click="s.toggleEditorFullscreen()"
+              class="text-[#71717A] hover:text-[#18181B] p-1 rounded-md hover:bg-black/[0.05] cursor-pointer ml-0.5"
+              :title="s.workspaceView === 'editor' ? '还原为双栏协同 (Alt+F)' : '代码全屏专注 (Alt+F)'"
+            >
+              <svg v-if="s.workspaceView === 'editor'" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+              <svg v-else class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6m-6 0l6-6M9 21H3v-6m6 0l-6 6M21 9V3h-6m0 6l6-6M3 15v6h6m-6 0l6-6"/></svg>
+            </button>
+            <button
+              @click="s.toggleEditorPanel()"
+              class="text-[#71717A] hover:text-[#18181B] p-1 rounded-md hover:bg-black/[0.05] cursor-pointer ml-0.5"
+              title="收起代码面板 (Ctrl+\)"
+            >✕</button>
           </div>
         </header>
 
@@ -351,6 +228,5 @@
 <script setup lang="ts">
 import { useWorkbenchStore } from '../stores/workbench'
 import MonacoEditor from './MonacoEditor.vue'
-import FileTreeNode from './FileTreeNode.vue'
 const s = useWorkbenchStore()
 </script>

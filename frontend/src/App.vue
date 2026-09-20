@@ -36,13 +36,65 @@
         <kbd class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white text-[#71717A] border border-black/[0.08]">Ctrl+K</kbd>
       </button>
 
-      <div style="--wails-draggable:no-drag" class="flex items-center p-0.5 bg-black/[0.05] rounded-xl text-xs font-medium">
-        <button @click="s.setWorkspaceView('chat')" :class="['px-2.5 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer', s.workspaceView === 'chat' ? 'bg-white text-[#D96B27] shadow-2xs font-semibold' : 'text-[#71717A]']">智能对话</button>
-        <button @click="s.setWorkspaceView('split')" :class="['px-2.5 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer', s.workspaceView === 'split' ? 'bg-white text-[#D96B27] shadow-2xs font-semibold' : 'text-[#71717A]']">
-          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
-          双栏协同
-        </button>
-        <button @click="s.setWorkspaceView('editor')" :class="['px-2.5 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer', s.workspaceView === 'editor' ? 'bg-white text-[#D96B27] shadow-2xs font-semibold' : 'text-[#71717A]']">文件与编辑器</button>
+      <!-- 顶栏核心工作台视口控制组 (Viewport Controls) -->
+      <div style="--wails-draggable:no-drag" class="flex items-center gap-1.5">
+        <div class="flex items-center p-0.5 bg-black/[0.05] rounded-xl text-xs font-medium">
+          <button
+            @click="s.setWorkspaceView('chat')"
+            :class="['px-2.5 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all', s.workspaceView === 'chat' ? 'bg-white text-[#D96B27] shadow-2xs font-bold' : 'text-[#71717A] hover:text-[#18181B]']"
+            title="纯对话专注模式 (隐藏代码面板)"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>对话专注</span>
+          </button>
+          <button
+            @click="s.setWorkspaceView('split')"
+            :class="['px-2.5 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all', s.workspaceView === 'split' ? 'bg-white text-[#D96B27] shadow-2xs font-bold' : 'text-[#71717A] hover:text-[#18181B]']"
+            title="双栏协同工作台 (Ctrl+\)"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+            <span>双栏协同</span>
+          </button>
+          <button
+            @click="s.setWorkspaceView('editor')"
+            :class="['px-2.5 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all', s.workspaceView === 'editor' ? 'bg-white text-[#D96B27] shadow-2xs font-bold' : 'text-[#71717A] hover:text-[#18181B]']"
+            title="代码全屏专注 (Alt+F)"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 8 5 12 9 16"/><polyline points="15 8 19 12 15 16"/></svg>
+            <span>代码全屏</span>
+          </button>
+        </div>
+
+        <!-- 代码全屏模式下的防失联 AI 指示胶囊 (Zero-Blindspot) -->
+        <template v-if="s.workspaceView === 'editor'">
+          <button
+            v-if="s.isStreaming"
+            @click="s.setWorkspaceView('split')"
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#D96B27]/10 border border-[#D96B27]/30 text-[#D96B27] text-xs font-semibold animate-pulse cursor-pointer shadow-2xs"
+            title="大模型正在生成思考，点击切回双栏协同"
+          >
+            <span class="animate-spin text-[10px]">⚡</span>
+            <span>AI 生成中... 展开双栏</span>
+          </button>
+          <button
+            v-else-if="s.pendingDiffFiles.length > 0"
+            @click="s.setWorkspaceView('split')"
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#D96B27]/15 border border-[#D96B27]/40 text-[#B8551B] text-xs font-bold cursor-pointer shadow-2xs animate-pulse"
+            title="有待确认的代码变更，点击切回双栏审查"
+          >
+            <span>📝</span>
+            <span>待确认变更 ({{ s.pendingDiffFiles.length }})</span>
+          </button>
+          <button
+            v-else
+            @click="s.setWorkspaceView('split')"
+            class="hidden lg:flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border border-black/[0.08] text-[#71717A] hover:text-[#D96B27] hover:border-[#D96B27]/30 text-xs font-medium cursor-pointer shadow-2xs"
+            title="点击切回双栏协同 (Ctrl+\)"
+          >
+            <span>💬</span>
+            <span>展开 AI 对话</span>
+          </button>
+        </template>
       </div>
 
       <div style="--wails-draggable:no-drag" class="flex items-center gap-2">
@@ -77,8 +129,20 @@
       <ActivityBar />
       <LeftDrawer />
       <div class="flex-1 flex flex-col overflow-hidden relative">
-        <div class="flex-1 flex overflow-hidden relative">
+        <div class="flex-1 flex overflow-hidden relative" id="workbench-main-area">
           <ChatCockpit v-show="s.workspaceView !== 'editor'" />
+
+          <!-- 可拖拽分栏手柄 (Draggable Splitter Sash) -->
+          <div
+            v-if="s.workspaceView === 'split' && s.isDiffOpen"
+            @mousedown="s.startSplitResize($event)"
+            @dblclick="s.resetSplitRatio()"
+            class="w-2 -ml-1 -mr-1 z-30 cursor-col-resize hover:bg-[#D96B27]/40 active:bg-[#D96B27] transition-colors relative group select-none flex items-center justify-center shrink-0"
+            title="双击平分窗口 (50/50)，按住左右拖拽调整分栏比例"
+          >
+            <div class="w-0.5 h-7 rounded-full bg-black/20 group-hover:bg-[#D96B27] transition-colors"></div>
+          </div>
+
           <DiffWorkspace />
         </div>
         <TerminalDrawer />

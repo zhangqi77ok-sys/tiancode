@@ -2,27 +2,28 @@
 <nav class="w-[48px] min-w-[48px] bg-[#EFEAE4] border-r border-black/[0.08] flex flex-col justify-between items-center py-2 z-20 shrink-0 select-none">
         <div class="flex flex-col items-center gap-2 w-full">
           <button
-            @click="s.activeActivity = 'chat'"
-            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer', s.activeActivity === 'chat' ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
-            title="AI 对话工作台"
+            @click="s.switchToChatActivity"
+            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer', s.activeActivity === 'chat' && s.isLeftDrawerOpen ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
+            title="会话分支列表 (点击折叠/展开)"
           >
             <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <span v-if="s.activeActivity === 'chat'" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
+            <span v-if="s.activeActivity === 'chat' && s.isLeftDrawerOpen" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
           </button>
           <button
             @click="s.switchToFileActivity"
-            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer', s.isDiffOpen && s.workspaceView !== 'chat' ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
-            title="工程文件资源管理器"
+            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer', s.activeActivity === 'files' && s.isLeftDrawerOpen ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
+            title="工程文件资源管理器 (点击折叠/展开)"
           >
             <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <span v-if="s.activeActivity === 'files' && s.isLeftDrawerOpen" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
           </button>
           <button
             @click="s.switchToGitActivity"
-            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer', s.activeActivity === 'git' ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
-            title="Git 变更与代码审查"
+            :class="['relative w-10 h-10 rounded-xl flex items-center justify-center transition-all cursor-pointer', s.activeActivity === 'git' && s.isLeftDrawerOpen ? 'bg-white shadow-2xs text-[#D96B27]' : 'text-[#71717A] hover:text-[#18181B] hover:bg-white/60']"
+            title="Git 变更与代码审查 (点击折叠/展开)"
           >
             <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
-            <span v-if="s.activeActivity === 'git'" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
+            <span v-if="s.activeActivity === 'git' && s.isLeftDrawerOpen" class="absolute -left-1 top-2.5 w-1 h-5 bg-[#D96B27] rounded-r-full"></span>
           </button>
           <button
             @click="s.toggleTerminalDrawer()"

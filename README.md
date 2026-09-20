@@ -141,21 +141,26 @@ plugins/ → pkg/plugin/v1 ← internal/ ← app.go
   * **OpenAI / DeepSeek**：流式请求自动注入 `"stream_options": {"include_usage": true}`，解析 `prompt_tokens_details.cached_tokens` 与 `prompt_cache_hit_tokens`，随 `StreamChunk` 派发；
 * **真实用量遥测大盘与顶栏微型指示胶囊 (Zero Demo Policy)**：
   * `internal/telemetry` 提供 `RecordWithCache`，严格从模型实际返回的 `usage` 累加核算命中率与预估节省金额（按平均节省 $0.0018 / 1k cached tokens）；
-  * 对话顶栏常驻微型指示胶囊：`[ ⚡ KV Cache 89% · 省 $1.20 ]`，未发生 Token 消耗前保持干净纯净空状态；鼠标悬停即时浮现命中率、读缓存 Tokens、写缓存 Tokens 与累计 Prompt 分布，杜绝任何形式的伪造假数据。
+### 10. 现代 AI IDE 双主轴一体化工作台与高人机工程学视口流转 (Dual-Loop Integrated Workbench & Ergonomic Viewports)
+* **解耦“工作内容”与“布局形态”**：彻底纠正过去将“智能对话 / 双栏协同 / 文件与编辑器”混在同一文字分段器中的心智冲突；顶栏全面重塑为现代顶级 AI IDE 规范的**面板视口控制组 (Viewport Controls)**：`[💬 对话专注]`、`[⚡ 双栏协同 (Ctrl+\)]`、`[💻 代码全屏 (Alt+F)]`，单向数据流与单一状态来源调度；
+* **消灭“双侧边栏夹心” (Eliminating the Double Sidebar Trap)**：将工程文件目录树（Explorer）与全盘检索彻底归拢搬迁至左侧主抽屉 `LeftDrawer`（会话分支 / 文件管理 / GitOps 统一由左侧 `ActivityBar` 图标点击切换并支持折叠），从 `DiffWorkspace` 中彻底剔除 240px 的内嵌冗余文件树，让右侧 Monaco 编辑器与 Diff 对比独占纯净宽屏舞台；
+* **自由拖拽分栏手柄 (Draggable Resizer Sash)**：双栏协同工作台中央嵌入丝滑拖拽中缝，鼠标悬停即现低饱和陶土暖橙抓手，支持在 20% ~ 80% 范围内按需自由缩放对话区与代码区；支持双击中缝一键平分 (50/50) 复位，分栏比例自动落盘持久化至 `localStorage`；
+* **代码全屏模式下的防失联 AI 微胶囊 (Zero-Blindspot Floating Mini-Cockpit)**：当用户切入代码全屏专注时，顶栏实时动态挂载微型 AI 状态胶囊，实时感知流式生成进度（`[⚡ AI 生成中... 展开双栏]`）或待确认代码变更（`[📝 待确认变更 (N)]`），点击随时一键切回双栏协同，彻底终结看代码时无法感知 AI 思考的“失联感”；
+* **全局人机工学快捷键闭环**：全面支持 `Ctrl + B`（快速折叠/展开左侧抽屉）、`Ctrl + \`（一键切换协同双栏与纯对话面板）、`Alt + F`（代码全屏与双栏无缝切变），实现全程无鼠标沉浸式编码。
 
 ---
 
 ## 🎨 三、视觉与人机工程学规范
 
 湉码 严格执行 Warm Minimalist 暖色极简视觉系统：
-* **主背景色**：`#FAF8F5` (Warm Cream 柔和暖米白)
+* **主背景色**：`#FAF8F5` (Warm Cream 柔和暖米白，消除纯白强反光，保护长时间视力)
 * **工作台底色**：`#F4EFEA` (Workspace Muted 米灰)
-* **品牌强调色**：`#D96B27` (Terracotta Orange 陶土暖橙)
-* **代码暖黑**：`#1E1C1A` (Code Dark 暖炭黑)
-* **16:9 人机工学**：单焦点聚合视图自由切换：
-  * `[💬 智能对话]`：全宽长句交互与思维链阅读；
-  * `[◫ 双栏协同]`：左侧对话流 + 右侧代码/Diff 比对；
-  * `[📝 文件与编辑器]`：Monaco 编辑器、Diff 视窗与文件树；
+* **品牌强调色**：`#D96B27` (Terracotta Orange 低饱和陶土暖橙)
+* **代码暖黑**：`#1E1C1A` (Code Dark 暖炭黑代码底色)
+* **16:9 人机工学空间流转**：视口控制组自由切换与无缝拖拽：
+  * `[💬 对话专注]`：全宽长句交互、多轮思维链沉浸阅读；
+  * `[⚡ 双栏协同 (Ctrl+\)]`：左侧智能对话 + 中间拖拽手柄 + 右侧 Monaco/Diff 代码审查；
+  * `[💻 代码全屏 (Alt+F)]`：代码全屏无干扰阅读，左上角保留微型 AI 脉冲徽章随时唤出；
 * **弹窗三维铁律**：全系统模态窗严格居中吸附、统一具备右上角显式 `[X]` 关闭、支持全局 `Esc` 快捷退出与悬停 Tooltip，**严禁使用浏览器原生 `alert()` / `confirm()`**。
 
 ---

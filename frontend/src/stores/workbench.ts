@@ -31,14 +31,90 @@ export interface EditorTabItem {
 
 export const useWorkbenchStore = defineStore('workbench', () => {
 // 1. 活动栏与工作区状态
-const activeActivity = ref('chat')
+const activeActivity = ref<'chat' | 'files' | 'git'>('chat')
+const isLeftDrawerOpen = ref(true)
 const isDiffOpen = ref(true)
 const workspaceView = ref<'chat' | 'split' | 'editor'>('split')
+
+// 拖拽分栏比例 (20% - 80%)，默认 52%，从本地存储恢复
+const savedSplit = localStorage.getItem('tiancode_editor_split_percent')
+const editorSplitPercent = ref<number>(savedSplit ? Math.min(Math.max(Number(savedSplit), 20), 80) : 52)
+const isResizingSplit = ref(false)
 
 function setWorkspaceView(v: 'chat' | 'split' | 'editor') {
   workspaceView.value = v
   isDiffOpen.value = v !== 'chat'
   if (v !== 'chat') void loadFileTree()
+}
+
+function toggleLeftDrawer(activity?: 'chat' | 'files' | 'git') {
+  if (activity) {
+    if (activeActivity.value === activity && isLeftDrawerOpen.value) {
+      isLeftDrawerOpen.value = false
+    } else {
+      activeActivity.value = activity
+      isLeftDrawerOpen.value = true
+      if (activity === 'files') void loadFileTree()
+      if (activity === 'git') void loadGitStatus()
+    }
+  } else {
+    isLeftDrawerOpen.value = !isLeftDrawerOpen.value
+  }
+}
+
+function toggleEditorPanel() {
+  if (workspaceView.value === 'chat') {
+    setWorkspaceView('split')
+  } else if (workspaceView.value === 'split') {
+    setWorkspaceView('chat')
+  } else {
+    setWorkspaceView('split')
+  }
+}
+
+function toggleEditorFullscreen() {
+  if (workspaceView.value === 'editor') {
+    setWorkspaceView('split')
+  } else {
+    setWorkspaceView('editor')
+  }
+}
+
+function resetSplitRatio() {
+  editorSplitPercent.value = 50
+  try {
+    localStorage.setItem('tiancode_editor_split_percent', '50')
+  } catch {}
+  showToast('✓ 已复位分栏比例 (50/50)')
+}
+
+function startSplitResize(e: MouseEvent) {
+  e.preventDefault()
+  isResizingSplit.value = true
+
+  const onMouseMove = (moveEvent: MouseEvent) => {
+    const mainEl = document.getElementById('workbench-main-area')
+    if (!mainEl) return
+    const rect = mainEl.getBoundingClientRect()
+    // DiffWorkspace 位于右侧，向左拖增加宽度
+    const currentDiffPx = rect.right - moveEvent.clientX
+    let newPercent = (currentDiffPx / rect.width) * 100
+    if (newPercent < 20) newPercent = 20
+    if (newPercent > 80) newPercent = 80
+    editorSplitPercent.value = Math.round(newPercent)
+  }
+
+  const onMouseUp = () => {
+    isResizingSplit.value = false
+    window.removeEventListener('mousemove', onMouseMove)
+    window.removeEventListener('mouseup', onMouseUp)
+    try {
+      localStorage.setItem('tiancode_editor_split_percent', String(editorSplitPercent.value))
+    } catch {}
+  }
+
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
 }
 
 async function suggestCommitMessage() {
@@ -545,8 +621,11 @@ async function restoreSnapshotAction(id: string) {
 }
 
 function switchToFileActivity() {
-  activeActivity.value = 'chat'
-  setWorkspaceView('split')
+  toggleLeftDrawer('files')
+}
+
+function switchToChatActivity() {
+  toggleLeftDrawer('chat')
 }
 
 async function gitPullAction() {
@@ -582,8 +661,7 @@ async function setSessionTag(id: string, tag: string) {
 }
 
 function switchToGitActivity() {
-  activeActivity.value = 'git'
-  void loadGitStatus()
+  toggleLeftDrawer('git')
 }
 
 async function handleFileClick(node: FileNode) {
@@ -2519,6 +2597,24 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     e.preventDefault()
     void saveEditor()
   }
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+    e.preventDefault()
+    toggleLeftDrawer()
+    return
+  }
+
+  if ((e.ctrlKey || e.metaKey) && (e.key === '\\' || e.key === '|')) {
+    e.preventDefault()
+    toggleEditorPanel()
+    return
+  }
+
+  if (e.altKey && e.key.toLowerCase() === 'f') {
+    e.preventDefault()
+    toggleEditorFullscreen()
+    return
+  }
 }
 
 function initWorkbench() {
@@ -2751,6 +2847,15 @@ function initWorkbench() {
     tabContextMenu,
     switchToFileActivity,
     switchToGitActivity,
+    switchToChatActivity,
+    isLeftDrawerOpen,
+    editorSplitPercent,
+    isResizingSplit,
+    toggleLeftDrawer,
+    toggleEditorPanel,
+    toggleEditorFullscreen,
+    resetSplitRatio,
+    startSplitResize,
     terminalHeight,
     terminalInputCmd,
     terminalOutputs,
