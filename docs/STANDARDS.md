@@ -63,7 +63,7 @@
 
 | 门禁 | 命令 | 通过标准 |
 | --- | --- | --- |
-| 格式 | `gofmt -l .` | 空输出 |
+| 格式 | `gofmt -l main.go app internal` | 空输出（vendor 为第三方代码，不纳入格式管治） |
 | 静态检查 | `go vet ./...` | 零错误 |
 | 注释/风格 | `golangci-lint run` | 零告警 |
 | 架构守卫 | `scripts/arch_check.ps1` | 退出码 0 |
