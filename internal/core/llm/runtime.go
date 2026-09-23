@@ -82,6 +82,17 @@ func (r *chatRuntime) Chat(ctx context.Context, req ChatRequest, policy RuntimeP
 		go func() {
 			defer close(wrapped)
 			defer cancel()
+			// terminalOnCtxDone 区分 callCtx 结束的两种成因——它们语义完全不同：
+			//   1) 调用方取消（用户点"中断"）：这不是错误。必须上报 EndCancelled，
+			//      否则 UI 会把主动中断渲染成"错误"（契约 C-APP-2 要求 EndCancelled）。
+			//   2) 总时长预算到期（C-RT-3）：这才是错误终态。
+			// 判据用**外层 ctx**：外层已结束即为取消；否则是预算到期。
+			terminalOnCtxDone := func() StreamChunk {
+				if err := ctx.Err(); err != nil {
+					return StreamChunk{EndReason: EndCancelled, Err: err}
+				}
+				return StreamChunk{EndReason: EndError, Err: callCtx.Err()}
+			}
 			for {
 				select {
 				case c, ok := <-ch:
@@ -91,16 +102,16 @@ func (r *chatRuntime) Chat(ctx context.Context, req ChatRequest, policy RuntimeP
 					select {
 					case wrapped <- c:
 					case <-callCtx.Done():
-						// 预算到期且消费方停读：尽力补发终态后退出（close 由 defer 兜底）
+						// 预算到期/被取消且消费方停读：尽力补发终态后退出（close 由 defer 兜底）
 						select {
-						case wrapped <- StreamChunk{EndReason: EndError, Err: callCtx.Err()}:
+						case wrapped <- terminalOnCtxDone():
 						default:
 						}
 						return
 					}
 				case <-callCtx.Done():
 					select {
-					case wrapped <- StreamChunk{EndReason: EndError, Err: callCtx.Err()}:
+					case wrapped <- terminalOnCtxDone():
 					default:
 					}
 					return

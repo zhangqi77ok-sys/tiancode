@@ -32,7 +32,7 @@
 | C-SES-2 | 重放按 Seq 严格有序，结果与写入顺序一致 | `TestLedger_ReplayOrder` |
 | C-SES-3 | 账本尾部半行（写入中断）→ 重放自动截断该行，前面事件完整恢复 | `TestLedger_ReplayTornTail` |
 | C-SES-4 | 追加失败（磁盘/rename 冲突）→ 错误必须返回调用方，禁止吞掉 | `TestLedger_AppendErrorPropagates` |
-| C-SES-5 | Windows rename 冲突（目标被占用）→ 备份式替换回退成功，原数据不丢 | `TestLedger_RenameConflictFallback` |
+| C-SES-5 | 写入目标被占用（Windows rename 冲突）→ 备份式替换回退成功，原数据不丢。**保护对象已下移到存储层**：账本自 ADR-0002 起改为追加式（`O_APPEND` + fsync），不再有"全量改写 + rename"，该回退现在保护的是渠道配置与工具写文件 | `TestWriteFileAtomic_RenameConflictFallback` |
 | C-SES-6 | 轮内崩溃 → 重放恢复到最后一条完整事件（`assistant_message` 锚点），不丢整轮已确认内容 | `TestLedger_CrashReplayRecovery` |
 
 ## C-TOOL：工具执行契约（M3/M4）
@@ -87,3 +87,15 @@
 | --- | --- | --- |
 | C-WS-1 | 非法工作区（不存在/非目录/空白）拒绝，且**不改变当前值** | `TestChatService_SetWorkspace` |
 | C-WS-2 | 切换工作区必须重建工具受控根与 agent（杜绝"界面切了实际没切"） | `TestChatService_SetWorkspace` + 装配统一走 `newRegistry` |
+
+## 契约变更记录
+
+> 规则：契约一经发布不得静默变更（见 `STANDARDS.md` §4）。下表登记每一次**指向或表述**的修正——
+> 即使行为语义不变也要记，否则会出现"测试名与实际实现层次长期不一致"这种慢性失真：
+> 契约表声称覆盖了某行为，而该行为实际没有任何测试在看。
+
+| 日期 | 契约 | 变更 | 依据 |
+| --- | --- | --- | --- |
+| 2026-09-23 | C-SES-5 | 锁定测试名由 `TestLedger_RenameConflictFallback` 更正为 `TestWriteFileAtomic_RenameConflictFallback`，并明确保护对象是**存储层原子写的回退路径**（渠道配置 / 工具写文件）。原表述是旧设计（全量改写 + rename）的残留，属指向修正，行为语义未变 | ADR-0002（账本改为追加式账本，不再全量改写） |
+| 2026-09-23 | C-RT-4 | 锁定测试落地于 `internal/core/agent/agent_test.go::TestRuntime_FacadeBoundary`。此前该条约只有守卫 R1 的静态保证、没有同名测试。新测试做两件事：用替身运行时驱动内核跑完整一轮（编译期证明依赖的是接口而非具体实现），并扫描本包**非测试**源码，禁止出现适配器/编排/壳层 import | 本文件"ID 与测试名一一对应"的要求 |
+| 2026-09-23 | C-APP-2 | 锁定测试落地于 `internal/app/chat_service_test.go::TestChatService_CancelKeepsEvents`，走 `httptest` 上游 + 真实 `chatRuntime` 的端到端路径。此前只有 `TestAgent_CancelKeepsEvents`，而它用 `fakeRuntime` **直接把 `EndCancelled` 喂进内核**，恰好绕过了真正会出错的那一环（runtime 中继把 ctx 取消误判为 `EndError`）——这个盲区正是"用户点中断却被上报成错误"长期未被发现的根因。补测同时修复了 `core/llm/runtime.go` 中继层的终态判定 | 本文件"ID 与测试名一一对应"的要求 + ADR-0003（流式三终态） |

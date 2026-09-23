@@ -19,8 +19,19 @@
 
 | 路径 | 理由 |
 | --- | --- |
-| `vendor/` | Go 官方 vendor 机制，保证离线/新环境可构建 |
-| `frontend/wailsjs/` | Wails 生成绑定，前端编译依赖，避免构建顺序耦合 |
+| `vendor/` 及其**内部全部文件**（含 `*.exe` 等二进制） | Go 官方 vendor 机制保证离线/新环境可构建。**vendor 内的文件一个都不能少**：wails 的 `webview2installer.go` 用 `//go:embed MicrosoftEdgeWebview2Setup.exe` 无条件嵌入该二进制，缺了它 `go build ./...` / `go vet` / `go test` 三条全红 |
+| `frontend/dist/.gitkeep` | 占位文件：`main.go` 有 `//go:embed all:frontend/dist`，**要求该目录存在**，否则全新克隆无法编译 |
+| `cmd/installer/payload/.gitkeep` | 同上：安装器载荷目录需存在（载荷本身由 `release.ps1` 生成，不入库） |
+
+**两条容易踩的坑（都曾在本仓库真实发生）**：
+
+1. **取反规则必须写在 `.gitignore` 最后，且父目录不能被排除。**
+   gitignore 是"后匹配者优先"，但 gitignore(5) 明确规定：**父目录被排除时，无法再取反其中的文件**。
+   本仓库曾用 `dist/`（未锚定）连带排除了 `frontend/dist` 目录本身，使 `!frontend/dist/.gitkeep`
+   变成一句废话——占位文件因此从未入库，直接导致新克隆构建失败。现该三条构建产物目录均锚定为
+   `/bin/` `/build/` `/dist/`。
+2. **白名单必须写成规则，不能只在注释里列清单。**
+   本仓库曾把白名单写成注释，于是 `*.exe` 把 vendor 内的 wails 安装器二进制静默挡在仓库外。
 
 ### 提交流程
 
@@ -80,10 +91,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
 
 ## 6. CI 门禁
 
+落地位置：**`.github/workflows/ci.yml`**（`windows-latest`）。该工作流的步骤顺序不可调换——
+必须在 Go 门禁之前构建前端，因为 `main.go` 用 `//go:embed all:frontend/dist` 内嵌前端产物。
+
 | 门禁 | 命令 | 通过标准 |
 | --- | --- | --- |
-| 格式 | `gofmt -l main.go app internal` | 空输出（vendor 为第三方代码，不纳入格式管治） |
+| 格式 | `gofmt -l main.go app internal cmd` | 空输出（vendor 为第三方代码，不纳入格式管治） |
 | 静态检查 | `go vet ./...` | 零错误 |
 | 注释/风格 | `golangci-lint run` | 零告警 |
 | 架构守卫 | `scripts/arch_check.ps1` | 退出码 0 |
 | 测试 | `go test ./...` | 全绿 |
+
+**行尾前提**：格式门禁要求工作区为 LF，依据是仓库根的 `.gitattributes`（`*.go text eol=lf`）。
+不要把这件事交给各人的 `core.autocrlf`——Git for Windows 默认 `true`，会把工作区签出为 CRLF，
+而 gofmt 只输出 LF，于是 `gofmt -l` 列出全部 Go 文件、格式门禁**在任何 Windows 机器上都永远无法通过**。
+行尾是仓库约定，必须随仓库分发。

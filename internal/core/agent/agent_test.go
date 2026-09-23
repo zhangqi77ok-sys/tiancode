@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -230,6 +231,65 @@ func TestAgent_CancelKeepsEvents(t *testing.T) {
 	}
 	if anchors := countEvents(t, dir, session.EventAssistantMsg); anchors != 0 {
 		t.Fatal("incomplete turn must not write assistant_message anchor")
+	}
+}
+
+// C-RT-4：agent 只依赖 ChatRuntime 抽象，不感知渠道与重试的存在（Facade 边界）。
+//
+// 为什么值得单独锁一条：这是"换渠道 / 调重试策略无需改动内核"的结构性保证。
+// 分两层验证，缺一不可：
+//  1. 编译期证据——用一个与真实实现毫无关系的替身驱动内核跑完一整轮。若 agent 依赖了
+//     具体运行时或渠道类型，本测试根本无法通过编译。
+//  2. 静态边界——本包源码不得出现适配器/编排/壳层依赖。这是守卫 R1 的用例级镜像：
+//     让边界在 `go test` 里也能被证伪，而不只在提交前的手工脚本里。
+func TestRuntime_FacadeBoundary(t *testing.T) {
+	ledger, dir := newTestLedger(t)
+	defer ledger.Close()
+
+	// 1) 接口依赖：替身运行时足以驱动完整一轮（产出 assistant 锚点）
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{{Delta: "ok"}, {EndReason: llm.EndDone}},
+	}}
+	ch, err := NewLoop(fr, "test-model", nil).Run(context.Background(), ledger, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+	if n := countEvents(t, dir, session.EventAssistantMsg); n != 1 {
+		t.Fatalf("assistant 锚点数 = %d, want 1（替身运行时应当能驱动完整一轮）", n)
+	}
+
+	// 2) 静态边界：只扫**非测试**源码——产线边界才是要守的东西。
+	//    为什么跳过 *_test.go：测试文件合法地需要更多引用，而且本文件自身就带着
+	//    下面这些禁止依赖的字面量（扫描字符串必然命中自己），会造成自指误报。
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forbidden := []string{
+		"tiancode/internal/platform", // 适配器：渠道/provider/工具实现
+		"tiancode/internal/app",      // 编排层
+		"tiancode/app",               // 壳层（Wails 绑定）
+		"wailsapp/wails",             // UI 框架
+	}
+	scanned := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanned++
+		for _, bad := range forbidden {
+			if strings.Contains(string(src), `"`+bad) {
+				t.Errorf("%s 出现禁止依赖 %q：内核不得感知适配器/编排/壳层", e.Name(), bad)
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("未扫描到任何产线源码，测试前提不成立")
 	}
 }
 

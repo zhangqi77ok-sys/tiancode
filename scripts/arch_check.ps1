@@ -8,9 +8,19 @@ $root = (Get-Location).Path
 $goFiles = Get-ChildItem -Recurse -Filter *.go | Where-Object { $_.FullName -notmatch '\\vendor\\|\\frontend\\' }
 
 # R1 dependency direction: internal/core/** must not import orchestrator/adapters/shell/wails
+# Scope note (2026-09-23): _test.go files are excluded on purpose.
+#   R1 guards the *production* dependency direction -- what actually ships and what
+#   `go build ./...` links. Two reasons tests must not be scanned:
+#     1) a test under internal/core may legitimately reference another layer (test-only import
+#        creates no production dependency and no cycle);
+#     2) this rule is a substring match, so a test that merely *mentions* these import paths in a
+#        comment or in an assertion string flags itself -- e.g. the C-RT-4 facade-boundary test
+#        literally lists the forbidden paths to assert against them.
+#   R2 below already excludes tests for the same reason; keeping R1 consistent avoids false reds,
+#   which are how a guard earns the "it always complains, ignore it" reputation.
 foreach ($f in $goFiles) {
     $rel = $f.FullName.Substring($root.Length + 1)
-    if ($rel -like 'internal\core\*') {
+    if ($rel -like 'internal\core\*' -and $f.Name -notlike '*_test.go') {
         $bad = Select-String -Path $f.FullName -Pattern '"tiancode/internal/(app|platform)"|"github\.com/wailsapp/wails'
         if ($bad) {
             Write-Host "[R1][FAIL] core package has cross-layer import: $rel"
