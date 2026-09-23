@@ -10,7 +10,8 @@ flowchart TB
     BIND --> ORCH["编排 internal/app（ChatService用例）"]
     ORCH --> LOOP["内核 internal/core/agent（ReAct循环，无状态）"]
     ORCH --> SES["内核 internal/core/session（事件账本+重放恢复）"]
-    LOOP --> LLM["内核 internal/core/llm（ProviderPort+流式纪律）"]
+    LOOP --> RT["运行时 internal/core/llm.ChatRuntime（策略：渠道选择/重试/超时预算）"]
+    RT --> LLM["内核 internal/core/llm.ProviderPort（流式纪律）"]
     LOOP --> TOOLS["内核 internal/core/tools（ToolPort+执行契约）"]
     LLM -.实现端口.-> PROV["适配器 internal/platform/openaiprovider"]
     TOOLS -.实现端口.-> FS["适配器 fs/shell/git（原子写+可配超时）"]
@@ -53,7 +54,7 @@ tiancode/
 
 | 模块 | 职责 | 关键契约 |
 | --- | --- | --- |
-| `core/llm` | 供应商端口与流式行为契约；不做 HTTP | 流式三终态（`CONTRACTS.md` C-LLM-*） |
+| `core/llm` | 供应商端口、ChatRuntime 运行时抽象与流式行为契约；不做 HTTP | 流式三终态（C-LLM-*）+ 运行时纪律（C-RT-*） |
 | `core/session` | 追加式事件账本；崩溃重放恢复 | 账本即事实源（C-SES-*） |
 | `core/tools` | 工具端口与执行契约 | 超时/部分输出/错误表达（C-TOOL-*） |
 | `core/agent` | 无状态 ReAct 循环，步数上限 25 | 只编排端口，自身零 IO |
@@ -64,9 +65,10 @@ tiancode/
 ## 对话主线数据流（M2 完成后）
 
 ```
-用户输入 → app/ 绑定 → ChatService.Send
+用户输入 → app/ 绑定 → ChatService.Send（Pipeline：ResolveSession→Dispatch→StreamRelay→Persist，见 ADR-0005）
   → session 账本追加 UserMessage（持久化成功才推进内存）
-  → agent.Loop：llm.ProviderPort.StreamChat（空闲看门狗/发送逃生）
+  → agent.Loop（Phase 状态机 Idle/Running/Cancelled）
+      → llm.ChatRuntime（流前重试，流中不换渠道）→ ProviderPort.StreamChat（空闲看门狗/发送逃生）
       ├─ Delta → 账本 AssistantDelta → 前端流式渲染
       ├─ ToolCall → tools.ToolPort.Execute（超时契约）→ 账本 ToolCall/ToolResult → 前端工具卡片
       └─ 终态 EndReason → 账本 AssistantMsg/TurnEnd → 前端终态标签

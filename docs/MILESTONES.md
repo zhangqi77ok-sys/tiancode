@@ -22,11 +22,12 @@
 
 ## M2 流式对话环 —— 未开始
 
-**范围**：`internal/platform/openaiprovider`（流式纪律：空闲看门狗/发送逃生/EndReason）；`core/agent` ReAct 循环；`app/` 绑定层 + `main.go`（首次引入 wails 依赖 + vendor）；最小对话 UI（会话列表/流式气泡/中断按钮）。
+**范围**：`internal/platform/openaiprovider`（流式纪律：空闲看门狗/发送逃生/EndReason）；`core/llm.ChatRuntime` 运行时抽象（ADR-0005：流前重试/流中不换渠道/超时预算）；`core/agent` ReAct 循环 + Phase 状态机；`internal/app` ChatService 四节点 Pipeline；`app/` 绑定层 + `main.go`（首次引入 wails 依赖 + vendor）；最小对话 UI（会话列表/流式气泡/中断按钮）。
 
 **出口标准**：
-- [ ] C-LLM-1 ~ C-LLM-7、C-APP-1、C-APP-2 测试绿
+- [ ] C-LLM-1 ~ C-LLM-7、C-RT-1 ~ C-RT-4、C-APP-1、C-APP-2 测试绿
 - [ ] httptest 模拟上游的六种故障时序全部按契约收束
+- [ ] 设计模式按 ADR-0005 落位（Runtime/State/Pipeline），无越界仪式
 - [ ] 桌面可启动，端到端发一条消息：流式渲染 + 终态标签正确
 - [ ] `go mod vendor` 入库，离线全量构建测试通过
 

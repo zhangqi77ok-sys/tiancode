@@ -15,6 +15,15 @@
 | C-LLM-6 | 消费方停止读取 → 发送方经 select 逃生退出（`ctx.Done`），不永久阻塞在 channel 发送 | `TestProviderStream_SlowConsumerEscape` |
 | C-LLM-7 | 终态互斥且唯一：整流 EndReason 非零块恰好 1 个 | `TestProviderStream_SingleTerminal` |
 
+## C-RT：模型调用运行时（M2，ADR-0005；纪律借 new-api"流前重试、流中不换渠道"）
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-RT-1 | 流开始前的失败（连接失败/HTTP 非 2xx）按 RuntimePolicy.MaxAttempts 重试，对 agent 透明 | `TestRuntime_PreStreamRetry` |
+| C-RT-2 | 首块发出后的失败**不重试、不换渠道**，直接透传上游 EndReason 终态（防上下文撕裂） | `TestRuntime_NoRetryMidStream` |
+| C-RT-3 | Runtime 施加连接/空闲/总时长三层超时预算；ProviderPort 无法绕过（经构造注入） | `TestRuntime_TimeoutBudget` |
+| C-RT-4 | agent 只依赖 ChatRuntime，不感知渠道与重试的存在（Facade 边界，守卫 R1 静态保证） | `TestRuntime_FacadeBoundary` |
+
 ## C-SES：事件账本与会话恢复（M1）
 
 | ID | 契约 | 锁定测试 |
