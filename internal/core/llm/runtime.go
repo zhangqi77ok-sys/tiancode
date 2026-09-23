@@ -10,7 +10,11 @@
 // 流中换渠道会造成"半段回答来自模型 A、半段来自模型 B"的上下文撕裂。
 package llm
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+)
 
 // RuntimePolicy 是一次调用的运行时策略。
 // MVP 为单渠道：MaxAttempts 固定语义，重试的是"建立流"这一动作而非渠道切换；
@@ -35,4 +39,75 @@ type ChatRuntime interface {
 	//   - C-RT-3 施加连接/空闲/总时长三层超时预算，ProviderPort 实现不得绕过；
 	//   - C-RT-4 调用方（agent）不感知渠道与重试的存在。
 	Chat(ctx context.Context, req ChatRequest, policy RuntimePolicy) (<-chan StreamChunk, error)
+}
+
+// TimeoutBudget 是 Runtime 施加的超时预算（C-RT-3）。
+// 分层对应关系：连接层超时由 provider 的 HTTPClient 决定；空闲层由 provider 的
+// 空闲看门狗决定；总时长层由本预算经 ctx 截止时间统一强制——三层互不替代。
+type TimeoutBudget struct {
+	// Total 是单次调用总预算（覆盖建流与流式全程）。<=0 表示不设总预算。
+	Total time.Duration
+}
+
+// chatRuntime 是 ChatRuntime 的默认实现（Strategy 变化点收敛于渠道策略，见 ADR-0005）。
+type chatRuntime struct {
+	provider ProviderPort
+	budget   TimeoutBudget
+}
+
+// NewChatRuntime 构造运行时：provider 为唯一上游端口，budget 为总时长预算。
+func NewChatRuntime(p ProviderPort, budget TimeoutBudget) ChatRuntime {
+	return &chatRuntime{provider: p, budget: budget}
+}
+
+// Chat 按策略执行一次流式调用（实现 ChatRuntime，契约 C-RT-1~4）。
+func (r *chatRuntime) Chat(ctx context.Context, req ChatRequest, policy RuntimePolicy) (<-chan StreamChunk, error) {
+	if policy.MaxAttempts < 1 {
+		policy.MaxAttempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		// 为什么每次尝试独立 ctx：预算针对"单次尝试"，失败即随本次一起释放
+		callCtx, cancel := context.WithTimeout(ctx, r.budget.Total)
+		ch, err := r.provider.StreamChat(callCtx, req)
+		if err != nil {
+			// 流开始前失败（C-RT-1）：释放本次预算后重试，对调用方透明
+			cancel()
+			lastErr = err
+			continue
+		}
+		// 流已建立（C-RT-2）：绝不重试。转接 channel 并托管预算 ctx 生命周期——
+		// relay 在流关闭（或预算到期）时调用 cancel，防止 context 泄漏。
+		wrapped := make(chan StreamChunk)
+		go func() {
+			defer close(wrapped)
+			defer cancel()
+			for {
+				select {
+				case c, ok := <-ch:
+					if !ok {
+						return
+					}
+					select {
+					case wrapped <- c:
+					case <-callCtx.Done():
+						// 预算到期且消费方停读：尽力补发终态后退出（close 由 defer 兜底）
+						select {
+						case wrapped <- StreamChunk{EndReason: EndError, Err: callCtx.Err()}:
+						default:
+						}
+						return
+					}
+				case <-callCtx.Done():
+					select {
+					case wrapped <- StreamChunk{EndReason: EndError, Err: callCtx.Err()}:
+					default:
+					}
+					return
+				}
+			}
+		}()
+		return wrapped, nil
+	}
+	return nil, fmt.Errorf("chat runtime: all %d attempt(s) failed: %w", policy.MaxAttempts, lastErr)
 }
