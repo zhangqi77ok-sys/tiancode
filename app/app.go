@@ -30,6 +30,16 @@ func (b *Bind) ListSessions() ([]string, error) {
 	return b.chat.ListSessions()
 }
 
+// ListSessionSummaries 返回会话摘要（ID + 用户标题；标题来自账本事件）。
+func (b *Bind) ListSessionSummaries() ([]app.SessionSummary, error) {
+	return b.chat.SessionSummaries()
+}
+
+// RenameSession 重命名会话（标题写入账本，重启后仍可恢复）。
+func (b *Bind) RenameSession(sessionID, title string) error {
+	return b.chat.RenameSession(sessionID, title)
+}
+
 // DeleteSession 删除会话及其账本文件；被删除的会话不再出现在列表。
 func (b *Bind) DeleteSession(sessionID string) error {
 	return b.chat.DeleteSession(sessionID)

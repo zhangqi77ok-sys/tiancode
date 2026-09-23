@@ -8,6 +8,12 @@ export interface ChatMessageDTO {
   content: string
 }
 
+// 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）
+export interface SessionSummaryDTO {
+  id: string
+  title: string
+}
+
 // 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）
 export interface ChannelDTO {
   id: string
@@ -44,6 +50,8 @@ export interface ChannelInput {
 
 interface WailsApp {
   ListSessions(): Promise<string[] | null>
+  ListSessionSummaries(): Promise<SessionSummaryDTO[] | null>
+  RenameSession(sessionID: string, title: string): Promise<void>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
   Send(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
@@ -85,6 +93,8 @@ export function bridge(): WailsBridge {
     const stub: WailsBridge = {
       app: {
         ListSessions: async () => [],
+        ListSessionSummaries: async () => [],
+        RenameSession: offlineWrite,
         Replay: async () => [],
         Send: async () => {},
         Stop: async () => {},

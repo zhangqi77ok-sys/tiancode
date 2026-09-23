@@ -44,6 +44,14 @@ function stop() {
   store.stop()
 }
 
+// 重命名会话：标题写入账本（重启后仍在）；取消（null）视为放弃
+async function renameSession(id: string) {
+  if (store.running) return
+  const next = window.prompt('会话名称（最多 60 字）', store.titleOf(id))
+  if (next === null) return
+  await store.renameSession(id, next)
+}
+
 // 删除会话：不可逆操作，先确认（消息删除后无法从界面找回）
 async function removeSession(id: string) {
   if (store.running) return
@@ -106,10 +114,18 @@ onMounted(async () => {
               "
               @click="store.selectSession(id)"
             >
-              {{ id }}
+              {{ store.titleOf(id) }}
             </button>
             <button
-              class="shrink-0 rounded-lg px-2 py-1 text-xs text-[var(--c-text-faint)] opacity-0 transition-opacity hover:text-[var(--c-err)] group-hover:opacity-100"
+              class="shrink-0 rounded-lg px-1.5 py-1 text-xs text-[var(--c-text-faint)] opacity-0 transition-opacity hover:text-[var(--c-primary)] group-hover:opacity-100"
+              :disabled="store.running"
+              title="重命名会话"
+              @click="renameSession(id)"
+            >
+              ✎
+            </button>
+            <button
+              class="shrink-0 rounded-lg px-1.5 py-1 text-xs text-[var(--c-text-faint)] opacity-0 transition-opacity hover:text-[var(--c-err)] group-hover:opacity-100"
               :disabled="store.running"
               title="删除会话"
               @click="removeSession(id)"

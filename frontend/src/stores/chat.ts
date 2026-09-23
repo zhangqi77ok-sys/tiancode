@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { bridge } from '../wails'
+import { bridge, type SessionSummaryDTO } from '../wails'
 
 // 会话消息的 UI 形态；streaming 标记流式中的临时消息，error 标记错误/取消态；
 // role='tool' 为工具卡片（toolName/status 承载卡片数据）；
@@ -46,8 +46,26 @@ export const useChatStore = defineStore('chat', () => {
   // 会话管理类操作的错误（删除等）：与流式错误分开，前者是"操作没生效"，后者是"回复失败"
   const error = ref('')
 
+  // 会话摘要（ID + 标题）：标题为空时侧栏回退显示 ID
+  const summaries = ref<SessionSummaryDTO[]>([])
+
   async function loadSessions() {
-    sessions.value = (await bridge().app.ListSessions()) ?? []
+    summaries.value = (await bridge().app.ListSessionSummaries()) ?? []
+    sessions.value = summaries.value.map((s) => s.id)
+  }
+
+  function titleOf(id: string): string {
+    return summaries.value.find((s) => s.id === id)?.title || id
+  }
+
+  async function renameSession(id: string, title: string) {
+    error.value = ''
+    try {
+      await bridge().app.RenameSession(id, title)
+      await loadSessions()
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+    }
   }
 
   async function selectSession(id: string) {
@@ -147,6 +165,9 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     running,
     error,
+    summaries,
+    titleOf,
+    renameSession,
     loadSessions,
     selectSession,
     newSession,
