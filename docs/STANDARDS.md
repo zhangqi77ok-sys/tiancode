@@ -59,7 +59,26 @@
 - 文档目录：`ARCHITECTURE.md` / `CONTRACTS.md` / `TESTING.md` / `MILESTONES.md` / `STANDARDS.md` / `adr/`。
 - `README.md` 承诺：新环境 5 分钟跑通构建/测试/运行三条命令。
 
-## 5. CI 门禁
+## 5. 交付纪律（每次开发完成必须打包）
+
+**每次开发完成（每个里程碑/每次功能提交）必须执行发布流水线产出安装包**，不允许只留源码：
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
+```
+
+流水线强制顺序：门禁（gofmt/vet/test/arch_check）→ 前端构建 → 应用 exe → **安装包** → 便携包。
+产物（`dist/`，gitignore）：
+
+| 产物 | 说明 |
+| --- | --- |
+| `tiancode-setup-v<版本>.exe` | **原生 Go 安装器**（无需 NSIS/Inno，离线可构建）：装到 `%LOCALAPPDATA%\Programs\tiancode`，创建开始菜单快捷方式与"应用和功能"卸载项；`-quiet` 静默模式供自动化 |
+| `tiancode-v<版本>-portable.zip` | 便携包（exe + README） |
+
+版本号唯一来源：仓库根 `VERSION`。安装器载荷经 `installer_payload` 构建标签内嵌，
+常规 `go build ./...` 不受影响。
+
+## 6. CI 门禁
 
 | 门禁 | 命令 | 通过标准 |
 | --- | --- | --- |

@@ -55,4 +55,5 @@
 - [x] 全部契约测试绿（10 包，`-count=1` 新鲜执行）；arch_check PASS；golangci-lint 零告警
 - [x] 新环境按 README 三命令跑通；离线构建验证（`GOPROXY=off` + vendor）
 - [x] 真实上游冒烟通过（grok-4.6 流式 EndDone 收束）
+- [x] **安装包流水线**（`scripts/release.ps1`：原生 Go 安装器，安装/卸载全生命周期实证通过）
 - [ ] 四环人工验收各一例真实任务，失败路径符合契约（待人工 GUI 验收）

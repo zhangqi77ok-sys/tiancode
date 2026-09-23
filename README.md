@@ -49,6 +49,21 @@ $env:TIANCODE_BASE_URL='https://your-gateway/v1'; $env:TIANCODE_API_KEY='sk-...'
 | `shell` | 命令执行（默认 120s 超时、超时返回部分输出、后台任务日志有界） | C-TOOL-1~5 |
 | `git` | 只读查看 status / diff / log | — |
 
+## 发布与安装（每次开发完成必做）
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
+```
+
+| 产物（`dist/`） | 说明 |
+| --- | --- |
+| `tiancode-setup-v0.1.0.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建开始菜单快捷方式与卸载项 |
+| `tiancode-v0.1.0-portable.zip` | 便携包（exe + README） |
+
+安装器支持 `-quiet`（静默，供脚本部署）与 `-dir <目录>`（自定义安装位置）；
+卸载：开始菜单 →“应用和功能”，或运行安装目录下 `tiancode-setup.exe -uninstall`。
+版本号来源：根目录 `VERSION`。
+
 ## 真实上游冒烟测试（可选）
 
 ```bash

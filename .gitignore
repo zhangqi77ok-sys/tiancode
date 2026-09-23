@@ -39,6 +39,10 @@ coverage.out
 *.test
 *.out
 
+# --- 安装器 payload（构建时由 release.ps1 生成，仅保留 .gitkeep 占位） ---
+cmd/installer/payload/*
+!cmd/installer/payload/.gitkeep
+
 # ------------------------------------------------------------
 # 白名单例外（必须入库，禁止加入上方忽略）：
 #   vendor/           —— Go 官方 vendor 机制，保证离线/新环境可构建
