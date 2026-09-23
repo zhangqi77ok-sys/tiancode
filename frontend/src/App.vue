@@ -12,6 +12,22 @@ const channels = useChannelStore()
 const input = ref('')
 const scroller = ref<HTMLElement | null>(null)
 const settingsOpen = ref(false)
+const workspace = ref('')
+
+// 顶栏只显示末级目录名（完整路径太长会挤掉状态区）
+const workspaceName = computed(() => workspace.value.split(/[\\/]/).filter(Boolean).pop() ?? '未设置工作区')
+
+// 切换工作区：工具受控根随即重建（后端契约：非法路径返回错误，不静默保留旧值）
+async function switchWorkspace() {
+  const next = window.prompt('工作区路径（工具只能读写此目录内）', workspace.value)
+  if (!next) return
+  try {
+    await bridge().app.SetWorkspace(next)
+    workspace.value = (await bridge().app.GetWorkspace()) ?? ''
+  } catch (e) {
+    window.alert(String(e instanceof Error ? e.message : e))
+  }
+}
 
 // 顶栏展示当前默认渠道：没有渠道时给出明确引导（而不是让用户对着发送键发呆）
 const activeChannelName = computed(
@@ -62,6 +78,7 @@ async function removeSession(id: string) {
 onMounted(async () => {
   await store.init()
   await channels.load()
+  workspace.value = (await bridge().app.GetWorkspace()) ?? ''
   bridge().runtime.EventsOn('chat:chunk', (p: { sessionID: string; delta: string; thinking: string }) => {
     store.onChunk(p)
     void scrollToBottom()
@@ -85,6 +102,7 @@ onMounted(async () => {
       </div>
       <div class="flex items-center gap-2">
         <span class="chip">{{ store.sessions.length }} 个会话</span>
+        <button class="chip" title="切换工作区" @click="switchWorkspace">▣ {{ workspaceName }}</button>
         <button
           class="chip"
           :class="hasChannel ? '' : 'text-[var(--c-warn)] border-[var(--c-warn)]'"

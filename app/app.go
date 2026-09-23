@@ -30,6 +30,12 @@ func (b *Bind) ListSessions() ([]string, error) {
 	return b.chat.ListSessions()
 }
 
+// GetWorkspace 返回当前工作区路径（工具受控根）。
+func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
+
+// SetWorkspace 切换工作区；非法路径（不存在/非目录/空白）返回错误供 UI 展示。
+func (b *Bind) SetWorkspace(dir string) error { return b.chat.SetWorkspace(dir) }
+
 // ListSessionSummaries 返回会话摘要（ID + 用户标题；标题来自账本事件）。
 func (b *Bind) ListSessionSummaries() ([]app.SessionSummary, error) {
 	return b.chat.SessionSummaries()

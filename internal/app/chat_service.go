@@ -26,10 +26,7 @@ import (
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/channels"
 	"tiancode/internal/platform/configfile"
-	"tiancode/internal/platform/fstool"
-	"tiancode/internal/platform/gittool"
 	"tiancode/internal/platform/providerfactory"
-	"tiancode/internal/platform/shelltool"
 )
 
 // Config 是对话服务的装配配置。
@@ -81,15 +78,9 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	}
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
-	registry := tools.NewRegistry()
-	for _, reg := range []func() error{
-		func() error { return registry.Register(fstool.New(cfg.WorkDir)) },
-		func() error { return registry.Register(shelltool.New(shelltool.Options{Root: cfg.WorkDir})) },
-		func() error { return registry.Register(gittool.New(cfg.WorkDir)) },
-	} {
-		if err := reg(); err != nil {
-			return nil, fmt.Errorf("register tool: %w", err)
-		}
+	registry, err := newRegistry(cfg.WorkDir)
+	if err != nil {
+		return nil, err
 	}
 	s.registry = registry
 
