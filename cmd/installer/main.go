@@ -2,7 +2,7 @@
 
 // Package main 是 tiancode 的原生 Windows 安装器（无外部依赖、离线可用）。
 //
-// 做什么：把内嵌的应用 exe 安装到用户目录，创建开始菜单快捷方式与
+// 做什么：把内嵌的应用 exe 安装到用户目录，创建桌面与开始菜单快捷方式与
 // "应用和功能"卸载注册项；-uninstall 反向清理。零外部工具（不需要 NSIS/Inno）。
 // 参照 legacy cmd/installer 的既有做法（MessageBoxW + registry），但收敛为：
 // 单 payload 内嵌 + 静默模式（-quiet，供自动化验证与脚本化部署）。
@@ -49,6 +49,7 @@ func main() {
 	dirFlag := flag.String("dir", defaultInstallDir(), "安装目录")
 	uninstall := flag.Bool("uninstall", false, "卸载已安装的 tiancode")
 	quiet := flag.Bool("quiet", false, "静默模式：不弹对话框（供自动化/脚本部署）")
+	noDesktop := flag.Bool("no-desktop-shortcut", false, "不创建桌面快捷方式（仅创建开始菜单快捷方式）")
 	flag.Parse()
 
 	if *uninstall {
@@ -68,12 +69,16 @@ func main() {
 			return
 		}
 	}
-	if err := doInstall(*dirFlag); err != nil {
+	if err := doInstall(*dirFlag, !*noDesktop); err != nil {
 		fail("安装失败", err, *quiet)
 		return
 	}
 	if !*quiet {
-		messageBox("tiancode 安装完成", "已创建开始菜单快捷方式，可从“应用和功能”卸载。", mbOK|mbIconInfo)
+		msg := "已创建桌面与开始菜单快捷方式，可从“应用和功能”卸载。"
+		if *noDesktop {
+			msg = "已创建开始菜单快捷方式（按参数跳过桌面快捷方式），可从“应用和功能”卸载。"
+		}
+		messageBox("tiancode 安装完成", msg, mbOK|mbIconInfo)
 	}
 }
 
