@@ -43,6 +43,8 @@ export const useChatStore = defineStore('chat', () => {
   const sessions = ref<string[]>([])
   const messages = ref<ChatMsg[]>([])
   const running = ref(false)
+  // 会话管理类操作的错误（删除等）：与流式错误分开，前者是"操作没生效"，后者是"回复失败"
+  const error = ref('')
 
   async function loadSessions() {
     sessions.value = (await bridge().app.ListSessions()) ?? []
@@ -114,6 +116,21 @@ export const useChatStore = defineStore('chat', () => {
     void loadSessions() // 新会话首聊后进入列表
   }
 
+  // 删除会话：删除后若删的是当前会话，则新建空会话
+  // （否则界面会停在一个已不存在的会话上，后续 Replay 只会得到空内容）。
+  async function removeSession(id: string) {
+    if (running.value) return // 流式中禁止删除，避免读到半截账本
+    error.value = ''
+    try {
+      await bridge().app.DeleteSession(id)
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      return
+    }
+    await loadSessions()
+    if (sessionId.value === id) await newSession()
+  }
+
   function stop() {
     if (sessionId.value && running.value) bridge().app.Stop(sessionId.value)
   }
@@ -129,6 +146,7 @@ export const useChatStore = defineStore('chat', () => {
     sessions,
     messages,
     running,
+    error,
     loadSessions,
     selectSession,
     newSession,
@@ -136,6 +154,7 @@ export const useChatStore = defineStore('chat', () => {
     onChunk,
     onTool,
     onTerminal,
+    removeSession,
     stop,
     init,
   }

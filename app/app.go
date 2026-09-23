@@ -30,6 +30,11 @@ func (b *Bind) ListSessions() ([]string, error) {
 	return b.chat.ListSessions()
 }
 
+// DeleteSession 删除会话及其账本文件；被删除的会话不再出现在列表。
+func (b *Bind) DeleteSession(sessionID string) error {
+	return b.chat.DeleteSession(sessionID)
+}
+
 // Replay 返回会话的已确认消息（历史恢复）。
 func (b *Bind) Replay(sessionID string) ([]app.ChatMessage, error) {
 	return b.chat.Replay(sessionID)

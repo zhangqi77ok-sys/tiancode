@@ -139,6 +139,20 @@ func (s *ChatService) activate(ch llm.Channel) error {
 	return nil
 }
 
+// DeleteSession 删除会话及其账本文件。
+// 打开中的账本必须先关闭：Windows 上句柄未释放时删除会失败（与旧实现 rename 失败同源）。
+func (s *ChatService) DeleteSession(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l, ok := s.ledgers[sessionID]; ok {
+		if err := l.Close(); err != nil {
+			return fmt.Errorf("关闭会话账本失败：%w", err)
+		}
+		delete(s.ledgers, sessionID)
+	}
+	return session.DeleteSession(s.cfg.DataDir, sessionID)
+}
+
 // Send 发送一条用户消息，返回流式块通道（恰好一个 EndReason 终态后关闭）。
 func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读 agent，避免自锁

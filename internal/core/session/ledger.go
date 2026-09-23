@@ -69,6 +69,9 @@ func OpenLedger(dir, sessionID string) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(dir, sessionID+".jsonl")
 	lastSeq, err := repairLedger(path)
 	if err != nil {

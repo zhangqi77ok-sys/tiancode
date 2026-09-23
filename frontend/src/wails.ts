@@ -47,6 +47,7 @@ interface WailsApp {
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
   Send(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
+  DeleteSession(sessionID: string): Promise<void>
   ListChannels(): Promise<ChannelListDTO | null>
   ChannelPresets(): Promise<PresetDTO[] | null>
   AddChannel(input: ChannelInput): Promise<ChannelDTO | null>
@@ -87,6 +88,7 @@ export function bridge(): WailsBridge {
         Replay: async () => [],
         Send: async () => {},
         Stop: async () => {},
+        DeleteSession: offlineWrite,
         ListChannels: async () => ({ channels: [], activeId: '' }),
         ChannelPresets: async () => [],
         AddChannel: offlineWrite,

@@ -44,6 +44,13 @@ function stop() {
   store.stop()
 }
 
+// 删除会话：不可逆操作，先确认（消息删除后无法从界面找回）
+async function removeSession(id: string) {
+  if (store.running) return
+  if (!window.confirm(`删除会话「${id}」？该会话的全部消息将被移除`)) return
+  await store.removeSession(id)
+}
+
 onMounted(async () => {
   await store.init()
   await channels.load()
@@ -89,21 +96,30 @@ onMounted(async () => {
       <aside class="card flex w-60 shrink-0 flex-col p-3">
         <button class="btn-primary mb-3 w-full py-2 text-sm" @click="store.newSession()">＋ 新建对话</button>
         <div class="flex-1 space-y-1 overflow-y-auto">
-          <button
-            v-for="id in store.sessions"
-            :key="id"
-            class="w-full truncate rounded-xl px-3 py-2 text-left text-sm transition-colors"
-            :class="
-              id === store.sessionId
-                ? 'bg-[var(--c-primary-soft)] font-medium text-[var(--c-primary)]'
-                : 'text-[var(--c-text-dim)] hover:bg-[var(--c-surface-soft)]'
-            "
-            @click="store.selectSession(id)"
-          >
-            {{ id }}
-          </button>
+          <div v-for="id in store.sessions" :key="id" class="group flex items-center gap-1">
+            <button
+              class="min-w-0 flex-1 truncate rounded-xl px-3 py-2 text-left text-sm transition-colors"
+              :class="
+                id === store.sessionId
+                  ? 'bg-[var(--c-primary-soft)] font-medium text-[var(--c-primary)]'
+                  : 'text-[var(--c-text-dim)] hover:bg-[var(--c-surface-soft)]'
+              "
+              @click="store.selectSession(id)"
+            >
+              {{ id }}
+            </button>
+            <button
+              class="shrink-0 rounded-lg px-2 py-1 text-xs text-[var(--c-text-faint)] opacity-0 transition-opacity hover:text-[var(--c-err)] group-hover:opacity-100"
+              :disabled="store.running"
+              title="删除会话"
+              @click="removeSession(id)"
+            >
+              ✕
+            </button>
+          </div>
         </div>
-        <div class="mt-2 px-1 text-[11px] text-[var(--c-text-faint)]">历史由事件账本恢复</div>
+        <div v-if="store.error" class="mt-2 px-1 text-[11px] text-[var(--c-err)]">{{ store.error }}</div>
+        <div v-else class="mt-2 px-1 text-[11px] text-[var(--c-text-faint)]">历史由事件账本恢复</div>
       </aside>
 
       <!-- 对话区 -->
