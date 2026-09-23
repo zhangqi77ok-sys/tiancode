@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -47,6 +49,47 @@ func TestChatService_RenameSessionPersists(t *testing.T) {
 	}
 	if len(sums2) != 1 || sums2[0].Title != "渠道排查" {
 		t.Fatalf("after restart: %+v", sums2)
+	}
+}
+
+// 导出 Markdown：走真实对话链路（httptest 上游），确保导出内容与界面所见一致。
+func TestChatService_ExportMarkdown(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"已配置 DeepSeek\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer up.Close()
+
+	s := newChannelService(t, Config{BaseURL: up.URL, APIKey: "sk", Model: "m1"})
+	ctx := context.Background()
+
+	if err := s.RenameSession("s1", "渠道排查"); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := s.Send(ctx, "s1", "帮我看下渠道")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch { // 排空流，等待账本落定
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	md, err := s.ExportSessionMarkdown("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# 渠道排查", "帮我看下渠道", "已配置 DeepSeek"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, md)
+		}
+	}
+
+	// 未重命名的会话：标题回退为会话 ID，导出仍可用
+	if _, err := s.ExportSessionMarkdown("s-untitled"); err != nil {
+		t.Fatalf("export without title: %v", err)
 	}
 }
 

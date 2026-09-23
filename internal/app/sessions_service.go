@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"tiancode/internal/core/session"
 )
@@ -36,6 +37,43 @@ func (s *ChatService) RenameSession(sessionID, title string) error {
 		return fmt.Errorf("保存会话标题失败：%w", err)
 	}
 	return nil
+}
+
+// roleLabel 把消息角色映射为中文小节标题（未知角色原样保留，不丢信息）。
+func roleLabel(role string) string {
+	switch role {
+	case "user":
+		return "用户"
+	case "assistant":
+		return "助手"
+	case "tool":
+		return "工具"
+	default:
+		return role
+	}
+}
+
+// ExportSessionMarkdown 把会话导出为 Markdown 文本（交由前端复制/保存）。
+// 复用界面同源的账本投影（Replay）：导出内容 = 用户所见，不引入第二事实源。
+func (s *ChatService) ExportSessionMarkdown(sessionID string) (string, error) {
+	title, err := session.SessionTitle(s.cfg.DataDir, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if title == "" {
+		title = sessionID // 未重命名：标题回退会话 ID（导出仍可用）
+	}
+	msgs, err := s.Replay(sessionID)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", title)
+	fmt.Fprintf(&b, "> 会话 %s · 导出于 %s\n", sessionID, time.Now().Format("2006-01-02 15:04"))
+	for _, m := range msgs {
+		fmt.Fprintf(&b, "\n## %s\n\n%s\n", roleLabel(m.Role), m.Content)
+	}
+	return b.String(), nil
 }
 
 // SessionSummaries 返回全部会话摘要（按 ID 排序，与 ListSessions 一致）。

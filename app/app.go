@@ -30,6 +30,11 @@ func (b *Bind) ListSessions() ([]string, error) {
 	return b.chat.ListSessions()
 }
 
+// ExportSessionMarkdown 返回会话的 Markdown 文本（前端负责复制/保存）。
+func (b *Bind) ExportSessionMarkdown(sessionID string) (string, error) {
+	return b.chat.ExportSessionMarkdown(sessionID)
+}
+
 // GetWorkspace 返回当前工作区路径（工具受控根）。
 func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
 

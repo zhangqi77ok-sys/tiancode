@@ -68,6 +68,19 @@ async function renameSession(id: string) {
   await store.renameSession(id, next)
 }
 
+// 导出当前会话为 Markdown 并复制到剪贴板（数据可带走；剪贴板不可用时明确报错，不假装成功）
+async function exportSession() {
+  if (!store.sessionId || store.running) return
+  const md = await store.exportMarkdown(store.sessionId)
+  if (!md) return
+  try {
+    await navigator.clipboard.writeText(md)
+    window.alert('已导出并复制到剪贴板（Markdown）')
+  } catch {
+    window.alert('导出失败：当前环境剪贴板不可用')
+  }
+}
+
 // 删除会话：不可逆操作，先确认（消息删除后无法从界面找回）
 async function removeSession(id: string) {
   if (store.running) return
@@ -102,6 +115,7 @@ onMounted(async () => {
       </div>
       <div class="flex items-center gap-2">
         <span class="chip">{{ store.sessions.length }} 个会话</span>
+        <button class="chip" title="导出当前会话为 Markdown" @click="exportSession">导出</button>
         <button class="chip" title="切换工作区" @click="switchWorkspace">▣ {{ workspaceName }}</button>
         <button
           class="chip"

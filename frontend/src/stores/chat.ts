@@ -149,6 +149,17 @@ export const useChatStore = defineStore('chat', () => {
     if (sessionId.value === id) await newSession()
   }
 
+  // 导出会话 Markdown（返回文本，复制/保存由调用方决定）
+  async function exportMarkdown(id: string): Promise<string> {
+    error.value = ''
+    try {
+      return (await bridge().app.ExportSessionMarkdown(id)) ?? ''
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      return ''
+    }
+  }
+
   function stop() {
     if (sessionId.value && running.value) bridge().app.Stop(sessionId.value)
   }
@@ -176,6 +187,7 @@ export const useChatStore = defineStore('chat', () => {
     onTool,
     onTerminal,
     removeSession,
+    exportMarkdown,
     stop,
     init,
   }

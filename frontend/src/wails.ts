@@ -52,6 +52,7 @@ interface WailsApp {
   ListSessions(): Promise<string[] | null>
   ListSessionSummaries(): Promise<SessionSummaryDTO[] | null>
   RenameSession(sessionID: string, title: string): Promise<void>
+  ExportSessionMarkdown(sessionID: string): Promise<string | null>
   GetWorkspace(): Promise<string | null>
   SetWorkspace(dir: string): Promise<void>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
@@ -97,6 +98,7 @@ export function bridge(): WailsBridge {
         ListSessions: async () => [],
         ListSessionSummaries: async () => [],
         RenameSession: offlineWrite,
+        ExportSessionMarkdown: async () => '',
         GetWorkspace: async () => '',
         SetWorkspace: offlineWrite,
         Replay: async () => [],
