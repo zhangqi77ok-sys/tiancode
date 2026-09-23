@@ -8,11 +8,52 @@ export interface ChatMessageDTO {
   content: string
 }
 
+// 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）
+export interface ChannelDTO {
+  id: string
+  name: string
+  protocol: string
+  baseUrl: string
+  model: string
+  hasKey: boolean
+  active: boolean
+}
+
+export interface ChannelListDTO {
+  channels: ChannelDTO[]
+  activeId: string
+}
+
+export interface PresetDTO {
+  key: string
+  name: string
+  protocol: string
+  baseUrl: string
+  suggestedModel: string
+}
+
+// 新增/更新入参；更新时 apiKey 留空 = 保持原密钥（后端契约，见 app.ChannelInput）
+export interface ChannelInput {
+  id: string
+  name: string
+  protocol: string
+  baseUrl: string
+  model: string
+  apiKey: string
+}
+
 interface WailsApp {
   ListSessions(): Promise<string[] | null>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
   Send(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
+  ListChannels(): Promise<ChannelListDTO | null>
+  ChannelPresets(): Promise<PresetDTO[] | null>
+  AddChannel(input: ChannelInput): Promise<ChannelDTO | null>
+  UpdateChannel(input: ChannelInput): Promise<void>
+  DeleteChannel(id: string): Promise<void>
+  SetActiveChannel(id: string): Promise<void>
+  DiscoverModels(input: ChannelInput): Promise<string[] | null>
 }
 
 interface WailsRuntime {
@@ -25,9 +66,15 @@ export interface WailsBridge {
   runtime: WailsRuntime
 }
 
+// 浏览器调试模式下的写操作桩：显式报错而非假装成功——
+// "看着保存成功其实没保存"比直接报错更贵（与后端"未实现协议显式拒绝"同一纪律）。
+const offlineWrite = async (): Promise<never> => {
+  throw new Error('浏览器调试模式：未连接本地内核，无法修改配置')
+}
+
 // bridge 返回类型化的 wails 注入对象。
 // 纯浏览器（vite dev）没有注入：返回桩实现，便于视觉调试与设计迭代
-// ——桩只返回空数据，绝不伪造业务数据（避免"看着能跑其实没接线"的假象）。
+// ——读操作桩返回空数据，绝不伪造业务数据。
 export function bridge(): WailsBridge {
   const w = window as unknown as {
     go?: { main: { App: WailsApp } }
@@ -40,6 +87,13 @@ export function bridge(): WailsBridge {
         Replay: async () => [],
         Send: async () => {},
         Stop: async () => {},
+        ListChannels: async () => ({ channels: [], activeId: '' }),
+        ChannelPresets: async () => [],
+        AddChannel: offlineWrite,
+        UpdateChannel: offlineWrite,
+        DeleteChannel: offlineWrite,
+        SetActiveChannel: offlineWrite,
+        DiscoverModels: offlineWrite,
       },
       runtime: { EventsOn: () => {} },
     }

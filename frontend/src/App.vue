@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useChatStore } from './stores/chat'
+import { useChannelStore } from './stores/channels'
+import ChannelSettings from './components/ChannelSettings.vue'
 import { bridge } from './wails'
 
 // 根组件：左侧会话卡片 + 右侧对话卡片。
 // 视觉语言：浅色柔和底 + 白卡 + 紫罗兰主色 + 药丸控件（令牌见 style.css）。
 const store = useChatStore()
+const channels = useChannelStore()
 const input = ref('')
 const scroller = ref<HTMLElement | null>(null)
+const settingsOpen = ref(false)
+
+// 顶栏展示当前默认渠道：没有渠道时给出明确引导（而不是让用户对着发送键发呆）
+const activeChannelName = computed(
+  () => channels.list.find((c) => c.active)?.name ?? '未配置渠道',
+)
+const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeId)
 
 // 建议提示（参考图的 chip 行）：点击填入输入框
 const suggestions = ['介绍这个项目', '读取 go.mod 前 5 行并复述 module 名', '运行 go test ./internal/core/tools/']
@@ -36,6 +46,7 @@ function stop() {
 
 onMounted(async () => {
   await store.init()
+  await channels.load()
   bridge().runtime.EventsOn('chat:chunk', (p: { sessionID: string; delta: string; thinking: string }) => {
     store.onChunk(p)
     void scrollToBottom()
@@ -59,6 +70,14 @@ onMounted(async () => {
       </div>
       <div class="flex items-center gap-2">
         <span class="chip">{{ store.sessions.length }} 个会话</span>
+        <button
+          class="chip"
+          :class="hasChannel ? '' : 'text-[var(--c-warn)] border-[var(--c-warn)]'"
+          title="模型渠道设置"
+          @click="settingsOpen = true"
+        >
+          {{ hasChannel ? activeChannelName : '未配置渠道 · 点击设置' }}
+        </button>
         <span class="chip" :class="store.running ? 'text-[var(--c-primary)] border-[var(--c-primary)]' : ''">
           {{ store.running ? '运行中' : '空闲' }}
         </span>
@@ -169,5 +188,8 @@ onMounted(async () => {
         </div>
       </main>
     </div>
+
+    <!-- 渠道设置（模态）：保存/切换后顶栏渠道名随之更新 -->
+    <ChannelSettings v-if="settingsOpen" @close="settingsOpen = false" />
   </div>
 </template>
