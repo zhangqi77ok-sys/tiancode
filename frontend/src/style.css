@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* 设计令牌（单一定义源；色板依据见方案设计风格节） */
+:root {
+  --c-primary: #3b82f6;
+  --c-bg: #0d1117;
+  --c-surface: #161b22;
+  --c-text: #e6edf3;
+  --c-text-dim: #8b949e;
+  --c-ok: #3fb950;
+  --c-err: #f85149;
+  --c-warn: #d29922;
+}
+
+body {
+  margin: 0;
+  font-family:
+    'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    sans-serif;
+}

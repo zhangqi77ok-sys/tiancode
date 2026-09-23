@@ -1,0 +1,20 @@
+# 注释与风格门禁配置（规则定义见 docs/STANDARDS.md §3 注释规范）。
+# 运行方式：CI 与本地提交前执行 `golangci-lint run`。
+
+run:
+  timeout: 3m
+
+linters:
+  disable-all: true
+  enable:
+    - revive        # 包注释 + 导出标识符 godoc 强制
+    - govet
+    - ineffassign
+    - staticcheck
+
+linters-settings:
+  revive:
+    rules:
+      - name: package-comments   # 每个非平凡包必须有包级注释
+      - name: exported           # 导出标识符必须有 godoc
+      - name: var-naming
