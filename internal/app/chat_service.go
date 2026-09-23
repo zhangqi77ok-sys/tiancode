@@ -113,7 +113,7 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 		return nil, err
 	}
 	var out []ChatMessage
-	err = ledger.Replay(func(ev session.SessionEvent) error {
+	err = ledger.Replay(func(ev session.Event) error {
 		var p struct {
 			Text string `json:"text"`
 		}

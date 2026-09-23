@@ -36,10 +36,10 @@ const (
 	EventError          EventKind = "error"
 )
 
-// SessionEvent 是账本中的最小事件单元。
+// Event 是账本中的最小事件单元。
 // 实现契约：Seq 在单个账本内单调递增；写入方必须持久化成功后才推进内存状态
 // （write-ahead：账本即事实源，内存只是缓存）。
-type SessionEvent interface {
+type Event interface {
 	// Seq 返回事件在账本中的序号（从 1 开始）。
 	Seq() int64
 	// Kind 返回事件类型。
@@ -123,7 +123,7 @@ func repairLedger(path string) (int64, error) {
 
 // Append 追加一个事件并 fsync 落盘。
 // 契约 C-SES-1/4：成功返回时事件行已持久化；任何失败返回错误且不推进序号水位。
-func (l *Ledger) Append(kind EventKind, data any) (SessionEvent, error) {
+func (l *Ledger) Append(kind EventKind, data any) (Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.f == nil {
@@ -146,7 +146,7 @@ func (l *Ledger) Append(kind EventKind, data any) (SessionEvent, error) {
 
 // Replay 按写入顺序重放账本中所有完整事件。
 // visit 返回错误则中止重放并原样上抛。
-func (l *Ledger) Replay(visit func(SessionEvent) error) error {
+func (l *Ledger) Replay(visit func(Event) error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	data, err := os.ReadFile(l.path)
@@ -187,7 +187,7 @@ func (l *Ledger) Close() error {
 	return err
 }
 
-// event 是 SessionEvent 的最小实现。
+// event 是 Event 的最小实现。
 // Data 使用 any 写入 / json.RawMessage 重放：两种来源 Encode 后字节等价。
 type event struct {
 	seqN  int64     `json:"-"`

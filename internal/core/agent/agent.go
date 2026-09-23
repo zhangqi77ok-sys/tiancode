@@ -102,7 +102,7 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string)
 // 注意：进行中的工具调用轮次不落锚点，崩溃恢复后该轮从最后一次用户消息重放。
 func (l *Loop) deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 	var msgs []llm.Message
-	err := ledger.Replay(func(ev session.SessionEvent) error {
+	err := ledger.Replay(func(ev session.Event) error {
 		var p struct {
 			Text string `json:"text"`
 		}

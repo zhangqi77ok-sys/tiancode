@@ -106,7 +106,7 @@ func countEvents(t *testing.T, dir string, kind session.EventKind) int {
 	}
 	defer l.Close()
 	n := 0
-	if err := l.Replay(func(ev session.SessionEvent) error {
+	if err := l.Replay(func(ev session.Event) error {
 		if ev.Kind() == kind {
 			n++
 		}

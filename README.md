@@ -13,17 +13,48 @@
 前置：Go 1.22+、Node 18+。
 
 ```bash
-# 后端（stdlib-only 依赖，离线可跑）
+# 后端（vendor 已入库，离线可跑）
 go build ./... && go test ./...
 
 # 前端
 cd frontend && npm install && npm run build
 
-# 桌面打包（M2 壳层落地后可用）
-wails build
+# 桌面应用（exe 直接可跑；wails CLI 可选）
+go build -o bin/tiancode.exe . && ./bin/tiancode.exe
 ```
 
-> 离线说明：首次构建需联网拉取依赖并执行 `go mod vendor`；此后仓库内 `vendor/` 保证离线可构建。
+> 离线说明：`vendor/` 已入库，`GOPROXY=off go build ./...` 可直接构建（已验证）。
+
+## 运行配置（环境变量）
+
+密钥只经环境变量注入，**永不入库**（docs/STANDARDS.md §1）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `TIANCODE_BASE_URL` | OpenAI 兼容网关根地址（含 `/v1`） |
+| `TIANCODE_API_KEY` | 供应商密钥 |
+| `TIANCODE_MODEL` | 默认模型（如 `grok-4.6`） |
+| `TIANCODE_WORKSPACE` | 工作区目录（fs/shell/git 工具的受控范围，缺省当前目录） |
+
+```powershell
+$env:TIANCODE_BASE_URL='https://your-gateway/v1'; $env:TIANCODE_API_KEY='sk-...'; $env:TIANCODE_MODEL='your-model'
+.\bin\tiancode.exe
+```
+
+## 内置工具
+
+| 工具 | 能力 | 关键契约 |
+| --- | --- | --- |
+| `fs` | 读写文件（原子写）、精准替换（多处匹配默认拒绝） | C-FS-1~4 |
+| `shell` | 命令执行（默认 120s 超时、超时返回部分输出、后台任务日志有界） | C-TOOL-1~5 |
+| `git` | 只读查看 status / diff / log | — |
+
+## 真实上游冒烟测试（可选）
+
+```bash
+TIANCODE_SMOKE_BASEURL=... TIANCODE_SMOKE_APIKEY=... TIANCODE_SMOKE_MODEL=... \
+  go test ./internal/platform/openaiprovider/ -run TestSmoke_RealUpstream -v
+```
 
 ## 提交白名单例外（必须入库，勿清理）
 

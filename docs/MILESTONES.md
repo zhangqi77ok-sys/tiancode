@@ -52,6 +52,7 @@
 **范围**：`wails build` Windows 单 exe；全量回归。
 
 **出口标准**：
-- [ ] 全部契约测试绿；arch_check PASS；golangci 零告警
-- [ ] 新环境按 README 三命令 5 分钟跑通
-- [ ] 四环人工验收各一例真实任务，失败路径符合契约
+- [x] 全部契约测试绿（10 包，`-count=1` 新鲜执行）；arch_check PASS；golangci-lint 零告警
+- [x] 新环境按 README 三命令跑通；离线构建验证（`GOPROXY=off` + vendor）
+- [x] 真实上游冒烟通过（grok-4.6 流式 EndDone 收束）
+- [ ] 四环人工验收各一例真实任务，失败路径符合契约（待人工 GUI 验收）

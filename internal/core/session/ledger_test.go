@@ -64,7 +64,7 @@ func TestLedger_ReplayOrder(t *testing.T) {
 
 	var got []EventKind
 	var seqs []int64
-	err = l2.Replay(func(ev SessionEvent) error {
+	err = l2.Replay(func(ev Event) error {
 		got = append(got, ev.Kind())
 		seqs = append(seqs, ev.Seq())
 		return nil
@@ -111,7 +111,7 @@ func TestLedger_ReplayTornTail(t *testing.T) {
 	defer l2.Close()
 
 	n := 0
-	err = l2.Replay(func(ev SessionEvent) error { n++; return nil })
+	err = l2.Replay(func(ev Event) error { n++; return nil })
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -156,8 +156,8 @@ func TestLedger_CrashReplayRecovery(t *testing.T) {
 	}
 	defer l2.Close()
 
-	var last SessionEvent
-	err = l2.Replay(func(ev SessionEvent) error { last = ev; return nil })
+	var last Event
+	err = l2.Replay(func(ev Event) error { last = ev; return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
