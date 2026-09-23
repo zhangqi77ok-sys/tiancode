@@ -35,13 +35,22 @@ const (
 	EndIdleTimeout
 )
 
+// ToolEvent 是工具执行动态（UI 工具卡片的数据源；同时落账本供审计）。
+type ToolEvent struct {
+	Name    string // 工具名
+	Status  string // "success" | "error"
+	Summary string // 结果摘要（可截断）
+}
+
 // StreamChunk 是流式传输的最小单元。
 // Delta 与 ToolCalls 可同时为空（例如仅携带 Usage 的收尾块）；
+// ToolEvent 非 nil 时为纯事件块（agent 产出，不经上游）；
 // Err 非 nil 的块必为终态块；EndReason 仅在终态块上非零，其余块必须为零值。
 type StreamChunk struct {
 	Delta     string          // 文本增量
 	Thinking  string          // 思考流增量（reasoning），可为空
-	ToolCalls []ToolCallChunk // 工具调用增量分片
+	ToolCalls []ToolCallChunk // 工具调用增量分片（来自模型）
+	ToolEvent *ToolEvent      // 工具执行动态（来自 agent）
 	Usage     *Usage          // token 用量（上游返回时非 nil）
 	Err       error           // 终态错误（仅 EndError 终态块非 nil）
 	EndReason EndReason       // 仅终态块非零

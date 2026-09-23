@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -10,24 +12,39 @@ import (
 
 	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
+	"tiancode/internal/core/tools"
 )
 
-// fakeRuntime 在 ChatRuntime 边界注入可控的流与请求捕获。
+// fakeRuntime 按脚本回放每次 Chat 调用的流（脚本段依序消费，段间独立）。
 type fakeRuntime struct {
-	mu   sync.Mutex
-	reqs []llm.ChatRequest
-	ch   chan llm.StreamChunk
-	err  error
+	mu     sync.Mutex
+	reqs   []llm.ChatRequest
+	script [][]llm.StreamChunk
+	err    error
+	manual chan llm.StreamChunk // 非空时忽略脚本（测试手工控制时序）
 }
 
-func (f *fakeRuntime) Chat(ctx context.Context, req llm.ChatRequest, _ llm.RuntimePolicy) (<-chan llm.StreamChunk, error) {
+func (f *fakeRuntime) Chat(_ context.Context, req llm.ChatRequest, _ llm.RuntimePolicy) (<-chan llm.StreamChunk, error) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, req)
-	ch := f.ch
+	n := len(f.reqs)
+	manual := f.manual
 	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
+	if manual != nil {
+		return manual, nil
+	}
+	if n > len(f.script) {
+		return nil, fmt.Errorf("unexpected Chat call #%d (script has %d)", n, len(f.script))
+	}
+	seg := f.script[n-1]
+	ch := make(chan llm.StreamChunk, len(seg))
+	for _, c := range seg {
+		ch <- c
+	}
+	close(ch)
 	return ch, nil
 }
 
@@ -35,6 +52,23 @@ func (f *fakeRuntime) requestCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.reqs)
+}
+
+// scriptTool 返回固定结果的桩工具。
+type scriptTool struct {
+	name     string
+	result   tools.ToolResult
+	executed int
+}
+
+func (s *scriptTool) Name() string        { return s.name }
+func (s *scriptTool) Description() string { return "scripted " + s.name }
+func (s *scriptTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (s *scriptTool) Execute(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+	s.executed++
+	return s.result, nil
 }
 
 func newTestLedger(t *testing.T) (*session.Ledger, string) {
@@ -47,7 +81,6 @@ func newTestLedger(t *testing.T) (*session.Ledger, string) {
 	return l, dir
 }
 
-// drain 读取流直至关闭或超时。
 func drain(t *testing.T, ch <-chan llm.StreamChunk, timeout time.Duration) []llm.StreamChunk {
 	t.Helper()
 	var out []llm.StreamChunk
@@ -65,17 +98,37 @@ func drain(t *testing.T, ch <-chan llm.StreamChunk, timeout time.Duration) []llm
 	}
 }
 
+func countEvents(t *testing.T, dir string, kind session.EventKind) int {
+	t.Helper()
+	l, err := session.OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	n := 0
+	if err := l.Replay(func(ev session.SessionEvent) error {
+		if ev.Kind() == kind {
+			n++
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // Phase 状态机：Idle → Running（轮内）→ Idle（轮毕）。
 func TestAgent_PhaseTransitions(t *testing.T) {
 	ledger, _ := newTestLedger(t)
 	defer ledger.Close()
 
-	fch := make(chan llm.StreamChunk)
-	loop := NewLoop(&fakeRuntime{ch: fch}, "test-model")
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{{Delta: "x"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "test-model", nil)
 	if loop.Phase() != PhaseIdle {
 		t.Fatalf("initial phase = %v, want Idle", loop.Phase())
 	}
-
 	ch, err := loop.Run(context.Background(), ledger, "q")
 	if err != nil {
 		t.Fatal(err)
@@ -83,21 +136,20 @@ func TestAgent_PhaseTransitions(t *testing.T) {
 	if loop.Phase() != PhaseRunning {
 		t.Fatalf("phase during turn = %v, want Running", loop.Phase())
 	}
-
-	close(fch) // runtime 未给终态即关闭 → agent 兜底 EndError（端口契约被破坏时的防线）
 	drain(t, ch, 3*time.Second)
 	if loop.Phase() != PhaseIdle {
 		t.Fatalf("phase after turn = %v, want Idle", loop.Phase())
 	}
 }
 
-// 忙碌拒绝：单轮进行中再次 Run 必须报错（防并发轮次撕裂账本语义）。
+// 忙碌拒绝：单轮进行中再次 Run 必须报 ErrBusy（防并发轮次撕裂账本语义）。
 func TestAgent_BusyRejected(t *testing.T) {
 	ledger, _ := newTestLedger(t)
 	defer ledger.Close()
 
 	fch := make(chan llm.StreamChunk)
-	loop := NewLoop(&fakeRuntime{ch: fch}, "m")
+	fr := &fakeRuntime{manual: fch}
+	loop := NewLoop(fr, "m", nil)
 	ch, err := loop.Run(context.Background(), ledger, "q")
 	if err != nil {
 		t.Fatal(err)
@@ -115,13 +167,13 @@ func TestAgent_PersistErrorPropagates(t *testing.T) {
 	ledger, _ := newTestLedger(t)
 	ledger.Close() // 注入持久化失败
 
-	loop := NewLoop(&fakeRuntime{}, "m")
+	loop := NewLoop(&fakeRuntime{}, "m", nil)
 	if _, err := loop.Run(context.Background(), ledger, "q"); err == nil {
 		t.Fatal("persist failure must propagate")
 	}
 }
 
-// C-APP-1（流中层）：增量落盘失败 → EndError 终态上抛，且 EndDone 不再被转发（恰好一个终态）。
+// C-APP-1（流中层）：增量落盘失败 → EndError 终态上抛，且 EndDone 不再被转发。
 func TestAgent_DeltaPersistErrorBecomesTerminal(t *testing.T) {
 	ledger, _ := newTestLedger(t)
 
@@ -130,7 +182,7 @@ func TestAgent_DeltaPersistErrorBecomesTerminal(t *testing.T) {
 	fch <- llm.StreamChunk{EndReason: llm.EndDone}
 	close(fch)
 
-	loop := NewLoop(&fakeRuntime{ch: fch}, "m")
+	loop := NewLoop(&fakeRuntime{manual: fch}, "m", nil)
 	ch, err := loop.Run(context.Background(), ledger, "q") // user 消息落盘成功
 	if err != nil {
 		t.Fatal(err)
@@ -138,8 +190,7 @@ func TestAgent_DeltaPersistErrorBecomesTerminal(t *testing.T) {
 	ledger.Close() // 注入后续持久化失败
 
 	chunks := drain(t, ch, 3*time.Second)
-	terminals := 0
-	sawPersistErr := false
+	terminals, sawPersistErr := 0, false
 	for _, c := range chunks {
 		if c.EndReason != llm.EndNone {
 			terminals++
@@ -156,46 +207,28 @@ func TestAgent_DeltaPersistErrorBecomesTerminal(t *testing.T) {
 	}
 }
 
-// C-APP-2：取消 → EndCancelled 终态 + 已产生的 delta 保留在账本 + 不写 assistant_message 锚点。
+// C-APP-2：取消 → EndCancelled 终态 + 已产生 delta 保留账本 + 不写锚点。
 func TestAgent_CancelKeepsEvents(t *testing.T) {
 	ledger, dir := newTestLedger(t)
 	defer ledger.Close()
 
-	fch := make(chan llm.StreamChunk)
-	loop := NewLoop(&fakeRuntime{ch: fch}, "m")
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{{Delta: "partial"}, {EndReason: llm.EndCancelled, Err: context.Canceled}},
+	}}
+	loop := NewLoop(fr, "m", nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	ch, err := loop.Run(ctx, ledger, "q")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	fch <- llm.StreamChunk{Delta: "partial"}
-	<-ch // 消费方收到首块后取消（模拟用户点中断）
+	<-ch // 收到首块后取消（模拟用户点中断）
 	cancel()
-	fch <- llm.StreamChunk{EndReason: llm.EndCancelled, Err: context.Canceled}
 	drain(t, ch, 3*time.Second)
 
-	l2, err := session.OpenLedger(dir, "s1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l2.Close()
-	deltas, anchors := 0, 0
-	if err := l2.Replay(func(ev session.SessionEvent) error {
-		switch ev.Kind() {
-		case session.EventAssistantDelta:
-			deltas++
-		case session.EventAssistantMsg:
-			anchors++
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if deltas == 0 {
+	if deltas := countEvents(t, dir, session.EventAssistantDelta); deltas == 0 {
 		t.Fatal("cancelled turn must keep produced deltas")
 	}
-	if anchors != 0 {
+	if anchors := countEvents(t, dir, session.EventAssistantMsg); anchors != 0 {
 		t.Fatal("incomplete turn must not write assistant_message anchor")
 	}
 }
@@ -211,12 +244,10 @@ func TestAgent_HistoryFromLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fch := make(chan llm.StreamChunk, 2)
-	fch <- llm.StreamChunk{Delta: "ok"}
-	fch <- llm.StreamChunk{EndReason: llm.EndDone}
-	close(fch)
-	fr := &fakeRuntime{ch: fch}
-	loop := NewLoop(fr, "test-model")
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{{Delta: "ok"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "test-model", nil)
 
 	ch, err := loop.Run(context.Background(), ledger, "q2")
 	if err != nil {
@@ -242,5 +273,167 @@ func TestAgent_HistoryFromLedger(t *testing.T) {
 	}
 	if fr.reqs[0].Model != "test-model" {
 		t.Fatalf("model = %q", fr.reqs[0].Model)
+	}
+}
+
+// 工具往返：模型调用工具 → agent 执行 → 结果回填 → 续步出最终回答。
+func TestAgent_ToolRoundtrip(t *testing.T) {
+	ledger, dir := newTestLedger(t)
+	defer ledger.Close()
+
+	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: "file-x"}}
+	registry := tools.NewRegistry()
+	if err := registry.Register(st); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{Delta: "checking"},
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "c1", Name: "fs", ArgumentsDelta: `{"action":"read"}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{
+			{Delta: "it says file-x"},
+			{EndReason: llm.EndDone},
+		},
+	}}
+	loop := NewLoop(fr, "test-model", registry)
+
+	ch, err := loop.Run(context.Background(), ledger, "read a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := drain(t, ch, 3*time.Second)
+
+	toolEvents, terminal := 0, llm.StreamChunk{}
+	for _, c := range chunks {
+		if c.ToolEvent != nil {
+			toolEvents++
+			if c.ToolEvent.Name != "fs" || c.ToolEvent.Status != "success" || c.ToolEvent.Summary != "file-x" {
+				t.Fatalf("tool event = %+v", c.ToolEvent)
+			}
+		}
+		if c.EndReason != llm.EndNone {
+			terminal = c
+		}
+	}
+	if toolEvents != 1 {
+		t.Fatalf("tool events = %d, want 1", toolEvents)
+	}
+	if terminal.EndReason != llm.EndDone {
+		t.Fatalf("terminal = %v, want EndDone", terminal.EndReason)
+	}
+	if st.executed != 1 {
+		t.Fatalf("tool executed = %d, want 1", st.executed)
+	}
+
+	// 第二次请求必须携带 assistant(tool_calls) + tool 结果
+	if fr.requestCount() != 2 {
+		t.Fatalf("requests = %d, want 2", fr.requestCount())
+	}
+	msgs := fr.reqs[1].Messages
+	if len(msgs) != 3 {
+		t.Fatalf("step-2 messages = %d, want 3", len(msgs))
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].ID != "c1" {
+		t.Fatalf("msgs[1] = %+v", msgs[1])
+	}
+	if msgs[2].Role != "tool" || msgs[2].ToolCallID != "c1" || msgs[2].Content != "file-x" {
+		t.Fatalf("msgs[2] = %+v", msgs[2])
+	}
+
+	// 账本：tool_call / tool_result 各一条；锚点是最终回答
+	if n := countEvents(t, dir, session.EventToolCall); n != 1 {
+		t.Fatalf("tool_call events = %d, want 1", n)
+	}
+	if n := countEvents(t, dir, session.EventToolResult); n != 1 {
+		t.Fatalf("tool_result events = %d, want 1", n)
+	}
+	if n := countEvents(t, dir, session.EventAssistantMsg); n != 1 {
+		t.Fatalf("assistant anchors = %d, want 1", n)
+	}
+}
+
+// 未知工具：业务失败回填模型，循环继续而非崩溃。
+func TestAgent_UnknownToolContinues(t *testing.T) {
+	ledger, dir := newTestLedger(t)
+	defer ledger.Close()
+
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "c1", Name: "nope", ArgumentsDelta: "{}"}}},
+			{EndReason: llm.EndDone},
+		},
+		{
+			{Delta: "fallback"},
+			{EndReason: llm.EndDone},
+		},
+	}}
+	loop := NewLoop(fr, "m", tools.NewRegistry()) // 空注册表
+
+	ch, err := loop.Run(context.Background(), ledger, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	if fr.requestCount() != 2 {
+		t.Fatalf("requests = %d, want 2 (must continue after unknown tool)", fr.requestCount())
+	}
+	msgs := fr.reqs[1].Messages
+	if len(msgs) != 3 || msgs[2].Content != `unknown tool "nope"` {
+		t.Fatalf("step-2 messages = %+v", msgs)
+	}
+	if n := countEvents(t, dir, session.EventToolResult); n != 1 {
+		t.Fatalf("tool_result events = %d, want 1", n)
+	}
+	if n := countEvents(t, dir, session.EventAssistantMsg); n != 1 {
+		t.Fatalf("assistant anchors = %d, want 1", n)
+	}
+}
+
+// 步数上限：模型持续调用工具，MaxStepsPerTurn 步后以 EndError 收束，不再调用。
+func TestAgent_StepLimit(t *testing.T) {
+	ledger, dir := newTestLedger(t)
+	defer ledger.Close()
+
+	st := &scriptTool{name: "loop", result: tools.ToolResult{Content: "again"}}
+	var script [][]llm.StreamChunk
+	for i := 0; i < MaxStepsPerTurn+5; i++ {
+		script = append(script, []llm.StreamChunk{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: fmt.Sprintf("c%d", i), Name: "loop", ArgumentsDelta: "{}"}}},
+			{EndReason: llm.EndDone},
+		})
+	}
+	fr := &fakeRuntime{script: script}
+	registry := tools.NewRegistry()
+	if err := registry.Register(st); err != nil {
+		t.Fatal(err)
+	}
+	loop := NewLoop(fr, "m", registry)
+
+	ch, err := loop.Run(context.Background(), ledger, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := drain(t, ch, 5*time.Second)
+
+	terminal := llm.StreamChunk{}
+	for _, c := range chunks {
+		if c.EndReason != llm.EndNone {
+			terminal = c
+		}
+	}
+	if terminal.EndReason != llm.EndError {
+		t.Fatalf("terminal = %v, want EndError", terminal.EndReason)
+	}
+	if terminal.Err == nil || !strings.Contains(terminal.Err.Error(), "step limit") {
+		t.Fatalf("terminal err = %v, want step limit", terminal.Err)
+	}
+	if fr.requestCount() != MaxStepsPerTurn {
+		t.Fatalf("requests = %d, want %d", fr.requestCount(), MaxStepsPerTurn)
+	}
+	if n := countEvents(t, dir, session.EventAssistantMsg); n != 0 {
+		t.Fatalf("assistant anchors = %d, want 0 (turn incomplete)", n)
 	}
 }

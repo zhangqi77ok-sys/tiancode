@@ -22,6 +22,7 @@ func TestChatService_PersistErrorPropagates(t *testing.T) {
 		BaseURL: "http://127.0.0.1:1", // 不会真正发请求：持久化先于网络
 		APIKey:  "k",
 		Model:   "m",
+		WorkDir: ".",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,9 +38,10 @@ func TestChatService_ConfigValidation(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"missing datadir", Config{BaseURL: "http://x", Model: "m"}},
-		{"missing baseurl", Config{DataDir: t.TempDir(), Model: "m"}},
-		{"missing model", Config{DataDir: t.TempDir(), BaseURL: "http://x"}},
+		{"missing datadir", Config{BaseURL: "http://x", Model: "m", WorkDir: "."}},
+		{"missing baseurl", Config{DataDir: t.TempDir(), Model: "m", WorkDir: "."}},
+		{"missing model", Config{DataDir: t.TempDir(), BaseURL: "http://x", WorkDir: "."}},
+		{"missing workdir", Config{DataDir: t.TempDir(), BaseURL: "http://x", Model: "m"}},
 	}
 	for _, tc := range cases {
 		if _, err := NewChatService(tc.cfg); err == nil {
@@ -68,7 +70,7 @@ func TestChatService_ReplayProjectsAnchors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := NewChatService(Config{DataDir: dir, BaseURL: "http://x", APIKey: "k", Model: "m"})
+	s, err := NewChatService(Config{DataDir: dir, BaseURL: "http://x", APIKey: "k", Model: "m", WorkDir: "."})
 	if err != nil {
 		t.Fatal(err)
 	}

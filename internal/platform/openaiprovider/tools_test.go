@@ -12,7 +12,7 @@ import (
 )
 
 // 请求转换：ChatRequest.Tools 必须以 OpenAI wire 形态出现在请求体中
-//（new-api 式 Convert 边界：中性结构 → 厂商私有格式）。
+// （new-api 式 Convert 边界：中性结构 → 厂商私有格式）。
 func TestProviderStream_SendsToolsInRequest(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

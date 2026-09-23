@@ -23,6 +23,8 @@ import (
 	"tiancode/internal/core/agent"
 	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
+	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/fstool"
 	"tiancode/internal/platform/openaiprovider"
 )
 
@@ -33,6 +35,7 @@ type Config struct {
 	APIKey  string
 	Model   string
 	DataDir string // 会话账本目录
+	WorkDir string // 工作区绝对/相对路径（fs 工具的受控范围）
 }
 
 // ChatService 编排对话用例。
@@ -43,13 +46,16 @@ type ChatService struct {
 	ledgers map[string]*session.Ledger
 }
 
-// NewChatService 装配编排层：provider → runtime → agent（构造期注入，依赖不可变）。
+// NewChatService 装配编排层：provider → runtime → 注册表(fs) → agent（构造期注入，依赖不可变）。
 func NewChatService(cfg Config) (*ChatService, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("chat service: data dir required")
 	}
 	if cfg.BaseURL == "" || cfg.Model == "" {
 		return nil, errors.New("chat service: base url and model required")
+	}
+	if cfg.WorkDir == "" {
+		return nil, errors.New("chat service: work dir required")
 	}
 	prov := openaiprovider.New(openaiprovider.Options{
 		BaseURL: cfg.BaseURL,
@@ -58,9 +64,13 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（provider 内 60s）
 	// 已覆盖挂起场景，总预算只防极端失控。
 	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
+	registry := tools.NewRegistry()
+	if err := registry.Register(fstool.New(cfg.WorkDir)); err != nil {
+		return nil, fmt.Errorf("register fs tool: %w", err)
+	}
 	return &ChatService{
 		cfg:     cfg,
-		agent:   agent.NewLoop(rt, cfg.Model),
+		agent:   agent.NewLoop(rt, cfg.Model, registry),
 		ledgers: make(map[string]*session.Ledger),
 	}, nil
 }

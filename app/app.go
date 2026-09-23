@@ -78,6 +78,15 @@ func (b *Bind) Send(ctx context.Context, sessionID, text string) error {
 				"thinking":  c.Thinking,
 			})
 		}
+		if c.ToolEvent != nil {
+			// 工具卡片数据（M3）：执行动态实时推送，前端渲染独立卡片
+			wruntime.EventsEmit(ctx, "chat:tool", map[string]string{
+				"sessionID": sessionID,
+				"name":      c.ToolEvent.Name,
+				"status":    c.ToolEvent.Status,
+				"summary":   c.ToolEvent.Summary,
+			})
+		}
 		if c.EndReason != llm.EndNone {
 			errText := ""
 			if c.Err != nil {

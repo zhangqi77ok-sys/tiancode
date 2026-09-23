@@ -36,6 +36,9 @@ onMounted(async () => {
   bridge().runtime.EventsOn('chat:terminal', (p: { sessionID: string; endReason: number; error: string }) => {
     store.onTerminal(p)
   })
+  bridge().runtime.EventsOn('chat:tool', (p: { sessionID: string; name: string; status: string; summary: string }) => {
+    store.onTool(p)
+  })
 })
 </script>
 
@@ -79,7 +82,18 @@ onMounted(async () => {
           class="flex"
           :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
         >
+          <!-- 工具卡片：名称 + 状态点 + 摘要 -->
           <div
+            v-if="m.role === 'tool'"
+            class="rounded-lg border px-3 py-1.5 text-xs"
+            :class="m.status === 'error' ? 'border-[#F85149]/60' : 'border-[#3FB950]/40'"
+          >
+            <span class="font-medium text-[#E6EDF3]">{{ m.toolName }}</span>
+            <span class="mx-1.5" :class="m.status === 'error' ? 'text-[#F85149]' : 'text-[#3FB950]'">● {{ m.status }}</span>
+            <span class="text-[#8B949E]">{{ m.content }}</span>
+          </div>
+          <div
+            v-else
             class="max-w-[80%] whitespace-pre-wrap rounded-xl px-3.5 py-2.5 text-sm leading-6"
             :class="[
               m.role === 'user'

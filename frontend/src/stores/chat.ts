@@ -2,10 +2,13 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { bridge } from '../wails'
 
-// 会话消息的 UI 形态；streaming 标记流式中的临时消息，error 标记错误/取消态。
+// 会话消息的 UI 形态；streaming 标记流式中的临时消息，error 标记错误/取消态；
+// role='tool' 为工具卡片（toolName/status 承载卡片数据）。
 export interface ChatMsg {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
+  toolName?: string
+  status?: string
   streaming?: boolean
   error?: boolean
 }
@@ -82,6 +85,11 @@ export const useChatStore = defineStore('chat', () => {
     if (last?.streaming) last.content += p.delta
   }
 
+  function onTool(p: { sessionID: string; name: string; status: string; summary: string }) {
+    if (p.sessionID !== sessionId.value) return
+    messages.value.push({ role: 'tool', content: p.summary, toolName: p.name, status: p.status })
+  }
+
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     if (p.sessionID !== sessionId.value) return
     running.value = false
@@ -116,6 +124,7 @@ export const useChatStore = defineStore('chat', () => {
     newSession,
     send,
     onChunk,
+    onTool,
     onTerminal,
     stop,
     init,
