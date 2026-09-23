@@ -124,3 +124,19 @@ func (m *SnapshotManager) RollbackFile(commitSHA string, filePath string) error 
 	}
 	return nil
 }
+
+// RollbackLatest 将指定文件回退到最近一次影子快照状态（Harness 状态回溯安全网）。
+// 用于 TDD 校验未过时自动撤销已落盘的文件；无可用快照时返回错误交由调用方处理。
+func (m *SnapshotManager) RollbackLatest(filePath string) error {
+	snaps, err := m.ListSnapshots()
+	if err != nil || len(snaps) == 0 {
+		return fmt.Errorf("no snapshot available to rollback [%s]: %w", filePath, err)
+	}
+	latest := snaps[0]
+	for _, s := range snaps[1:] {
+		if s.CreatedAt.After(latest.CreatedAt) {
+			latest = s
+		}
+	}
+	return m.RollbackFile(latest.CommitSHA, filePath)
+}

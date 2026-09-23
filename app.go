@@ -14,9 +14,9 @@ import (
 	"sync"
 	"syscall"
 
-	"tiancode/internal/agent"
 	"tiancode/internal/config"
 	"tiancode/internal/core/loop"
+	"tiancode/internal/core/harness"
 	"tiancode/internal/core/sandbox"
 	"tiancode/internal/host"
 	"tiancode/internal/llm"
@@ -28,6 +28,7 @@ import (
 	"tiancode/plugins/provider/grok"
 	"tiancode/plugins/provider/ollama"
 	safetyrail "tiancode/plugins/rail/safety"
+	astguard "tiancode/plugins/rail/astguard"
 	fstool "tiancode/plugins/tool/fs"
 	gittool "tiancode/plugins/tool/git"
 	searchtool "tiancode/plugins/tool/search"
@@ -160,6 +161,7 @@ func NewApp() *App {
 	registerWorkspaceTools(reg, wd, sb, sm)
 	_ = reg.Register(ask_user.NewTool())
 	_ = reg.Register(safetyrail.New())
+	_ = reg.Register(astguard.New())
 
 	chStore, _ := config.NewChannelStore()
 	exStore, _ := config.NewExtraStore()
@@ -184,7 +186,7 @@ func NewApp() *App {
 	}
 
 	app.gateway = NewWailsInteractionGateway(app)
-	app.engine = configureEngine(reg, app.gateway, mcpMgr, wd)
+	app.engine = configureEngine(reg, app.gateway, mcpMgr, sb, sm, wd)
 
 	return app
 }
@@ -199,25 +201,10 @@ func registerWorkspaceTools(reg *host.Registry, wd string, sb *sandbox.Sandbox, 
 	_ = reg.RegisterOrReplace(archtool.NewTool(wd))
 }
 
-// configureEngine 构造并配置执行引擎（注入 MCP 调用与 TDD 校验回调），由 NewApp 与 SetWorkspace 共用，
-// 确保引擎仅构建一次、且行为在构造期即确定（消除导出可变字段与先建后弃的双构建隐患）。
-func configureEngine(reg *host.Registry, gw loop.InteractionGateway, mgr *mcp.Manager, workspace string) *loop.ExecutionEngine {
-	return loop.NewExecutionEngine(reg, gw,
-		func(ctx context.Context, name string, args map[string]any) (string, error) {
-			return mgr.CallTool(ctx, name, args)
-		},
-		func(writtenFile string) (string, bool) {
-			report, err := agent.RunTDDValidation(workspace)
-			if err != nil {
-				return err.Error(), false
-			}
-			out := report.Output
-			if writtenFile != "" {
-				out = writtenFile + "\n" + out
-			}
-			return out, report.Status == "PASS"
-		},
-	)
+// configureEngine 经 Harness 门面装配执行引擎（MCP 调用 + TDD 校验 + 失败时自动回退），
+// 由 NewApp 与 SetWorkspace 共用，确保引擎仅构建一次、行为在构造期即确定（见 T1/A14）。
+func configureEngine(reg *host.Registry, gw loop.InteractionGateway, mgr *mcp.Manager, sb *sandbox.Sandbox, sm *sandbox.SnapshotManager, workspace string) *loop.ExecutionEngine {
+	return harness.New(reg, gw, sb, sm, mgr).BuildEngine(workspace)
 }
 
 // startup 窗口初始化生命周期
@@ -362,7 +349,7 @@ func (a *App) rebindMCPManager(absDir string) {
 		a.mcpManager.StopAll()
 	}
 	a.mcpManager = mcp.NewManager(absDir)
-	a.engine = configureEngine(a.registry, a.gateway, a.mcpManager, absDir)
+	a.engine = configureEngine(a.registry, a.gateway, a.mcpManager, sb, a.snapshotMgr, absDir)
 }
 
 func (a *App) ListProjects() []config.Project {
