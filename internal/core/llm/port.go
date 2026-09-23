@@ -12,14 +12,17 @@ package llm
 
 import "context"
 
-// EndReason 标记一次流式调用的终态。终态互斥且整个流中恰好出现一次：
+// EndReason 标记一次流式调用的终态。终态互斥且整个流中恰好出现一个非 EndNone 块：
 // 消费方必须依据 EndReason 区分"正常结束 / 错误 / 取消 / 超时"，
 // 禁止以"流自然停止"来猜测终态（旧实现的断流卡死即源于此缺失）。
 type EndReason int
 
 const (
+	// EndNone 零值：非终态块。为什么占用零值：使"EndReason != EndNone"天然表达"这是终态"，
+	// 消费方一行判断即可统计终态且不与任何真实终态混淆。
+	EndNone EndReason = iota
 	// EndDone 上游正常完成（收到 finish_reason 或 [DONE]）。
-	EndDone EndReason = iota
+	EndDone
 	// EndError 上游或网络错误；随终态出现的 StreamChunk.Err 必填。
 	EndError
 	// EndCancelled 消费方取消（ctx.Done 触发）。
