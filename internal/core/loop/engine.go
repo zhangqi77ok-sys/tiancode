@@ -1,3 +1,8 @@
+// Package loop 是 ReAct 双环自主执行内核，设计为无状态：
+// 它接收已装配好的 EngineRequest（含 Messages / LLMTools / Strategy），
+// 自身不持有会话或记忆。多轮会话历史的压缩与上下文窗口装配由领域服务
+// internal/core/memory 负责，由应用宿主层（app_chat.go）编排后注入
+// EngineRequest.Messages。这样 loop 不反向依赖 session/memory，保持可独立测试。
 package loop
 
 import (

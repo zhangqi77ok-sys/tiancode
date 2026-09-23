@@ -1,3 +1,7 @@
+// Package host 是"插件宿主（plugin host）"的注册中心契约，属于核心层（core）。
+// 切勿与"应用宿主层"混淆：本包只描述插件的注册/分发契约，仅依赖 pkg/plugin/v1；
+// app.go / main 包才是 Wails/IPC 的应用宿主（组合根），它依赖 host.Registry，
+// 但 host 本身不反向依赖 app。即依赖方向永远是 app -> host -> pkg/plugin/v1。
 package host
 
 import (

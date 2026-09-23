@@ -44,8 +44,8 @@
 | ID | 铁律 |
 |----|------|
 | A1 | 聊天主循环只改 `internal/core/loop`。`App.SendMessage` 只组上下文、转发事件、落盘 Task。 |
-| A2 | 工具只经 `host.Registry`。禁止在 `SendMessage` 里 `switch toolName`。新工具：`plugins/tool/<name>` + `NewApp`/`SetWorkspace` 都 `Register`/`RegisterOrReplace`。 |
-| A3 | `SetWorkspace` 必须重绑 **fs、git、terminal、search** 与 `engine.Verify`。漏绑 search 视为回归。 |
+| A2 | 工具只经 `host.Registry`。禁止在 `SendMessage` 里 `switch toolName`。新增工具只需在 `registerWorkspaceTools`(app.go) 注册一处，`NewApp` 与 `SetWorkspace` 共用该入口（`RegisterOrReplace` 幂等）。 |
+| A3 | `SetWorkspace` 必须重绑全部工程算子（fs/git/terminal/search/arch 经 `registerWorkspaceTools`），并经由 `configureEngine` 重新注入绑定新工作区的 verify(MCP/TDD) 回调。漏绑 search 视为回归。 |
 | A4 | 无渠道、无 Key、无 endpoint → 拒绝发网，禁止填 OpenAI 默认 URL、禁止写死模型名。 |
 | A5 | 禁止假数据：假会话、假 MCP、假在线、假 PASS。空状态必须空。 |
 | A6 | 禁止 `alert`/`confirm`/`prompt`。弹窗：居中、Esc、遮罩、显式 X。 |
@@ -53,6 +53,8 @@
 | A8 | 不新增活动栏图标。实验能力只进设置「实验特性」。 |
 | A9 | 文档与代码同步：改行为必须改本文对应工作包状态，禁止只改矩阵把 🟡 刷成 🟢。 |
 | A10 | Windows 交付：改完功能按 `scripts/build-windows.ps1` 或既有安装器流程出包；不提交巨大二进制到 git。 |
+| A11 | 依赖方向严格单向：`app`(main 组合根) → `internal/core`(loop/memory/host) → `pkg/plugin/v1` / `internal/llm` / `internal/session`。core 包之间不得反向依赖；`loop` 保持无状态，不引入 `session`/`memory`/`agent` 依赖——多轮记忆装配由 `app_chat.go` 调 `internal/core/memory` 后注入 `EngineRequest.Messages`。 |
+| A12 | 术语消歧：「host」两义——`internal/host` 是**核心层插件注册契约**（非应用宿主），`app.go`/main 才是**应用宿主（组合根）**。二者依赖为 app → host，host 不反向依赖 app。 |
 
 ---
 

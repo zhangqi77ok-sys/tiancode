@@ -1,3 +1,8 @@
+// Package agent 提供 TDD 自动化测试校验与多智能体（swarm）协作能力，
+// 是一个仅依赖标准库的领域服务叶子包（不依赖 loop/host/app，无环）。
+// 注意与 internal/core/loop 中的 ReAct 执行循环（"智能体"的运行内核）区分：
+// 本包的 RunTDDValidation 由应用宿主在构造引擎时通过 verify 回调注入，
+// loop 不直接引用本包，从而保持执行内核的无状态与可测。
 package agent
 
 import (
