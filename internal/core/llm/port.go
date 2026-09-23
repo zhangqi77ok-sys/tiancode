@@ -76,9 +76,9 @@ type ChatRequest struct {
 
 // Message 是中性对话消息（OpenAI 兼容形态）。
 type Message struct {
-	Role      string
-	Content   string
-	ToolCalls []ToolCall
+	Role       string
+	Content    string
+	ToolCalls  []ToolCall
 	ToolCallID string // role=tool 时回填对应的调用 ID
 }
 
