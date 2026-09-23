@@ -13,17 +13,23 @@
 前置：Go 1.22+、Node 18+。
 
 ```bash
-# 后端（vendor 已入库，离线可跑）
+# 1) 前端 —— 必须排在 Go 编译之前。
+#    为什么：main.go 用 //go:embed all:frontend/dist 把前端产物嵌进单 exe，
+#    先编 Go 只会得到一个没有界面的空壳。
+cd frontend && npm install && npm run build && cd ..
+
+# 2) 后端：编译与测试（vendor 已入库，离线可跑）
 go build ./... && go test ./...
 
-# 前端
-cd frontend && npm install && npm run build
-
-# 桌面应用（exe 直接可跑；wails CLI 可选）
+# 3) 桌面应用（exe 直接可跑；wails CLI 可选）
 go build -o bin/tiancode.exe . && ./bin/tiancode.exe
 ```
 
 > 离线说明：`vendor/` 已入库，`GOPROXY=off go build ./...` 可直接构建（已验证）。
+> **为什么第 2 步不必先构建前端**：仓库里入库了占位文件 `frontend/dist/.gitkeep`，
+> 它保证全新克隆（尚无 `frontend/dist` 目录）也能通过 `go build ./...` / `go vet ./...` / `go test ./...`；
+> 否则 `go:embed` 会因"目录不存在"直接报错（`pattern all:frontend/dist: no matching files found`）。
+> `npm run build` 会清空 `dist/`，构建后请执行 `git checkout -- frontend/dist/.gitkeep` 复原占位文件。
 
 ## 配置（安装版首次运行）
 

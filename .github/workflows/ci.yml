@@ -1,0 +1,81 @@
+name: CI
+
+# 为什么必须有本文件：docs/STANDARDS.md §6 定义了五道门禁并声明"由 CI 强制"，
+# scripts/arch_check.ps1 自称 "Must pass before every commit / in CI"，
+# .golangci.yml 也写着"CI 与本地提交前执行"。但这些承诺此前没有载体——
+# 仓库里没有任何 CI 配置，于是门禁全靠人自觉，导致以下缺陷长期无人发现：
+#   - .gitignore 的 *.exe 把 wails 必需的 MicrosoftEdgeWebview2Setup.exe 挡在仓库外，
+#     新克隆执行 go build/vet/test 全线失败；
+#   - frontend/dist 占位文件从未入库，go:embed 缺目录；
+#   - 缺少 .gitattributes，Windows 默认 core.autocrlf=true 使 gofmt -l 列出全部 60 个 Go 文件。
+# 本工作流就是为了让这三类问题在 PR 阶段立刻暴露。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支的旧运行自动取消，避免排队浪费
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    # 为什么用 windows-latest 而不是 ubuntu-latest：
+    #   1) 产品只交付 Windows 单 exe（ADR-0001），且构建依赖 wails 的 Windows 侧代码；
+    #   2) 架构守卫 scripts/arch_check.ps1 按 Windows 路径语义（\ 分隔符）匹配，
+    #      换到 Linux 会"看起来通过"却什么都没检查——假绿比红更危险。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 顺序不可调换：main.go 用 //go:embed all:frontend/dist 内嵌前端产物，
+      # 必须先构建前端，后续 go build/vet/test 才拿到真实产物（而非空目录）。
+      - name: 前端 · 依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 前端 · 构建（含 vue-tsc 类型检查，见 package.json build 脚本）
+        working-directory: frontend
+        run: npm run build
+
+      - name: 前端 · 测试（vitest）
+        working-directory: frontend
+        run: npm test
+
+      - name: 格式 · gofmt（要求空输出）
+        shell: bash
+        run: |
+          out=$(gofmt -l main.go app internal cmd)
+          if [ -n "$out" ]; then
+            echo "以下文件未按 gofmt 格式化："
+            echo "$out"
+            exit 1
+          fi
+
+      - name: 静态检查 · go vet
+        run: go vet ./...
+
+      - name: 架构守卫 · arch_check R1-R4
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/arch_check.ps1
+
+      - name: 注释与风格 · golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59.1
+          args: --timeout=3m
+
+      - name: 测试 · go test（-count=1 强制新鲜执行，不吃缓存）
+        run: go test ./... -count=1

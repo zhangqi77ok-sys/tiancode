@@ -1,0 +1,45 @@
+# ============================================================
+# 行尾与文本属性统一（随仓库分发的单一定义源）
+#
+# 为什么必须有本文件：
+# Git for Windows 安装时默认 core.autocrlf=true，会把工作区文本签出为 CRLF；
+# 而 gofmt 一律输出 LF。于是 `gofmt -l`（docs/STANDARDS.md §6 的格式门禁）会把
+# **全部** Go 源码判为"需要格式化"——实测 60/60 命中，导致该门禁在任何 Windows
+# 开发机上都永远无法通过，"格式：空输出"这一条形同虚设。
+# 行尾属于**仓库约定**，不能依赖每台机器的 core.autocrlf 设置。
+# ============================================================
+
+# 默认：文本自动识别，工作区统一 LF（跨平台源码一致）
+* text=auto eol=lf
+
+# Go 源码：必须 LF（gofmt 的硬要求，也是本文件存在的主因）
+*.go text eol=lf
+
+# 跨平台文本：LF
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ts   text eol=lf
+*.vue  text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+
+# Windows 专有脚本：CRLF（PowerShell 5.1 用 ANSI 读无 BOM 文件，LF 易出问题）
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：禁止任何行尾/编码转换
+*.exe   binary
+*.png   binary
+*.ico   binary
+*.jpg   binary
+*.zip   binary
+
+# 关于 vendor/：刻意**不**为它单独设置属性。
+# 为什么：若写成 `vendor/** -text`（关闭文本属性），git 就不再对 vendor 做行尾归一化，
+# 于是工作区里 CRLF 的第三方文件会与索引里的 LF 逐字节不等，被误报为"已修改"
+# （实测一次就让 1154 个文件变脏）。保持默认的文本归一化，`text=auto` 会识别
+# vendor 内的文本并统一为 LF，既与上游一致，也不会污染 git status。

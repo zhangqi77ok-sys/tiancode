@@ -9,9 +9,15 @@ node_modules/
 frontend/dist/*
 !frontend/dist/.gitkeep
 *.exe
-bin/
-build/
-dist/
+# 下面三条刻意**锚定到仓库根**（前导 /），不要写回 `bin/` `/build/` `dist/` 形式。
+# 为什么：不锚定的 `dist/` 会连 `frontend/dist` 这个**目录本身**一起排除，而 git 的规则是
+# 「父目录被排除时，无法再取反其中的文件」（gitignore(5) 明文）——
+# 于是上一行的 `!frontend/dist/.gitkeep` 变成一句废话，占位文件永远进不了仓库，
+# 最终让新克隆的 `go build ./...` 因 go:embed 找不到 frontend/dist 而失败。
+# 同理，release.ps1 的产物都在仓库根，锚定后语义完全等价。
+/bin/
+/build/
+/dist/
 
 # --- 运行时数据（永不入库） ---
 data/
@@ -44,7 +50,20 @@ cmd/installer/payload/*
 !cmd/installer/payload/.gitkeep
 
 # ------------------------------------------------------------
-# 白名单例外（必须入库，禁止加入上方忽略）：
-#   vendor/           —— Go 官方 vendor 机制，保证离线/新环境可构建
-#   frontend/wailsjs/ —— Wails 生成绑定，前端编译依赖，避免构建顺序耦合
+# 白名单例外（必须入库，禁止被上方规则忽略）
+#
+# 为什么这里必须写成"取反规则"而不是"注释里列一份清单"：
+# gitignore 只认规则，注释不起任何作用。此处原先只有注释，于是上方的 `*.exe`
+# 把 vendor 内的
+#   vendor/github.com/wailsapp/wails/v2/internal/webview2runtime/MicrosoftEdgeWebview2Setup.exe
+# 一并挡在仓库外；而 wails 的 webview2installer.go 用 //go:embed 无条件嵌入该文件，
+# 导致任何新克隆执行 `go build ./...` / `go vet ./...` / `go test ./...` 全部失败：
+#   pattern MicrosoftEdgeWebview2Setup.exe: no matching files found
+# 后果是"离线全绿"只在作者本机（go mod vendor 复制过该文件）成立，仓库本身不可构建。
+#
+# 规则：vendor/ 是第三方源码快照，其内部一切文件（含 *.exe、*.log、与 dist/bin 同名的
+# 目录）都必须入库，否则离线构建不可复现。
+#
+# 取反规则必须放在本文件最后：gitignore 后匹配者优先。
 # ------------------------------------------------------------
+!vendor/**
