@@ -60,3 +60,30 @@
 | --- | --- | --- |
 | C-APP-1 | 持久化/流式任何错误必须上抛到 UI 层（守卫 R2 静态强制 + 用例测试） | `TestChatService_PersistErrorPropagates` |
 | C-APP-2 | 用户中断 → `EndCancelled` 终态 + 账本保留已产生事件，UI 显示"已取消" | `TestChatService_CancelKeepsEvents` |
+
+## C-CH：模型渠道管理
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-CH-1 | `config.json` 有值时首次启动迁移为一个激活渠道；空配置不迁移 | `TestStore_LoadMissingReturnsEmpty` / `TestMigrateFromConfig` / `TestChatService_MigratesConfigToFirstChannel` |
+| C-CH-2 | 必填字段与协议校验；未实现协议**显式拒绝**；激活渠道不可删除 | `TestValidateChannel_RequiresCoreFields` / `TestFactory_UnsupportedProtocolExplicitError` / `TestChatService_ChannelCRUDValidation` |
+| C-CH-3 | 切换激活渠道后下一次 Send 打到新上游（运行时重建生效） | `TestChatService_SetActiveRebuildsRuntime` |
+| C-CH-4 | 模型发现失败报错且**不改动已保存配置**；UI 不清空已选模型 | `TestChatService_DiscoverModels` / `channels.test.ts: 模型发现失败不清空已有模型` |
+| C-CH-5 | 渠道配置原子写（无临时文件残留） | `TestStore_SaveLoadRoundtripAtomic` |
+| C-CH-6 | 密钥绝不出编排层：列表仅返回脱敏视图 + `hasKey` | `TestChannel_SanitizedHidesKey` / `TestChatService_ChannelCRUDValidation` |
+
+## C-SES 扩展：会话删除 / 重命名 / 导出
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-SES-7 | 删除会话**幂等**（重复删除不报错），删除后不再出现在列表 | `TestDeleteSession_RemovesLedger` |
+| C-SES-8 | 会话 ID 含路径分隔符一律拒绝（防越出账本目录读写删） | `TestDeleteSession_RejectsPathTraversal` / `TestSessionTitle_RejectsBadID` |
+| C-SES-9 | 标题以账本事件（`session_renamed`）为事实源，重启后可恢复；空/超长标题拒绝 | `TestSessionTitle_ReplaysLatestRename` / `TestChatService_RenameSessionPersists` |
+| C-SES-10 | 导出 Markdown 与界面同源（账本投影）；未重命名时标题回退会话 ID | `TestChatService_ExportMarkdown` |
+
+## C-WS：工作区
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-WS-1 | 非法工作区（不存在/非目录/空白）拒绝，且**不改变当前值** | `TestChatService_SetWorkspace` |
+| C-WS-2 | 切换工作区必须重建工具受控根与 agent（杜绝"界面切了实际没切"） | `TestChatService_SetWorkspace` + 装配统一走 `newRegistry` |
