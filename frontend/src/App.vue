@@ -3,17 +3,25 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import { useChatStore } from './stores/chat'
 import { bridge } from './wails'
 
-// 根组件：左会话列表 + 右对话区（流式气泡/终态标签/中断按钮）。
-// 设计令牌见 style.css；全部交互围绕"可区分的三终态"。
+// 根组件：左侧会话卡片 + 右侧对话卡片。
+// 视觉语言：浅色柔和底 + 白卡 + 紫罗兰主色 + 药丸控件（令牌见 style.css）。
 const store = useChatStore()
 const input = ref('')
 const scroller = ref<HTMLElement | null>(null)
+
+// 建议提示（参考图的 chip 行）：点击填入输入框
+const suggestions = ['介绍这个项目', '读取 go.mod 前 5 行并复述 module 名', '运行 go test ./internal/core/tools/']
 
 async function scrollToBottom() {
   await nextTick()
   scroller.value?.scrollTo({ top: scroller.value.scrollHeight })
 }
 watch(() => store.messages.length, scrollToBottom)
+
+function fmtTime(at?: number): string {
+  if (!at) return ''
+  return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
 
 async function submit() {
   const text = input.value.trim()
@@ -28,7 +36,6 @@ function stop() {
 
 onMounted(async () => {
   await store.init()
-  // 事件桥：流式块与终态（Observer，ADR-0005）
   bridge().runtime.EventsOn('chat:chunk', (p: { sessionID: string; delta: string; thinking: string }) => {
     store.onChunk(p)
     void scrollToBottom()
@@ -43,97 +50,124 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex h-screen bg-[#0D1117] text-[#E6EDF3]">
-    <!-- 侧栏：会话列表 -->
-    <aside class="flex w-56 shrink-0 flex-col border-r border-[#21262D]">
-      <div class="p-3">
-        <button
-          class="w-full rounded-md bg-[#3B82F6] py-1.5 text-sm font-medium transition-colors hover:bg-[#2563EB]"
-          @click="store.newSession()"
-        >
-          ＋ 新建会话
-        </button>
+  <div class="flex h-screen flex-col gap-4 p-5">
+    <!-- 顶栏 -->
+    <header class="flex items-center justify-between">
+      <div class="flex items-baseline gap-3">
+        <h1 class="text-[20px] font-semibold tracking-tight">tiancode</h1>
+        <span class="text-xs text-[var(--c-text-dim)]">桌面 AI 编程智能体</span>
       </div>
-      <div class="flex-1 space-y-1 overflow-y-auto px-2 pb-2">
-        <button
-          v-for="id in store.sessions"
-          :key="id"
-          class="w-full truncate rounded px-2 py-1.5 text-left text-sm transition-colors"
-          :class="id === store.sessionId ? 'bg-[#161B22] text-[#E6EDF3]' : 'text-[#8B949E] hover:bg-[#161B22]'"
-          @click="store.selectSession(id)"
-        >
-          {{ id }}
-        </button>
+      <div class="flex items-center gap-2">
+        <span class="chip">{{ store.sessions.length }} 个会话</span>
+        <span class="chip" :class="store.running ? 'text-[var(--c-primary)] border-[var(--c-primary)]' : ''">
+          {{ store.running ? '运行中' : '空闲' }}
+        </span>
       </div>
-      <div class="border-t border-[#21262D] px-3 py-2 text-[11px] text-[#8B949E]">
-        {{ store.sessions.length }} 个会话
-      </div>
-    </aside>
+    </header>
 
-    <!-- 主区：对话 -->
-    <main class="flex min-w-0 flex-1 flex-col">
-      <div ref="scroller" class="flex-1 space-y-3 overflow-y-auto px-6 py-4">
-        <div v-if="!store.messages.length" class="flex h-full items-center justify-center text-sm text-[#8B949E]">
-          发送第一条消息开始对话
-        </div>
-        <div
-          v-for="(m, i) in store.messages"
-          :key="i"
-          class="flex"
-          :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
-        >
-          <!-- 工具卡片：名称 + 状态点 + 摘要 -->
-          <div
-            v-if="m.role === 'tool'"
-            class="rounded-lg border px-3 py-1.5 text-xs"
-            :class="m.status === 'error' ? 'border-[#F85149]/60' : 'border-[#3FB950]/40'"
+    <div class="flex min-h-0 flex-1 gap-4">
+      <!-- 会话列表 -->
+      <aside class="card flex w-60 shrink-0 flex-col p-3">
+        <button class="btn-primary mb-3 w-full py-2 text-sm" @click="store.newSession()">＋ 新建对话</button>
+        <div class="flex-1 space-y-1 overflow-y-auto">
+          <button
+            v-for="id in store.sessions"
+            :key="id"
+            class="w-full truncate rounded-xl px-3 py-2 text-left text-sm transition-colors"
+            :class="
+              id === store.sessionId
+                ? 'bg-[var(--c-primary-soft)] font-medium text-[var(--c-primary)]'
+                : 'text-[var(--c-text-dim)] hover:bg-[var(--c-surface-soft)]'
+            "
+            @click="store.selectSession(id)"
           >
-            <span class="font-medium text-[#E6EDF3]">{{ m.toolName }}</span>
-            <span class="mx-1.5" :class="m.status === 'error' ? 'text-[#F85149]' : 'text-[#3FB950]'">● {{ m.status }}</span>
-            <span class="text-[#8B949E]">{{ m.content }}</span>
-          </div>
-          <div
-            v-else
-            class="max-w-[80%] whitespace-pre-wrap rounded-xl px-3.5 py-2.5 text-sm leading-6"
-            :class="[
-              m.role === 'user'
-                ? 'bg-[#3B82F6] text-white'
-                : 'border border-[#21262D] bg-[#161B22]',
-              m.error ? 'border-[#F85149]/60' : '',
-            ]"
-          >
-            {{ m.content }}<span
-              v-if="m.streaming"
-              class="ml-1 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-[#8B949E] align-middle"
-            ></span>
-          </div>
+            {{ id }}
+          </button>
         </div>
-      </div>
+        <div class="mt-2 px-1 text-[11px] text-[var(--c-text-faint)]">历史由事件账本恢复</div>
+      </aside>
 
-      <!-- 输入区 -->
-      <div class="flex gap-2 border-t border-[#21262D] p-3">
-        <textarea
-          v-model="input"
-          rows="2"
-          class="flex-1 resize-none rounded-lg border border-[#21262D] bg-[#161B22] px-3 py-2 text-sm outline-none transition-colors focus:border-[#3B82F6]"
-          placeholder="输入消息…（Ctrl+Enter 发送）"
-          @keydown.ctrl.enter.prevent="submit"
-        ></textarea>
-        <button
-          v-if="store.running"
-          class="rounded-lg bg-[#D29922] px-4 text-sm font-medium text-[#0D1117] transition-colors hover:bg-[#D29922]/85"
-          @click="stop"
-        >
-          中断
-        </button>
-        <button
-          v-else
-          class="rounded-lg bg-[#3B82F6] px-4 text-sm font-medium transition-colors hover:bg-[#2563EB]"
-          @click="submit"
-        >
-          发送
-        </button>
-      </div>
-    </main>
+      <!-- 对话区 -->
+      <main class="card flex min-w-0 flex-1 flex-col">
+        <div ref="scroller" class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <!-- 空状态 + 建议 chips -->
+          <div v-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4">
+            <p class="text-sm text-[var(--c-text-dim)]">发一条消息开始，或试试：</p>
+            <div class="flex flex-wrap justify-center gap-2">
+              <button v-for="s in suggestions" :key="s" class="chip" @click="input = s">{{ s }}</button>
+            </div>
+          </div>
+
+          <template v-for="(m, i) in store.messages" :key="i">
+            <!-- 工具卡片：药丸 + 状态点 -->
+            <div v-if="m.role === 'tool'" class="flex justify-start">
+              <div
+                class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs"
+                :class="
+                  m.status === 'error'
+                    ? 'border-[var(--c-err)] bg-[var(--c-err-soft)] text-[var(--c-err)]'
+                    : 'border-[var(--c-border)] bg-[var(--c-ok-soft)] text-[var(--c-text-dim)]'
+                "
+              >
+                <span class="h-1.5 w-1.5 rounded-full" :class="m.status === 'error' ? 'bg-[var(--c-err)]' : 'bg-[var(--c-ok)]'"></span>
+                <span class="font-medium text-[var(--c-text)]">{{ m.toolName }}</span>
+                <span class="max-w-[420px] truncate">{{ m.content }}</span>
+              </div>
+            </div>
+
+            <!-- 用户消息：紫罗兰实心气泡，右对齐 -->
+            <div v-else-if="m.role === 'user'" class="flex flex-col items-end gap-1">
+              <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
+                <span>YOU</span><span>{{ fmtTime(m.at) }}</span>
+              </div>
+              <div
+                class="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
+              >
+                {{ m.content }}
+              </div>
+            </div>
+
+            <!-- 助手消息：白卡 + 角色标签 -->
+            <div v-else class="flex flex-col items-start gap-1">
+              <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
+                <span class="font-medium text-[var(--c-text-dim)]">AGENT</span><span>{{ fmtTime(m.at) }}</span>
+              </div>
+              <div
+                class="max-w-[85%] whitespace-pre-wrap rounded-2xl border px-4 py-3 text-sm leading-6"
+                :class="
+                  m.term === 3 || m.term === 4
+                    ? 'border-[var(--c-warn)] bg-[var(--c-warn-soft)]'
+                    : m.error
+                      ? 'border-[var(--c-err)] bg-[var(--c-err-soft)]'
+                      : 'border-[var(--c-border)] bg-[var(--c-surface)]'
+                "
+              >
+                {{ m.content }}<span v-if="m.streaming" class="caret"></span>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 输入区 -->
+        <div class="flex items-end gap-3 border-t border-[var(--c-border)] p-4">
+          <textarea
+            v-model="input"
+            rows="1"
+            class="max-h-32 flex-1 resize-none rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 outline-none transition-colors focus:border-[var(--c-primary)]"
+            placeholder="输入消息…（Ctrl+Enter 发送）"
+            @keydown.ctrl.enter.prevent="submit"
+            @input="
+              (e) => {
+                const t = e.target as HTMLTextAreaElement
+                t.style.height = 'auto'
+                t.style.height = Math.min(t.scrollHeight, 128) + 'px'
+              }
+            "
+          ></textarea>
+          <button v-if="store.running" class="btn-primary h-10 px-4 text-sm" @click="stop">中断</button>
+          <button v-else class="btn-icon shrink-0" title="发送" @click="submit">➤</button>
+        </div>
+      </main>
+    </div>
   </div>
 </template>

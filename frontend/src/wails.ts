@@ -25,11 +25,25 @@ export interface WailsBridge {
   runtime: WailsRuntime
 }
 
-// bridge 返回类型化的 wails 注入对象。仅在 wails 桌面环境调用（纯浏览器无此对象）。
+// bridge 返回类型化的 wails 注入对象。
+// 纯浏览器（vite dev）没有注入：返回桩实现，便于视觉调试与设计迭代
+// ——桩只返回空数据，绝不伪造业务数据（避免"看着能跑其实没接线"的假象）。
 export function bridge(): WailsBridge {
   const w = window as unknown as {
-    go: { main: { App: WailsApp } }
-    runtime: WailsRuntime
+    go?: { main: { App: WailsApp } }
+    runtime?: WailsRuntime
+  }
+  if (!w.go || !w.runtime) {
+    const stub: WailsBridge = {
+      app: {
+        ListSessions: async () => [],
+        Replay: async () => [],
+        Send: async () => {},
+        Stop: async () => {},
+      },
+      runtime: { EventsOn: () => {} },
+    }
+    return stub
   }
   return { app: w.go.main.App, runtime: w.runtime }
 }

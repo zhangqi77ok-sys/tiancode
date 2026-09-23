@@ -1,22 +1,141 @@
 @import "tailwindcss";
 
-/* 设计令牌（单一定义源；色板依据见方案设计风格节） */
+/* ============================================================
+   设计令牌（单一定义源；方向依据参考图 Hyz Office 风格：
+   浅色柔和底 + 白色圆角卡片 + 紫罗兰主色 + 药丸控件 + 轻投影）
+   规则：组件一律引用令牌，禁止散落硬编码色值。
+   ============================================================ */
 :root {
-  --c-primary: #3b82f6;
-  --c-bg: #0d1117;
-  --c-surface: #161b22;
-  --c-text: #e6edf3;
-  --c-text-dim: #8b949e;
-  --c-ok: #3fb950;
-  --c-err: #f85149;
-  --c-warn: #d29922;
+  /* 主色：紫罗兰 */
+  --c-primary: #7c5cff;
+  --c-primary-hover: #6a4df2;
+  --c-primary-soft: #efeaff; /* 主色浅底：选中态/标签底 */
+
+  /* 背景与表面 */
+  --c-bg: #f4f4fb; /* 页面底（浅薰衣草白） */
+  --c-bg-tint: #eef0fa; /* 渐变第二层 */
+  --c-surface: #ffffff; /* 卡片 */
+  --c-surface-soft: #fafaff; /* 次级卡片/输入底 */
+  --c-border: #e9eaf2; /* 卡片描边 */
+
+  /* 文字 */
+  --c-text: #1a1b2e;
+  --c-text-dim: #6b6c82;
+  --c-text-faint: #9a9bb0;
+
+  /* 功能色（浅底 + 前景成对） */
+  --c-ok: #22c55e;
+  --c-ok-soft: #e8f8ee;
+  --c-err: #ef4444;
+  --c-err-soft: #fdeaea;
+  --c-warn: #f59e0b;
+  --c-warn-soft: #fdf3e3;
+
+  /* 圆角与投影 */
+  --r-card: 18px;
+  --r-input: 14px;
+  --r-pill: 999px;
+  --shadow-card: 0 8px 24px rgba(79, 70, 229, 0.08);
+  --shadow-float: 0 12px 32px rgba(79, 70, 229, 0.14);
 }
 
 body {
   margin: 0;
+  color: var(--c-text);
   font-family:
     'PingFang SC',
     'Microsoft YaHei',
     system-ui,
     sans-serif;
+  /* 柔和渐变底：参考图的"空气感"来源 */
+  background:
+    radial-gradient(1200px 600px at 12% -10%, #ffffff 0%, rgba(255, 255, 255, 0) 60%),
+    radial-gradient(900px 500px at 100% 0%, var(--c-primary-soft) 0%, rgba(239, 234, 255, 0) 55%),
+    linear-gradient(160deg, var(--c-bg) 0%, var(--c-bg-tint) 100%);
+  min-height: 100vh;
+}
+
+/* 通用卡片：白底 + 细描边 + 轻投影 + 大圆角 */
+.card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card);
+}
+
+/* 药丸标签/建议项（参考图的 chip） */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  color: var(--c-text-dim);
+  font-size: 12px;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.chip:hover {
+  color: var(--c-primary);
+  border-color: var(--c-primary);
+  background: var(--c-primary-soft);
+}
+
+/* 主按钮（药丸） */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-pill);
+  background: var(--c-primary);
+  color: #fff;
+  font-weight: 500;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.btn-primary:hover {
+  background: var(--c-primary-hover);
+  box-shadow: var(--shadow-float);
+}
+
+/* 圆形图标按钮 */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-pill);
+  background: var(--c-primary);
+  color: #fff;
+  transition: background 0.15s ease;
+}
+.btn-icon:hover {
+  background: var(--c-primary-hover);
+}
+
+/* 流式光标 */
+.caret {
+  display: inline-block;
+  width: 6px;
+  height: 15px;
+  margin-left: 3px;
+  border-radius: 2px;
+  vertical-align: middle;
+  background: var(--c-text-faint);
+  animation: caret-pulse 1s ease-in-out infinite;
+}
+@keyframes caret-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
 }

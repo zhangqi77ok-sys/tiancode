@@ -3,12 +3,15 @@ import { ref } from 'vue'
 import { bridge } from '../wails'
 
 // 会话消息的 UI 形态；streaming 标记流式中的临时消息，error 标记错误/取消态；
-// role='tool' 为工具卡片（toolName/status 承载卡片数据）。
+// role='tool' 为工具卡片（toolName/status 承载卡片数据）；
+// at 为消息时间戳（渲染 HH:MM）；term 记录终态枚举（UI 区分 取消/超时 与 错误）。
 export interface ChatMsg {
   role: 'user' | 'assistant' | 'tool'
   content: string
   toolName?: string
   status?: string
+  at?: number
+  term?: number
   streaming?: boolean
   error?: boolean
 }
@@ -61,8 +64,8 @@ export const useChatStore = defineStore('chat', () => {
 
   async function send(text: string) {
     if (!sessionId.value) await newSession()
-    messages.value.push({ role: 'user', content: text })
-    messages.value.push({ role: 'assistant', content: '', streaming: true })
+    messages.value.push({ role: 'user', content: text, at: Date.now() })
+    messages.value.push({ role: 'assistant', content: '', streaming: true, at: Date.now() })
     running.value = true
     try {
       // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
@@ -87,7 +90,13 @@ export const useChatStore = defineStore('chat', () => {
 
   function onTool(p: { sessionID: string; name: string; status: string; summary: string }) {
     if (p.sessionID !== sessionId.value) return
-    messages.value.push({ role: 'tool', content: p.summary, toolName: p.name, status: p.status })
+    messages.value.push({
+      role: 'tool',
+      content: p.summary,
+      toolName: p.name,
+      status: p.status,
+      at: Date.now(),
+    })
   }
 
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
@@ -96,6 +105,7 @@ export const useChatStore = defineStore('chat', () => {
     const last = messages.value[messages.value.length - 1]
     if (last?.streaming) {
       last.streaming = false
+      last.term = p.endReason
       if (p.endReason !== END_REASON.DONE) {
         last.error = true
         last.content += (last.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
