@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -15,9 +16,11 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.7",
     "@vitejs/plugin-vue": "^5.1.3",
+    "happy-dom": "^20.14.5",
     "tailwindcss": "^4.0.7",
     "typescript": "~5.5.4",
     "vite": "^6.1.0",
+    "vitest": "^5.0.1",
     "vue-tsc": "^2.0.29"
   }
 }
