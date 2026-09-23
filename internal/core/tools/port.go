@@ -28,10 +28,12 @@ type ToolResult struct {
 
 // ToolPort 是工具端口：适配器实现它，内核只依赖它。
 type ToolPort interface {
-	// Name 返回工具唯一名（模型可见），如 fs_write / shell_run。
+	// Name 返回工具唯一名（模型可见），如 fs / shell。
 	Name() string
 	// Description 返回给模型看的用途描述（供工具选择）。
 	Description() string
+	// Schema 返回参数的 JSON Schema（发给模型的工具定义）。
+	Schema() json.RawMessage
 	// Execute 执行工具。实现必须遵守包注释中的执行契约：
 	// 内部超时可配、超时返回部分输出、业务失败走 ToolResult.IsError。
 	Execute(ctx context.Context, args json.RawMessage) (ToolResult, error)

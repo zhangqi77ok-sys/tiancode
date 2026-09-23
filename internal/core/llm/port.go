@@ -10,7 +10,10 @@
 // 行为契约见 docs/CONTRACTS.md「流式三终态」。
 package llm
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // EndReason 标记一次流式调用的终态。终态互斥且整个流中恰好出现一个非 EndNone 块：
 // 消费方必须依据 EndReason 区分"正常结束 / 错误 / 取消 / 超时"，
@@ -70,11 +73,20 @@ type ProviderPort interface {
 	StreamChat(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
 }
 
+// ToolDef 是提供给模型的工具定义（JSON Schema 形态，与具体供应商无关）。
+// 供应商私有格式转换是适配器的职责（Convert 边界，参照 new-api Adaptor 接口）。
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage // JSON Schema
+}
+
 // ChatRequest 是一次对话补全请求的中性结构（与具体供应商无关）；
 // 厂商私有格式转换是适配器的职责（Convert 边界，参照 new-api Adaptor 接口）。
 type ChatRequest struct {
 	Model    string
 	Messages []Message
+	Tools    []ToolDef // 模型可调用的工具定义；无工具时为空
 }
 
 // Message 是中性对话消息（OpenAI 兼容形态）。

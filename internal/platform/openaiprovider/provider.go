@@ -30,6 +30,69 @@ import (
 // 编译期保证实现端口契约。
 var _ llm.ProviderPort = (*Provider)(nil)
 
+// ---- wire 类型：OpenAI 私有格式（Convert 边界，参照 new-api Adaptor）----
+
+type wireFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type wireTool struct {
+	Type     string       `json:"type"` // 恒为 "function"
+	Function wireFunction `json:"function"`
+}
+
+type wireToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type wireMessage struct {
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+}
+
+type wireRequest struct {
+	Model    string        `json:"model"`
+	Messages []wireMessage `json:"messages"`
+	Tools    []wireTool    `json:"tools,omitempty"`
+	Stream   bool          `json:"stream"`
+}
+
+// toWireMessages 把中性消息转换为 OpenAI 私有格式（工具调用需嵌套 function 对象）。
+func toWireMessages(msgs []llm.Message) []wireMessage {
+	out := make([]wireMessage, 0, len(msgs))
+	for _, m := range msgs {
+		wm := wireMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			wtc := wireToolCall{ID: tc.ID, Type: "function"}
+			wtc.Function.Name = tc.Name
+			wtc.Function.Arguments = tc.Arguments
+			wm.ToolCalls = append(wm.ToolCalls, wtc)
+		}
+		out = append(out, wm)
+	}
+	return out
+}
+
+func toWireTools(defs []llm.ToolDef) []wireTool {
+	out := make([]wireTool, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, wireTool{
+			Type:     "function",
+			Function: wireFunction{Name: d.Name, Description: d.Description, Parameters: d.Parameters},
+		})
+	}
+	return out
+}
+
 // terminalGrace 是终态块的投递等待上限。
 // 为什么 500ms：消费方取消 ctx 后通常仍在排空通道以获取终态，给一次阻塞投递机会；
 // 消费方确已离开时最多延迟 500ms 关闭，杜绝 goroutine 泄漏。
@@ -63,11 +126,12 @@ func New(opts Options) *Provider {
 // StreamChat 发起流式对话补全（实现 core/llm.ProviderPort）。
 // HTTP 非 2xx 以 error 返回（流未开始）——该形态是 ChatRuntime 流前重试（C-RT-1）的前提。
 func (p *Provider) StreamChat(ctx context.Context, req llm.ChatRequest) (<-chan llm.StreamChunk, error) {
-	payload, err := json.Marshal(struct {
-		Model    string        `json:"model"`
-		Messages []llm.Message `json:"messages"`
-		Stream   bool          `json:"stream"`
-	}{req.Model, req.Messages, true})
+	payload, err := json.Marshal(wireRequest{
+		Model:    req.Model,
+		Messages: toWireMessages(req.Messages),
+		Tools:    toWireTools(req.Tools),
+		Stream:   true,
+	})
 	if err != nil {
 		return nil, err
 	}
