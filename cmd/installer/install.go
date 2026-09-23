@@ -65,7 +65,7 @@ func doInstall(dir string) error {
 		}
 	}
 
-	if err := createShortcut(shortcutPath(), appPath); err != nil {
+	if err := createShortcut(shortcutPath(), appPath, userHome()); err != nil {
 		return fmt.Errorf("创建快捷方式：%w", err)
 	}
 	if err := writeUninstallEntry(dir, setupPath); err != nil {
@@ -124,11 +124,21 @@ func shortcutPath() string {
 	return filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", appName+".lnk")
 }
 
+// userHome 返回用户主目录。
+// 为什么快捷方式工作目录指向主目录而非安装目录：避免应用把运行时文件
+// 写进安装目录（配置/会话已固定在 %APPDATA%\tiancode，见 ADR-0006）。
+func userHome() string {
+	if h := os.Getenv("USERPROFILE"); h != "" {
+		return h
+	}
+	return os.TempDir()
+}
+
 // createShortcut 经 WScript.Shell 创建 .lnk（Go 标准库无 COM 能力）。
-func createShortcut(lnk, target string) error {
+func createShortcut(lnk, target, workDir string) error {
 	ps := fmt.Sprintf(
 		`$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%s');$s.TargetPath='%s';$s.WorkingDirectory='%s';$s.Save()`,
-		lnk, target, filepath.Dir(target))
+		lnk, target, workDir)
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
 	if out, err := cmd.CombinedOutput(); err != nil {

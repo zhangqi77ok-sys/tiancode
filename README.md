@@ -25,19 +25,30 @@ go build -o bin/tiancode.exe . && ./bin/tiancode.exe
 
 > 离线说明：`vendor/` 已入库，`GOPROXY=off go build ./...` 可直接构建（已验证）。
 
-## 运行配置（环境变量）
+## 配置（安装版首次运行）
 
-密钥只经环境变量注入，**永不入库**（docs/STANDARDS.md §1）：
+配置以**用户级文件为主**，环境变量为覆盖（优先级：env > 文件），密钥永不入库。
 
-| 变量 | 说明 |
-| --- | --- |
-| `TIANCODE_BASE_URL` | OpenAI 兼容网关根地址（含 `/v1`） |
-| `TIANCODE_API_KEY` | 供应商密钥 |
-| `TIANCODE_MODEL` | 默认模型（如 `grok-4.6`） |
-| `TIANCODE_WORKSPACE` | 工作区目录（fs/shell/git 工具的受控范围，缺省当前目录） |
+配置文件路径：`%APPDATA%\tiancode\config.json`
+
+```json
+{
+  "baseUrl": "https://your-gateway/v1",
+  "apiKey": "sk-...",
+  "model": "grok-4.6",
+  "workspace": "C:\\path\\to\\your\\project"
+}
+```
+
+- **首次运行**：文件不存在时自动生成该模板并弹窗提示路径与必填字段（不会静默退出）；
+- 会话数据固定在 `%APPDATA%\tiancode\sessions`（与安装目录解耦，卸载不删会话）；
+- 启动失败会弹错误框并写入 `%APPDATA%\tiancode\tiancode.log`；
+- 开发/脚本部署可用环境变量覆盖：`TIANCODE_BASE_URL` / `TIANCODE_API_KEY` / `TIANCODE_MODEL` / `TIANCODE_WORKSPACE`；
+- 自定义配置路径：`tiancode.exe -config <路径>`。
 
 ```powershell
-$env:TIANCODE_BASE_URL='https://your-gateway/v1'; $env:TIANCODE_API_KEY='sk-...'; $env:TIANCODE_MODEL='your-model'
+# 开发模式（env 覆盖，无需配置文件）
+$env:TIANCODE_BASE_URL='https://ss2a.top/v1'; $env:TIANCODE_API_KEY='sk-...'; $env:TIANCODE_MODEL='grok-4.6'; $env:TIANCODE_WORKSPACE='d:\your\project'
 .\bin\tiancode.exe
 ```
 
