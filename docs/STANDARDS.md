@@ -83,11 +83,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
 
 | 产物 | 说明 |
 | --- | --- |
-| `tiancode-setup-v<版本>.exe` | **原生 Go 安装器**（无需 NSIS/Inno，离线可构建）：装到 `%LOCALAPPDATA%\Programs\tiancode`，创建开始菜单快捷方式与"应用和功能"卸载项；`-quiet` 静默模式供自动化 |
+| `tiancode-setup-v<版本>.exe` | **原生 Go 安装器**（无需 NSIS/Inno，离线可构建）：装到 `%LOCALAPPDATA%\Programs\tiancode`，创建**桌面与开始菜单**快捷方式、"应用和功能"卸载项；`-quiet` 静默模式供自动化，`-no-desktop-shortcut` 供桌面受限环境 |
 | `tiancode-v<版本>-portable.zip` | 便携包（exe + README） |
 
 版本号唯一来源：仓库根 `VERSION`。安装器载荷经 `installer_payload` 构建标签内嵌，
 常规 `go build ./...` 不受影响。
+安装/卸载契约见 `CONTRACTS.md` C-INS-1~7；端到端实证脚本 `scripts/install-smoke.ps1`
+（含"卸载不得删掉其它安装的注册项"回归断言）。
 
 ## 6. CI 门禁
 

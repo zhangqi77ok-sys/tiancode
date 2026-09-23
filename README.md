@@ -74,12 +74,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
 
 | 产物（`dist/`） | 说明 |
 | --- | --- |
-| `tiancode-setup-v0.1.0.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建开始菜单快捷方式与卸载项 |
+| `tiancode-setup-v0.1.0.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建**桌面与开始菜单**快捷方式与卸载项 |
 | `tiancode-v0.1.0-portable.zip` | 便携包（exe + README） |
 
-安装器支持 `-quiet`（静默，供脚本部署）与 `-dir <目录>`（自定义安装位置）；
+安装器支持 `-quiet`（静默，供脚本部署）、`-dir <目录>`（自定义安装位置）与
+`-no-desktop-shortcut`（只建开始菜单入口，供桌面受限或企业托管环境）；
+桌面路径按注册表实际位置解析，因此 OneDrive 重定向桌面也能正确落位。
 卸载：开始菜单 →“应用和功能”，或运行安装目录下 `tiancode-setup.exe -uninstall`。
 版本号来源：根目录 `VERSION`。
+
+安装过程中的非致命问题（未建成某一入口、注册项归属不符等）会写入
+`%APPDATA%\tiancode\setup.log`——安装器是 GUI 子系统程序，没有控制台，日志是唯一的可查记录。
+
+安装/卸载端到端实证（安装 → 启动 → 卸载 → 注册项恢复校验，全部逐项断言）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-smoke.ps1
+```
 
 ## 真实上游冒烟测试（可选）
 

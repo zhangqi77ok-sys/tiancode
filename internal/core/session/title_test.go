@@ -16,7 +16,7 @@ func TestSessionTitle_ReplaysLatestRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 无重命名事件 → 空标题（UI 回退显示会话 ID）
-	if title, err := SessionTitle(dir, "s1"); err != nil || title != "" {
+	if title, err := Title(dir, "s1"); err != nil || title != "" {
 		t.Fatalf("title = %q err = %v, want empty", title, err)
 	}
 
@@ -28,7 +28,7 @@ func TestSessionTitle_ReplaysLatestRename(t *testing.T) {
 		if _, err := l2.Append(EventSessionRenamed, map[string]string{"title": want}); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := SessionTitle(dir, "s1"); err != nil || got != want {
+		if got, err := Title(dir, "s1"); err != nil || got != want {
 			t.Fatalf("title = %q err = %v, want %q", got, err, want)
 		}
 	}
@@ -36,14 +36,14 @@ func TestSessionTitle_ReplaysLatestRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 关闭后重放仍然可取（标题持久化在账本，不依赖内存态）
-	if got, err := SessionTitle(dir, "s1"); err != nil || got != "第二版" {
+	if got, err := Title(dir, "s1"); err != nil || got != "第二版" {
 		t.Fatalf("after close: title = %q err = %v", got, err)
 	}
 }
 
 // 非法会话 ID 必须拒绝（与 DeleteSession/OpenLedger 同一道防线）。
 func TestSessionTitle_RejectsBadID(t *testing.T) {
-	if _, err := SessionTitle(t.TempDir(), "../x"); err == nil {
+	if _, err := Title(t.TempDir(), "../x"); err == nil {
 		t.Fatal("bad session id must be rejected")
 	}
 }

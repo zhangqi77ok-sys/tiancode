@@ -10,8 +10,10 @@ import (
 // 重放到任意时刻都得到一致视图，也不会有"两个文件不同步"的老问题。
 const EventSessionRenamed EventKind = "session_renamed"
 
-// SessionTitle 重放账本取最新标题；从未重命名过则返回空串（UI 回退显示会话 ID）。
-func SessionTitle(dir, sessionID string) (string, error) {
+// Title 重放账本取最新标题；从未重命名过则返回空串（UI 回退显示会话 ID）。
+// 命名刻意不带 Session 前缀：调用方已是 session.Title，再加前缀会重复
+// （revive: exported 的 stutter 规则会拒绝 session.SessionTitle）。
+func Title(dir, sessionID string) (string, error) {
 	l, err := OpenLedger(dir, sessionID)
 	if err != nil {
 		return "", err

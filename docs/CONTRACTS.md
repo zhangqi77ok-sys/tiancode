@@ -88,6 +88,22 @@
 | C-WS-1 | 非法工作区（不存在/非目录/空白）拒绝，且**不改变当前值** | `TestChatService_SetWorkspace` |
 | C-WS-2 | 切换工作区必须重建工具受控根与 agent（杜绝"界面切了实际没切"） | `TestChatService_SetWorkspace` + 装配统一走 `newRegistry` |
 
+## C-INS：安装与卸载（M5）
+
+> 为什么补这一组：安装器此前**没有任何契约条目**，于是"重建时漏掉桌面快捷方式"这类能力回退
+> 无人拦下——遗留版创建了桌面 + 开始菜单两个入口（legacy `cmd/installer/main.go:217-222`），
+> 重建版只剩开始菜单，用户装完在桌面找不到入口。契约缺位 = 可静默回退。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-INS-1 | 安装创建**恰好两处**快捷方式：开始菜单 + 桌面，命名均为 `tiancode.lnk` | `TestShortcuts_BothStartMenuAndDesktop` |
+| C-INS-2 | 卸载删除的快捷方式集合与安装创建的**逐项一致**（杜绝孤儿 `.lnk`）；且不因安装时用了 `-no-desktop-shortcut` 而漏删 | `TestShortcuts_InstallUninstallSymmetry` / `TestShortcuts_UninstallAlwaysCoversBoth` |
+| C-INS-3 | 必需项策略：开始菜单快捷方式创建失败**中断安装**；桌面项失败只告警——恰好一个必需项 | `TestShortcuts_OnlyStartMenuIsRequired` |
+| C-INS-4 | 卸载**不得删除其它安装的**卸载注册项：仅当 `InstallLocation` 指向本次卸载目录时才删；`-dir` 不一致时跳过告警 | `TestUninstallOwnsEntry` + `scripts/install-smoke.ps1 [3]` |
+| C-INS-5 | 桌面路径按**注册表实际位置**解析（支持 OneDrive/组策略重定向），读不到才回退 `%USERPROFILE%\Desktop`；`%NAME%` 需展开 | `TestDesktopDirFallback_UsesUserProfile` / `TestExpandEnvVars` |
+| C-INS-6 | 不依赖 PATH 解析 PowerShell：优先用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`，缺失才回退裸名 | `TestPowershellExe_ResolvesToExistingFile` / `TestPowershellExe_FallsBackWhenMissing` |
+| C-INS-7 | 非致命问题（跳过桌面项、注册项归属不符、清理调度失败）必须**同时写 stderr 与 `%APPDATA%\tiancode\setup.log`**——GUI 子系统无控制台，只写 stderr 等于静默 | `scripts/install-smoke.ps1`（读取 setup.log 并逐行回显） |
+
 ## 契约变更记录
 
 > 规则：契约一经发布不得静默变更（见 `STANDARDS.md` §4）。下表登记每一次**指向或表述**的修正——
@@ -99,3 +115,4 @@
 | 2026-09-23 | C-SES-5 | 锁定测试名由 `TestLedger_RenameConflictFallback` 更正为 `TestWriteFileAtomic_RenameConflictFallback`，并明确保护对象是**存储层原子写的回退路径**（渠道配置 / 工具写文件）。原表述是旧设计（全量改写 + rename）的残留，属指向修正，行为语义未变 | ADR-0002（账本改为追加式账本，不再全量改写） |
 | 2026-09-23 | C-RT-4 | 锁定测试落地于 `internal/core/agent/agent_test.go::TestRuntime_FacadeBoundary`。此前该条约只有守卫 R1 的静态保证、没有同名测试。新测试做两件事：用替身运行时驱动内核跑完整一轮（编译期证明依赖的是接口而非具体实现），并扫描本包**非测试**源码，禁止出现适配器/编排/壳层 import | 本文件"ID 与测试名一一对应"的要求 |
 | 2026-09-23 | C-APP-2 | 锁定测试落地于 `internal/app/chat_service_test.go::TestChatService_CancelKeepsEvents`，走 `httptest` 上游 + 真实 `chatRuntime` 的端到端路径。此前只有 `TestAgent_CancelKeepsEvents`，而它用 `fakeRuntime` **直接把 `EndCancelled` 喂进内核**，恰好绕过了真正会出错的那一环（runtime 中继把 ctx 取消误判为 `EndError`）——这个盲区正是"用户点中断却被上报成错误"长期未被发现的根因。补测同时修复了 `core/llm/runtime.go` 中继层的终态判定 | 本文件"ID 与测试名一一对应"的要求 + ADR-0003（流式三终态） |
+| 2026-09-23 | **新增 C-INS-1 ~ C-INS-7** | 补齐安装/卸载契约（此前完全缺失）。同时修正实现两处：① 卸载按名字无条件删除共享注册项 → 改为校验 `InstallLocation` 归属（实测踩过：用隔离目录做卸载验证，连带删掉了用户正式安装的注册项）；② 非致命警告只写 stderr，而安装器是 `-H windowsgui` 构建、没有控制台 → 警告用户永远看不到，改为同时落盘 `setup.log` | 用户实测反馈"安装后桌面没有快捷方式" + legacy 对照（legacy 同时创建桌面与开始菜单） |

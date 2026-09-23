@@ -130,11 +130,12 @@ M5 标"未开始"（6 项出口已达成）、`legacy + 新 main 推送远端` �
 | 格式 | `gofmt -l main.go app internal cmd` | ✅ 空输出 |
 | 静态检查 | `go vet ./...` | ✅ exit 0 |
 | 架构守卫 | `scripts/arch_check.ps1` | ✅ `[ARCH CHECK] PASS`，exit 0 |
-| 测试 | `go test ./... -count=1` | ✅ 13 个包 ok |
+| 测试 | `go test ./... -count=1` | ✅ **15 个包 ok**（含新增 `cmd/installer`） |
 | 前端类型+构建 | `npm run build`（`vue-tsc --noEmit` + `vite build`） | ✅ 1.30s，产物 90.78 kB |
 | 前端单测 | `npm test`（vitest） | ✅ 14/14 |
-| 注释/风格 | `golangci-lint run` | ⚠️ 本机原本未安装，隔离安装后实测见下节 |
-| 发布流水线 | `scripts/release.ps1` | ⚠️ 见下节（先暴露了一个环境问题，已修） |
+| 注释/风格 | `golangci-lint run` | ✅ **exit 0，0 告警**（隔离安装 v1.59.1 后实测；见下「附 3」） |
+| 发布流水线 | `scripts/release.ps1` | ✅ 产物齐备，但本机需重试（见「附 1」） |
+| 安装/启动/卸载 | `scripts/install-smoke.ps1` | ✅ **failures=0**（见「附 2」） |
 
 ### 附：发布流水线暴露的两个问题
 
@@ -159,6 +160,39 @@ Node 在 `.workbuddy\binaries\node\versions\22.22.2-3`）。脚本没写错，�
 **轮询直到条件成立或超时**（语义不变、不依赖机器快慢）。已把该判据写入 `docs/TESTING.md`，
 避免后来者把"负载造成的红"误判成回归。
 
+**(3) golangci-lint 的隔离安装与它抓到的真问题**
+用户实测反馈"安装后桌面没有快捷方式"，排查期间顺带把 `golangci-lint` 装上并跑通：
+`GOBIN` + 隔离 `GOMODCACHE` 装 `v1.59.1`（直接 `go install` 写用户级模块缓存会被环境拒绝：
+`rename ...\go\pkg\mod\cache\download\...zip: Access is denied`），`run` → **exit 0**。
+它抓到 1 条真实问题：`internal/core/session/title.go` 的 `SessionTitle` 触发
+`revive: exported` 的 stutter 规则 → 更名为 `session.Title`。
+
+---
+
+## 二·B、安装器：桌面快捷方式回退与三个派生缺陷（2026-09-23）
+
+**用户报告**：装完 tiancode，「桌面没有快捷方式」。
+
+**根因**：legacy 安装器创建**桌面 + 开始菜单**两个快捷方式
+（`legacy-local-main:cmd/installer/main.go:217,221-222`，并设 `IconLocation`），
+重建版只保留了开始菜单——一次**能力回退**。而安装器此前**没有任何契约条目**
+（`docs/CONTRACTS.md` 无 C-INS 组），所以回退无人拦下。**契约缺位 = 可静默回退。**
+
+| # | 缺陷 | 严重度 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 桌面快捷方式缺失（能力回退） | 高 | `installShortcuts()` 建两处；`uninstallShortcuts()` 逐项对应（C-INS-1/2） |
+| 2 | 卸载**无条件按名删共享注册项** | 高 | 新增 `ownsUninstallEntry()`：仅当 `InstallLocation` 指向本次目录才删（C-INS-4）。**实测踩过**：用隔离目录做卸载验证，把用户正式安装的注册项删了 |
+| 3 | 非致命警告只写 stderr，而安装器是 `-H windowsgui`、**没有控制台** | 中 | 新增 `warn()`：同时落盘 `%APPDATA%\tiancode\setup.log`。原先"装了但少东西"用户永远看不到原因 |
+| 4 | 桌面路径硬编码 `%USERPROFILE%\Desktop` | 中 | 改读注册表 `User Shell Folders\Desktop`（支持 OneDrive/组策略重定向）；自写 `%NAME%` 展开器（`os.ExpandEnv` 只认 `$NAME`）（C-INS-5） |
+| 5 | 依赖 PATH 解析 `powershell.exe` | 中 | 实测精简 PATH 下报 `executable file not found`，且失败发生在应用文件已写入后 → 留下**没有卸载项**的坏安装。改为优先取 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（C-INS-6） |
+
+**配套**：必需项策略（开始菜单失败中断安装，桌面项失败只告警——桌面受限环境不该阻断安装）；
+新增 `-no-desktop-shortcut` 开关；新增 `scripts/install-smoke.ps1`（10 项断言 + 归属保护回归 + 测前状态还原）。
+
+**顺带查明**：Windows 路径**大小写不敏感**，legacy 的 `%LOCALAPPDATA%\Programs\Tiancode` 与
+新版默认的 `...\Programs\tiancode` 是**同一目录**——用户装新版时装进了旧目录，
+留下孤儿 `uninstall.exe`（1.8MB），并把 v0.0.1 的注册项覆盖成新值。
+
 ---
 
 ## 三、剩余事项
@@ -166,7 +200,9 @@ Node 在 `.workbuddy\binaries\node\versions\22.22.2-3`）。脚本没写错，�
 ### 必须人工验收（无法由静态检查替代）
 
 - **M2 桌面端到端**：启动 → 发一条消息 → 流式渲染 + 终态标签正确
-- **M5 安装版启动实证**：无配置 → 生成模板并提示；有配置 → 窗口正常打开
+- **M5 桌面快捷方式双击**：桌面 `tiancode.lnk` 双击能正常启动并落到主窗口
+  （创建/删除已由 `install-smoke.ps1` 断言，但"双击可用"与无配置时的弹框可见性
+  需人工目视确认一次——非交互会话下进程不停留在对话框，自动化抓不到）
 - **M5 四环人工验收**：各一例真实任务，失败路径符合契约
 
 ### 刻意不做（属设计范围，非缺陷）
@@ -193,6 +229,16 @@ Node 在 `.workbuddy\binaries\node\versions\22.22.2-3`）。脚本没写错，�
 
 - 本机 Go 为 `E:\pro\tools\go`（`go1.22.5 windows/amd64`），此前**未在 PATH 中**，
   因此本项目此前所有"Go 已全绿"的说法在本机并未被独立复核过。
-- 本轮每一项结论都由实际命令输出支撑；`golangci-lint` 未预装，**在补装前未实测**。
-- 排查中出现过两次**偶发**的 std 解析错误（`internal/goarch is not in std`、`internal/abi`），
-  隔离重跑即通过——判定为构建缓存瞬时问题，非仓库缺陷；GOROOT 实为完整（`src/internal/goarch` 等均在）。
+- 本轮每一项结论都由实际命令输出支撑；六道门禁（含 `golangci-lint`）**均已在本机实测**。
+- 排查中多次出现**偶发**的 std 解析错误（`internal/goarch is not in std`、`internal/abi`、
+  `crypto/dsa`、`internal/syscall/windows/sysdll` … 每次不同的包），隔离重跑即通过；
+  GOROOT 源码经清点**确为完整**（`src/sync` 27 个文件等）。
+  已定位为**本环境对工作区外文件访问的间歇性拦截**（同期 `go install` 写用户级模块缓存被明确拒绝：
+  `Access is denied`），非仓库缺陷。
+  **操作含义**：本机跑 Go 命令必须**允许重试**；判定"失败是真实回归"前，先在无并发负载条件下重跑。
+- `scripts/install-smoke.ps1` 会**真实创建/删除桌面与开始菜单快捷方式**，并改写共享卸载注册项——
+  但它自带测前备份与还原（注册表键值+类型、同名 `.lnk`、`config.json`），跑完机器回到测前状态。
+  本机已跑通并验证还原成功。
+- **本轮遗留一处未做**：`%LOCALAPPDATA%\Programs\tiancode` 中仍有 v0.0.1 的孤儿 `uninstall.exe`
+  （1.8MB，指向旧版卸载器，新安装器不使用它）。它无害但易混淆，**需用户决定是否删除**
+  （属删除用户文件，不宜代为执行）。

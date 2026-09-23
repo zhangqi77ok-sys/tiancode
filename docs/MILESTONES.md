@@ -76,15 +76,41 @@
 - [x] C-TOOL-1 ~ C-TOOL-5 测试绿（shell：超时可配/部分输出+TIMEOUT/业务失败/后台日志有界/取消杀进程树）
 - [x] agent 可完成"跑测试→读输出→修文件"闭环（shell + 只读 git 工具已装配）
 
-## M5 打包与四环验收 —— 进行中（自动化项已过，剩人工验收）
+## M5 打包与四环验收 —— 进行中（仅剩人工 GUI 验收）
 
-**范围**：`wails build` Windows 单 exe；全量回归。
+**范围**：Windows 单 exe 打包（`release.ps1` 以 `go build -tags desktop,production` 直出，不依赖 wails CLI）；全量回归。
 
 **出口标准**：
-- [x] 全部契约测试绿（10 包，`-count=1` 新鲜执行）；arch_check PASS；golangci-lint 零告警
+- [x] 全部契约测试绿（`-count=1` 新鲜执行，15 个含测试的包）；arch_check PASS；**golangci-lint 0 告警**
 - [x] 新环境按 README 三命令跑通；离线构建验证（`GOPROXY=off` + vendor）
 - [x] 真实上游冒烟通过（grok-4.6 流式 EndDone 收束）
-- [x] **安装包流水线**（`scripts/release.ps1`：原生 Go 安装器，安装/卸载全生命周期实证通过）
+- [x] **安装包流水线**（`scripts/release.ps1`：原生 Go 安装器，无需 NSIS/Inno）
 - [x] **安装版可用性修复**（配置改用户级文件 + env 覆盖；数据目录固定用户级；启动失败弹框可见——ADR-0006）
-- [ ] 安装版启动实证（无配置→生成模板并提示；有配置→窗口正常打开）
-- [ ] 四环人工验收各一例真实任务，失败路径符合契约（待人工 GUI 验收）
+- [x] **安装版启动实证**（2026-09-23 实机复验，`scripts/install-smoke.ps1`，**failures=0**；安装到隔离目录以保护既有安装）：
+      - 安装（`-quiet`）：应用 exe / 卸载入口 / **开始菜单 + 桌面快捷方式** / HKCU 卸载项 **五项齐全**（C-INS-1）
+      - `-no-desktop-shortcut`：只建开始菜单，桌面保持干净（C-INS-3）
+      - 有配置启动：**主窗口就绪**——判据取应用**自身生命周期日志**出现 `started v0.1.0 ...`（该行由 `OnStartup` 写，
+        `main.go` 注释即称其为"窗口就绪的可断言证据"）。**不再抓 `MainWindowTitle`**：非交互会话下标题可能一直为空，
+        会把能用的构建判成失败（实测踩过）
+      - 无配置启动：`%APPDATA%\tiancode\config.json` 模板**已生成** ✓
+        （**弹框可见性未证实**：非交互启动下进程未阻塞在对话框而是即刻退出，需人工双击目视确认一次）
+      - 卸载：上述五项**全部清除**，无孤儿 `.lnk`（C-INS-2）
+      - **归属保护**：用无关 `-dir` 执行卸载 → 注册项**未被动**，且在 `setup.log` 留下可见警告（C-INS-4）
+      - 测前状态全部还原：注册表键（值 + 类型）、桌面同名 `.lnk`、`config.json` ✓
+- [ ] 四环人工验收各一例真实任务，失败路径符合契约（需人工 + 真实模型渠道）
+
+### 已闭环：golangci-lint 零告警
+
+`STANDARDS.md` §6 与 `.golangci.yml` 要求 `golangci-lint run` 零告警，CI 把它列为**阻断性**步骤。
+
+**2026-09-23 已实测通过**：把 `golangci-lint v1.59.1` 装到隔离目录
+（`GOBIN` + 隔离 `GOMODCACHE`，不动用户级模块缓存——直接 `go install` 曾被环境拒绝：
+`rename ...\go\pkg\mod\cache\download\...zip: Access is denied`），
+`golangci-lint run` → **exit 0，0 告警**。
+
+过程中它抓到 1 条真实问题并已修：`internal/core/session/title.go` 的 `SessionTitle`
+触发 `revive: exported` 的 stutter 规则（调用方已是 `session.SessionTitle`）→ 更名为
+`session.Title`（2 处调用点同步更新；契约登记的测试名 `TestSessionTitle_*` 保持不变）。
+
+同批复核：`gofmt -l` 空输出、`go vet ./...` exit 0、`go test ./... -count=1` 15 包全 ok、
+`scripts/arch_check.ps1` PASS。**六道门禁首次全部有本机实测证据。**

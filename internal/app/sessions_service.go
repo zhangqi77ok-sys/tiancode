@@ -56,7 +56,7 @@ func roleLabel(role string) string {
 // ExportSessionMarkdown 把会话导出为 Markdown 文本（交由前端复制/保存）。
 // 复用界面同源的账本投影（Replay）：导出内容 = 用户所见，不引入第二事实源。
 func (s *ChatService) ExportSessionMarkdown(sessionID string) (string, error) {
-	title, err := session.SessionTitle(s.cfg.DataDir, sessionID)
+	title, err := session.Title(s.cfg.DataDir, sessionID)
 	if err != nil {
 		return "", err
 	}
@@ -85,7 +85,7 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 	}
 	out := make([]SessionSummary, 0, len(ids))
 	for _, id := range ids {
-		title, err := session.SessionTitle(s.cfg.DataDir, id)
+		title, err := session.Title(s.cfg.DataDir, id)
 		if err != nil {
 			return nil, fmt.Errorf("读取会话 %s 标题失败：%w", id, err)
 		}
