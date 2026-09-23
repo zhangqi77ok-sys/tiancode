@@ -25,7 +25,9 @@ import (
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/fstool"
+	"tiancode/internal/platform/gittool"
 	"tiancode/internal/platform/openaiprovider"
+	"tiancode/internal/platform/shelltool"
 )
 
 // Config 是对话服务的装配配置。
@@ -64,9 +66,16 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（provider 内 60s）
 	// 已覆盖挂起场景，总预算只防极端失控。
 	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
+	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
 	registry := tools.NewRegistry()
-	if err := registry.Register(fstool.New(cfg.WorkDir)); err != nil {
-		return nil, fmt.Errorf("register fs tool: %w", err)
+	for _, reg := range []func() error{
+		func() error { return registry.Register(fstool.New(cfg.WorkDir)) },
+		func() error { return registry.Register(shelltool.New(shelltool.Options{Root: cfg.WorkDir})) },
+		func() error { return registry.Register(gittool.New(cfg.WorkDir)) },
+	} {
+		if err := reg(); err != nil {
+			return nil, fmt.Errorf("register tool: %w", err)
+		}
 	}
 	return &ChatService{
 		cfg:     cfg,
