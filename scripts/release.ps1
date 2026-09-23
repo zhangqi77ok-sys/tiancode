@@ -29,7 +29,9 @@ try {
 
 Write-Host "==> [3/6] app exe"
 New-Item -ItemType Directory -Force -Path build, dist, cmd\installer\payload | Out-Null
-go build -ldflags="-H windowsgui -s -w" -o build\tiancode.exe .
+# 必须带 wails 生产构建标签（desktop,production），否则运行时报
+# "Wails applications will not build without the correct build tags"。
+go build -tags desktop,production -ldflags="-H windowsgui -s -w -X main.version=$Version" -o build\tiancode.exe .
 if ($LASTEXITCODE -ne 0) { throw "app build failed" }
 
 Write-Host "==> [4/6] installer (native Go, no NSIS required)"

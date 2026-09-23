@@ -104,6 +104,23 @@ func TestDefaultPath_UnderAppData(t *testing.T) {
 	}
 }
 
+// C-CFG-7：容忍 UTF-8 BOM（记事本另存为 UTF-8 的默认产物）。
+func TestLoad_ToleratesUTF8BOM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := []byte(`{"baseUrl":"u","apiKey":"k","model":"m","workspace":"w"}`)
+	withBOM := append([]byte{0xEF, 0xBB, 0xBF}, body...)
+	if err := os.WriteFile(path, withBOM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("BOM 配置必须可解析（记事本默认行为）：%v", err)
+	}
+	if f.Model != "m" {
+		t.Fatalf("loaded = %+v", f)
+	}
+}
+
 // Validate：缺字段时列出全部缺失项（首次运行引导可一次说清）。
 func TestValidate_ListsAllMissing(t *testing.T) {
 	err := Validate(File{BaseURL: "u", Model: "m"})

@@ -10,6 +10,7 @@
 package configfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,7 @@ func appDataDir() string {
 }
 
 // Load 读取并解析配置；文件不存在时错误包装 ErrNotFound。
+// 容忍 UTF-8 BOM：Windows 记事本另存为 UTF-8 会带 BOM，直接解析会失败（实测踩到）。
 func Load(path string) (File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -58,6 +60,7 @@ func Load(path string) (File, error) {
 		}
 		return File{}, err
 	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}) // 去 UTF-8 BOM
 	var f File
 	if err := json.Unmarshal(data, &f); err != nil {
 		return File{}, fmt.Errorf("配置解析失败 %s：%w", path, err)

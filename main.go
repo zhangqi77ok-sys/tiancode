@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"flag"
@@ -22,6 +23,9 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// version 由 release.ps1 通过 -ldflags "-X main.version=<VERSION>" 注入。
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", configfile.DefaultPath(), "配置文件路径（默认 %APPDATA%\\tiancode\\config.json）")
@@ -47,6 +51,13 @@ func main() {
 		Height: 800,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
+		},
+		OnStartup: func(ctx context.Context) {
+			// 窗口就绪的可断言证据（排障与验收都依赖这行）
+			shell.LogLifecycle(fmt.Sprintf("started v%s model=%s workspace=%s", version, cfg.Model, cfg.WorkDir))
+		},
+		OnShutdown: func(ctx context.Context) {
+			shell.LogLifecycle("shutdown")
 		},
 		Bind: []interface{}{shell.New(chat)},
 	})

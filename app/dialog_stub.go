@@ -8,3 +8,8 @@ import "fmt"
 func NotifyError(title, text string) {
 	fmt.Printf("[ERROR] %s：%s\n", title, text)
 }
+
+// LogLifecycle 在非 Windows 平台输出到 stdout。
+func LogLifecycle(msg string) {
+	fmt.Println("[lifecycle]", msg)
+}

@@ -24,6 +24,13 @@ func NotifyError(title, text string) {
 	proc.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), uintptr(mbIconError))
 }
 
+// LogLifecycle 记录启动/退出等生命周期事件。
+// 为什么需要它：GUI 应用的"窗口是否真的打开"必须留下可断言证据——
+// 否则"进程存活"会把错误框误判成正常运行（M5 复现过的假阳性）。
+func LogLifecycle(msg string) {
+	appendLog(msg)
+}
+
 // appendLog 追加一行到 %APPDATA%\tiancode\tiancode.log（排障用；失败静默，
 // 日志不可写不应阻断启动错误提示本身）。
 func appendLog(line string) {
