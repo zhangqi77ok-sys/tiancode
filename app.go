@@ -341,11 +341,7 @@ func (a *App) SetWorkspace(dir string) error {
 	registerWorkspaceTools(a.registry, absDir, sb, a.snapshotMgr)
 
 	// 重新初始化智能体自主执行引擎，绑定新工作区的插件执行链
-	if a.mcpManager != nil {
-		a.mcpManager.StopAll()
-	}
-	a.mcpManager = mcp.NewManager(absDir)
-	a.engine = configureEngine(a.registry, a.gateway, a.mcpManager, absDir)
+	a.rebindMCPManager(absDir)
 	if a.extraStore != nil {
 		go func() {
 			a.mcpManager.SyncFromConfig(context.Background(), a.extraStore.ListMCPs())
@@ -356,6 +352,17 @@ func (a *App) SetWorkspace(dir string) error {
 		_ = a.projectStore.Add(absDir)
 	}
 	return nil
+}
+
+// rebindMCPManager 停止旧 MCP 管理器并以新工作区重建，同步重建执行引擎。
+// 引擎的 mcpCall 闭包捕获 mcpManager 指针，故"重赋 mcpManager"与"重建引擎"是耦合操作，必须成对出现。
+// 此方法是唯一入口：禁止在别处单独重赋 a.mcpManager，否则引擎持有的仍是旧管理器，MCP 调用会静默失效（对应 hotplug P3 脆弱点）。
+func (a *App) rebindMCPManager(absDir string) {
+	if a.mcpManager != nil {
+		a.mcpManager.StopAll()
+	}
+	a.mcpManager = mcp.NewManager(absDir)
+	a.engine = configureEngine(a.registry, a.gateway, a.mcpManager, absDir)
 }
 
 func (a *App) ListProjects() []config.Project {

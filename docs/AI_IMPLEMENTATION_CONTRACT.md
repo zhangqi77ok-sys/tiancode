@@ -55,6 +55,8 @@
 | A10 | Windows 交付：改完功能按 `scripts/build-windows.ps1` 或既有安装器流程出包；不提交巨大二进制到 git。 |
 | A11 | 依赖方向严格单向：`app`(main 组合根) → `internal/core`(loop/memory/host) → `pkg/plugin/v1` / `internal/llm` / `internal/session`。core 包之间不得反向依赖；`loop` 保持无状态，不引入 `session`/`memory`/`agent` 依赖——多轮记忆装配由 `app_chat.go` 调 `internal/core/memory` 后注入 `EngineRequest.Messages`。 |
 | A12 | 术语消歧：「host」两义——`internal/host` 是**核心层插件注册契约**（非应用宿主），`app.go`/main 才是**应用宿主（组合根）**。二者依赖为 app → host，host 不反向依赖 app。 |
+| A13 | 「Harness 运行时」= {sandbox 沙箱隔离, Registry 中的 SafetyRail 前置防护, loop 工具路由/ReAct, agent.TDD 自纠, memory 上下文装配} 组合，**目前无单一 Harness 模块**。注意 `internal/ast`(AST 语义审查) 与 fs 写后影子快照自动回退**尚未接入执行 harness**：前者仅被 arch 工具/app_shell 使用，后者仅在 fs 写前建快照、回退为手动动作；二者应在引入 `internal/core/harness` 门面后融合。 |
+| A14 | 热插拔仅运行时热换 MCP（`ReloadHotplugRegistry` 经 `SyncFromConfig` 原地改同一 `mcpManager` 实例，引擎闭包捕获该指针故有效），**内置算子静态注册不可热替**。重赋 `mcpManager` 必须与重建引擎配对，唯一入口为 `App.rebindMCPManager`。 |
 
 ---
 
