@@ -48,6 +48,48 @@ export interface ChannelInput {
   apiKey: string
 }
 
+// createAppStub 生成"调用即明确报错"的桩。
+// 为什么不用静默桩：绑定路径错时静默返回空数据，UI 会显示"0 个会话/无渠道"，
+// 让人误以为数据丢了；必须让错误说清原因（这是本轮真实踩到的坑）。
+function failingApp(reason: string): WailsApp {
+  const boom = async (): Promise<never> => {
+    throw new Error(reason)
+  }
+  return new Proxy({} as WailsApp, {
+    get: () => boom,
+  })
+}
+
+// resolveApp 解析 Wails 注入的绑定对象。
+// Wails v2 按 `window.go.<包名>.<结构体名>` 注入：我们的壳层是 package app 的 Bind，
+// 因此是 go.app.Bind（曾误写 go.main.App，导致全部 IPC 抛 "reading 'App'"）。
+// 先按已知候选路径取，再按"具备 Send/ListSessions 方法"鸭子类型兜底，避免再被命名变更绊倒。
+function resolveApp(go: unknown): WailsApp | null {
+  if (!go || typeof go !== 'object') return null
+  const ns = go as Record<string, Record<string, unknown>>
+  for (const pkg of ['app', 'main']) {
+    const bag = ns[pkg]
+    if (!bag || typeof bag !== 'object') continue
+    for (const name of ['Bind', 'App']) {
+      const candidate = bag[name]
+      if (candidate && typeof (candidate as WailsApp).Send === 'function') {
+        return candidate as WailsApp
+      }
+    }
+  }
+  // 兜底：任何命名空间下具备完整方法集的对象
+  for (const bag of Object.values(ns)) {
+    if (!bag || typeof bag !== 'object') continue
+    for (const candidate of Object.values(bag)) {
+      const c = candidate as WailsApp
+      if (c && typeof c.Send === 'function' && typeof c.ListSessions === 'function') {
+        return c
+      }
+    }
+  }
+  return null
+}
+
 interface WailsApp {
   ListSessions(): Promise<string[] | null>
   ListSessionSummaries(): Promise<SessionSummaryDTO[] | null>
@@ -84,15 +126,16 @@ const offlineWrite = async (): Promise<never> => {
   throw new Error('浏览器调试模式：未连接本地内核，无法修改配置')
 }
 
-// bridge 返回类型化的 wails 注入对象。
-// 纯浏览器（vite dev）没有注入：返回桩实现，便于视觉调试与设计迭代
-// ——读操作桩返回空数据，绝不伪造业务数据。
+// bridge 返回类型化的 wails 注入对象。三种情形：
+//  1. 未注入 go（纯浏览器 vite dev）→ 读操作空数据、写操作显式报错的调试桩；
+//  2. 注入了 go 但解析不到绑定（路径/版本不匹配）→ 全部调用抛可读原因，绝不静默返回空数据；
+//  3. 正常 → 返回真实绑定。
 export function bridge(): WailsBridge {
   const w = window as unknown as {
-    go?: { main: { App: WailsApp } }
+    go?: Record<string, unknown>
     runtime?: WailsRuntime
   }
-  if (!w.go || !w.runtime) {
+  if (!w.go) {
     const stub: WailsBridge = {
       app: {
         ListSessions: async () => [],
@@ -117,5 +160,13 @@ export function bridge(): WailsBridge {
     }
     return stub
   }
-  return { app: w.go.main.App, runtime: w.runtime }
+
+  const app = resolveApp(w.go)
+  if (!app) {
+    return {
+      app: failingApp('未找到本地内核绑定（期望 window.go.app.Bind）。请确认安装包与前端构建版本一致，或重装应用。'),
+      runtime: w.runtime ?? { EventsOn: () => {} },
+    }
+  }
+  return { app, runtime: w.runtime ?? { EventsOn: () => {} } }
 }

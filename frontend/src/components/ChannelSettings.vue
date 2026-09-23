@@ -73,7 +73,13 @@ onMounted(async () => {
           <h2 class="text-base font-semibold">模型渠道</h2>
           <span class="text-xs text-[var(--c-text-dim)]">配置网关地址与密钥，切换默认渠道即时生效</span>
         </div>
-        <button class="btn-icon h-8 w-8 text-sm" title="关闭" @click="emit('close')">✕</button>
+        <button
+          class="flex h-8 w-8 items-center justify-center rounded-full text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-text)]"
+          title="关闭"
+          @click="emit('close')"
+        >
+          ✕
+        </button>
       </header>
 
       <!-- 错误条：单条即可，不堆叠 -->
