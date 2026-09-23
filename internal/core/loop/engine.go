@@ -109,18 +109,21 @@ type InteractionGateway interface {
 
 // ExecutionEngine ReAct 双环自主执行引擎
 type ExecutionEngine struct {
-	registry   *host.Registry
-	MCPCall    func(ctx context.Context, name string, args map[string]any) (string, error)
-	Verify     func(writtenFile string) (output string, pass bool)
+	registry *host.Registry
+	mcpCall  func(ctx context.Context, name string, args map[string]any) (string, error)
+	verify   func(writtenFile string) (output string, pass bool)
 
 	gateway InteractionGateway
 }
 
-// NewExecutionEngine 构造执行引擎
-func NewExecutionEngine(reg *host.Registry, gw InteractionGateway) *ExecutionEngine {
+// NewExecutionEngine 构造执行引擎。
+// MCPCall/Verify 在构造期即确定，禁止构造后从外部改写（消除导出可变字段，根治双构建隐患）。
+func NewExecutionEngine(reg *host.Registry, gw InteractionGateway, mcpCall func(ctx context.Context, name string, args map[string]any) (string, error), verify func(writtenFile string) (output string, pass bool)) *ExecutionEngine {
 	return &ExecutionEngine{
 		registry: reg,
 		gateway:  gw,
+		mcpCall:  mcpCall,
+		verify:   verify,
 	}
 }
 

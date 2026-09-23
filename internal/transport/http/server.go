@@ -54,7 +54,7 @@ func NewServer(addr string, reg *host.Registry, sm *sandbox.SnapshotManager, sb 
 		registry:    reg,
 		snapshotMgr: sm,
 		sandbox:     sb,
-		engine:      loop.NewExecutionEngine(reg, nil),
+		engine:      loop.NewExecutionEngine(reg, nil, nil, nil),
 	}
 
 	mux := http.NewServeMux()

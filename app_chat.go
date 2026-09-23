@@ -13,6 +13,7 @@ import (
 
 	"tiancode/internal/config"
 	"tiancode/internal/core/loop"
+	"tiancode/internal/core/memory"
 	"tiancode/internal/core/sandbox"
 	"tiancode/internal/session"
 	v1 "tiancode/pkg/plugin/v1"
@@ -293,7 +294,7 @@ func (a *App) SendMessage(req ChatRequest) error {
 
 		workspaceTools := a.buildLLMToolsFromRegistry(agentCtx)
 		workspaceTools, systemPrompt = loop.ApplyStrategy(req.Strategy, req.StrategyNote, workspaceTools, systemPrompt)
-		conversation := buildConversationWindow(systemPrompt, currentSession.Messages, 120000)
+		conversation := memory.BuildConversationWindow(systemPrompt, currentSession.Messages, 120000)
 		roundStart := time.Now()
 		var hasHitCap bool
 		var hasError bool

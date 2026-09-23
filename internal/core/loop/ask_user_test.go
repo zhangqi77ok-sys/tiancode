@@ -48,7 +48,7 @@ func TestEngine_AskUserPausesUntilResume(t *testing.T) {
 
 	eventChan := make(chan EngineEvent, 100)
 	gw := newMockGateway(eventChan)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	
 	req := &EngineRequest{
 		SessionID: "sess_1",
@@ -110,7 +110,7 @@ func TestEngine_AskUserSkipUsesRecommended(t *testing.T) {
 
 	eventChan := make(chan EngineEvent, 100)
 	gw := newMockGateway(eventChan)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	
 	req := &EngineRequest{
 		SessionID: "sess_2",
@@ -156,7 +156,7 @@ func TestAskUserRejectsFewerThanTwoOptions(t *testing.T) {
 	
 	eventChan := make(chan EngineEvent, 100)
 	gw := newMockGateway(eventChan)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	
 	req := &EngineRequest{
 		SessionID: "sess_3",

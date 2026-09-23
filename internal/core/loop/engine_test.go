@@ -65,7 +65,7 @@ func TestExecutionEngine_SparseToolIndices(t *testing.T) {
 	}
 
 	gw := newMockGateway(nil)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	eventChan := make(chan EngineEvent, 20)
 
 	ctx := context.Background()
@@ -135,7 +135,7 @@ func TestExecutionEngine_NilGuards(t *testing.T) {
 	}
 
 	// 2. nil registry
-	engineNoReg := NewExecutionEngine(nil, nil)
+	engineNoReg := NewExecutionEngine(nil, nil, nil, nil)
 	ch2 := make(chan EngineEvent, 10)
 	err2 := engineNoReg.Execute(context.Background(), &EngineRequest{Prompt: "hi"}, ch2)
 	if err2 == nil {
@@ -144,7 +144,7 @@ func TestExecutionEngine_NilGuards(t *testing.T) {
 
 	// 3. nil request
 	reg := host.NewRegistry()
-	engineOk := NewExecutionEngine(reg, nil)
+	engineOk := NewExecutionEngine(reg, nil, nil, nil)
 	ch3 := make(chan EngineEvent, 10)
 	err3 := engineOk.Execute(context.Background(), nil, ch3)
 	if err3 == nil {
@@ -189,7 +189,7 @@ func TestExecutionEngine_SafetyRailBlocks(t *testing.T) {
 	_ = reg.Register(&dangerousProvider{})
 	_ = reg.Register(safety.New())
 	gw := newMockGateway(nil)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	ch := make(chan EngineEvent, 20)
 	go func() { _ = engine.Execute(context.Background(), &EngineRequest{Prompt: "x"}, ch) }()
 	blocked := false
@@ -259,12 +259,11 @@ func TestExecutionEngine_TDDVerifyAfterWrite(t *testing.T) {
 	_ = reg.Register(&tddWriteProvider{})
 	_ = reg.Register(&tddWriteTool{})
 	gw := newMockGateway(nil)
-	engine := NewExecutionEngine(reg, gw)
 	called := ""
-	engine.Verify = func(written string) (string, bool) {
+	engine := NewExecutionEngine(reg, gw, nil, func(written string) (string, bool) {
 		called = written
 		return "ok tests", true
-	}
+	})
 	ch := make(chan EngineEvent, 20)
 	go func() {
 		_ = engine.Execute(context.Background(), &EngineRequest{Prompt: "x", Strategy: StrategyTDD}, ch)
@@ -290,7 +289,7 @@ func TestExecutionEngine_DirectPathUsesRegisteredProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	gw := newMockGateway(nil)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	ch := make(chan EngineEvent, 30)
 	go func() {
 		_ = engine.Execute(context.Background(), &EngineRequest{
@@ -360,7 +359,7 @@ func TestExecutionEngine_CircuitBreaker_DuplicateCalls(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	gw := newMockGateway(nil)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	eventChan := make(chan EngineEvent, 80)
 	go func() {
 		_ = engine.Execute(context.Background(), &EngineRequest{
@@ -389,7 +388,7 @@ func TestExecutionEngine_CircuitBreaker_ConsecutiveErrors(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	gw := newMockGateway(nil)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	eventChan := make(chan EngineEvent, 80)
 	go func() {
 		_ = engine.Execute(context.Background(), &EngineRequest{

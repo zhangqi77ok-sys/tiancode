@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tiancode/internal/config"
+	"tiancode/internal/core/memory"
 	"tiancode/internal/session"
 )
 
@@ -44,8 +45,8 @@ func TestBuildConversationWindow_InPlacePruningAndDeterminism(t *testing.T) {
 	}
 
 	// 运行 buildConversationWindow 两次，验证输出完全确定性且哈希相等
-	conv1 := buildConversationWindow(systemPrompt, history, 32000)
-	conv2 := buildConversationWindow(systemPrompt, history, 32000)
+	conv1 := memory.BuildConversationWindow(systemPrompt, history, 32000)
+	conv2 := memory.BuildConversationWindow(systemPrompt, history, 32000)
 
 	if len(conv1) != 6 { // 1 system + 5 history
 		t.Fatalf("Expected 6 messages, got %d", len(conv1))

@@ -70,6 +70,42 @@ if ($engineGo -notmatch 'OnAfterAct') {
     $errors++
 }
 
+# 规则 7: 宿主层 (app.go / app_chat.go) 禁止内含上下文窗口构建逻辑
+# 该逻辑已收归 internal/core/memory，宿主只应调用 memory.BuildConversationWindow（对应 T2）
+$hostFiles = @("app.go", "app_chat.go")
+foreach ($hf in $hostFiles) {
+    if (Test-Path $hf) {
+        $hc = Get-Content $hf -Raw
+        if ($hc -match 'pruneHistoricalOutput|func buildConversationWindow') {
+            Write-Host "❌ [R7] $hf 内含上下文窗口构建逻辑，必须收归 internal/core/memory" -ForegroundColor Red
+            $errors++
+        }
+    }
+}
+if (-not (Test-Path "internal\core\memory\window.go")) {
+    Write-Host "❌ [R7] 缺少 internal/core/memory/window.go，上下文窗口逻辑无处安放" -ForegroundColor Red
+    $errors++
+} else {
+    $mc = Get-Content "internal\core\memory\window.go" -Raw
+    if ($mc -notmatch 'func BuildConversationWindow') {
+        Write-Host "❌ [R7] memory/window.go 未定义 BuildConversationWindow" -ForegroundColor Red
+        $errors++
+    }
+}
+
+# 规则 8: 工具注册必须经由 registerWorkspaceTools 单一入口，禁止 NewApp/SetWorkspace 各自重复注册（对应 T0）
+foreach ($tc in @('gittool.NewTool', 'fstool.NewTool', 'terminaltool.NewTool', 'searchtool.NewTool', 'archtool.NewTool')) {
+    $count = ([regex]::Matches($appContent, '(?<![a-zA-Z])' + [regex]::Escape($tc))).Count
+    if ($count -gt 1) {
+        Write-Host "❌ [R8] $tc 在 app.go 出现 $count 次，工具注册应集中在 registerWorkspaceTools 单一入口" -ForegroundColor Red
+        $errors++
+    }
+}
+if ($appContent -notmatch 'func registerWorkspaceTools') {
+    Write-Host "❌ [R8] 缺少 registerWorkspaceTools 单一工具注册入口" -ForegroundColor Red
+    $errors++
+}
+
 Write-Host ""
 if ($errors -gt 0) {
     Write-Host "❌ 架构守卫失败（$errors 项违规）| 阅读 AGENTS.md 铁律7 和 docs/architecture/PLUGIN_ARCH.md" -ForegroundColor Red

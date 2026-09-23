@@ -28,9 +28,15 @@
 ### 1. 微内核上限退居防爆安全保险丝
 在 `internal/core/loop/engine.go` 与 `llm_path.go` 中，将微内核执行上限由 24 调整为 100：
 ```go
-func NewExecutionEngine(reg *host.Registry) *ExecutionEngine {
+// MCPCall/Verify 自 T1 起改为构造期注入，杜绝构造后改写（导出可变字段已移除，根治双构建隐患）
+func NewExecutionEngine(reg *host.Registry, gw InteractionGateway,
+    mcpCall func(ctx context.Context, name string, args map[string]any) (string, error),
+    verify func(writtenFile string) (output string, pass bool)) *ExecutionEngine {
     return &ExecutionEngine{
         registry:    reg,
+        gateway:     gw,
+        mcpCall:     mcpCall,
+        verify:      verify,
         maxSteps:    15,
         maxLLMTurns: 100, // 仅作为极端死循环防爆安全兜底保险丝
     }

@@ -26,37 +26,37 @@ func NormalizeStrategy(raw string) string {
 }
 
 // ApplyStrategy 改写系统提示，并在只读策略下从模型可见工具表里拿掉会改磁盘的算子。
+// 提示词模板外置于 strategy_prompts.go，按归一化策略名选择模板并注入变量（Label/Note），实现配置与逻辑分离。
 func ApplyStrategy(strategy, note string, tools []llm.ToolDef, system string) ([]llm.ToolDef, string) {
 	s := NormalizeStrategy(strategy)
 	note = strings.TrimSpace(note)
+
+	var label string
 	switch s {
 	case StrategyAnalyze:
-		system += "\n[执行策略 analyze (审查与分析)] 只允许读取与解释。禁止写入文件、禁止执行会改动工作区的命令、禁止 Git 写操作。"
-		system += "\n【审查与探索铁律（先检索/先地图再下钻）】禁止盲目全库扫描或无节制大面积递归列举文件。必须严格执行："
-		system += "\n 1. 首选检索：优先使用 search_workspace 算子 (grep/find) 快速定位关键词、函数定义与关键文件，杜绝盲扫；"
-		system += "\n 2. 先看地图：首轮仅观察顶层目录结构与关键清单（如 go.mod, package.json, Cargo.toml, README 等）；"
-		system += "\n 3. 精准下钻：仅深入读取靶向文件并分析，严禁读取无关目录或第三方依赖（如 node_modules/vendor/bin/dist）。"
+		label = "analyze"
+	case StrategyTDD:
+		label = "tdd"
+	default:
+		label = "implement"
+	}
+
+	var body strings.Builder
+	if tmpl, ok := strategyPromptTpl[s]; ok {
+		_ = tmpl.Execute(&body, map[string]string{"Label": label, "Note": note})
+	}
+	system += "\n" + body.String()
+	system += "\n" + sharedCompletionTpl
+
+	// 只读策略下从可见工具表移除会改盘/执行的算子（fs_control 保留，由 DenyByStrategy 拦截其写动作）
+	if s == StrategyAnalyze {
 		tools = filterTools(tools, func(t llm.ToolDef) bool {
-			// 如果是 fs_control，在只读策略下修改其描述与 enum
 			if strings.ToLower(t.Function.Name) == "fs_control" {
-				return true // 保留，但靠 DenyByStrategy 和提示词拦写
+				return true
 			}
 			return !t.Mutating
 		})
-	case StrategyTDD:
-		system += "\n[执行策略 tdd (测试驱动开发)] 先运行或补齐前置测试，再改最小实现，直到测试全绿通过。"
-		system += "\n【TDD 完成判定铁律】测试失败则任务状态绝对不是完成，严禁在测试未通过时宣称任务完成；必须继续分析失败原因并修复代码直至测试全部通过。"
-	default:
-		system += "\n[全自主统一 Coding Agent] 具备读取检索、代码编写、终端运行与测试验证的完整能力。意图自适应原则：\n 1. 当用户仅要求解释、答疑、代码审查或架构分析时，通过 search_workspace 与 read_file 只读分析并给出详尽解答，不修改工作区文件；\n 2. 当用户要求修复 Bug、实现功能、新增接口或重构代码时，先定位后精准改写，修改后自动产生 Monaco Diff 待用户审核；\n 3. 当用户要求测试驱动或验证质量时，自主调用测试算子进行验证并修复；\n 4. 探索代码时遵循「先检索/看地图再精准下钻」原则，严禁盲目全库递归遍历。"
 	}
-	if note != "" {
-		system += "\n[用户附加约束] " + note
-	}
-
-	system += "\n【任务自主完成与结束铁律】"
-	system += "\n1. 执行由你完全自主驱动，不设置人为固定轮次强行中断：当你自主判定当前任务已达成目标、或已得出明确结论向用户汇报时，请直接向用户输出答复内容，不要再发起任何工具调用。系统检测到你未发起工具调用时，即确认本次任务由你自主圆满交付。"
-	system += "\n2. 若任务尚未达成（如需要修改更多关联文件、继续运行测试排错、定位或修复代码等），请自主继续调用必要工具推进，直到任务完成。"
-
 	return tools, system
 }
 

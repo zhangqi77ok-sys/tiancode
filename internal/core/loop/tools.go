@@ -75,7 +75,7 @@ ALLOW_ONCE:
 		result = res
 		output = TrimToolOutput(res.Content, 3000)
 		isErr = res.IsError
-	} else if e.MCPCall != nil {
+	} else if e.mcpCall != nil {
 			var mcpArgs map[string]any
 			if len(rawArgs) > 0 {
 				_ = json.Unmarshal(rawArgs, &mcpArgs)
@@ -83,7 +83,7 @@ ALLOW_ONCE:
 			if mcpArgs == nil {
 				mcpArgs = map[string]any{}
 			}
-			mcpRes, err := e.MCPCall(ctx, toolName, mcpArgs)
+			mcpRes, err := e.mcpCall(ctx, toolName, mcpArgs)
 			if err != nil {
 				return fmt.Sprintf("MCP 算子 [%s] 执行失败: %v", toolName, err), true, "", nil
 			}
@@ -117,8 +117,8 @@ ALLOW_ONCE:
 			}
 		}
 	}
-	if written != "" && !isErr && ShouldVerifyAfterWrite(strategy) && e.Verify != nil {
-		vout, pass := e.Verify(written)
+	if written != "" && !isErr && ShouldVerifyAfterWrite(strategy) && e.verify != nil {
+		vout, pass := e.verify(written)
 		tddPass = &pass
 		output = strings.TrimSpace(output) + "\n\n" + FormatVerifyFollowup(written, vout, pass)
 	}

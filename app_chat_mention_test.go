@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tiancode/internal/core/memory"
 	"tiancode/internal/session"
 )
 
@@ -36,7 +38,7 @@ func TestBuildConversationWindow_UserRoleAlignment(t *testing.T) {
 	}
 
 	// 强制使用极小的 maxHistoryChars 触发裁剪
-	conv := buildConversationWindow(systemPrompt, history, 1200)
+	conv := memory.BuildConversationWindow(systemPrompt, history, 1200)
 
 	// 系统消息在首位
 	if len(conv) == 0 || conv[0].Role != "system" {

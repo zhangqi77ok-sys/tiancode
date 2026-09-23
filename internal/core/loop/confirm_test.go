@@ -93,7 +93,7 @@ func TestEngine_ConfirmPausesUntilResume_Allow(t *testing.T) {
 
 	eventChan := make(chan EngineEvent, 100)
 	gw := newMockGateway(eventChan)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	
 	req := &EngineRequest{
 		SessionID: "sess_confirm_1",
@@ -146,7 +146,7 @@ func TestEngine_ConfirmPausesUntilResume_Deny(t *testing.T) {
 
 	eventChan := make(chan EngineEvent, 100)
 	gw := newMockGateway(eventChan)
-	engine := NewExecutionEngine(reg, gw)
+	engine := NewExecutionEngine(reg, gw, nil, nil)
 	
 	req := &EngineRequest{
 		SessionID: "sess_confirm_2",

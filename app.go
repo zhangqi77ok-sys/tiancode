@@ -40,71 +40,6 @@ import (
 
 
 
-// pruneHistoricalOutput 对历史冗长工具输出进行原位折叠修剪，保留上下文拓扑与公共前缀哈希
-func pruneHistoricalOutput(content string, maxChars int) string {
-	if len(content) <= maxChars {
-		return content
-	}
-	lines := strings.Split(content, "\n")
-	if len(lines) <= 12 {
-		return content[:maxChars] + "...\n[Output pruned for KV cache efficiency]"
-	}
-	// 保留前 8 行与后 2 行关键信息，中间折叠行数
-	head := strings.Join(lines[:8], "\n")
-	tail := strings.Join(lines[len(lines)-2:], "\n")
-	prunedLines := len(lines) - 10
-	return fmt.Sprintf("%s\n\n[... %d lines folded/pruned for KV cache efficiency ...]\n\n%s", head, prunedLines, tail)
-}
-
-// buildConversationWindow 动态构建模型多轮会话上下文窗口
-// 基于两级微创修剪策略 (In-Place Output Pruning)，维持严格单向追加 (Append-Only) 保证公共前缀 KV Cache
-func buildConversationWindow(systemPrompt string, history []session.SessionMessage, maxHistoryChars int) []llm.Message {
-	conversation := []llm.Message{
-		{Role: "system", Content: systemPrompt},
-	}
-
-	if len(history) == 0 {
-		return conversation
-	}
-
-	// 1. 双阈值原位修剪历史冗长输出 (In-Place Output Pruning)
-	// 对倒数 2 条以前的历史消息，单条若超过 1,000 字符原位折叠，保留前后骨架与角色拓扑
-	processed := make([]llm.Message, len(history))
-	totalChars := 0
-	for i, m := range history {
-		content := m.Content
-		if len(history) > 3 && i < len(history)-2 && len(content) > 1000 {
-			content = pruneHistoricalOutput(content, 1000)
-		}
-		processed[i] = llm.Message{
-			Role:    m.Role,
-			Content: content,
-		}
-		totalChars += len(content)
-	}
-
-	// 2. 若全量历史在预算内，保持严格正序单向追加 (Append-Only，100% 保持前缀 KV Cache)
-	if totalChars <= maxHistoryChars {
-		conversation = append(conversation, processed...)
-		return conversation
-	}
-
-	// 3. 超极端情况（如数十轮巨型上下文），从头部安全削减早期轮次
-	// 严格角色对齐原则：裁剪后首条消息必须是 "user" 角色（杜绝孤立 assistant 或 tool 导致大模型 400 报错）
-	startIndex := 0
-	for startIndex < len(processed)-2 && totalChars > maxHistoryChars {
-		totalChars -= len(processed[startIndex].Content)
-		startIndex++
-	}
-
-	for startIndex < len(processed)-1 && processed[startIndex].Role != "user" {
-		startIndex++
-	}
-
-	conversation = append(conversation, processed[startIndex:]...)
-	return conversation
-}
-
 // buildLLMToolsFromRegistry 动态从 Registry 中提取所有已注册插件算子声明，并转换为大模型工具契约格式
 // 保证新增算子“即注册即生效”，并严格按字母升序排序以保证工具前缀 Token 序列绝对恒定
 func (a *App) buildLLMToolsFromRegistry(ctx context.Context) []llm.ToolDef {
@@ -222,11 +157,7 @@ func NewApp() *App {
 	_ = reg.Register(grok.NewProvider())
 	_ = reg.Register(ollama.NewProvider())
 	_ = reg.Register(azure.NewProvider())
-	_ = reg.Register(gittool.NewTool(wd))
-	_ = reg.Register(fstool.NewTool(sb, sm))
-	_ = reg.Register(searchtool.NewTool(sb))
-	_ = reg.Register(terminaltool.NewTool(wd))
-	_ = reg.Register(archtool.NewTool(wd))
+	registerWorkspaceTools(reg, wd, sb, sm)
 	_ = reg.Register(ask_user.NewTool())
 	_ = reg.Register(safetyrail.New())
 
@@ -239,17 +170,11 @@ func NewApp() *App {
 	}
 
 	mcpMgr := mcp.NewManager(wd)
-	eng := loop.NewExecutionEngine(reg, nil)
-	eng.MCPCall = func(ctx context.Context, name string, args map[string]any) (string, error) {
-		return mcpMgr.CallTool(ctx, name, args)
-	}
-
 	app := &App{
 		workspace:    wd,
 		sandbox:      sb,
 		snapshotMgr:  sm,
 		registry:     reg,
-		engine:       eng,
 		channelStore: chStore,
 		extraStore:   exStore,
 		sessionStore: sessStore,
@@ -258,28 +183,41 @@ func NewApp() *App {
 		adrStore:     config.DefaultADRStore(),
 	}
 
-	eng.Verify = func(writtenFile string) (string, bool) {
-		ws := app.workspace
-		if ws == "" {
-			ws = wd
-		}
-		report, err := agent.RunTDDValidation(ws)
-		if err != nil {
-			return err.Error(), false
-		}
-		out := report.Output
-		if writtenFile != "" {
-			out = writtenFile + "\n" + out
-		}
-		return out, report.Status == "PASS"
-	}
-
 	app.gateway = NewWailsInteractionGateway(app)
-	app.engine = loop.NewExecutionEngine(reg, app.gateway)
-	app.engine.MCPCall = eng.MCPCall
-	app.engine.Verify = eng.Verify
+	app.engine = configureEngine(reg, app.gateway, mcpMgr, wd)
 
 	return app
+}
+
+// registerWorkspaceTools 注册所有依赖工作区路径的内置工具算子。
+// NewApp 与 SetWorkspace 共用此函数：新增工具只需在此注册一次，杜绝两处重复与遗漏。
+func registerWorkspaceTools(reg *host.Registry, wd string, sb *sandbox.Sandbox, sm *sandbox.SnapshotManager) {
+	_ = reg.RegisterOrReplace(gittool.NewTool(wd))
+	_ = reg.RegisterOrReplace(fstool.NewTool(sb, sm))
+	_ = reg.RegisterOrReplace(terminaltool.NewTool(wd))
+	_ = reg.RegisterOrReplace(searchtool.NewTool(sb))
+	_ = reg.RegisterOrReplace(archtool.NewTool(wd))
+}
+
+// configureEngine 构造并配置执行引擎（注入 MCP 调用与 TDD 校验回调），由 NewApp 与 SetWorkspace 共用，
+// 确保引擎仅构建一次、且行为在构造期即确定（消除导出可变字段与先建后弃的双构建隐患）。
+func configureEngine(reg *host.Registry, gw loop.InteractionGateway, mgr *mcp.Manager, workspace string) *loop.ExecutionEngine {
+	return loop.NewExecutionEngine(reg, gw,
+		func(ctx context.Context, name string, args map[string]any) (string, error) {
+			return mgr.CallTool(ctx, name, args)
+		},
+		func(writtenFile string) (string, bool) {
+			report, err := agent.RunTDDValidation(workspace)
+			if err != nil {
+				return err.Error(), false
+			}
+			out := report.Output
+			if writtenFile != "" {
+				out = writtenFile + "\n" + out
+			}
+			return out, report.Status == "PASS"
+		},
+	)
 }
 
 // startup 窗口初始化生命周期
@@ -400,37 +338,14 @@ func (a *App) SetWorkspace(dir string) error {
 	a.sandbox = sb
 	a.snapshotMgr = sandbox.NewSnapshotManager(absDir)
 
-	if a.registry != nil {
-		_ = a.registry.RegisterOrReplace(gittool.NewTool(absDir))
-		_ = a.registry.RegisterOrReplace(fstool.NewTool(sb, a.snapshotMgr))
-		_ = a.registry.RegisterOrReplace(terminaltool.NewTool(absDir))
-		_ = a.registry.RegisterOrReplace(searchtool.NewTool(sb))
-		_ = a.registry.RegisterOrReplace(archtool.NewTool(absDir))
-	}
+	registerWorkspaceTools(a.registry, absDir, sb, a.snapshotMgr)
 
 	// 重新初始化智能体自主执行引擎，绑定新工作区的插件执行链
 	if a.mcpManager != nil {
 		a.mcpManager.StopAll()
 	}
 	a.mcpManager = mcp.NewManager(absDir)
-	if a.registry != nil {
-		a.engine = loop.NewExecutionEngine(a.registry, a.gateway)
-		a.engine.MCPCall = func(ctx context.Context, name string, args map[string]any) (string, error) {
-			return a.mcpManager.CallTool(ctx, name, args)
-		}
-		ws := absDir
-		a.engine.Verify = func(writtenFile string) (string, bool) {
-			report, err := agent.RunTDDValidation(ws)
-			if err != nil {
-				return err.Error(), false
-			}
-			out := report.Output
-			if writtenFile != "" {
-				out = writtenFile + "\n" + out
-			}
-			return out, report.Status == "PASS"
-		}
-	}
+	a.engine = configureEngine(a.registry, a.gateway, a.mcpManager, absDir)
 	if a.extraStore != nil {
 		go func() {
 			a.mcpManager.SyncFromConfig(context.Background(), a.extraStore.ListMCPs())
