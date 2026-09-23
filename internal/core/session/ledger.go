@@ -44,6 +44,8 @@ type SessionEvent interface {
 	Seq() int64
 	// Kind 返回事件类型。
 	Kind() EventKind
+	// Data 返回事件负载（原始 JSON，如 {"text":"..."}）。
+	Data() json.RawMessage
 	// Encode 输出该事件的单行 JSON（JSONL 账本的一行，不含换行符）。
 	Encode() ([]byte, error)
 }
@@ -195,6 +197,16 @@ type event struct {
 
 func (e *event) Seq() int64      { return e.seqN }
 func (e *event) Kind() EventKind { return e.kindV }
+
+// Data 返回事件负载。写入侧（any）与重放侧（RawMessage）均序列化为原始 JSON，
+// 保证两类来源对消费方（如 deriveMessages）字节等价。
+func (e *event) Data() json.RawMessage {
+	b, err := json.Marshal(e.data)
+	if err != nil {
+		return nil
+	}
+	return b
+}
 
 // Encode 输出该事件的单行 JSON（不含换行符）。
 func (e *event) Encode() ([]byte, error) {
