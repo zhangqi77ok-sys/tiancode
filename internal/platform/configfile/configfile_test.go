@@ -121,16 +121,17 @@ func TestLoad_ToleratesUTF8BOM(t *testing.T) {
 	}
 }
 
-// Validate：缺字段时列出全部缺失项（首次运行引导可一次说清）。
-func TestValidate_ListsAllMissing(t *testing.T) {
+// Validate：只要求 workspace（渠道信息由 channels.json 持有）。
+func TestValidate_OnlyWorkspaceRequired(t *testing.T) {
 	err := Validate(File{BaseURL: "u", Model: "m"})
 	if err == nil {
-		t.Fatal("missing apiKey/workspace must fail validation")
+		t.Fatal("missing workspace must fail validation")
 	}
-	if !strings.Contains(err.Error(), "apiKey") || !strings.Contains(err.Error(), "workspace") {
-		t.Fatalf("err = %v, want mentions apiKey and workspace", err)
+	if !strings.Contains(err.Error(), "workspace") {
+		t.Fatalf("err = %v, want mentions workspace", err)
 	}
-	if err := Validate(File{BaseURL: "u", APIKey: "k", Model: "m", Workspace: "w"}); err != nil {
-		t.Fatalf("complete config must pass: %v", err)
+	// 仅 workspace 即可通过：网关信息是可选迁移来源（用户可能只在应用内配渠道）
+	if err := Validate(File{Workspace: "w"}); err != nil {
+		t.Fatalf("workspace-only config must pass: %v", err)
 	}
 }

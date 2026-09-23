@@ -24,48 +24,62 @@ import (
 	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/channels"
+	"tiancode/internal/platform/configfile"
 	"tiancode/internal/platform/fstool"
 	"tiancode/internal/platform/gittool"
-	"tiancode/internal/platform/openaiprovider"
+	"tiancode/internal/platform/providerfactory"
 	"tiancode/internal/platform/shelltool"
 )
 
 // Config 是对话服务的装配配置。
-// APIKey 只允许来自环境变量或用户本地配置，禁止硬编码入库（STANDARDS §1）。
+// BaseURL/APIKey/Model 是**渠道迁移来源**：首次启动若无渠道配置，用它们生成首个渠道；
+// 此后渠道配置是唯一事实源（用户在应用内管理）。密钥只允许来自用户配置/环境变量，
+// 禁止硬编码入库（STANDARDS §1）。
 type Config struct {
-	BaseURL string // OpenAI 兼容网关根地址（含 /v1）
+	BaseURL string
 	APIKey  string
 	Model   string
 	DataDir string // 会话账本目录
-	WorkDir string // 工作区绝对/相对路径（fs 工具的受控范围）
+	WorkDir string // 工作区（fs/shell/git 工具的受控范围）
+	// ChannelsPath 是渠道配置文件路径；缺省 %APPDATA%\tiancode\channels.json。
+	// 可注入是为测试隔离（同进程多实例不互相污染）。
+	ChannelsPath string
 }
 
 // ChatService 编排对话用例。
 type ChatService struct {
-	cfg     Config
-	agent   *agent.Loop
+	cfg      Config
+	store    *channels.Store
+	factory  *providerfactory.Factory
+	registry *tools.Registry
+
 	mu      sync.Mutex
+	agent   *agent.Loop // 随激活渠道重建；无激活渠道时为 nil（Send 给出可读错误）
+	active  llm.Channel
 	ledgers map[string]*session.Ledger
 }
 
-// NewChatService 装配编排层：provider → runtime → 注册表(fs) → agent（构造期注入，依赖不可变）。
+// NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
+// 装配顺序刻意让"无渠道"成为合法状态：用户可以先把应用跑起来，再在设置里添加渠道
+// （否则首次启动会被配置硬门槛挡死——这正是旧实现"装完点开没反应"的根因之一）。
 func NewChatService(cfg Config) (*ChatService, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("chat service: data dir required")
 	}
-	if cfg.BaseURL == "" || cfg.Model == "" {
-		return nil, errors.New("chat service: base url and model required")
-	}
 	if cfg.WorkDir == "" {
 		return nil, errors.New("chat service: work dir required")
 	}
-	prov := openaiprovider.New(openaiprovider.Options{
-		BaseURL: cfg.BaseURL,
-		APIKey:  cfg.APIKey,
-	})
-	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（provider 内 60s）
-	// 已覆盖挂起场景，总预算只防极端失控。
-	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
+	if cfg.ChannelsPath == "" {
+		cfg.ChannelsPath = channels.DefaultPath()
+	}
+	s := &ChatService{
+		cfg:     cfg,
+		store:   channels.NewStore(cfg.ChannelsPath),
+		factory: providerfactory.New(),
+		ledgers: make(map[string]*session.Ledger),
+	}
+
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
 	registry := tools.NewRegistry()
 	for _, reg := range []func() error{
@@ -77,20 +91,67 @@ func NewChatService(cfg Config) (*ChatService, error) {
 			return nil, fmt.Errorf("register tool: %w", err)
 		}
 	}
-	return &ChatService{
-		cfg:     cfg,
-		agent:   agent.NewLoop(rt, cfg.Model, registry),
-		ledgers: make(map[string]*session.Ledger),
-	}, nil
+	s.registry = registry
+
+	if err := s.bootstrapChannels(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// bootstrapChannels 加载渠道配置；首次运行从 Config 迁移（C-CH-1）。
+// 为什么要迁移：老用户升级不该被迫二次配置（config.json 里已有网关信息）。
+func (s *ChatService) bootstrapChannels() error {
+	cfg, err := s.store.Load()
+	if err != nil {
+		return err
+	}
+	if len(cfg.Channels) == 0 {
+		migrated, ok := channels.MigrateFromConfig(configfile.File{
+			BaseURL: s.cfg.BaseURL, APIKey: s.cfg.APIKey, Model: s.cfg.Model,
+		})
+		if !ok {
+			return nil // 无渠道且无迁移来源：合法状态，UI 引导添加
+		}
+		if err := s.store.Save(migrated); err != nil {
+			return fmt.Errorf("persist migrated channel: %w", err)
+		}
+		cfg = migrated
+	}
+	active, ok := cfg.Active()
+	if !ok {
+		return nil // 有渠道但无激活项：同样合法（等用户选择）
+	}
+	return s.activate(active)
+}
+
+// activate 由渠道构建运行时与 agent；这是唯一与"具体渠道"耦合的装配点。
+func (s *ChatService) activate(ch llm.Channel) error {
+	prov, err := s.factory.NewProvider(ch)
+	if err != nil {
+		return err
+	}
+	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（provider 内 60s）
+	// 已覆盖挂起场景，总预算只防极端失控。
+	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
+	s.agent = agent.NewLoop(rt, ch.Model, s.registry)
+	s.active = ch
+	return nil
 }
 
 // Send 发送一条用户消息，返回流式块通道（恰好一个 EndReason 终态后关闭）。
 func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
-	ledger, err := s.ledgerFor(sessionID)
+	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读 agent，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
 	}
-	return s.agent.Run(ctx, ledger, text)
+	s.mu.Lock()
+	ag := s.agent
+	s.mu.Unlock()
+	if ag == nil {
+		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
+	}
+	return ag.Run(ctx, ledger, text)
 }
 
 // ListSessions 返回全部会话 ID。

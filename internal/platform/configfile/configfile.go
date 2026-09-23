@@ -33,6 +33,11 @@ type File struct {
 	Workspace string `json:"workspace"` // agent 工作区（fs/shell/git 受控范围）
 }
 
+// Dir 返回用户级应用数据目录 %APPDATA%\tiancode。
+// 为什么导出：其他用户级文件（渠道配置等）必须落在同一目录，
+// 避免各处重复拼路径导致目录漂移。
+func Dir() string { return appDataDir() }
+
 // DefaultPath 返回配置路径 %APPDATA%\tiancode\config.json。
 func DefaultPath() string { return filepath.Join(appDataDir(), "config.json") }
 
@@ -106,23 +111,13 @@ func Merge(file File, getenv func(string) string) File {
 	}
 }
 
-// Validate 校验必填项，返回人类可读的缺失说明（供首次运行引导展示）。
+// Validate 校验配置有效性，返回人类可读的缺失说明（供首次运行引导展示）。
+// 只要求 workspace：模型渠道已由"渠道管理"（channels.json）持有，
+// BaseURL/APIKey/Model 在本文件里退化为**迁移来源**（可选）。
+// 若在此强制它们，等于把"渠道已配置好"的用户挡在启动门槛外。
 func Validate(f File) error {
-	var missing []string
-	if f.BaseURL == "" {
-		missing = append(missing, "baseUrl")
-	}
-	if f.APIKey == "" {
-		missing = append(missing, "apiKey")
-	}
-	if f.Model == "" {
-		missing = append(missing, "model")
-	}
-	if f.Workspace == "" {
-		missing = append(missing, "workspace")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("配置缺少字段：%s", strings.Join(missing, "、"))
+	if strings.TrimSpace(f.Workspace) == "" {
+		return fmt.Errorf("配置缺少字段：%s", "workspace")
 	}
 	return nil
 }

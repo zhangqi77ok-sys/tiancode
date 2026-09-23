@@ -23,6 +23,8 @@ func TestChatService_PersistErrorPropagates(t *testing.T) {
 		APIKey:  "k",
 		Model:   "m",
 		WorkDir: ".",
+		// 隔离渠道文件：绝不读写用户真实的 %APPDATA%\tiancode\channels.json
+		ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -34,14 +36,14 @@ func TestChatService_PersistErrorPropagates(t *testing.T) {
 
 // 装配校验：缺关键配置必须在构造期失败（fail-fast），不留半装配实例。
 func TestChatService_ConfigValidation(t *testing.T) {
+	// 注意：BaseURL/Model 不再是必填（渠道配置是唯一事实源，且允许先启动后配置渠道）；
+	// 只有数据目录与工作区是硬前提。
 	cases := []struct {
 		name string
 		cfg  Config
 	}{
-		{"missing datadir", Config{BaseURL: "http://x", Model: "m", WorkDir: "."}},
-		{"missing baseurl", Config{DataDir: t.TempDir(), Model: "m", WorkDir: "."}},
-		{"missing model", Config{DataDir: t.TempDir(), BaseURL: "http://x", WorkDir: "."}},
-		{"missing workdir", Config{DataDir: t.TempDir(), BaseURL: "http://x", Model: "m"}},
+		{"missing datadir", Config{WorkDir: "."}},
+		{"missing workdir", Config{DataDir: t.TempDir()}},
 	}
 	for _, tc := range cases {
 		if _, err := NewChatService(tc.cfg); err == nil {
@@ -70,7 +72,10 @@ func TestChatService_ReplayProjectsAnchors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := NewChatService(Config{DataDir: dir, BaseURL: "http://x", APIKey: "k", Model: "m", WorkDir: "."})
+	s, err := NewChatService(Config{
+		DataDir: dir, BaseURL: "http://x", APIKey: "k", Model: "m", WorkDir: ".",
+		ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
