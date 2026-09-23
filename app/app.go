@@ -111,6 +111,7 @@ func (b *Bind) Send(ctx context.Context, sessionID, text string) error {
 				"name":      c.ToolEvent.Name,
 				"status":    c.ToolEvent.Status,
 				"summary":   c.ToolEvent.Summary,
+				"diff":      c.ToolEvent.Diff, // 编辑类工具的结构化 diff（无变更时为空串）
 			})
 		}
 		if c.EndReason != llm.EndNone {

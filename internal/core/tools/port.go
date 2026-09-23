@@ -24,6 +24,10 @@ type ToolResult struct {
 	Content  string
 	IsError  bool
 	TimedOut bool // 超时/被中断时为 true，Content 携带已捕获的部分输出
+	// Diff 是编辑类工具产生的结构化 diff（无变更时为空串）。
+	// 仅供 UI 展示（agent 透传到 llm.ToolEvent.Diff），模型上下文仍只用 Content——
+	// 这样 diff 不额外消耗 token，也不改变模型可见的工具语义（ADR-0006）。
+	Diff string
 }
 
 // ToolPort 是工具端口：适配器实现它，内核只依赖它。

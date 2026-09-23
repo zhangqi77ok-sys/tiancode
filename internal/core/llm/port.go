@@ -40,6 +40,10 @@ type ToolEvent struct {
 	Name    string // 工具名
 	Status  string // "success" | "error"
 	Summary string // 结果摘要（可截断）
+	// Diff 是编辑类工具的结构化 diff（无变更时为空）。
+	// 为什么走结构化字段而非让 UI 解析 Content 文本：文本解析脆且一旦摘要被截断就丢信息；
+	// 字段化后 UI 可按行着色，且契约由 tools.ToolResult.Diff 单向透传（ADR-0006）。
+	Diff string
 }
 
 // StreamChunk 是流式传输的最小单元。

@@ -71,6 +71,22 @@ describe('chat store', () => {
     expect(store.messages).toEqual([])
   })
 
+  // 工具卡片携带结构化 diff（内核字段透传，UI 不解析文本）
+  it('工具事件携带 diff', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.onTool({
+      sessionID: store.sessionId,
+      name: 'fs',
+      status: 'success',
+      summary: 'written a.txt',
+      diff: '--- a.txt\n+++ a.txt\n@@ -1,1 +1,1 @@\n-one\n+ONE',
+    })
+    const card = store.messages[store.messages.length - 1]
+    expect(card.diff).toContain('+ONE')
+    expect(card.diff).toContain('-one')
+  })
+
   // 终态错误要解开输入（running=false），否则用户被锁死无法继续
   it('错误终态解锁输入并标注消息', async () => {
     const store = useChatStore()

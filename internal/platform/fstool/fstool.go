@@ -126,10 +126,20 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	if err != nil {
 		return bizErr(err), nil
 	}
+	// 读旧内容只为生成 diff；文件不存在＝新建（正常），其他读失败则显式报错不静默
+	var old []byte
+	if data, readErr := os.ReadFile(full); readErr == nil {
+		old = data
+	} else if !os.IsNotExist(readErr) {
+		return bizErrf("read before write failed: %v", readErr), nil
+	}
 	if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
 		return bizErrf("write failed: %v", err), nil
 	}
-	return tools.ToolResult{Content: fmt.Sprintf("written %s (%d bytes)", path, len(content))}, nil
+	return tools.ToolResult{
+		Content: fmt.Sprintf("written %s (%d bytes)", path, len(content)),
+		Diff:    diffText(path, string(old), content),
+	}, nil
 }
 
 func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
@@ -157,7 +167,10 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	if err := atomicfile.WriteFileAtomic(full, []byte(updated), 0o600); err != nil {
 		return bizErrf("replace write failed: %v", err), nil
 	}
-	return tools.ToolResult{Content: fmt.Sprintf("replaced %d occurrence(s) in %s", count, path)}, nil
+	return tools.ToolResult{
+		Content: fmt.Sprintf("replaced %d occurrence(s) in %s", count, path),
+		Diff:    diffText(path, string(data), updated),
+	}, nil
 }
 
 // bizErrf 构造模型可见的业务失败（ToolResult.IsError，而非机制 error）。

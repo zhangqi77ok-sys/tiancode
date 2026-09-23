@@ -44,6 +44,15 @@ async function scrollToBottom() {
 }
 watch(() => store.messages.length, scrollToBottom)
 
+// diff 行着色：只按前缀判定（diff 由内核生成，格式稳定）
+function diffLineClass(line: string): string {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'text-[var(--c-text-faint)]'
+  if (line.startsWith('@@')) return 'text-[var(--c-primary)]'
+  if (line.startsWith('+')) return 'text-[var(--c-ok)]'
+  if (line.startsWith('-')) return 'text-[var(--c-err)]'
+  return 'text-[var(--c-text-dim)]'
+}
+
 function fmtTime(at?: number): string {
   if (!at) return ''
   return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
@@ -182,8 +191,8 @@ onMounted(async () => {
           </div>
 
           <template v-for="(m, i) in store.messages" :key="i">
-            <!-- 工具卡片：药丸 + 状态点 -->
-            <div v-if="m.role === 'tool'" class="flex justify-start">
+            <!-- 工具卡片：药丸 + 状态点（编辑类工具附可展开的结构化 diff） -->
+            <div v-if="m.role === 'tool'" class="flex flex-col items-start gap-1.5">
               <div
                 class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs"
                 :class="
@@ -196,6 +205,18 @@ onMounted(async () => {
                 <span class="font-medium text-[var(--c-text)]">{{ m.toolName }}</span>
                 <span class="max-w-[420px] truncate">{{ m.content }}</span>
               </div>
+
+              <details
+                v-if="m.diff"
+                class="w-full max-w-[90%] rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)]"
+              >
+                <summary class="cursor-pointer px-3 py-1.5 text-[11px] text-[var(--c-text-dim)]">变更预览</summary>
+                <pre class="max-h-72 overflow-auto px-3 pb-2 font-mono text-[11px] leading-5"><div
+                  v-for="(l, li) in m.diff.split('\n')"
+                  :key="li"
+                  :class="diffLineClass(l)"
+                >{{ l }}</div></pre>
+              </details>
             </div>
 
             <!-- 用户消息：紫罗兰实心气泡，右对齐 -->

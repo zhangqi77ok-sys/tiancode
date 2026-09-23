@@ -10,6 +10,8 @@ export interface ChatMsg {
   content: string
   toolName?: string
   status?: string
+  // 编辑类工具的结构化 diff（由内核字段透传，非文本解析所得）
+  diff?: string
   at?: number
   term?: number
   streaming?: boolean
@@ -108,13 +110,14 @@ export const useChatStore = defineStore('chat', () => {
     if (last?.streaming) last.content += p.delta
   }
 
-  function onTool(p: { sessionID: string; name: string; status: string; summary: string }) {
+  function onTool(p: { sessionID: string; name: string; status: string; summary: string; diff?: string }) {
     if (p.sessionID !== sessionId.value) return
     messages.value.push({
       role: 'tool',
       content: p.summary,
       toolName: p.name,
       status: p.status,
+      diff: p.diff,
       at: Date.now(),
     })
   }
