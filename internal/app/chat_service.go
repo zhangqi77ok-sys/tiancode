@@ -111,6 +111,9 @@ func (s *ChatService) bootstrapChannels() error {
 	if err != nil {
 		return err
 	}
+	// 审批策略（用户设置）与渠道无关，必须**在任一提前返回之前**恢复：
+	// 曾放在 active 检查之后，导致"没有渠道时策略丢失"（测试当场抓到）。
+	s.approvalTools = cfg.ApprovalTools
 	if len(cfg.Channels) == 0 {
 		migrated, ok := channels.MigrateFromConfig(configfile.File{
 			BaseURL: s.cfg.BaseURL, APIKey: s.cfg.APIKey, Model: s.cfg.Model,

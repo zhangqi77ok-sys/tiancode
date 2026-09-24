@@ -24,9 +24,14 @@ import (
 )
 
 // Config 是渠道配置全集（channels.json 的结构）。
+// ApprovalTools 是"用户设置"的一部分（审批策略）：空 = 审批关闭（ADR-0007 默认关）。
+// 为什么会放在这里：本文件是当前唯一的用户级可变配置存储（原子写 + 版本迁移都在此），
+// 单独再造一个 settings 文件会引入第二处 IO 路径与第二套兼容逻辑。
 type Config struct {
 	Channels []llm.Channel `json:"channels"`
 	ActiveID string        `json:"activeId"`
+	// ApprovalTools 需要执行前审批的工具名（精确匹配；空 = 关闭）
+	ApprovalTools []string `json:"approvalTools,omitempty"`
 }
 
 // Active 返回激活渠道；未配置激活项或找不到时返回 false。

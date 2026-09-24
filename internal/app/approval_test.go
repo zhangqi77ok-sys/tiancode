@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -96,7 +97,44 @@ func TestChatService_ApprovalBridge(t *testing.T) {
 	}
 }
 
-// 等待中取消：返回错误（由 agent 视为拒绝）且未决项被清理，绝不泄漏或挂起。
+// 策略持久化：重启（重新装配）后仍是开启状态——否则用户每次启动都要重开开关。
+func TestChatService_ApprovalPolicyPersists(t *testing.T) {
+	channelsPath := filepath.Join(t.TempDir(), "channels.json")
+	work := t.TempDir()
+	mk := func() *ChatService {
+		s, err := NewChatService(Config{
+			DataDir:      t.TempDir(),
+			WorkDir:      work,
+			ChannelsPath: channelsPath,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+
+	s1 := mk()
+	if err := s1.SetApprovalPolicy([]string{"shell"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 重新装配 = 模拟重启
+	s2 := mk()
+	got := s2.ApprovalPolicy()
+	if len(got) != 1 || got[0] != "shell" {
+		t.Fatalf("重启后策略丢失：%v", got)
+	}
+
+	// 关闭同样要落盘：Save 写整份配置，旧值必须被清除（否则"关了又自己开"）
+	if err := s2.SetApprovalPolicy(nil); err != nil {
+		t.Fatal(err)
+	}
+	s3 := mk()
+	if len(s3.ApprovalPolicy()) != 0 {
+		t.Fatalf("关闭后重启仍为开：%v", s3.ApprovalPolicy())
+	}
+}
 func TestChatService_ApprovalCancelWhileWaiting(t *testing.T) {
 	s := newChannelService(t, Config{})
 	if err := s.SetApprovalPolicy([]string{"shell"}); err != nil {

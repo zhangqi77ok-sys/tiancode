@@ -35,7 +35,8 @@ func (s *ChatService) ApprovalPolicy() []string {
 }
 
 // SetApprovalPolicy 设置需要审批的工具清单；传空即关闭审批（默认关，ADR-0007 第 1 条）。
-// 会同步重建 agent 的审批器：策略变更必须立刻生效，不能等下次启动。
+// 会同步重建审批器并**持久化到用户级配置**：策略变更必须立刻生效，
+// 且重启后仍然有效（否则用户每次启动都要重开开关，属于基础体验缺失）。
 func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 	cleaned := make([]string, 0, len(toolNames))
 	for _, n := range toolNames {
@@ -47,6 +48,15 @@ func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 先落盘再改内存：落盘失败时内存保持不变，避免"界面显示已开、重启却没了"
+	cfg, err := s.store.Load()
+	if err != nil {
+		return err
+	}
+	cfg.ApprovalTools = cleaned
+	if err := s.store.Save(cfg); err != nil {
+		return fmt.Errorf("保存审批策略失败：%w", err)
+	}
 	s.approvalTools = cleaned
 	s.applyApproverLocked()
 	return nil
