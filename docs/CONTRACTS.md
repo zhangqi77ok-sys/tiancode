@@ -88,6 +88,17 @@
 | C-WS-1 | 非法工作区（不存在/非目录/空白）拒绝，且**不改变当前值** | `TestChatService_SetWorkspace` |
 | C-WS-2 | 切换工作区必须重建工具受控根与 agent（杜绝"界面切了实际没切"） | `TestChatService_SetWorkspace` + 装配统一走 `newRegistry` |
 
+## C-APR：审批闸门（ADR-0007，默认关闭）
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-APR-1 | 未配置审批清单时不干预（approver 为 nil，行为与历史版本完全一致） | `TestExecTool_NoApproverRunsDirectly` |
+| C-APR-2 | 拒绝必须产生**模型可见**的失败结果（含工具名与原因），且工具零执行；无原因时补默认说明 | `TestExecTool_Denied` / `TestExecTool_DeniedWithoutReason` |
+| C-APR-3 | 审批通道故障按**拒绝**处理（故障时放行最危险） | `TestExecTool_ApproverErrorDenies` |
+| C-APR-4 | 等待审批受 ctx 约束：取消 → 视为拒绝，且未决请求被清理（不挂起、不泄漏） | `TestExecTool_CancelWhileWaiting` / `TestChatService_ApprovalCancelWhileWaiting` |
+| C-APR-5 | 清单外工具直接放行且**不发事件**（不许泛化拦截，更不做内容分析） | `TestChatService_ApprovalBridge` |
+| C-APR-6 | 未知或已处理的请求 ID 一律报错（不静默放行）；策略查询返回副本 | `TestChatService_ApprovalBridge` |
+
 ## C-INS：安装与卸载（M5）
 
 > 为什么补这一组：安装器此前**没有任何契约条目**，于是"重建时漏掉桌面快捷方式"这类能力回退

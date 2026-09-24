@@ -6,12 +6,15 @@ import { bridge, type SessionSummaryDTO } from '../wails'
 // role='tool' 为工具卡片（toolName/status 承载卡片数据）；
 // at 为消息时间戳（渲染 HH:MM）；term 记录终态枚举（UI 区分 取消/超时 与 错误）。
 export interface ChatMsg {
-  role: 'user' | 'assistant' | 'tool'
+  role: 'user' | 'assistant' | 'tool' | 'approval'
   content: string
   toolName?: string
   status?: string
   // 编辑类工具的结构化 diff（由内核字段透传，非文本解析所得）
   diff?: string
+  // 审批卡片数据（role='approval'）：id 用于回传答复；args 为原始 JSON 原样展示
+  approvalId?: string
+  args?: string
   at?: number
   term?: number
   streaming?: boolean
@@ -103,6 +106,51 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 审批卡片：内核要"问"时插入一张带允许/拒绝按钮的卡片（ADR-0007）
+  function onApproval(p: { id: string; toolName: string; arguments: string }) {
+    messages.value.push({
+      role: 'approval',
+      content: p.toolName,
+      toolName: p.toolName,
+      approvalId: p.id,
+      args: p.arguments,
+      at: Date.now(),
+    })
+  }
+
+  // 提交答复：失败必须可见（例如"已处理"），绝不静默
+  async function resolveApproval(id: string, approved: boolean, reason = '') {
+    error.value = ''
+    try {
+      await bridge().app.ResolveApproval(id, approved, reason)
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      return
+    }
+    // 卡片转已决状态，防重复点击（后端也会拒绝重复 ID，这里只省一次往返）
+    const card = messages.value.find((m) => m.approvalId === id)
+    if (card) card.status = approved ? 'approved' : 'denied'
+  }
+
+  // 审批策略：空数组 = 关闭（默认）
+  async function setApprovalPolicy(tools: string[]) {
+    error.value = ''
+    try {
+      await bridge().app.SetApprovalPolicy(tools)
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+    }
+  }
+
+  async function loadApprovalPolicy(): Promise<string[]> {
+    try {
+      return (await bridge().app.ApprovalPolicy()) ?? []
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      return []
+    }
+  }
+
   // 事件桥回调（App.vue onMounted 绑定）。
   function onChunk(p: { sessionID: string; delta: string; thinking: string }) {
     if (p.sessionID !== sessionId.value) return
@@ -191,6 +239,10 @@ export const useChatStore = defineStore('chat', () => {
     onTerminal,
     removeSession,
     exportMarkdown,
+    onApproval,
+    resolveApproval,
+    setApprovalPolicy,
+    loadApprovalPolicy,
     stop,
     init,
   }

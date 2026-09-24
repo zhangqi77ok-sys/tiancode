@@ -69,6 +69,13 @@ function stop() {
   store.stop()
 }
 
+// 审批闸门开关（ADR-0007 默认关）：开启后 shell 命令执行前需你确认
+const approvalOn = ref(false)
+async function toggleApproval() {
+  approvalOn.value = !approvalOn.value
+  await store.setApprovalPolicy(approvalOn.value ? ['shell'] : [])
+}
+
 // 重命名会话：标题写入账本（重启后仍在）；取消（null）视为放弃
 async function renameSession(id: string) {
   if (store.running) return
@@ -108,9 +115,14 @@ onMounted(async () => {
   bridge().runtime.EventsOn('chat:terminal', (p: { sessionID: string; endReason: number; error: string }) => {
     store.onTerminal(p)
   })
-  bridge().runtime.EventsOn('chat:tool', (p: { sessionID: string; name: string; status: string; summary: string }) => {
+  bridge().runtime.EventsOn('chat:tool', (p: { sessionID: string; name: string; status: string; summary: string; diff?: string }) => {
     store.onTool(p)
   })
+  bridge().runtime.EventsOn('chat:approval', (p: { id: string; toolName: string; arguments: string }) => {
+    store.onApproval(p)
+    void scrollToBottom()
+  })
+  approvalOn.value = (await store.loadApprovalPolicy()).length > 0
 })
 </script>
 
@@ -126,6 +138,14 @@ onMounted(async () => {
         <span class="chip">{{ store.sessions.length }} 个会话</span>
         <button class="chip" title="导出当前会话为 Markdown" @click="exportSession">导出</button>
         <button class="chip" title="切换工作区" @click="switchWorkspace">▣ {{ workspaceName }}</button>
+        <button
+          class="chip"
+          :class="approvalOn ? 'text-[var(--c-primary)] border-[var(--c-primary)]' : ''"
+          title="开启后 shell 命令执行前需你确认"
+          @click="toggleApproval"
+        >
+          命令确认 {{ approvalOn ? '开' : '关' }}
+        </button>
         <button
           class="chip"
           :class="hasChannel ? '' : 'text-[var(--c-warn)] border-[var(--c-warn)]'"
@@ -217,6 +237,26 @@ onMounted(async () => {
                   :class="diffLineClass(l)"
                 >{{ l }}</div></pre>
               </details>
+            </div>
+
+            <!-- 审批卡片：原始参数原样展示，用户显式允许/拒绝（ADR-0007） -->
+            <div v-else-if="m.role === 'approval'" class="flex flex-col items-start gap-1">
+              <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
+                <span class="font-medium text-[var(--c-text-dim)]">需要确认</span>
+              </div>
+              <div class="w-full max-w-[90%] rounded-2xl border border-[var(--c-warn)] bg-[var(--c-warn-soft)] p-3">
+                <div class="flex items-center gap-2 text-xs">
+                  <span class="font-medium">即将执行工具</span>
+                  <span class="chip text-[10px]">{{ m.toolName }}</span>
+                  <span v-if="m.status === 'approved'" class="chip text-[10px] text-[var(--c-ok)] border-[var(--c-ok)]">已允许</span>
+                  <span v-else-if="m.status === 'denied'" class="chip text-[10px] text-[var(--c-err)] border-[var(--c-err)]">已拒绝</span>
+                </div>
+                <pre class="mt-2 max-h-40 overflow-auto rounded-lg bg-[var(--c-surface)] px-2 py-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap">{{ m.args }}</pre>
+                <div v-if="!m.status" class="mt-2 flex gap-2">
+                  <button class="btn-primary px-4 py-1.5 text-xs" @click="store.resolveApproval(m.approvalId!, true)">允许执行</button>
+                  <button class="chip" @click="store.resolveApproval(m.approvalId!, false, '用户拒绝')">拒绝</button>
+                </div>
+              </div>
             </div>
 
             <!-- 用户消息：紫罗兰实心气泡，右对齐 -->

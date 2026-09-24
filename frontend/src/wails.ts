@@ -8,6 +8,14 @@ export interface ChatMessageDTO {
   content: string
 }
 
+// 审批请求载荷（内核要"问"时推送；UI 渲染确认卡片，答复经 ResolveApproval 回流）。
+// 载荷不带 sessionID：流式进行中 UI 禁止切换会话（store 保证），故卡片必然属于当前会话。
+export interface ApprovalEventDTO {
+  id: string
+  toolName: string
+  arguments: string
+}
+
 // 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）
 export interface SessionSummaryDTO {
   id: string
@@ -102,6 +110,10 @@ interface WailsApp {
   Stop(sessionID: string): Promise<void>
   DeleteSession(sessionID: string): Promise<void>
   ListChannels(): Promise<ChannelListDTO | null>
+  // 审批闸门（ADR-0007）：策略查询/设置 + 答复回传
+  ApprovalPolicy(): Promise<string[] | null>
+  SetApprovalPolicy(tools: string[]): Promise<void>
+  ResolveApproval(id: string, approved: boolean, reason: string): Promise<void>
   ChannelPresets(): Promise<PresetDTO[] | null>
   AddChannel(input: ChannelInput): Promise<ChannelDTO | null>
   UpdateChannel(input: ChannelInput): Promise<void>
@@ -141,6 +153,9 @@ export function bridge(): WailsBridge {
         ListSessions: async () => [],
         ListSessionSummaries: async () => [],
         RenameSession: offlineWrite,
+        ApprovalPolicy: async () => [],
+        SetApprovalPolicy: offlineWrite,
+        ResolveApproval: offlineWrite,
         ExportSessionMarkdown: async () => '',
         GetWorkspace: async () => '',
         SetWorkspace: offlineWrite,

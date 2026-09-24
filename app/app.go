@@ -30,7 +30,16 @@ type Bind struct {
 
 // New 装配壳层。
 func New(chat *app.ChatService) *Bind {
-	return &Bind{chat: chat, cancels: make(map[string]context.CancelFunc)}
+	b := &Bind{chat: chat, cancels: make(map[string]context.CancelFunc)}
+	// 审批事件桥（ADR-0007）：内核要"问"时推给前端，前端答复经 ResolveApproval 回流
+	chat.SetApprovalHandler(func(e app.ApprovalEvent) {
+		wruntime.EventsEmit(b.appCtx(), "chat:approval", map[string]string{
+			"id":        e.ID,
+			"toolName":  e.ToolName,
+			"arguments": e.Arguments,
+		})
+	})
+	return b
 }
 
 // appCtx 返回应用上下文；未注入时退化为 Background——
@@ -57,6 +66,18 @@ func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
 
 // SetWorkspace 切换工作区；非法路径（不存在/非目录/空白）返回错误供 UI 展示。
 func (b *Bind) SetWorkspace(dir string) error { return b.chat.SetWorkspace(dir) }
+
+// ApprovalPolicy 返回当前需要执行前审批的工具清单（空 = 审批关闭，默认）。
+func (b *Bind) ApprovalPolicy() []string { return b.chat.ApprovalPolicy() }
+
+// SetApprovalPolicy 设置需要审批的工具清单；传空数组即关闭审批（ADR-0007 默认关）。
+func (b *Bind) SetApprovalPolicy(tools []string) error { return b.chat.SetApprovalPolicy(tools) }
+
+// ResolveApproval 提交用户对某次审批请求的答复（允许/拒绝 + 原因）。
+// 未知或已处理的 ID 返回错误——UI 会明确提示，绝不静默放行。
+func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
+	return b.chat.ResolveApproval(id, approved, reason)
+}
 
 // ListSessionSummaries 返回会话摘要（ID + 用户标题；标题来自账本事件）。
 func (b *Bind) ListSessionSummaries() ([]app.SessionSummary, error) {

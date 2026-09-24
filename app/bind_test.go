@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"tiancode/internal/app"
 )
 
 // 回归锁定：绑定方法不得声明 context.Context 参数。
@@ -41,7 +44,18 @@ func TestBindMethods_MustNotTakeContext(t *testing.T) {
 
 // 无 AppCtx 时不得 panic（事件桥拿到 Background 也不能打断数据流）。
 func TestBind_AppCtxFallback(t *testing.T) {
-	b := New(nil)
+	// 用真实服务构造：New 会向服务注入审批事件回调，nil 服务会在那里解引用
+	chat, err := app.NewChatService(app.Config{
+		DataDir:      t.TempDir(),
+		WorkDir:      t.TempDir(),
+		ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = chat.Close() })
+
+	b := New(chat)
 	if b.appCtx() == nil {
 		t.Fatal("appCtx 必须永不返回 nil")
 	}
@@ -54,10 +68,10 @@ func TestBind_AppCtxFallback(t *testing.T) {
 // 少一个会让 UI 静默失效，多一个说明有未接线方法。
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
-		"AddChannel", "ChannelPresets", "DeleteChannel", "DeleteSession", "DiscoverModels",
+		"AddChannel", "ApprovalPolicy", "ChannelPresets", "DeleteChannel", "DeleteSession", "DiscoverModels",
 		"ExportSessionMarkdown", "GetWorkspace", "ListChannels", "ListSessionSummaries",
-		"ListSessions", "RenameSession", "Replay", "Send", "SetActiveChannel",
-		"SetWorkspace", "Stop", "UpdateChannel",
+		"ListSessions", "RenameSession", "Replay", "ResolveApproval", "Send", "SetActiveChannel",
+		"SetApprovalPolicy", "SetWorkspace", "Stop", "UpdateChannel",
 	}
 	bindType := reflect.TypeOf(&Bind{})
 	got := make([]string, 0, bindType.NumMethod())

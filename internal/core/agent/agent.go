@@ -55,6 +55,8 @@ type Loop struct {
 	model    string
 	registry *tools.Registry // 可为 nil：纯对话模式（无工具）
 	phase    atomic.Int32
+	// approver 为 nil 表示不启用审批（默认关，ADR-0007）；经 SetApprover 注入
+	approver Approver
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -193,7 +195,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
 				return
 			}
-			result := l.execTool(ctx, call)
+			result := l.execToolWithApproval(ctx, call) // 审批闸门（默认关，ADR-0007）
 			if _, err := ledger.Append(session.EventToolResult, map[string]any{
 				"name": call.Name, "content": result.Content, "is_error": result.IsError,
 			}); err != nil {

@@ -5,6 +5,7 @@ const h = vi.hoisted(() => ({
   summaries: [] as { id: string; title: string }[],
   failRename: false,
   deleted: [] as string[],
+  resolved: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
@@ -20,6 +21,11 @@ vi.mock('../wails', () => ({
       DeleteSession: async (id: string) => {
         h.deleted.push(id)
       },
+      ApprovalPolicy: async () => [],
+      SetApprovalPolicy: async () => {},
+      ResolveApproval: async (id: string) => {
+        h.resolved.push(id)
+      },
     },
     runtime: { EventsOn: () => {} },
   }),
@@ -33,6 +39,24 @@ describe('chat store', () => {
     h.summaries = []
     h.failRename = false
     h.deleted = []
+    h.resolved = []
+  })
+
+  // 审批卡片：原始参数原样落地 → 答复后卡片转已决（防重复点击）
+  it('审批卡片插入与答复', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.onApproval({ id: 'ap-1', toolName: 'shell', arguments: '{"command":"rm -rf /tmp/x"}' })
+
+    const card = store.messages[store.messages.length - 1]
+    expect(card.role).toBe('approval')
+    expect(card.toolName).toBe('shell')
+    expect(card.args).toContain('rm -rf')
+
+    await store.resolveApproval('ap-1', false, '危险命令')
+    expect(h.resolved).toEqual(['ap-1'])
+    expect(card.status).toBe('denied')
+    expect(store.error).toBe('')
   })
 
   // 侧栏以摘要驱动：有标题显示标题，无标题回退会话 ID
