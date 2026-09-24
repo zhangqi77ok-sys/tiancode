@@ -4,6 +4,7 @@ import { useChatStore } from './stores/chat'
 import { useChannelStore } from './stores/channels'
 import ChannelSettings from './components/ChannelSettings.vue'
 import { bridge } from './wails'
+import { renderMarkdown } from './markdown'
 
 // 根组件：左侧会话卡片 + 右侧对话卡片。
 // 视觉语言：浅色柔和底 + 白卡 + 紫罗兰主色 + 药丸控件（令牌见 style.css）。
@@ -276,8 +277,9 @@ onMounted(async () => {
               <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
                 <span class="font-medium text-[var(--c-text-dim)]">AGENT</span><span>{{ fmtTime(m.at) }}</span>
               </div>
+              <!-- 助手消息走 Markdown 渲染（marked + DOMPurify，模型输出不可信） -->
               <div
-                class="max-w-[85%] whitespace-pre-wrap rounded-2xl border px-4 py-3 text-sm leading-6"
+                class="md max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6"
                 :class="
                   m.term === 3 || m.term === 4
                     ? 'border-[var(--c-warn)] bg-[var(--c-warn-soft)]'
@@ -286,7 +288,7 @@ onMounted(async () => {
                       : 'border-[var(--c-border)] bg-[var(--c-surface)]'
                 "
               >
-                {{ m.content }}<span v-if="m.streaming" class="caret"></span>
+                <div v-html="renderMarkdown(m.content)"></div><span v-if="m.streaming" class="caret"></span>
               </div>
             </div>
           </template>
