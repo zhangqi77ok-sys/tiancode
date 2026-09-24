@@ -45,6 +45,7 @@ func main() {
 	}
 	defer chat.Close()
 
+	bind := shell.New(chat)
 	err = wails.Run(&options.App{
 		Title:  "tiancode",
 		Width:  1280,
@@ -53,13 +54,16 @@ func main() {
 			Assets: assets,
 		},
 		OnStartup: func(ctx context.Context) {
+			// 应用上下文经字段注入：绑定方法不能带 context.Context 参数
+			// （Wails 的 ParseArgs 严格校验实参个数且不注入 ctx，见 app.Bind 注释）
+			bind.AppCtx = ctx
 			// 窗口就绪的可断言证据（排障与验收都依赖这行）
 			shell.LogLifecycle(fmt.Sprintf("started v%s model=%s workspace=%s", version, cfg.Model, cfg.WorkDir))
 		},
 		OnShutdown: func(ctx context.Context) {
 			shell.LogLifecycle("shutdown")
 		},
-		Bind: []interface{}{shell.New(chat)},
+		Bind: []interface{}{bind},
 	})
 	if err != nil {
 		shell.NotifyError("tiancode 运行错误", err.Error())
