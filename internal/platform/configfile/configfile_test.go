@@ -121,6 +121,59 @@ func TestLoad_ToleratesUTF8BOM(t *testing.T) {
 	}
 }
 
+// 首启零配置：首次运行必须能直接启动，而不是"先手改配置文件再启动"。
+func TestEnsureDefault_CreatesUsableConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	f, created, err := EnsureDefault(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("首次运行应创建配置")
+	}
+	if err := Validate(f); err != nil {
+		t.Fatalf("默认配置必须直接可用：%v", err)
+	}
+	// 工作区必须真实存在：否则启动即失败，等于没消灭门槛
+	st, err := os.Stat(f.Workspace)
+	if err != nil || !st.IsDir() {
+		t.Fatalf("默认工作区应为已存在目录：%q err=%v", f.Workspace, err)
+	}
+	// 必须是配置目录内的工作区（不猜用户主目录/文档目录）
+	if filepath.Dir(f.Workspace) != filepath.Clean(dir) {
+		t.Fatalf("默认工作区应位于配置目录内：%q", f.Workspace)
+	}
+	// 不得写入模板占位符（占位符会被拒迁/误导用户）
+	if f.BaseURL != "" || f.APIKey != "" || f.Model != "" {
+		t.Fatalf("默认配置不应含网关占位符：%+v", f)
+	}
+	// 落盘后可被 Load 读回（不是只在内存里对）
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("生成的文件必须能被 Load 读回：%v", err)
+	}
+	if loaded.Workspace != f.Workspace {
+		t.Fatalf("落盘内容不一致：%+v", loaded)
+	}
+
+	// 幂等且不覆盖：用户改过的配置必须保留
+	if err := os.WriteFile(path, []byte(`{"workspace":"C:\\custom-ws"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f2, created2, err := EnsureDefault(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created2 {
+		t.Fatal("已存在时不得报告为已创建")
+	}
+	if f2.Workspace != `C:\custom-ws` {
+		t.Fatalf("不得覆盖既有配置：%+v", f2)
+	}
+}
+
 // Validate：只要求 workspace（渠道信息由 channels.json 持有）。
 func TestValidate_OnlyWorkspaceRequired(t *testing.T) {
 	err := Validate(File{BaseURL: "u", Model: "m"})

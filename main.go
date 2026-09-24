@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"embed"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -74,17 +73,15 @@ func main() {
 // loadConfig 装配配置：配置文件为主、环境变量覆盖（开发/脚本化部署用）。
 // 首次运行（文件不存在）生成模板并给出明确指引，绝不静默退出。
 func loadConfig(path string) (app.Config, error) {
-	file, err := configfile.Load(path)
-	if errors.Is(err, configfile.ErrNotFound) {
-		if werr := configfile.WriteTemplate(path); werr != nil {
-			return app.Config{}, fmt.Errorf("未找到配置文件，且模板生成失败：%v", werr)
-		}
-		return app.Config{}, fmt.Errorf(
-			"首次运行：已生成配置模板，请填写后重新启动\n\n文件位置：\n%s\n\n需要填写：baseUrl（网关地址，含 /v1）、apiKey、model、workspace（工作目录）",
-			path)
-	}
+	// 首启零配置：文件不存在时生成可直接启动的默认配置并**继续启动**——
+	// 旧行为是"生成模板后报错退出"，等于装完点开就没反应（最硬的门槛）。
+	file, created, err := configfile.EnsureDefault(path)
 	if err != nil {
 		return app.Config{}, err
+	}
+	if created {
+		shell.LogLifecycle(fmt.Sprintf(
+			"first run: generated default config %s (workspace=%s)", path, file.Workspace))
 	}
 
 	merged := configfile.Merge(file, os.Getenv)

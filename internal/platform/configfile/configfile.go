@@ -1,6 +1,7 @@
 // Package configfile 负责用户级配置文件的定位、加载与模板生成（组合根的配置来源）。
 //
-// 做什么：读取 %APPDATA%\tiancode\config.json；不存在时生成模板供用户填写。
+// 做什么：读取 %APPDATA%\tiancode\config.json；不存在时生成**可直接启动**的默认配置
+// （EnsureDefault：首启零配置，不再要求用户先手改文件——那是装完点开即报错的根源）。
 // 被谁依赖：main.go（组合根装配）。
 // 依赖谁：仅 stdlib。
 //
@@ -109,6 +110,36 @@ func Merge(file File, getenv func(string) string) File {
 		Model:     override("TIANCODE_MODEL", file.Model),
 		Workspace: override("TIANCODE_WORKSPACE", file.Workspace),
 	}
+}
+
+// EnsureDefault 确保配置文件存在；不存在则生成可直接启动的默认配置并返回 (配置, true, nil)。
+//
+// 为什么默认工作区放在配置目录内（%APPDATA%\tiancode\workspace）：不猜用户主目录/文档目录，
+// 且一定存在、一定可写；用户可在应用内用工作区切换器改成任意真实项目目录。
+// 已存在时原样返回既有配置，**绝不覆盖**用户改动。
+func EnsureDefault(path string) (File, bool, error) {
+	existing, err := Load(path)
+	if err == nil {
+		return existing, false, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return File{}, false, err
+	}
+
+	dir := filepath.Dir(path)
+	workspace := filepath.Join(dir, "workspace")
+	if mkErr := os.MkdirAll(workspace, 0o700); mkErr != nil {
+		return File{}, false, fmt.Errorf("创建默认工作区失败（%s）：%w", workspace, mkErr)
+	}
+	f := File{Workspace: workspace} // 网关字段留空：渠道在应用内配置（channels.json 为事实源）
+	data, mErr := json.MarshalIndent(f, "", "  ")
+	if mErr != nil {
+		return File{}, false, mErr
+	}
+	if wErr := os.WriteFile(path, append(data, '\n'), 0o600); wErr != nil {
+		return File{}, false, fmt.Errorf("写入默认配置失败（%s）：%w", path, wErr)
+	}
+	return f, true, nil
 }
 
 // Validate 校验配置有效性，返回人类可读的缺失说明（供首次运行引导展示）。
