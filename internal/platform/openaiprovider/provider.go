@@ -276,10 +276,15 @@ func (p *Provider) handleLine(ctx context.Context, out chan llm.StreamChunk, lin
 				ReasoningContent string `json:"reasoning_content"` // DeepSeek R1 思考流
 				Reasoning        string `json:"reasoning"`         // 网关思考流别名字段
 				ToolCalls        []struct {
-					Index    int    `json:"index"`
-					ID       string `json:"id"`
+					Index int    `json:"index"`
+					ID    string `json:"id"`
+					Type  string `json:"type"`
+					// Name 是部分网关的非标准顶层写法，仅作兜底（见下方 firstNonEmpty）
 					Name     string `json:"name"`
 					Function struct {
+						// 标准 OpenAI 流式形态：名字嵌在 function 里
+						// （曾误读顶层 name → 工具名恒为空 → 回填 assistant.tool_calls 缺 id/name → 上游 400）
+						Name      string `json:"name"`
 						Arguments string `json:"arguments"`
 					} `json:"function"`
 				} `json:"tool_calls"`
@@ -326,10 +331,14 @@ func (p *Provider) handleLine(ctx context.Context, out chan llm.StreamChunk, lin
 	if len(choice.Delta.ToolCalls) > 0 {
 		chunk.ToolCalls = make([]llm.ToolCallChunk, 0, len(choice.Delta.ToolCalls))
 		for _, tc := range choice.Delta.ToolCalls {
+			name := tc.Function.Name
+			if name == "" {
+				name = tc.Name // 非标准顶层写法的兜底
+			}
 			chunk.ToolCalls = append(chunk.ToolCalls, llm.ToolCallChunk{
 				Index:          tc.Index,
 				ID:             tc.ID,
-				Name:           tc.Name,
+				Name:           name,
 				ArgumentsDelta: tc.Function.Arguments,
 			})
 		}
