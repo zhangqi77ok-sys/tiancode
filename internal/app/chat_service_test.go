@@ -50,6 +50,8 @@ func TestChatService_ConfigValidation(t *testing.T) {
 	}{
 		{"missing datadir", Config{WorkDir: "."}},
 		{"missing workdir", Config{DataDir: t.TempDir()}},
+		// 不存在的目录必须早失败：否则启动看似正常，直到第一次写文件才报错（实机踩过）
+		{"nonexistent workdir", Config{DataDir: t.TempDir(), WorkDir: filepath.Join(t.TempDir(), "nope")}},
 	}
 	for _, tc := range cases {
 		if _, err := NewChatService(tc.cfg); err == nil {

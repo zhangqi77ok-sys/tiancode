@@ -94,3 +94,26 @@ func TestMigrateFromConfig(t *testing.T) {
 		t.Fatal("empty config must not migrate")
 	}
 }
+
+// 模板占位符不得迁移成渠道。
+// 实机事故：config.json 里是模板值（your-gateway.example / your-model），
+// 首启自动"迁移"出一个看着有渠道、实际连不通的假渠道——比没有渠道更误导。
+func TestMigrateFromConfig_RejectsPlaceholders(t *testing.T) {
+	cases := []configfile.File{
+		{BaseURL: "https://your-gateway.example/v1", APIKey: "sk-real", Model: "your-model"},
+		{BaseURL: "https://api.deepseek.com/v1", APIKey: "your-api-key", Model: "deepseek-chat"},
+		{BaseURL: "https://placeholder.example/v1", APIKey: "sk-real", Model: "some-model"},
+		{BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-real", Model: "change-me"},
+	}
+	for _, src := range cases {
+		if cfg, ok := MigrateFromConfig(src); ok {
+			t.Fatalf("placeholder config must not migrate: %+v → %+v", src, cfg)
+		}
+	}
+	// 真实值仍然迁移（别把守卫写得太宽）
+	if _, ok := MigrateFromConfig(configfile.File{
+		BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-abc123", Model: "deepseek-chat",
+	}); !ok {
+		t.Fatal("real config must still migrate")
+	}
+}
