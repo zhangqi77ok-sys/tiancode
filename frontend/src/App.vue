@@ -53,6 +53,12 @@ function fmtTime(at?: number): string {
 const thinkingOpen = ref<Record<number, boolean>>({})
 const toolOpen = ref<Record<number, boolean>>({})
 
+// 折叠态按消息下标记；换会话后下标指向别的行，必须清空
+watch(() => store.sessionId, () => {
+  thinkingOpen.value = {}
+  toolOpen.value = {}
+})
+
 function isThinkingOpen(i: number, streaming?: boolean) {
   if (i in thinkingOpen.value) return thinkingOpen.value[i]
   return !!streaming
