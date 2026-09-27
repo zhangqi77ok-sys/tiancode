@@ -10,10 +10,11 @@ import (
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/fstool"
 	"tiancode/internal/platform/gittool"
+	"tiancode/internal/platform/searchtool"
 	"tiancode/internal/platform/shelltool"
 )
 
-// newRegistry 按工作区构造工具集（fs/shell/git 的受控根）。
+// newRegistry 按工作区构造工具集（fs/shell/git/search 的受控根）。
 // 抽成函数是为了让"启动装配"与"运行期切换工作区"共用同一段装配逻辑，
 // 避免两处漂移（切换后工具集与启动时不一致是隐蔽 bug）。
 func newRegistry(workDir string) (*tools.Registry, error) {
@@ -22,6 +23,7 @@ func newRegistry(workDir string) (*tools.Registry, error) {
 		func() error { return registry.Register(fstool.New(workDir)) },
 		func() error { return registry.Register(shelltool.New(shelltool.Options{Root: workDir})) },
 		func() error { return registry.Register(gittool.New(workDir)) },
+		func() error { return registry.Register(searchtool.New(workDir)) },
 	} {
 		if err := reg(); err != nil {
 			return nil, fmt.Errorf("register tool: %w", err)
