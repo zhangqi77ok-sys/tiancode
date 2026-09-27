@@ -160,23 +160,22 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			return
 		}
 
-		// 工具调用轮：回填 assistant(tool_calls) + 逐个执行工具并追加 tool 结果消息
+		// 工具调用轮：按索引补全空 ID（写入 calls 与 assistant.ToolCalls 共享底层），再落盘执行
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ToolCalls: calls})
-		for _, call := range calls {
-			id := call.ID
-			if id == "" {
-				id = fmt.Sprintf("call-%d", ledger.NextSeq())
-				call.ID = id
+		for i := range calls {
+			if calls[i].ID == "" {
+				calls[i].ID = fmt.Sprintf("call-%d", ledger.NextSeq())
 			}
+			call := calls[i]
 			if _, err := ledger.Append(session.EventToolCall, map[string]string{
-				"id": id, "name": call.Name, "arguments": call.Arguments,
+				"id": call.ID, "name": call.Name, "arguments": call.Arguments,
 			}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
 				return
 			}
 			result := l.execTool(ctx, call)
 			if _, err := ledger.Append(session.EventToolResult, map[string]any{
-				"id": id, "name": call.Name, "content": result.Content, "is_error": result.IsError,
+				"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
 			}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool result: %w", err)})
 				return

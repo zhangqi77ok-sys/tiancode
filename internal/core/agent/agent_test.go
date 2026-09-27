@@ -498,6 +498,49 @@ func TestAgent_StepLimit(t *testing.T) {
 	}
 }
 
+// 模型省略 tool call ID 时，同轮续步消息里 assistant.ToolCalls 与 role=tool 必须共用合成 ID。
+func TestAgent_FillsEmptyToolCallIDInSameTurn(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: "ok"}}
+	registry := tools.NewRegistry()
+	if err := registry.Register(st); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "", Name: "fs", ArgumentsDelta: `{}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "done"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry)
+	ch, err := loop.Run(context.Background(), ledger, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	if fr.requestCount() != 2 {
+		t.Fatalf("requests = %d, want 2", fr.requestCount())
+	}
+	msgs := fr.reqs[1].Messages
+	if len(msgs) < 3 {
+		t.Fatalf("step-2 messages = %+v", msgs)
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].ToolCalls) != 1 {
+		t.Fatalf("msgs[1] = %+v", msgs[1])
+	}
+	id := msgs[1].ToolCalls[0].ID
+	if id == "" {
+		t.Fatal("assistant ToolCalls[0].ID must be synthesized when model omits id")
+	}
+	if msgs[2].Role != "tool" || msgs[2].ToolCallID != id || msgs[2].Content != "ok" {
+		t.Fatalf("msgs[2] = %+v, want ToolCallID %q", msgs[2], id)
+	}
+}
+
 // C-AGT-1：第二轮 Run 发给模型的消息必须含上一轮 assistant(tool_calls)+role=tool。
 func TestAgent_DerivesToolHistoryAcrossTurns(t *testing.T) {
 	ledger, _ := newTestLedger(t)
