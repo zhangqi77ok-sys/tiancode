@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import DOMPurify from 'dompurify'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderMarkdown } from './markdown'
 
 describe('renderMarkdown', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('渲染代码块与粗体', () => {
     const html = renderMarkdown('**hi**\n\n```go\nfmt.Println(1)\n```')
     expect(html).toContain('<strong>')
@@ -10,7 +15,9 @@ describe('renderMarkdown', () => {
   })
 
   it('去掉 script 与 javascript URL', () => {
+    const sanitize = vi.spyOn(DOMPurify, 'sanitize')
     const html = renderMarkdown('<script>alert(1)</script>[x](javascript:alert(1))')
+    expect(sanitize).toHaveBeenCalled()
     expect(html.toLowerCase()).not.toContain('<script')
     expect(html.toLowerCase()).not.toContain('javascript:')
   })
