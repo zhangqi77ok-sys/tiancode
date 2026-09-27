@@ -15,6 +15,13 @@ describe('renderMarkdown', () => {
     expect(html.toLowerCase()).not.toContain('javascript:')
   })
 
+  it('代码块内比较符不双重转义', () => {
+    const html = renderMarkdown('```go\nif a < b {\n}\n```')
+    expect(html).not.toContain('&amp;lt;')
+    expect(html).toContain('a &lt; b')
+    expect(html).toMatch(/<(?:pre|code)\b/i)
+  })
+
   it('空输入返回空串', () => {
     expect(renderMarkdown('')).toBe('')
   })
