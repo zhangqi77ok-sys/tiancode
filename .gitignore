@@ -35,6 +35,7 @@ logs/
 # --- 临时文件与个人 IDE 配置（永不入库） ---
 tmp/
 .tmp/
+.worktrees/
 .DS_Store
 Thumbs.db
 .idea/
