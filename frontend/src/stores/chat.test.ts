@@ -26,7 +26,7 @@ vi.mock('../wails', () => ({
   }),
 }))
 
-const { useChatStore } = await import('./chat')
+const { useChatStore, END_REASON } = await import('./chat')
 
 describe('chat store', () => {
   beforeEach(() => {
@@ -99,6 +99,24 @@ describe('chat store', () => {
     await store.newSession()
     store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ab…', content: 'abcdef' })
     expect(store.messages[0]).toMatchObject({ role: 'tool', toolName: 'fs', status: 'success', content: 'abcdef' })
+  })
+
+  // 工具卡插在流式助手之前后，后续 delta/thinking/终态仍必须落到该助手上
+  it('工具卡插入后仍把流式增量写到助手消息', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.messages.push({ role: 'user', content: 'run' })
+    store.messages.push({ role: 'assistant', content: '', streaming: true })
+    store.running = true
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok', content: 'file' })
+    store.onChunk({ sessionID: store.sessionId, delta: 'done', thinking: 'plan' })
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    expect(store.messages.map((m) => m.role)).toEqual(['user', 'tool', 'assistant'])
+    expect(store.messages[1]).toMatchObject({ role: 'tool', toolName: 'fs', content: 'file' })
+    expect(store.messages[2].content).toBe('done')
+    expect(store.messages[2].thinking).toBe('plan')
+    expect(store.messages[2].streaming).toBe(false)
+    expect(store.running).toBe(false)
   })
 
   it('selectSession 映射 Replay 的 tool 与 thinking', async () => {

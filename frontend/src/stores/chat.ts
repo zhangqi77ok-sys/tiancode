@@ -98,47 +98,55 @@ export const useChatStore = defineStore('chat', () => {
       // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
       await bridge().app.Send(sessionId.value, text)
     } catch (e) {
-      const last = messages.value[messages.value.length - 1]
-      if (last?.streaming) {
-        last.streaming = false
-        last.error = true
-        last.content = `⚠ 出错了：${String(e)}`
+      const ast = inFlightAssistant()
+      if (ast) {
+        ast.streaming = false
+        ast.error = true
+        ast.content = `⚠ 出错了：${String(e)}`
       }
       running.value = false
     }
   }
 
+  // 本轮占位助手：工具卡会插在它前面，不能用 messages.at(-1)。
+  function inFlightAssistant(): ChatMsg | undefined {
+    return messages.value.find((m) => m.role === 'assistant' && m.streaming)
+  }
+
   // 事件桥回调（App.vue onMounted 绑定）。
   function onChunk(p: { sessionID: string; delta: string; thinking: string }) {
     if (p.sessionID !== sessionId.value) return
-    const last = messages.value[messages.value.length - 1]
-    if (last?.streaming) {
-      last.content += p.delta
-      if (p.thinking) last.thinking = (last.thinking || '') + p.thinking
-    }
+    const ast = inFlightAssistant()
+    if (!ast) return
+    ast.content += p.delta
+    if (p.thinking) ast.thinking = (ast.thinking || '') + p.thinking
   }
 
   function onTool(p: { sessionID: string; name: string; status: string; summary: string; content?: string }) {
     if (p.sessionID !== sessionId.value) return
-    messages.value.push({
+    const card: ChatMsg = {
       role: 'tool',
       content: p.content || p.summary,
       toolName: p.name,
       status: p.status,
       at: Date.now(),
-    })
+    }
+    // 插在流式助手之前，与 Replay 顺序一致：user → tool(s) → assistant
+    const i = messages.value.findIndex((m) => m.role === 'assistant' && m.streaming)
+    if (i >= 0) messages.value.splice(i, 0, card)
+    else messages.value.push(card)
   }
 
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     if (p.sessionID !== sessionId.value) return
     running.value = false
-    const last = messages.value[messages.value.length - 1]
-    if (last?.streaming) {
-      last.streaming = false
-      last.term = p.endReason
+    const ast = inFlightAssistant()
+    if (ast) {
+      ast.streaming = false
+      ast.term = p.endReason
       if (p.endReason !== END_REASON.DONE) {
-        last.error = true
-        last.content += (last.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
+        ast.error = true
+        ast.content += (ast.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
       }
     }
     void loadSessions() // 新会话首聊后进入列表

@@ -53,8 +53,12 @@ function fmtTime(at?: number): string {
 const thinkingOpen = ref<Record<number, boolean>>({})
 const toolOpen = ref<Record<number, boolean>>({})
 
-// 折叠态按消息下标记；换会话后下标指向别的行，必须清空
+// 折叠态按消息下标记；换会话或条数变化（工具卡插入）会使下标错位，必须清空
 watch(() => store.sessionId, () => {
+  thinkingOpen.value = {}
+  toolOpen.value = {}
+})
+watch(() => store.messages.length, () => {
   thinkingOpen.value = {}
   toolOpen.value = {}
 })
