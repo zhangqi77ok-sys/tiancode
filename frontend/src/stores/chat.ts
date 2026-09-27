@@ -10,6 +10,7 @@ export interface ChatMsg {
   content: string
   toolName?: string
   status?: string
+  thinking?: string
   at?: number
   term?: number
   streaming?: boolean
@@ -72,7 +73,13 @@ export const useChatStore = defineStore('chat', () => {
     if (running.value) return // 进行中禁止切换，避免流式块串会话
     sessionId.value = id
     const history = (await bridge().app.Replay(id)) ?? []
-    messages.value = history.map((m) => ({ role: m.role as ChatMsg['role'], content: m.content }))
+    messages.value = history.map((m) => ({
+      role: m.role as ChatMsg['role'],
+      content: m.content,
+      toolName: m.toolName,
+      status: m.status,
+      thinking: m.thinking,
+    }))
   }
 
   async function newSession() {
@@ -105,14 +112,17 @@ export const useChatStore = defineStore('chat', () => {
   function onChunk(p: { sessionID: string; delta: string; thinking: string }) {
     if (p.sessionID !== sessionId.value) return
     const last = messages.value[messages.value.length - 1]
-    if (last?.streaming) last.content += p.delta
+    if (last?.streaming) {
+      last.content += p.delta
+      if (p.thinking) last.thinking = (last.thinking || '') + p.thinking
+    }
   }
 
-  function onTool(p: { sessionID: string; name: string; status: string; summary: string }) {
+  function onTool(p: { sessionID: string; name: string; status: string; summary: string; content?: string }) {
     if (p.sessionID !== sessionId.value) return
     messages.value.push({
       role: 'tool',
-      content: p.summary,
+      content: p.content || p.summary,
       toolName: p.name,
       status: p.status,
       at: Date.now(),

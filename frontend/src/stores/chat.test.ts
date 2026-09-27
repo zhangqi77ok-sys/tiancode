@@ -5,13 +5,14 @@ const h = vi.hoisted(() => ({
   summaries: [] as { id: string; title: string }[],
   failRename: false,
   deleted: [] as string[],
+  replay: [] as { role: string; content: string; toolName?: string; status?: string; thinking?: string }[],
 }))
 
 vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
       ListSessionSummaries: async () => h.summaries,
-      Replay: async () => [],
+      Replay: async () => h.replay,
       Send: async () => {},
       Stop: async () => {},
       RenameSession: async () => {
@@ -33,6 +34,7 @@ describe('chat store', () => {
     h.summaries = []
     h.failRename = false
     h.deleted = []
+    h.replay = []
   })
 
   // 侧栏以摘要驱动：有标题显示标题，无标题回退会话 ID
@@ -82,4 +84,38 @@ describe('chat store', () => {
     expect(store.messages[0].error).toBe(true)
     expect(store.messages[0].content).toContain('上游 500')
   })
+
+  it('onChunk 累加 thinking 与 delta', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.messages.push({ role: 'assistant', content: '', streaming: true })
+    store.onChunk({ sessionID: store.sessionId, delta: 'Hi', thinking: 'plan' })
+    expect(store.messages[0].content).toBe('Hi')
+    expect(store.messages[0].thinking).toBe('plan')
+  })
+
+  it('onTool 保存全文 content', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ab…', content: 'abcdef' })
+    expect(store.messages[0]).toMatchObject({ role: 'tool', toolName: 'fs', status: 'success', content: 'abcdef' })
+  })
+
+  it('selectSession 映射 Replay 的 tool 与 thinking', async () => {
+    h.summaries = [{ id: 's-1', title: '' }]
+    h.replay = [
+      { role: 'user', content: 'u' },
+      { role: 'tool', content: 'file-x', toolName: 'fs', status: 'success' },
+      { role: 'assistant', content: 'done', thinking: 'plan' },
+    ]
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.selectSession('s-1')
+    expect(store.messages).toEqual([
+      { role: 'user', content: 'u' },
+      { role: 'tool', content: 'file-x', toolName: 'fs', status: 'success' },
+      { role: 'assistant', content: 'done', thinking: 'plan' },
+    ])
+  })
 })
+

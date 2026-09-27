@@ -99,7 +99,7 @@ onMounted(async () => {
   bridge().runtime.EventsOn('chat:terminal', (p: { sessionID: string; endReason: number; error: string }) => {
     store.onTerminal(p)
   })
-  bridge().runtime.EventsOn('chat:tool', (p: { sessionID: string; name: string; status: string; summary: string }) => {
+  bridge().runtime.EventsOn('chat:tool', (p: { sessionID: string; name: string; status: string; summary: string; content: string }) => {
     store.onTool(p)
   })
 })
