@@ -137,6 +137,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 
 	var b strings.Builder
 	matches := 0
+	hitMax := false
 	truncatedMatches := false
 	walkErr := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -161,8 +162,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 		if err != nil || info.Size() > maxFileBytes {
 			return nil
 		}
-		hits, err := searchFile(p, re)
-		if err != nil {
+		if hitMax {
+			truncatedMatches = true
+			return errStop
+		}
+		hits, err := searchFile(ctx, p, re)
+		if err != nil && ctx.Err() == nil {
 			return nil
 		}
 		rel, err := filepath.Rel(t.root, p)
@@ -170,7 +175,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 			rel = p
 		}
 		rel = filepath.ToSlash(rel)
-		for _, h := range hits {
+		for i, h := range hits {
 			line := fmt.Sprintf("%s:%d:%s\n", rel, h.line, h.text)
 			if b.Len()+len(line) > maxOutputBytes {
 				b.WriteString("(truncated, output limit 64KiB)\n")
@@ -179,9 +184,16 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 			b.WriteString(line)
 			matches++
 			if matches >= max {
-				truncatedMatches = true
-				return errStop
+				if i+1 < len(hits) {
+					truncatedMatches = true
+					return errStop
+				}
+				hitMax = true
+				break
 			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		return nil
 	})
@@ -203,7 +215,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 		}
 		content += fmt.Sprintf("(truncated, max_matches %d)", max)
 	}
-	if matches == 0 && !truncatedMatches {
+	if matches == 0 && content == "" {
 		return tools.ToolResult{Content: "no matches"}, nil
 	}
 	return tools.ToolResult{Content: content}, nil
@@ -216,7 +228,7 @@ type hit struct {
 	text string
 }
 
-func searchFile(path string, re *regexp.Regexp) ([]hit, error) {
+func searchFile(ctx context.Context, path string, re *regexp.Regexp) ([]hit, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -236,6 +248,9 @@ func searchFile(path string, re *regexp.Regexp) ([]hit, error) {
 	var hits []hit
 	lineNo := 0
 	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return hits, err
+		}
 		lineNo++
 		text := strings.TrimRight(sc.Text(), "\r")
 		if !utf8.ValidString(text) {
@@ -244,6 +259,9 @@ func searchFile(path string, re *regexp.Regexp) ([]hit, error) {
 		if re.MatchString(text) {
 			hits = append(hits, hit{line: lineNo, text: text})
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return hits, err
 	}
 	return hits, sc.Err()
 }

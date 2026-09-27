@@ -80,6 +80,46 @@ func TestSearch_OutputBounded(t *testing.T) {
 	}
 }
 
+func TestSearch_OutputByteBounded(t *testing.T) {
+	tool := newWS(t)
+	write(t, tool.root, "big.txt", strings.Repeat("x", 64*1024+1024)+"needle")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "needle"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("byte-limit truncation must not be IsError: %+v", res)
+	}
+	if strings.TrimSpace(res.Content) == "no matches" || strings.Contains(res.Content, "no matches") {
+		t.Fatalf("oversized first hit must not become no matches: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "truncated") || !strings.Contains(res.Content, "64KiB") {
+		t.Fatalf("must annotate 64KiB truncation: %s", res.Content)
+	}
+}
+
+func TestSearch_MaxMatchesExactNoTruncate(t *testing.T) {
+	tool := newWS(t)
+	write(t, tool.root, "a.txt", "needle\nneedle")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "needle", "max_matches": 2}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	if strings.Contains(res.Content, "truncated") {
+		t.Fatalf("exact max_matches with nothing left must not annotate: %s", res.Content)
+	}
+	body := strings.TrimSuffix(res.Content, "\n")
+	matchLines := 0
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.Contains(ln, "needle") {
+			matchLines++
+		}
+	}
+	if matchLines != 2 {
+		t.Fatalf("match lines = %d, want 2; %s", matchLines, res.Content)
+	}
+}
+
 func TestSearch_InvalidPattern(t *testing.T) {
 	tool := newWS(t)
 	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "["}))
@@ -132,10 +172,13 @@ func TestSearch_NoMatchIsSuccess(t *testing.T) {
 }
 
 func TestSearch_TimeoutPartial(t *testing.T) {
-	tool := NewWithTimeout(t.TempDir(), time.Millisecond)
-	for i := 0; i < 3000; i++ {
-		write(t, tool.root, filepath.Join("d", fmt.Sprintf("%04d.txt", i)), "needle line")
+	root := t.TempDir()
+	var body strings.Builder
+	for i := 0; i < 40000; i++ {
+		body.WriteString("needle line\n")
 	}
+	write(t, root, "big.txt", body.String())
+	tool := NewWithTimeout(root, time.Nanosecond)
 	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "needle", "max_matches": 200}))
 	if err != nil {
 		t.Fatal(err)
@@ -145,5 +188,10 @@ func TestSearch_TimeoutPartial(t *testing.T) {
 	}
 	if res.Content == "" {
 		t.Fatal("Content must be non-empty")
+	}
+	hasHit := strings.Contains(res.Content, "big.txt:")
+	hasTimeout := strings.Contains(res.Content, "TIMEOUT")
+	if !hasHit && !hasTimeout {
+		t.Fatalf("want path:line: partial or TIMEOUT, got %q", res.Content)
 	}
 }
