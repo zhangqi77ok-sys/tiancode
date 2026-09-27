@@ -53,6 +53,20 @@
 | C-FS-2 | replace 多处匹配 → 报错且**文件零修改**（多处匹配阻断） | `TestFSReplace_MultiMatchBlocks` |
 | C-FS-3 | replace 零匹配 → 报错且文件零修改 | `TestFSReplace_NoMatchBlocks` |
 | C-FS-4 | 路径越界（`../`、绝对路径逃逸工作区）→ 拒绝执行 | `TestFSWrite_PathEscapeRejected` |
+| C-FS-5 | `list` 越界或非目录 → `IsError` 且工作区零修改 | `TestFSList_RejectsEscapeAndNonDir` |
+| C-FS-6 | `list` 最多 500 条，超出截断并标注总数 | `TestFSList_OutputBounded` |
+| C-FS-7 | `list` 只列下一层（子目录内容不出现） | `TestFSList_NonRecursive` |
+
+## C-SEARCH：工作区内容搜索（M6）
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-SEARCH-1 | 路径越界拒绝 | `TestSearch_PathEscapeRejected` |
+| C-SEARCH-2 | 匹配数与总字节均有界，超限截断并标注 | `TestSearch_OutputBounded` / `TestSearch_OutputByteBounded` |
+| C-SEARCH-3 | 无效正则 → `IsError` 且原因可读 | `TestSearch_InvalidPattern` |
+| C-SEARCH-4 | 跳过二进制与内置忽略目录；显式 `path=vendor` 仍搜该根 | `TestSearch_SkipsIgnoredAndBinary` |
+| C-SEARCH-5 | 零匹配成功，`Content` 含 `no matches` | `TestSearch_NoMatchIsSuccess` |
+| C-SEARCH-6 | 超时预算内返回；有部分命中则带已捕获输出 | `TestSearch_TimeoutPartial` |
 
 ## C-APP：编排纪律（M2 起持续生效）
 
@@ -60,6 +74,16 @@
 | --- | --- | --- |
 | C-APP-1 | 持久化/流式任何错误必须上抛到 UI 层（守卫 R2 静态强制 + 用例测试） | `TestChatService_PersistErrorPropagates` |
 | C-APP-2 | 用户中断 → `EndCancelled` 终态 + 账本保留已产生事件，UI 显示"已取消" | `TestChatService_CancelKeepsEvents` |
+| C-APP-3 | `Replay` 投影含 tool 卡（name/status/content）与 assistant thinking | `TestChatService_ReplayIncludesTools` |
+
+## C-AGT：模型上下文回放（M6）
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-AGT-1 | 第二轮 `Run` 的请求消息含上一轮 `assistant(tool_calls)` + `role=tool`，ID 配对 | `TestAgent_DerivesToolHistoryAcrossTurns` |
+| C-AGT-2 | 单条 tool 结果 >4096 字节时模型侧截断并含 `truncated` 标注；账本仍是全文 | `TestAgent_TruncatesToolResultForModel` |
+| C-AGT-3 | 无对应 result 的 tool_call 不进入模型消息 | `TestAgent_OmitsUnpairedToolCall` |
+| C-AGT-4 | 缺 `id` 的旧事件能合成 ID 并配对，第二轮请求协议合法 | `TestAgent_SyntheticIDsForLegacyLedger` |
 
 ## C-CH：模型渠道管理
 
@@ -116,3 +140,4 @@
 | 2026-09-23 | C-RT-4 | 锁定测试落地于 `internal/core/agent/agent_test.go::TestRuntime_FacadeBoundary`。此前该条约只有守卫 R1 的静态保证、没有同名测试。新测试做两件事：用替身运行时驱动内核跑完整一轮（编译期证明依赖的是接口而非具体实现），并扫描本包**非测试**源码，禁止出现适配器/编排/壳层 import | 本文件"ID 与测试名一一对应"的要求 |
 | 2026-09-23 | C-APP-2 | 锁定测试落地于 `internal/app/chat_service_test.go::TestChatService_CancelKeepsEvents`，走 `httptest` 上游 + 真实 `chatRuntime` 的端到端路径。此前只有 `TestAgent_CancelKeepsEvents`，而它用 `fakeRuntime` **直接把 `EndCancelled` 喂进内核**，恰好绕过了真正会出错的那一环（runtime 中继把 ctx 取消误判为 `EndError`）——这个盲区正是"用户点中断却被上报成错误"长期未被发现的根因。补测同时修复了 `core/llm/runtime.go` 中继层的终态判定 | 本文件"ID 与测试名一一对应"的要求 + ADR-0003（流式三终态） |
 | 2026-09-23 | **新增 C-INS-1 ~ C-INS-7** | 补齐安装/卸载契约（此前完全缺失）。同时修正实现两处：① 卸载按名字无条件删除共享注册项 → 改为校验 `InstallLocation` 归属（实测踩过：用隔离目录做卸载验证，连带删掉了用户正式安装的注册项）；② 非致命警告只写 stderr，而安装器是 `-H windowsgui` 构建、没有控制台 → 警告用户永远看不到，改为同时落盘 `setup.log` | 用户实测反馈"安装后桌面没有快捷方式" + legacy 对照（legacy 同时创建桌面与开始菜单） |
+| 2026-09-27 | **新增 C-AGT-1~4 / C-FS-5~7 / C-SEARCH-1~6 / C-APP-3** | M6 编程智能体可用性：跨轮工具历史回放（含模型侧 4096 字节截断、旧账本合成 ID）、`fs.list`、工作区 `search`、Replay 投影工具卡与 thinking。截断只发生在 derive 视图，账本保留全文（ADR-0007） | `docs/superpowers/specs/2026-09-27-coding-agent-usability-design.md` + ADR-0007 |

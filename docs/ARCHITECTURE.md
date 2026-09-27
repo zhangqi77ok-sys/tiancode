@@ -14,7 +14,7 @@ flowchart TB
     RT --> LLM["内核 internal/core/llm.ProviderPort（流式纪律）"]
     LOOP --> TOOLS["内核 internal/core/tools（ToolPort+执行契约）"]
     LLM -.实现端口.-> PROV["适配器 internal/platform/openaiprovider"]
-    TOOLS -.实现端口.-> FS["适配器 fs/shell/git（原子写+可配超时）"]
+    TOOLS -.实现端口.-> FS["适配器 fs/shell/git/search（原子写+可配超时）"]
 ```
 
 ## 依赖规则
@@ -41,7 +41,7 @@ tiancode/
 │   │   ├── llm/               # ProviderPort + StreamChunk/EndReason 契约
 │   │   ├── tools/             # ToolPort + ToolResult 执行契约
 │   │   └── session/           # 事件账本 + 重放恢复（M1 实现）
-│   └── platform/              # 适配器：openaiprovider[M2] / atomicfile[M1] / shell,git,fs[M3-M4]
+│   └── platform/              # 适配器：openaiprovider[M2] / atomicfile[M1] / shell,git,fs[M3-M4] / search[M6]
 ├── frontend/                  # Vue3 + Tailwind4 最小对话 UI（M2 展开）
 ├── docs/                      # 文档体系（见 STANDARDS.md §4）
 ├── scripts/arch_check.ps1     # 架构守卫 R1-R4
@@ -60,19 +60,30 @@ tiancode/
 | `core/agent` | 无状态 ReAct 循环，步数上限 25 | 只编排端口，自身零 IO |
 | `internal/app` | 用例编排；错误上抛 UI | 禁止 `_ =` 吞错（守卫 R2） |
 | `platform/openaiprovider` | OpenAI 兼容流式适配器 | 实现流式纪律（M2） |
-| `platform/*` 其余 | 原子写 / 进程执行 / 工具适配 | 原子性 + 可配超时（M1/M3/M4） |
+| `platform/*` 其余 | 原子写 / 进程执行 / 工具适配（fs/shell/git/search） | 原子性 + 可配超时（M1/M3/M4/M6） |
 
-## 对话主线数据流（M2 完成后）
+## 内置工具
+
+| 工具 | 位置 | 能力 | 关键契约 |
+| --- | --- | --- | --- |
+| `fs` | `platform/fstool` | read / write / replace / list（非递归、有界） | C-FS-1~7 |
+| `shell` | `platform/shelltool` | 命令执行（超时/部分输出/后台有界） | C-TOOL-1~5 |
+| `git` | `platform/gittool` | 只读 status / diff / log | — |
+| `search` | `platform/searchtool` | 工作区内容搜索（有界、跳过内置忽略目录） | C-SEARCH-1~6 |
+
+## 对话主线数据流（M2 完成后；M6 加粗跨轮回放）
 
 ```
 用户输入 → app/ 绑定 → ChatService.Send（Pipeline：ResolveSession→Dispatch→StreamRelay→Persist，见 ADR-0005）
   → session 账本追加 UserMessage（持久化成功才推进内存）
+  → deriveMessages(ledger)          ← M6：跨轮 derive 含 tool_calls + role=tool（模型侧截断见 ADR-0007）
   → agent.Loop（Phase 状态机 Idle/Running/Cancelled）
       → llm.ChatRuntime（流前重试，流中不换渠道）→ ProviderPort.StreamChat（空闲看门狗/发送逃生）
-      ├─ Delta → 账本 AssistantDelta → 前端流式渲染
-      ├─ ToolCall → tools.ToolPort.Execute（超时契约）→ 账本 ToolCall/ToolResult → 前端工具卡片
+      ├─ Delta → 账本 AssistantDelta → 前端流式渲染（markdown / thinking）
+      ├─ ToolCall → tools.ToolPort.Execute（超时契约）→ 账本 ToolCall/ToolResult（含 id）→ 前端可展开工具卡片
       └─ 终态 EndReason → 账本 AssistantMsg/TurnEnd → 前端终态标签
 取消 → ctx.Done → EndCancelled 终态，账本保留已产生事件
+切换会话 → ChatService.Replay（投影含 tool 卡与 thinking，C-APP-3）
 ```
 
 ## 设计风格

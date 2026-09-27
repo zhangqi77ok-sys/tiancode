@@ -99,6 +99,19 @@
       - 测前状态全部还原：注册表键（值 + 类型）、桌面同名 `.lnk`、`config.json` ✓
 - [ ] 四环人工验收各一例真实任务，失败路径符合契约（需人工 + 真实模型渠道）
 
+## M6 编程智能体可用性 —— 实现已完成（剩 GUI 人工验收）
+
+**范围**：跨轮工具历史回放（账本带 `id`、derive 含 `tool_calls` + `role=tool`、模型侧截断）；`fs.list`；独立 `search` 工具；对话区 markdown / thinking / 可展开工具卡；Replay 投影工具与 thinking。非目标：文件树 / 编辑器 / git 面板 / git 写操作 / 语法高亮库 / .gitignore 解析 / 会话自动标题 / 四环人工验收。
+
+**出口标准**（与 spec §2 一致）：
+- [x] 第二轮 `Send` 发给模型的 `Messages` 含上一轮完整的 `assistant(tool_calls)` + `role=tool`，ID 配对正确；单条工具结果超过 4096 字节时模型侧截断并标注，账本仍是全文（C-AGT-1~4，ADR-0007）
+- [x] 模型可调用 `fs` 的 `list`（非递归、有界，C-FS-5~7）和独立工具 `search`（工作区内容搜索、有界、跳过内置忽略目录，C-SEARCH-1~6）
+- [x] 对话区：助手消息渲染 markdown；有 thinking 时流式展开、终态折叠；工具卡可展开看全文；刷新/切换会话后工具卡仍在（C-APP-3）
+- [x] 新契约测试先红后绿；既有 `go test ./...` 与 `frontend` vitest 不回退
+- [x] 文档与代码同一批提交：`CONTRACTS` / `ARCHITECTURE` / `MILESTONES` / `TESTING` / `PENDING` + ADR-0007；`VERSION`=`0.2.0`
+- [ ] **四环人工验收**仍属 M5 遗留（需人工 + 真实模型渠道，见 `PENDING.md`）；本里程碑不替代该项
+- [ ] `scripts/release.ps1` 发布 `0.2.0`（独立发布步骤，非本实现批次）
+
 ### 已闭环：golangci-lint 零告警
 
 `STANDARDS.md` §6 与 `.golangci.yml` 要求 `golangci-lint run` 零告警，CI 把它列为**阻断性**步骤。
