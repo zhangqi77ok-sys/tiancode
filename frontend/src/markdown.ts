@@ -1,3 +1,5 @@
+// 消息渲染：Markdown → 消毒后的 HTML。
+// 为什么必须消毒：渲染的是模型输出（不可信）。直接 v-html 等于把 XSS 交给上游。
 import { Marked, type Tokens } from 'marked'
 import DOMPurify from 'dompurify'
 

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,11 @@ type ChatService struct {
 	agent   *agent.Loop // 随激活渠道重建；无激活渠道时为 nil（Send 给出可读错误）
 	active  llm.Channel
 	ledgers map[string]*session.Ledger
+
+	// 审批闸门状态（ADR-0007，默认关闭）
+	approvalTools    []string                       // 需要审批的工具名（空 = 关闭）
+	approvalEmit     func(ApprovalEvent)            // 事件回调（壳层注入）
+	pendingApprovals map[string]chan agent.Decision // 未决请求：ID → 答复通道
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -68,14 +74,22 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	if cfg.WorkDir == "" {
 		return nil, errors.New("chat service: work dir required")
 	}
+	// 工作区必须是已存在的目录：fs/shell/git 的受控根都指向它，
+	// 不存在时"启动看似正常、首次读写才报错"最难排查（实机事故）。
+	if info, err := os.Stat(cfg.WorkDir); err != nil {
+		return nil, fmt.Errorf("工作区不可用（%s）：请把配置里的 workspace 改成已存在的目录", cfg.WorkDir)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("工作区不是目录（%s）", cfg.WorkDir)
+	}
 	if cfg.ChannelsPath == "" {
 		cfg.ChannelsPath = channels.DefaultPath()
 	}
 	s := &ChatService{
-		cfg:     cfg,
-		store:   channels.NewStore(cfg.ChannelsPath),
-		factory: providerfactory.New(),
-		ledgers: make(map[string]*session.Ledger),
+		cfg:              cfg,
+		store:            channels.NewStore(cfg.ChannelsPath),
+		factory:          providerfactory.New(),
+		ledgers:          make(map[string]*session.Ledger),
+		pendingApprovals: make(map[string]chan agent.Decision),
 	}
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
@@ -98,6 +112,9 @@ func (s *ChatService) bootstrapChannels() error {
 	if err != nil {
 		return err
 	}
+	// 审批策略（用户设置）与渠道无关，必须**在任一提前返回之前**恢复：
+	// 曾放在 active 检查之后，导致"没有渠道时策略丢失"（测试当场抓到）。
+	s.approvalTools = cfg.ApprovalTools
 	if len(cfg.Channels) == 0 {
 		migrated, ok := channels.MigrateFromConfig(configfile.File{
 			BaseURL: s.cfg.BaseURL, APIKey: s.cfg.APIKey, Model: s.cfg.Model,
@@ -127,6 +144,7 @@ func (s *ChatService) activate(ch llm.Channel) error {
 	// 已覆盖挂起场景，总预算只防极端失控。
 	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
 	s.agent = agent.NewLoop(rt, ch.Model, s.registry)
+	s.applyApproverLocked() // 渠道重建后重新装上审批器（策略变更必须对当前运行时生效）
 	s.active = ch
 	return nil
 }

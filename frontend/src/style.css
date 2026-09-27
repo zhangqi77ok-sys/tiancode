@@ -56,6 +56,91 @@ body {
 }
 
 /* 通用卡片：白底 + 细描边 + 轻投影 + 大圆角 */
+/* Markdown 内容（AI 回复）：代码块/列表/行内代码/表格排版。
+   为什么不用 typography 插件：只需少量对话场景规则，多一个依赖不划算。 */
+.md > div > :first-child {
+  margin-top: 0;
+}
+.md > div > :last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0.5rem 0;
+}
+.md h1,
+.md h2,
+.md h3 {
+  margin: 0.75rem 0 0.4rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.md h1 {
+  font-size: 1.05rem;
+}
+.md h2 {
+  font-size: 1rem;
+}
+.md h3 {
+  font-size: 0.95rem;
+}
+.md ul,
+.md ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.15rem 0;
+}
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--c-surface-soft);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  padding: 0.1rem 0.3rem;
+}
+.md pre {
+  margin: 0.6rem 0;
+  padding: 0.75rem 0.85rem;
+  overflow-x: auto;
+  background: var(--c-surface-soft);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-input);
+  line-height: 1.55;
+}
+.md pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 0.82rem;
+}
+.md blockquote {
+  margin: 0.5rem 0;
+  padding: 0.25rem 0.75rem;
+  border-left: 3px solid var(--c-primary);
+  color: var(--c-text-dim);
+}
+.md a {
+  color: var(--c-primary);
+  text-decoration: underline;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+.md th,
+.md td {
+  border: 1px solid var(--c-border);
+  padding: 0.25rem 0.5rem;
+}
+
 .card {
   background: var(--c-surface);
   border: 1px solid var(--c-border);

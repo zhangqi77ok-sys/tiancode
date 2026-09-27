@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   failRename: false,
   deleted: [] as string[],
   replay: [] as { role: string; content: string; toolName?: string; status?: string; thinking?: string }[],
+  resolved: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
@@ -21,6 +22,11 @@ vi.mock('../wails', () => ({
       DeleteSession: async (id: string) => {
         h.deleted.push(id)
       },
+      ApprovalPolicy: async () => [],
+      SetApprovalPolicy: async () => {},
+      ResolveApproval: async (id: string) => {
+        h.resolved.push(id)
+      },
     },
     runtime: { EventsOn: () => {} },
   }),
@@ -35,6 +41,24 @@ describe('chat store', () => {
     h.failRename = false
     h.deleted = []
     h.replay = []
+    h.resolved = []
+  })
+
+  // 审批卡片：原始参数原样落地 → 答复后卡片转已决（防重复点击）
+  it('审批卡片插入与答复', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.onApproval({ id: 'ap-1', toolName: 'shell', arguments: '{"command":"rm -rf /tmp/x"}' })
+
+    const card = store.messages[store.messages.length - 1]
+    expect(card.role).toBe('approval')
+    expect(card.toolName).toBe('shell')
+    expect(card.args).toContain('rm -rf')
+
+    await store.resolveApproval('ap-1', false, '危险命令')
+    expect(h.resolved).toEqual(['ap-1'])
+    expect(card.status).toBe('denied')
+    expect(store.error).toBe('')
   })
 
   // 侧栏以摘要驱动：有标题显示标题，无标题回退会话 ID
@@ -71,6 +95,22 @@ describe('chat store', () => {
     expect(h.deleted).toEqual(['s-1'])
     expect(store.sessionId).not.toBe('s-1')
     expect(store.messages).toEqual([])
+  })
+
+  // 工具卡片携带结构化 diff（内核字段透传，UI 不解析文本）
+  it('工具事件携带 diff', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.onTool({
+      sessionID: store.sessionId,
+      name: 'fs',
+      status: 'success',
+      summary: 'written a.txt',
+      diff: '--- a.txt\n+++ a.txt\n@@ -1,1 +1,1 @@\n-one\n+ONE',
+    })
+    const card = store.messages[store.messages.length - 1]
+    expect(card.diff).toContain('+ONE')
+    expect(card.diff).toContain('-one')
   })
 
   // 终态错误要解开输入（running=false），否则用户被锁死无法继续

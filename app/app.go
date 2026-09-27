@@ -14,15 +14,41 @@ import (
 
 // Bind 是暴露给前端（Wails Bind）的入口对象。
 // 公开方法 = IPC 端点：一进一出、错误上抛；流式内容经事件桥推送（Observer，ADR-0005）。
+//
+// 铁律：绑定方法**不得**声明 context.Context 参数。
+// 本版本 Wails 的 boundMethod.ParseArgs 要求 JS 实参个数严格等于 Go 声明参数个数，
+// 且 Call 直接反射调用（不做任何 ctx 注入）。曾把 ctx 写成首参，
+// 导致每次发送都报 "received 2 arguments to method 'app.Bind.Send', expected 3"（实机事故）。
+// 应用上下文改由 OnStartup 写入 AppCtx 字段（字段不参与绑定校验）。
 type Bind struct {
 	chat    *app.ChatService
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	// AppCtx 是 Wails 应用上下文，由 main 的 OnStartup 注入（事件推送与取消传播都依赖它）。
+	AppCtx context.Context
 }
 
 // New 装配壳层。
 func New(chat *app.ChatService) *Bind {
-	return &Bind{chat: chat, cancels: make(map[string]context.CancelFunc)}
+	b := &Bind{chat: chat, cancels: make(map[string]context.CancelFunc)}
+	// 审批事件桥（ADR-0007）：内核要"问"时推给前端，前端答复经 ResolveApproval 回流
+	chat.SetApprovalHandler(func(e app.ApprovalEvent) {
+		wruntime.EventsEmit(b.appCtx(), "chat:approval", map[string]string{
+			"id":        e.ID,
+			"toolName":  e.ToolName,
+			"arguments": e.Arguments,
+		})
+	})
+	return b
+}
+
+// appCtx 返回应用上下文；未注入时退化为 Background——
+// 宁可事件桥拿到一个无价值的 ctx，也不要 nil panic 打断已建立的数据流。
+func (b *Bind) appCtx() context.Context {
+	if b.AppCtx == nil {
+		return context.Background()
+	}
+	return b.AppCtx
 }
 
 // ListSessions 返回全部会话 ID。
@@ -40,6 +66,18 @@ func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
 
 // SetWorkspace 切换工作区；非法路径（不存在/非目录/空白）返回错误供 UI 展示。
 func (b *Bind) SetWorkspace(dir string) error { return b.chat.SetWorkspace(dir) }
+
+// ApprovalPolicy 返回当前需要执行前审批的工具清单（空 = 审批关闭，默认）。
+func (b *Bind) ApprovalPolicy() []string { return b.chat.ApprovalPolicy() }
+
+// SetApprovalPolicy 设置需要审批的工具清单；传空数组即关闭审批（ADR-0007 默认关）。
+func (b *Bind) SetApprovalPolicy(tools []string) error { return b.chat.SetApprovalPolicy(tools) }
+
+// ResolveApproval 提交用户对某次审批请求的答复（允许/拒绝 + 原因）。
+// 未知或已处理的 ID 返回错误——UI 会明确提示，绝不静默放行。
+func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
+	return b.chat.ResolveApproval(id, approved, reason)
+}
 
 // ListSessionSummaries 返回会话摘要（ID + 用户标题；标题来自账本事件）。
 func (b *Bind) ListSessionSummaries() ([]app.SessionSummary, error) {
@@ -68,7 +106,8 @@ func (b *Bind) Replay(sessionID string) ([]app.ChatMessage, error) {
 // endReason 取值对应 core/llm：1=EndDone 2=EndError 3=EndCancelled 4=EndIdleTimeout。
 // 返回值仅在"流建立失败"（前置错误，如配置缺失/连接失败重试耗尽）时非 nil；
 // 流中终态一律经 chat:terminal 事件传递。
-func (b *Bind) Send(ctx context.Context, sessionID, text string) error {
+func (b *Bind) Send(sessionID, text string) error {
+	ctx := b.appCtx() // 见 Bind 注释：ctx 不能作绑定方法参数
 	runCtx, cancel := context.WithCancel(ctx)
 	b.mu.Lock()
 	b.cancels[sessionID] = cancel
@@ -112,6 +151,7 @@ func (b *Bind) Send(ctx context.Context, sessionID, text string) error {
 				"status":    c.ToolEvent.Status,
 				"summary":   c.ToolEvent.Summary,
 				"content":   c.ToolEvent.Content,
+				"diff":      c.ToolEvent.Diff, // 编辑类工具的结构化 diff（无变更时为空串）
 			})
 		}
 		if c.EndReason != llm.EndNone {

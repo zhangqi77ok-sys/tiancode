@@ -76,7 +76,7 @@ tiancode/
 ```
 用户输入 → app/ 绑定 → ChatService.Send（Pipeline：ResolveSession→Dispatch→StreamRelay→Persist，见 ADR-0005）
   → session 账本追加 UserMessage（持久化成功才推进内存）
-  → deriveMessages(ledger)          ← M6：跨轮 derive 含 tool_calls + role=tool（模型侧截断见 ADR-0007）
+  → deriveMessages(ledger)          ← M6：跨轮 derive 含 tool_calls + role=tool（模型侧截断见 ADR-0008）
   → agent.Loop（Phase 状态机 Idle/Running/Cancelled）
       → llm.ChatRuntime（流前重试，流中不换渠道）→ ProviderPort.StreamChat（空闲看门狗/发送逃生）
       ├─ Delta → 账本 AssistantDelta → 前端流式渲染（markdown / thinking）

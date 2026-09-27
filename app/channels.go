@@ -4,8 +4,6 @@
 package app
 
 import (
-	"context"
-
 	"tiancode/internal/core/llm"
 )
 
@@ -115,6 +113,6 @@ func (b *Bind) SetActiveChannel(id string) error {
 }
 
 // DiscoverModels 按渠道信息拉取上游模型列表（不落盘，失败不影响已保存配置）。
-func (b *Bind) DiscoverModels(ctx context.Context, in ChannelInput) ([]string, error) {
-	return b.chat.DiscoverModels(ctx, in.toDomain())
+func (b *Bind) DiscoverModels(in ChannelInput) ([]string, error) {
+	return b.chat.DiscoverModels(b.appCtx(), in.toDomain())
 }
