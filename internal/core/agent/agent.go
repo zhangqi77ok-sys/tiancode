@@ -193,6 +193,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			summary := result.Content
 			if len(summary) > 200 {
+				// 为什么截断 200：工具卡片只需摘要，完整结果已在账本与模型上下文中
 				summary = summary[:200] + "…"
 			}
 			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{

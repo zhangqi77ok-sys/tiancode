@@ -369,7 +369,7 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 	for _, c := range chunks {
 		if c.ToolEvent != nil {
 			toolEvents++
-			if c.ToolEvent.Name != "fs" || c.ToolEvent.Status != "success" || c.ToolEvent.Summary != "file-x" {
+			if c.ToolEvent.Name != "fs" || c.ToolEvent.Status != "success" || c.ToolEvent.Summary != "file-x" || c.ToolEvent.Content != "file-x" {
 				t.Fatalf("tool event = %+v", c.ToolEvent)
 			}
 		}
@@ -411,6 +411,55 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 	}
 	if n := countEvents(t, dir, session.EventAssistantMsg); n != 1 {
 		t.Fatalf("assistant anchors = %d, want 1", n)
+	}
+}
+
+// ToolEvent.Content 超过 64KiB 必须截断（壳层 IPC）；Summary 仍是 200 字节摘要。
+func TestAgent_TruncatesToolEventForIPC(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	big := strings.Repeat("x", 70*1024)
+	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: big}}
+	registry := tools.NewRegistry()
+	if err := registry.Register(st); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "c1", Name: "fs", ArgumentsDelta: `{}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "done"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry)
+	ch, err := loop.Run(context.Background(), ledger, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := drain(t, ch, 3*time.Second)
+
+	var ev *llm.ToolEvent
+	for _, c := range chunks {
+		if c.ToolEvent != nil {
+			ev = c.ToolEvent
+		}
+	}
+	if ev == nil {
+		t.Fatal("missing ToolEvent")
+	}
+	wantSummary := strings.Repeat("x", 200) + "…"
+	if ev.Summary != wantSummary {
+		t.Fatalf("summary len=%d want 200-byte chip, got %q", len(ev.Summary), ev.Summary)
+	}
+	if ev.Content == big {
+		t.Fatal("ToolEvent.Content must be truncated for IPC")
+	}
+	if !strings.Contains(ev.Content, "truncated") || !strings.Contains(ev.Content, fmt.Sprintf("%d", len(big))) {
+		t.Fatalf("content missing truncate marker: len=%d", len(ev.Content))
+	}
+	if !strings.HasPrefix(ev.Content, strings.Repeat("x", toolEventIPCLimit)) {
+		t.Fatal("truncated IPC content must keep the first 64KiB")
 	}
 }
 
