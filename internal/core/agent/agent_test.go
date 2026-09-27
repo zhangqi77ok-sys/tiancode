@@ -497,3 +497,59 @@ func TestAgent_StepLimit(t *testing.T) {
 		t.Fatalf("assistant anchors = %d, want 0 (turn incomplete)", n)
 	}
 }
+
+// C-AGT-1：第二轮 Run 发给模型的消息必须含上一轮 assistant(tool_calls)+role=tool。
+func TestAgent_DerivesToolHistoryAcrossTurns(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: "file-x"}}
+	registry := tools.NewRegistry()
+	if err := registry.Register(st); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "c1", Name: "fs", ArgumentsDelta: `{"action":"read"}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "fixed"}, {EndReason: llm.EndDone}},
+		{{Delta: "ok"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry)
+
+	ch, err := loop.Run(context.Background(), ledger, "fix foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	ch, err = loop.Run(context.Background(), ledger, "also bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	if fr.requestCount() != 3 {
+		t.Fatalf("requests = %d, want 3", fr.requestCount())
+	}
+	msgs := fr.reqs[2].Messages
+	if len(msgs) != 5 {
+		t.Fatalf("turn-2 messages = %d, want 5 (user, assistant+tools, tool, assistant, user); got %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "fix foo" {
+		t.Fatalf("msgs[0] = %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].ID != "c1" {
+		t.Fatalf("msgs[1] = %+v", msgs[1])
+	}
+	if msgs[2].Role != "tool" || msgs[2].ToolCallID != "c1" || msgs[2].Content != "file-x" {
+		t.Fatalf("msgs[2] = %+v", msgs[2])
+	}
+	if msgs[3].Role != "assistant" || msgs[3].Content != "fixed" {
+		t.Fatalf("msgs[3] = %+v", msgs[3])
+	}
+	if msgs[4].Role != "user" || msgs[4].Content != "also bar" {
+		t.Fatalf("msgs[4] = %+v", msgs[4])
+	}
+}

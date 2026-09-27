@@ -82,7 +82,7 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string)
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
-	msgs, err := l.deriveMessages(ledger)
+	msgs, err := deriveMessages(ledger)
 	if err != nil {
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("derive history: %w", err)
@@ -94,30 +94,6 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string)
 	out := make(chan llm.StreamChunk)
 	go l.turn(ctx, ledger, msgs, toolDefs, out)
 	return out, nil
-}
-
-// deriveMessages 从账本重放推导多轮消息。
-// 只取 user_message / assistant_message 两类锚点：delta 是过程量，assistant_message
-// 才是"确认完成"的消息；被取消的轮次天然不进入历史（其 delta 仍留在账本供审计）。
-// 注意：进行中的工具调用轮次不落锚点，崩溃恢复后该轮从最后一次用户消息重放。
-func (l *Loop) deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
-	var msgs []llm.Message
-	err := ledger.Replay(func(ev session.Event) error {
-		var p struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(ev.Data(), &p); err != nil {
-			return err
-		}
-		switch ev.Kind() {
-		case session.EventUserMessage:
-			msgs = append(msgs, llm.Message{Role: "user", Content: p.Text})
-		case session.EventAssistantMsg:
-			msgs = append(msgs, llm.Message{Role: "assistant", Content: p.Text})
-		}
-		return nil
-	})
-	return msgs, err
 }
 
 // turn 是多步消费循环：每步一次模型调用；工具调用触发续步。
@@ -187,15 +163,20 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		// 工具调用轮：回填 assistant(tool_calls) + 逐个执行工具并追加 tool 结果消息
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ToolCalls: calls})
 		for _, call := range calls {
+			id := call.ID
+			if id == "" {
+				id = fmt.Sprintf("call-%d", ledger.NextSeq())
+				call.ID = id
+			}
 			if _, err := ledger.Append(session.EventToolCall, map[string]string{
-				"name": call.Name, "arguments": call.Arguments,
+				"id": id, "name": call.Name, "arguments": call.Arguments,
 			}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
 				return
 			}
 			result := l.execTool(ctx, call)
 			if _, err := ledger.Append(session.EventToolResult, map[string]any{
-				"name": call.Name, "content": result.Content, "is_error": result.IsError,
+				"id": id, "name": call.Name, "content": result.Content, "is_error": result.IsError,
 			}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool result: %w", err)})
 				return

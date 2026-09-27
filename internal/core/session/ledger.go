@@ -147,6 +147,14 @@ func (l *Ledger) Append(kind EventKind, data any) (Event, error) {
 	return ev, nil
 }
 
+// NextSeq 返回下一次 Append 将使用的序号，不推进水位。
+// 单写入方在写入 tool_call 前用它生成 call-{seq}；账本不支持并发双写。
+func (l *Ledger) NextSeq() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lastSeq + 1
+}
+
 // Replay 按写入顺序重放账本中所有完整事件。
 // visit 返回错误则中止重放并原样上抛。
 func (l *Ledger) Replay(visit func(Event) error) error {
