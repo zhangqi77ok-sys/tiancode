@@ -37,9 +37,10 @@ const (
 
 // ToolEvent 是工具执行动态（UI 工具卡片的数据源；同时落账本供审计）。
 type ToolEvent struct {
-	Name    string // 工具名
-	Status  string // "success" | "error"
-	Summary string // 结果摘要（可截断）
+	Name    string
+	Status  string
+	Summary string
+	Content string // 全文；壳层 IPC 上限 64KiB，由 agent 截断
 }
 
 // StreamChunk 是流式传输的最小单元。

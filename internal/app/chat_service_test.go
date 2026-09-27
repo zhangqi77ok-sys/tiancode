@@ -58,7 +58,7 @@ func TestChatService_ConfigValidation(t *testing.T) {
 	}
 }
 
-// Replay 只投影已确认锚点：被取消轮次的 delta 不进历史（与 agent 语义一致）。
+// Replay 只投影已确认锚点：delta 文本不进历史（与 agent 语义一致）。无 tool 事件时仍为 2 条。
 func TestChatService_ReplayProjectsAnchors(t *testing.T) {
 	dir := t.TempDir()
 	l, err := session.OpenLedger(dir, "s1")
@@ -98,6 +98,68 @@ func TestChatService_ReplayProjectsAnchors(t *testing.T) {
 	}
 	if msgs[1].Role != "assistant" || msgs[1].Content != "a1" {
 		t.Fatalf("msgs[1] = %+v", msgs[1])
+	}
+}
+
+// C-APP-3：Replay 投影 tool 卡与 assistant thinking。
+func TestChatService_ReplayIncludesTools(t *testing.T) {
+	dir := t.TempDir()
+	l, err := session.OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventUserMessage, map[string]string{"text": "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventAssistantDelta, map[string]any{"text": "x", "thinking": "plan-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventToolCall, map[string]string{"id": "c1", "name": "fs", "arguments": "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventToolResult, map[string]any{"id": "c1", "name": "fs", "content": "file-x", "is_error": false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventAssistantDelta, map[string]any{"text": "y", "thinking": "plan-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventAssistantMsg, map[string]string{"text": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewChatService(Config{
+		DataDir: dir, WorkDir: ".", ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	msgs, err := s.Replay("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len=%d %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "u1" {
+		t.Fatalf("msgs[0]=%+v", msgs[0])
+	}
+	if msgs[1].Role != "tool" || msgs[1].ToolName != "fs" || msgs[1].Status != "success" || msgs[1].Content != "file-x" {
+		t.Fatalf("msgs[1]=%+v", msgs[1])
+	}
+	if msgs[2].Role != "assistant" || msgs[2].Content != "done" || msgs[2].Thinking != "plan-aplan-b" {
+		t.Fatalf("msgs[2]=%+v", msgs[2])
+	}
+
+	md, err := s.ExportSessionMarkdown("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md, "file-x") || !strings.Contains(md, "## 工具") {
+		t.Fatalf("export must include tool section:\n%s", md)
 	}
 }
 

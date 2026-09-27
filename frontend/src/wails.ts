@@ -6,6 +6,9 @@
 export interface ChatMessageDTO {
   role: string
   content: string
+  toolName?: string
+  status?: string
+  thinking?: string
 }
 
 // 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,33 +165,67 @@ func (s *ChatService) ListSessions() ([]string, error) {
 	return session.ListSessions(s.cfg.DataDir)
 }
 
-// ChatMessage 是投影给前端的已确认消息（user/assistant 锚点）。
+// ChatMessage 是投影给前端的已确认消息（user/assistant 锚点与 tool 卡）。
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	ToolName string `json:"toolName,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // Replay 把会话账本投影为已确认消息列表，供前端恢复历史。
-// 只投影 user_message / assistant_message 锚点——被取消轮次的 delta 不进历史
-// （与 agent.deriveMessages 同一语义，见 core/agent）。
+// 投影 user_message / tool_result / assistant_message；delta 文本不进历史，
+// thinking 累加到下一条 assistant（与 agent.deriveMessages 同一语义）。
 func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 	ledger, err := s.ledgerFor(sessionID)
 	if err != nil {
 		return nil, err
 	}
 	var out []ChatMessage
+	var thinking strings.Builder
 	err = ledger.Replay(func(ev session.Event) error {
-		var p struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(ev.Data(), &p); err != nil {
-			return err
-		}
 		switch ev.Kind() {
 		case session.EventUserMessage:
+			var p struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
 			out = append(out, ChatMessage{Role: "user", Content: p.Text})
+		case session.EventAssistantDelta:
+			var p struct {
+				Text     string `json:"text"`
+				Thinking string `json:"thinking"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			thinking.WriteString(p.Thinking)
+		case session.EventToolResult:
+			var p struct {
+				Name    string `json:"name"`
+				Content string `json:"content"`
+				IsError bool   `json:"is_error"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			st := "success"
+			if p.IsError {
+				st = "error"
+			}
+			out = append(out, ChatMessage{Role: "tool", Content: p.Content, ToolName: p.Name, Status: st})
 		case session.EventAssistantMsg:
-			out = append(out, ChatMessage{Role: "assistant", Content: p.Text})
+			var p struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			out = append(out, ChatMessage{Role: "assistant", Content: p.Text, Thinking: thinking.String()})
+			thinking.Reset()
 		}
 		return nil
 	})

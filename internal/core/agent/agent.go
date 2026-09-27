@@ -183,15 +183,21 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
 			// 下一续步请求才合法（结果经 ToolCallID 与调用配对）
 			msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content})
-			status, summary := "success", result.Content
+			status := "success"
 			if result.IsError {
 				status = "error"
 			}
+			content := result.Content
+			if len(content) > toolEventIPCLimit {
+				content = truncateToBytes(content, toolEventIPCLimit) + fmt.Sprintf("\n\n[truncated, original %d bytes]", len(result.Content))
+			}
+			summary := result.Content
 			if len(summary) > 200 {
-				// 为什么截断 200：工具卡片只需摘要，完整结果已在账本与模型上下文中
 				summary = summary[:200] + "…"
 			}
-			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{Name: call.Name, Status: status, Summary: summary}}) {
+			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+				Name: call.Name, Status: status, Summary: summary, Content: content,
+			}}) {
 				return
 			}
 		}

@@ -111,6 +111,7 @@ func (b *Bind) Send(ctx context.Context, sessionID, text string) error {
 				"name":      c.ToolEvent.Name,
 				"status":    c.ToolEvent.Status,
 				"summary":   c.ToolEvent.Summary,
+				"content":   c.ToolEvent.Content,
 			})
 		}
 		if c.EndReason != llm.EndNone {
