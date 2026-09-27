@@ -553,3 +553,143 @@ func TestAgent_DerivesToolHistoryAcrossTurns(t *testing.T) {
 		t.Fatalf("msgs[4] = %+v", msgs[4])
 	}
 }
+
+// C-AGT-2：发给模型的单条 tool 结果超过 4096 字节必须截断；账本保留全文。
+func TestAgent_TruncatesToolResultForModel(t *testing.T) {
+	ledger, dir := newTestLedger(t)
+	defer ledger.Close()
+
+	big := strings.Repeat("x", 5000)
+	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: big}}
+	registry := tools.NewRegistry()
+	if err := registry.Register(st); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "c1", Name: "fs", ArgumentsDelta: `{}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "done"}, {EndReason: llm.EndDone}},
+		{{Delta: "ok"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry)
+	ch, err := loop.Run(context.Background(), ledger, "q1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+	ch, err = loop.Run(context.Background(), ledger, "q2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	got := fr.reqs[2].Messages[2].Content
+	if len(got) >= 5000 || !strings.Contains(got, "truncated") || !strings.Contains(got, "5000") {
+		t.Fatalf("model tool content = %d bytes, %q", len(got), got[:min(80, len(got))])
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", 4096)) {
+		t.Fatal("truncated view must keep the first 4096 bytes")
+	}
+
+	l2, err := session.OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	full := ""
+	if err := l2.Replay(func(ev session.Event) error {
+		if ev.Kind() != session.EventToolResult {
+			return nil
+		}
+		var p struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(ev.Data(), &p); err != nil {
+			return err
+		}
+		full = p.Content
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if full != big {
+		t.Fatalf("ledger content len = %d, want 5000", len(full))
+	}
+}
+
+// C-AGT-3：没有 result 的 tool_call 不得进入模型消息。
+func TestAgent_OmitsUnpairedToolCall(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+	if _, err := ledger.Append(session.EventUserMessage, map[string]string{"text": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Append(session.EventToolCall, map[string]string{
+		"id": "c-orphan", "name": "fs", "arguments": "{}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{{Delta: "ok"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", nil)
+	ch, err := loop.Run(context.Background(), ledger, "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	for i, m := range fr.reqs[0].Messages {
+		if m.Role == "tool" || len(m.ToolCalls) > 0 {
+			t.Fatalf("unpaired tool leaked at msgs[%d] = %+v", i, m)
+		}
+	}
+}
+
+// C-AGT-4：旧账本缺 id 时合成 call-{seq} 且配对合法。
+func TestAgent_SyntheticIDsForLegacyLedger(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+	if _, err := ledger.Append(session.EventUserMessage, map[string]string{"text": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	callEv, err := ledger.Append(session.EventToolCall, map[string]string{
+		"name": "fs", "arguments": "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Append(session.EventToolResult, map[string]any{
+		"name": "fs", "content": "ok", "is_error": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": "done"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{{Delta: "ok"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", nil)
+	ch, err := loop.Run(context.Background(), ledger, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	msgs := fr.reqs[0].Messages
+	wantID := fmt.Sprintf("call-%d", callEv.Seq())
+	if len(msgs) < 4 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].ID != wantID {
+		t.Fatalf("msgs[1] = %+v, want id %s", msgs[1], wantID)
+	}
+	if msgs[2].Role != "tool" || msgs[2].ToolCallID != wantID || msgs[2].Content != "ok" {
+		t.Fatalf("msgs[2] = %+v", msgs[2])
+	}
+}
