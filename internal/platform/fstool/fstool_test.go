@@ -3,6 +3,7 @@ package fstool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,5 +156,75 @@ func TestFSRead(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatal("read missing file must be a business error")
+	}
+}
+
+// C-FS-5：list 越界或非目录 → IsError 且工作区零修改。
+func TestFSList_RejectsEscapeAndNonDir(t *testing.T) {
+	tool := newTool(t)
+	mustWrite(t, tool, "a.txt", "x")
+	parent := filepath.Dir(tool.Root())
+
+	for _, p := range []string{"../evil", filepath.Join(parent, "x")} {
+		res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{"action": "list", "path": p}))
+		if err != nil {
+			t.Fatalf("path %q: mechanism error %v", p, err)
+		}
+		if !res.IsError {
+			t.Fatalf("path %q: escape must be IsError", p)
+		}
+	}
+	res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{"action": "list", "path": "a.txt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("list on file must be IsError")
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() == "evil" {
+			t.Fatal("list escape created parent entry")
+		}
+	}
+}
+
+// C-FS-6：list 最多 500 条，超出截断并标注总数。
+func TestFSList_OutputBounded(t *testing.T) {
+	tool := newTool(t)
+	for i := 0; i < 510; i++ {
+		mustWrite(t, tool, filepath.Join("f", fmt.Sprintf("%04d.txt", i)), "x")
+	}
+	res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{"action": "list", "path": "f"}))
+	if err != nil || res.IsError {
+		t.Fatalf("list: %v %s", err, res.Content)
+	}
+	lines := strings.Split(strings.TrimRight(res.Content, "\n"), "\n")
+	if len(lines) != 501 { // 500 entries + truncated line
+		t.Fatalf("lines = %d, want 501", len(lines))
+	}
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "truncated") || !strings.Contains(last, "510") {
+		t.Fatalf("truncation line = %q", last)
+	}
+}
+
+// C-FS-7：list 只列下一层。
+func TestFSList_NonRecursive(t *testing.T) {
+	tool := newTool(t)
+	mustWrite(t, tool, "sub/nested.txt", "x")
+	mustWrite(t, tool, "top.txt", "y")
+	res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{"action": "list"}))
+	if err != nil || res.IsError {
+		t.Fatalf("list: %v %s", err, res.Content)
+	}
+	if strings.Contains(res.Content, "nested.txt") {
+		t.Fatalf("recursive leak: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "top.txt") || !strings.Contains(res.Content, "sub/") {
+		t.Fatalf("missing top entries: %s", res.Content)
 	}
 }

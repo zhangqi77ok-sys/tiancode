@@ -1,10 +1,10 @@
-// Package fstool 实现工作区受控文件工具（read/write/replace）。
+// Package fstool 实现工作区受控文件工具（read/write/replace/list）。
 // 做什么：把模型的结构化文件操作转换为受路径校验与原子写保护的磁盘操作。
 // 被谁依赖：internal/app（装配进工具注册表）。
 // 依赖谁：core/tools 端口、core/llm（定义形态）、platform/atomicfile、stdlib。
 //
-// 执行契约（C-FS-1~4、C-TOOL-1）：路径越界拒绝；replace 多处/零匹配报错且文件
-// 零修改；write 走原子写；内部施加超时（30s——fs 操作快，宽裕即安全）。
+// 执行契约（C-FS-1~7、C-TOOL-1）：路径越界拒绝；replace 多处/零匹配报错且文件
+// 零修改；write 走原子写；list 非递归且有界；内部施加超时（30s——fs 操作快，宽裕即安全）。
 package fstool
 
 import (
@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ func (t *Tool) Name() string { return "fs" }
 
 // Description 实现工具端口。
 func (t *Tool) Description() string {
-	return "读写工作区文件（read/write）与精准局部替换（replace，多处匹配默认拒绝）"
+	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）与非递归目录列表（list，最多 500 条）"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。
@@ -49,7 +50,7 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["read", "write", "replace"]},
+    "action": {"type": "string", "enum": ["read", "write", "replace", "list"]},
     "path": {"type": "string", "description": "相对工作区的路径"},
     "content": {"type": "string", "description": "write 时的完整文件内容"},
     "target": {"type": "string", "description": "replace 时的精确目标文本"},
@@ -89,8 +90,10 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 		return t.write(ctx, args.Path, args.Content)
 	case "replace":
 		return t.replace(ctx, args.Path, args.Target, args.Replacement, args.AllowMultiple)
+	case "list":
+		return t.list(args.Path)
 	default:
-		return bizErrf("unknown action %q (want read/write/replace)", args.Action), nil
+		return bizErrf("unknown action %q (want read/write/replace/list)", args.Action), nil
 	}
 }
 
@@ -158,6 +161,64 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		return bizErrf("replace write failed: %v", err), nil
 	}
 	return tools.ToolResult{Content: fmt.Sprintf("replaced %d occurrence(s) in %s", count, path)}, nil
+}
+
+const listLimit = 500
+
+func (t *Tool) list(path string) (tools.ToolResult, error) {
+	if path == "" {
+		path = "."
+	}
+	full, err := t.resolve(path)
+	if err != nil {
+		return bizErr(err), nil
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return bizErrf("list failed: %v", err), nil
+	}
+	if !info.IsDir() {
+		return bizErrf("not a directory: %s", path), nil
+	}
+	entries, err := os.ReadDir(full)
+	if err != nil {
+		return bizErrf("list failed: %v", err), nil
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir() != entries[j].IsDir() {
+			return entries[i].IsDir()
+		}
+		return entries[i].Name() < entries[j].Name()
+	})
+	total := len(entries)
+	if total == 0 {
+		return tools.ToolResult{Content: "empty directory"}, nil
+	}
+	var b strings.Builder
+	n := total
+	if n > listLimit {
+		n = listLimit
+	}
+	for i := 0; i < n; i++ {
+		e := entries[i]
+		name := e.Name()
+		if name == "." || name == ".." {
+			continue
+		}
+		if e.IsDir() {
+			fmt.Fprintf(&b, "dir  %s/\n", name)
+			continue
+		}
+		size := "-"
+		if fi, err := e.Info(); err == nil {
+			size = fmt.Sprintf("%d", fi.Size())
+		}
+		fmt.Fprintf(&b, "file %s  %s\n", name, size)
+	}
+	if total > listLimit {
+		fmt.Fprintf(&b, "(truncated, showing %d of %d entries)\n", listLimit, total)
+	}
+	return tools.ToolResult{Content: strings.TrimRight(b.String(), "\n")}, nil
 }
 
 // bizErrf 构造模型可见的业务失败（ToolResult.IsError，而非机制 error）。
