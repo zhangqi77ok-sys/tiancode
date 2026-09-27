@@ -4,6 +4,7 @@ import { useChatStore } from './stores/chat'
 import { useChannelStore } from './stores/channels'
 import ChannelSettings from './components/ChannelSettings.vue'
 import { bridge } from './wails'
+import { renderMarkdown } from './markdown'
 
 // 根组件：左侧会话卡片 + 右侧对话卡片。
 // 视觉语言：浅色柔和底 + 白卡 + 紫罗兰主色 + 药丸控件（令牌见 style.css）。
@@ -47,6 +48,20 @@ watch(() => store.messages.length, scrollToBottom)
 function fmtTime(at?: number): string {
   if (!at) return ''
   return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+const thinkingOpen = ref<Record<number, boolean>>({})
+const toolOpen = ref<Record<number, boolean>>({})
+
+function isThinkingOpen(i: number, streaming?: boolean) {
+  if (i in thinkingOpen.value) return thinkingOpen.value[i]
+  return !!streaming
+}
+function toggleThinking(i: number, streaming?: boolean) {
+  thinkingOpen.value[i] = !isThinkingOpen(i, streaming)
+}
+function chipText(s: string) {
+  return s.length > 200 ? s.slice(0, 200) + '…' : s
 }
 
 async function submit() {
@@ -182,20 +197,22 @@ onMounted(async () => {
           </div>
 
           <template v-for="(m, i) in store.messages" :key="i">
-            <!-- 工具卡片：药丸 + 状态点 -->
-            <div v-if="m.role === 'tool'" class="flex justify-start">
-              <div
+            <!-- 工具卡片：药丸 + 状态点；点击展开全文 -->
+            <div v-if="m.role === 'tool'" class="flex flex-col items-start gap-1">
+              <button
                 class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs"
                 :class="
                   m.status === 'error'
                     ? 'border-[var(--c-err)] bg-[var(--c-err-soft)] text-[var(--c-err)]'
                     : 'border-[var(--c-border)] bg-[var(--c-ok-soft)] text-[var(--c-text-dim)]'
                 "
+                @click="toolOpen[i] = !toolOpen[i]"
               >
                 <span class="h-1.5 w-1.5 rounded-full" :class="m.status === 'error' ? 'bg-[var(--c-err)]' : 'bg-[var(--c-ok)]'"></span>
                 <span class="font-medium text-[var(--c-text)]">{{ m.toolName }}</span>
-                <span class="max-w-[420px] truncate">{{ m.content }}</span>
-              </div>
+                <span class="max-w-[420px] truncate">{{ chipText(m.content) }}</span>
+              </button>
+              <pre v-if="toolOpen[i]" class="tool-full max-w-[85%]">{{ m.content }}</pre>
             </div>
 
             <!-- 用户消息：紫罗兰实心气泡，右对齐 -->
@@ -210,13 +227,24 @@ onMounted(async () => {
               </div>
             </div>
 
-            <!-- 助手消息：白卡 + 角色标签 -->
+            <!-- 助手消息：白卡 + 角色标签；成功路径 markdown，错误/取消/超时纯文本 -->
             <div v-else class="flex flex-col items-start gap-1">
               <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
                 <span class="font-medium text-[var(--c-text-dim)]">AGENT</span><span>{{ fmtTime(m.at) }}</span>
               </div>
+              <button
+                v-if="m.thinking"
+                class="chip text-[11px]"
+                @click="toggleThinking(i, m.streaming)"
+              >
+                思考
+              </button>
+              <pre
+                v-if="m.thinking && isThinkingOpen(i, m.streaming)"
+                class="tool-full max-w-[85%] text-[var(--c-text-dim)]"
+              >{{ m.thinking }}</pre>
               <div
-                class="max-w-[85%] whitespace-pre-wrap rounded-2xl border px-4 py-3 text-sm leading-6"
+                class="prose-md max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6"
                 :class="
                   m.term === 3 || m.term === 4
                     ? 'border-[var(--c-warn)] bg-[var(--c-warn-soft)]'
@@ -225,7 +253,8 @@ onMounted(async () => {
                       : 'border-[var(--c-border)] bg-[var(--c-surface)]'
                 "
               >
-                {{ m.content }}<span v-if="m.streaming" class="caret"></span>
+                <div v-if="m.error || m.term === 3 || m.term === 4" class="whitespace-pre-wrap">{{ m.content }}</div>
+                <div v-else v-html="renderMarkdown(m.content)"></div><span v-if="m.streaming" class="caret"></span>
               </div>
             </div>
           </template>
