@@ -195,6 +195,11 @@ type ChatMessage struct {
 	ToolName string `json:"toolName,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Thinking string `json:"thinking,omitempty"`
+	// 工具卡语义标签与结构化 diff（历史恢复与实时事件同构）：
+	// 此前 Replay 不投影 Diff，历史工具卡丢失"变更预览"（实时有、重启后消失）。
+	Title string `json:"title,omitempty"`
+	Op    string `json:"op,omitempty"`
+	Diff  string `json:"diff,omitempty"`
 }
 
 // Replay 把会话账本投影为已确认消息列表，供前端恢复历史。
@@ -231,6 +236,9 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 				Name    string `json:"name"`
 				Content string `json:"content"`
 				IsError bool   `json:"is_error"`
+				Title   string `json:"title"`
+				Op      string `json:"op"`
+				Diff    string `json:"diff"`
 			}
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
@@ -239,7 +247,10 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			if p.IsError {
 				st = "error"
 			}
-			out = append(out, ChatMessage{Role: "tool", Content: p.Content, ToolName: p.Name, Status: st})
+			out = append(out, ChatMessage{
+				Role: "tool", Content: p.Content, ToolName: p.Name, Status: st,
+				Title: p.Title, Op: p.Op, Diff: p.Diff,
+			})
 		case session.EventAssistantMsg:
 			var p struct {
 				Text string `json:"text"`

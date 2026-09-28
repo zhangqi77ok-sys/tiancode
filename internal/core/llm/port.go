@@ -45,6 +45,10 @@ type ToolEvent struct {
 	// 为什么走结构化字段而非让 UI 解析 Content 文本：文本解析脆且一旦摘要被截断就丢信息；
 	// 字段化后 UI 可按行着色，且契约由 tools.ToolResult.Diff 单向透传（ADR-0006）。
 	Diff string
+	// Title/Op 是工具卡片的语义标签（tools.ToolResult 同名透传）：主标签 + 动作类型。
+	// 旧事件缺省为空，UI 回退工具名渲染。
+	Title string
+	Op    string
 }
 
 // StreamChunk 是流式传输的最小单元。

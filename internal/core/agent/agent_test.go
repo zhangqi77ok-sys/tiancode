@@ -341,7 +341,10 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 	ledger, dir := newTestLedger(t)
 	defer ledger.Close()
 
-	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: "file-x"}}
+	st := &scriptTool{name: "fs", result: tools.ToolResult{
+		Content: "file-x", Title: "a.txt", Op: "read",
+		Diff: "--- a.txt\n+++ a.txt\n@@ -1,1 +1,1 @@\n-old\n+new",
+	}}
 	registry := tools.NewRegistry()
 	if err := registry.Register(st); err != nil {
 		t.Fatal(err)
@@ -371,6 +374,10 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 			toolEvents++
 			if c.ToolEvent.Name != "fs" || c.ToolEvent.Status != "success" || c.ToolEvent.Summary != "file-x" || c.ToolEvent.Content != "file-x" {
 				t.Fatalf("tool event = %+v", c.ToolEvent)
+			}
+			// UI 语义标签与结构化 diff 必须透传到实时事件（工具卡"install.go（修改）"的数据源）
+			if c.ToolEvent.Title != "a.txt" || c.ToolEvent.Op != "read" || c.ToolEvent.Diff == "" {
+				t.Fatalf("tool event title/op/diff = %q/%q/%q", c.ToolEvent.Title, c.ToolEvent.Op, c.ToolEvent.Diff)
 			}
 		}
 		if c.EndReason != llm.EndNone {
@@ -411,6 +418,35 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 	}
 	if n := countEvents(t, dir, session.EventAssistantMsg); n != 1 {
 		t.Fatalf("assistant anchors = %d, want 1", n)
+	}
+
+	// 账本 payload 必须携带 title/op/diff——Replay 恢复历史工具卡的数据源
+	// （此前 diff 不落账，历史卡片丢失"变更预览"）
+	l2, err := session.OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	var got struct{ title, op, diff string }
+	if err := l2.Replay(func(ev session.Event) error {
+		if ev.Kind() != session.EventToolResult {
+			return nil
+		}
+		var p struct {
+			Title string `json:"title"`
+			Op    string `json:"op"`
+			Diff  string `json:"diff"`
+		}
+		if err := json.Unmarshal(ev.Data(), &p); err != nil {
+			return err
+		}
+		got.title, got.op, got.diff = p.Title, p.Op, p.Diff
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.title != "a.txt" || got.op != "read" || got.diff == "" {
+		t.Fatalf("ledger payload title=%q op=%q diff=%q", got.title, got.op, got.diff)
 	}
 }
 

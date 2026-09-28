@@ -20,6 +20,10 @@ type IconName =
   | 'copy'
   | 'star'
   | 'message'
+  | 'file'
+  | 'terminal'
+  | 'search'
+  | 'wrench'
 
 withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 16 })
 
@@ -54,6 +58,12 @@ const PATHS: Record<IconName, string[]> = {
   ],
   star: ['M12 3l2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9-5.5 2.9 1-6.1L3 9.5l6.3-.9z'],
   message: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
+  file: ['M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z', 'M15 2v5h5'],
+  terminal: ['m4 17 6-6-6-6', 'M12 19h8'],
+  search: ['M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16Z', 'm21 21-4.35-4.35'],
+  wrench: [
+    'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
+  ],
 }
 </script>
 

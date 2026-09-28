@@ -90,7 +90,7 @@ func (t *Tool) Schema() json.RawMessage {
 }
 
 // Execute 实现工具端口。
-func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.ToolResult, err error) {
 	var a struct {
 		Action         string `json:"action"`
 		Command        string `json:"command"`
@@ -100,6 +100,18 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return businessErrf("invalid arguments: %v", err), nil
 	}
+	// 卡片语义标签：run/bg_start 显示命令首段（参考稿的"⌨ 命令"形态），bg_* 显示任务号
+	defer func() {
+		if res.Title == "" {
+			res.Op = "exec"
+			switch {
+			case a.Command != "":
+				res.Title = tools.Headline(a.Command, 120)
+			case a.TaskID != "":
+				res.Title = "task " + a.TaskID
+			}
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{Content: "cancelled", IsError: true, TimedOut: true}, nil
 	}

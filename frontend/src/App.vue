@@ -35,7 +35,16 @@ onMounted(() => {
   })
   bridge().runtime.EventsOn(
     'chat:tool',
-    (p: { sessionID: string; name: string; status: string; summary: string; content?: string; diff?: string }) => {
+    (p: {
+      sessionID: string
+      name: string
+      status: string
+      summary: string
+      content?: string
+      diff?: string
+      title?: string
+      op?: string
+    }) => {
       store.onTool(p)
     },
   )

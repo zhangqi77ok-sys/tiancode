@@ -178,6 +178,9 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			result := l.execToolWithApproval(ctx, call) // 审批闸门（默认关，ADR-0007）
 			if _, err := ledger.Append(session.EventToolResult, map[string]any{
 				"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
+				// UI 语义标签与结构化 diff 一并落账：Replay 恢复的历史工具卡才有
+				// "install.go（修改）+3 -1"与变更预览（此前 diff 只在实时事件里，重启即丢）
+				"title": result.Title, "op": result.Op, "diff": result.Diff,
 			}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool result: %w", err)})
 				return
@@ -200,6 +203,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
 				Name: call.Name, Status: status, Summary: summary, Content: content, Diff: result.Diff,
+				Title: result.Title, Op: result.Op,
 			}}) {
 				return
 			}

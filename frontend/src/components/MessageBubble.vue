@@ -78,7 +78,7 @@ function fmtTime(at?: number): string {
         class="transition-transform"
         :class="thinkingOpen ? '' : '-rotate-90'"
       />
-      思考过程
+      深度思考
     </button>
     <pre v-if="m.thinking && thinkingOpen" class="tool-full max-w-[85%] text-[var(--c-text-dim)]">{{ m.thinking }}</pre>
 

@@ -28,6 +28,13 @@ type ToolResult struct {
 	// 仅供 UI 展示（agent 透传到 llm.ToolEvent.Diff），模型上下文仍只用 Content——
 	// 这样 diff 不额外消耗 token，也不改变模型可见的工具语义（ADR-0006）。
 	Diff string
+	// Title/Op 是工具卡片的语义标签（仅供 UI，不进模型上下文，与 Diff 同纪律）：
+	// Title 主标签（文件名/命令首段/搜索词），Op 动作类型（read/write/edit/list/exec/search/git）。
+	// 设计动因：Summary 只是 Content 的字节截断，UI 拿它渲染不出"install.go（修改）"；
+	// 语义必须由最清楚自己干了什么的工具在生产侧结构化给出。旧账本事件缺此二字段，
+	// UI 按空值回退工具名（可选字段，向后兼容）。
+	Title string
+	Op    string
 }
 
 // ToolPort 是工具端口：适配器实现它，内核只依赖它。

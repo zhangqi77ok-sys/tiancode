@@ -6,7 +6,16 @@ const h = vi.hoisted(() => ({
   failRename: false,
   deleted: [] as string[],
   renamed: [] as { id: string; title: string }[],
-  replay: [] as { role: string; content: string; toolName?: string; status?: string; thinking?: string }[],
+  replay: [] as {
+    role: string
+    content: string
+    toolName?: string
+    status?: string
+    thinking?: string
+    title?: string
+    op?: string
+    diff?: string
+  }[],
   resolved: [] as string[],
 }))
 
@@ -157,8 +166,8 @@ describe('chat store', () => {
     expect(store.summaries.some((s) => s.id === store.sessionId)).toBe(false)
   })
 
-  // 工具卡片携带结构化 diff（内核字段透传，UI 不解析文本）
-  it('工具事件携带 diff', async () => {
+  // 工具卡片携带结构化 diff 与语义标签（内核字段透传，UI 不解析文本）
+  it('工具事件携带 diff 与 title/op', async () => {
     const store = useChatStore()
     await store.newSession()
     store.onTool({
@@ -166,11 +175,15 @@ describe('chat store', () => {
       name: 'fs',
       status: 'success',
       summary: 'written a.txt',
+      title: 'a.txt',
+      op: 'write',
       diff: '--- a.txt\n+++ a.txt\n@@ -1,1 +1,1 @@\n-one\n+ONE',
     })
     const card = store.messages[store.messages.length - 1]
     expect(card.diff).toContain('+ONE')
     expect(card.diff).toContain('-one')
+    expect(card.title).toBe('a.txt')
+    expect(card.op).toBe('write')
   })
 
   // 终态错误要解开输入（running=false），否则用户被锁死无法继续
@@ -223,7 +236,15 @@ describe('chat store', () => {
     h.summaries = [{ id: 's-1', title: '' }]
     h.replay = [
       { role: 'user', content: 'u' },
-      { role: 'tool', content: 'file-x', toolName: 'fs', status: 'success' },
+      {
+        role: 'tool',
+        content: 'file-x',
+        toolName: 'fs',
+        status: 'success',
+        title: 'install.go',
+        op: 'edit',
+        diff: '+x',
+      },
       { role: 'assistant', content: 'done', thinking: 'plan' },
     ]
     const store = useChatStore()
@@ -232,7 +253,15 @@ describe('chat store', () => {
     // 只锁 Replay 映射契约：id 是入库时生成的稳定 key，不属于 Replay 契约，先剥掉再比
     expect(store.messages.map(({ id: _ignored, ...rest }) => rest)).toEqual([
       { role: 'user', content: 'u' },
-      { role: 'tool', content: 'file-x', toolName: 'fs', status: 'success' },
+      {
+        role: 'tool',
+        content: 'file-x',
+        toolName: 'fs',
+        status: 'success',
+        title: 'install.go',
+        op: 'edit',
+        diff: '+x',
+      },
       { role: 'assistant', content: 'done', thinking: 'plan' },
     ])
   })

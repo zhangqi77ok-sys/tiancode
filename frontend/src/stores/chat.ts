@@ -14,6 +14,10 @@ export interface ChatMsg {
   thinking?: string
   // 编辑类工具的结构化 diff（由内核字段透传，非文本解析所得）
   diff?: string
+  // 工具卡语义标签（内核产出）：title 主标签（文件名/命令首段/搜索词），op 动作类型
+  // （read/write/edit/list/exec/search/git）。旧账本缺省 → 卡片回退工具名渲染
+  title?: string
+  op?: string
   // 审批卡片数据（role='approval'）：id 用于回传答复；args 为原始 JSON 原样展示
   approvalId?: string
   args?: string
@@ -99,6 +103,9 @@ export const useChatStore = defineStore('chat', () => {
         toolName: m.toolName,
         status: m.status,
         thinking: m.thinking,
+        title: m.title,
+        op: m.op,
+        diff: m.diff,
       }),
     )
   }
@@ -228,6 +235,8 @@ export const useChatStore = defineStore('chat', () => {
     summary: string
     content?: string
     diff?: string
+    title?: string
+    op?: string
   }) {
     if (p.sessionID !== sessionId.value) return
     const card = withId({
@@ -236,6 +245,8 @@ export const useChatStore = defineStore('chat', () => {
       toolName: p.name,
       status: p.status,
       diff: p.diff,
+      title: p.title,
+      op: p.op,
       at: Date.now(),
     })
     // 插在流式助手之前，与 Replay 顺序一致：user → tool(s) → assistant

@@ -95,7 +95,7 @@ func (t *Tool) resolve(path string) (string, error) {
 }
 
 // Execute 实现工具端口。
-func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.ToolResult, err error) {
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{Content: "cancelled", IsError: true, TimedOut: true}, nil
 	}
@@ -111,6 +111,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
+	// 卡片语义标签：搜索词作主标签（defer 覆盖全部返回路径，含超时/无匹配）
+	defer func() {
+		if res.Title == "" {
+			res.Op = "search"
+			res.Title = tools.Headline(a.Pattern, 80)
+		}
+	}()
 	if strings.TrimSpace(a.Pattern) == "" {
 		return tools.ToolResult{Content: "pattern is required", IsError: true}, nil
 	}

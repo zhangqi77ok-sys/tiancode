@@ -55,7 +55,7 @@ func (t *Tool) Schema() json.RawMessage {
 }
 
 // Execute 实现工具端口（内部超时 + 输出有界 + 业务失败走 IsError）。
-func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.ToolResult, err error) {
 	var a struct {
 		Action string `json:"action"`
 		Path   string `json:"path"`
@@ -64,6 +64,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return businessErrf("invalid arguments: %v", err), nil
 	}
+	// 卡片语义标签："git status" 式子命令作主标签（defer 覆盖全部返回路径）
+	defer func() {
+		if res.Title == "" {
+			res.Op = "git"
+			res.Title = "git " + a.Action
+		}
+	}()
 
 	gitArgs, err := buildArgs(a.Action, a.Path, a.Limit)
 	if err != nil {

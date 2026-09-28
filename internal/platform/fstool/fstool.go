@@ -62,7 +62,7 @@ func (t *Tool) Schema() json.RawMessage {
 }
 
 // Execute 实现工具端口（遵守执行契约：内部超时/业务失败走 IsError）。
-func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.ToolResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, fsTimeout)
 	defer cancel()
 
@@ -77,6 +77,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return bizErrf("invalid arguments: %v", err), nil
 	}
+
+	// 卡片语义标签：defer 覆盖全部返回路径（成功/业务失败/取消），失败卡也能显示"动了哪个文件"
+	defer func() {
+		if res.Title == "" {
+			res.Title, res.Op = fsTitle(args.Path), fsOp(args.Action)
+		}
+	}()
 
 	// 取消响应：入口即检查（C-TOOL-5 协作式取消）
 	if err := ctx.Err(); err != nil {
@@ -237,6 +244,24 @@ func (t *Tool) list(path string) (tools.ToolResult, error) {
 // bizErrf 构造模型可见的业务失败（ToolResult.IsError，而非机制 error）。
 func bizErrf(format string, a ...any) tools.ToolResult {
 	return tools.ToolResult{Content: fmt.Sprintf(format, a...), IsError: true}
+}
+
+// fsTitle 卡片主标签：路径末段（read/write/replace 是文件，list 是目录）。
+// 只取末段：卡片一行内要一眼认出目标，全路径太长。
+func fsTitle(path string) string {
+	base := filepath.Base(filepath.Clean(path))
+	if base == "." || base == string(filepath.Separator) {
+		return "(workspace)"
+	}
+	return base
+}
+
+// fsOp 卡片动作徽章：replace 的语义即"编辑"
+func fsOp(action string) string {
+	if action == "replace" {
+		return "edit"
+	}
+	return action
 }
 
 func bizErr(err error) tools.ToolResult {

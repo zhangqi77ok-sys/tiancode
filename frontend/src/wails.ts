@@ -9,6 +9,10 @@ export interface ChatMessageDTO {
   toolName?: string
   status?: string
   thinking?: string
+  // 工具卡语义标签与结构化 diff（0.2.13 起账本携带；旧账本缺省 → UI 回退工具名）
+  title?: string
+  op?: string
+  diff?: string
 }
 
 // 审批请求载荷（内核要"问"时推送；UI 渲染确认卡片，答复经 ResolveApproval 回流）。

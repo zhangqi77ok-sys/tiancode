@@ -119,7 +119,10 @@ func TestChatService_ReplayIncludesTools(t *testing.T) {
 	if _, err := l.Append(session.EventToolCall, map[string]string{"id": "c1", "name": "fs", "arguments": "{}"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Append(session.EventToolResult, map[string]any{"id": "c1", "name": "fs", "content": "file-x", "is_error": false}); err != nil {
+	if _, err := l.Append(session.EventToolResult, map[string]any{
+		"id": "c1", "name": "fs", "content": "file-x", "is_error": false,
+		"title": "install.go", "op": "edit", "diff": "--- a\n+++ b\n@@\n+x",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := l.Append(session.EventAssistantDelta, map[string]any{"text": "y", "thinking": "plan-b"}); err != nil {
@@ -151,6 +154,10 @@ func TestChatService_ReplayIncludesTools(t *testing.T) {
 	}
 	if msgs[1].Role != "tool" || msgs[1].ToolName != "fs" || msgs[1].Status != "success" || msgs[1].Content != "file-x" {
 		t.Fatalf("msgs[1]=%+v", msgs[1])
+	}
+	// 语义标签与 diff 必须投影（历史工具卡渲染"install.go（修改）+ 查看变更"的数据源）
+	if msgs[1].Title != "install.go" || msgs[1].Op != "edit" || msgs[1].Diff == "" {
+		t.Fatalf("msgs[1] title/op/diff = %q/%q/%q", msgs[1].Title, msgs[1].Op, msgs[1].Diff)
 	}
 	if msgs[2].Role != "assistant" || msgs[2].Content != "done" || msgs[2].Thinking != "plan-aplan-b" {
 		t.Fatalf("msgs[2]=%+v", msgs[2])
