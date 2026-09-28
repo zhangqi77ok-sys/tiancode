@@ -6,6 +6,7 @@ import AppHeader from './components/AppHeader.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
+import FloatingTodo from './components/FloatingTodo.vue'
 import MessageList from './components/MessageList.vue'
 import SessionList from './components/SessionList.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -89,9 +90,11 @@ onBeforeUnmount(() => {
         @open-channels="channelsOpen = true"
       />
 
-      <main class="card flex min-w-0 flex-1 flex-col">
+      <main class="card relative flex min-w-0 flex-1 flex-col">
         <MessageList @suggest="draft = $event" />
         <Composer v-model="draft" />
+        <!-- 悬浮任务清单：挂在对话面板内（absolute 以面板为参照系），位置/折叠态跨重启保留 -->
+        <FloatingTodo />
       </main>
     </div>
 

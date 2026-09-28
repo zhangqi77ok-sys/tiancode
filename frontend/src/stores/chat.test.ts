@@ -360,7 +360,7 @@ describe('chat store', () => {
     expect(todoCards[0].todos).toEqual([{ text: 'a', status: 'done' }])
   })
 
-  // todo 工具卡不再重复渲染（任务卡由 TodoCard 承载）
+  // todo 工具卡不再重复渲染（任务卡由悬浮件 FloatingTodo 承载）
   it('onTool 忽略 todo 工具', async () => {
     const store = useChatStore()
     await store.newSession()

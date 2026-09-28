@@ -99,6 +99,20 @@
 | C-CH-7 | **自动禁用是运行期标记**：应用启动时把 `auto_disabled` 渠道恢复为 `enabled`（单次网络抖动 / 上游 5xx 不得让应用永久无渠道可用）；`manually_disabled`（用户显式意图）与凭证级禁用标记**一概不动**；恢复动作留痕（启动日志） | `TestPool_ReviveAutoDisabled` / `TestPool_ReviveKeepsManualDisabled` / `TestPool_ReviveKeepsCredentialBan` / `TestChatService_StartupRevivesAutoDisabledChannel` |
 | C-CH-8 | 无可用渠道的错误**必须可执行**：点名渠道与其状态（自动禁用/手动停用）、缺失的模型名与渠道现有模型，并给出恢复动作；禁止只回"无可用渠道：default / m（retry=0）"这类零信息量文本（该错误直接渲染在对话气泡里） | `TestGateway_NoChannelErrorIsActionable` / `TestGateway_NoChannelErrorNamesMissingModel` |
 
+## C-UI：对话界面（0.2.24）
+
+> 悬浮任务清单（用户反馈"任务清单最好是悬浮在这里，点击就展开一个悬浮列表，也可以关闭成一个悬浮图标"）。
+> 为什么单列一组并写明：任务清单的**载体**从"消息流内的内联卡"变成"对话面板上的悬浮件"，
+> 这是渲染契约的变化——数据契约（账本 EventTodo / 实时 TodoEvent / 单卡原地更新）完全不变。
+> 内联卡消失后，若没有契约盯着，很容易出现"两处都在渲染"或"两处都不渲染"的静默回退。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-UI-1 | 任务清单**不在消息流内联渲染**（不再随对话滚走）；由悬浮件承载，点击在"悬浮列表 ⇄ 悬浮图标"两态间切换；无任务清单时**不渲染**（不是空壳） | `floatingTodo.test.ts: 无任务卡时返回 null` + 无头渲染实证（两态截图） |
+| C-UI-2 | 悬浮件几何：位置钳制在对话面板内且**至少保留 56px 可见**（拖不出视野）；元素比 56px 还小时整体留在容器内；上界不为负 | `floatingTodo.test.ts: 位置钳制…/元素大于容器时…` |
+| C-UI-3 | 持久化位置解析对脏数据**一律回退默认位**（缺失/截断 JSON/非数字/非有限数），绝不因脏数据渲染出错或抛异常 | `floatingTodo.test.ts: 解析持久化位置…` |
+| C-UI-4 | 任务快照取**最后一条** todo 卡（实时与账本重放同源、同卡原地更新）；拖动有阈值判定，**点击不被手抖吞掉**；新的一份清单出现时展开 | `floatingTodo.test.ts: 任务快照取最后一条 todo 卡/拖动判定有阈值` |
+
 ## C-SES 扩展：会话删除 / 重命名 / 导出
 
 | ID | 契约 | 锁定测试 |
@@ -156,4 +170,5 @@
 | 2026-09-23 | C-APP-2 | 锁定测试落地于 `internal/app/chat_service_test.go::TestChatService_CancelKeepsEvents`，走 `httptest` 上游 + 真实 `chatRuntime` 的端到端路径。此前只有 `TestAgent_CancelKeepsEvents`，而它用 `fakeRuntime` **直接把 `EndCancelled` 喂进内核**，恰好绕过了真正会出错的那一环（runtime 中继把 ctx 取消误判为 `EndError`）——这个盲区正是"用户点中断却被上报成错误"长期未被发现的根因。补测同时修复了 `core/llm/runtime.go` 中继层的终态判定 | 本文件"ID 与测试名一一对应"的要求 + ADR-0003（流式三终态） |
 | 2026-09-23 | **新增 C-INS-1 ~ C-INS-7** | 补齐安装/卸载契约（此前完全缺失）。同时修正实现两处：① 卸载按名字无条件删除共享注册项 → 改为校验 `InstallLocation` 归属（实测踩过：用隔离目录做卸载验证，连带删掉了用户正式安装的注册项）；② 非致命警告只写 stderr，而安装器是 `-H windowsgui` 构建、没有控制台 → 警告用户永远看不到，改为同时落盘 `setup.log` | 用户实测反馈"安装后桌面没有快捷方式" + legacy 对照（legacy 同时创建桌面与开始菜单） |
 | 2026-09-27 | **新增 C-AGT-1~4 / C-FS-5~7 / C-SEARCH-1~6 / C-APP-3** | M6 编程智能体可用性：跨轮工具历史回放（含模型侧 4096 字节截断、旧账本合成 ID）、`fs.list`、工作区 `search`、Replay 投影工具卡与 thinking。截断只发生在 derive 视图，账本保留全文（ADR-0008；编号避让远端已发布的 ADR-0007 审批闸门） | `docs/superpowers/specs/2026-09-27-coding-agent-usability-design.md` + ADR-0008 |
-| 2026-09-28 | **新增 C-CH-7 / C-CH-8 / C-APP-4** | 实机故障：唯一渠道被 `auto_ban` 置为 `auto_disabled` 后，应用表现为"发消息毫无反应、没法对话"。三处根因分别固化为契约：① 选路失败的错误文本零信息量（用户不知道是没配、被禁用还是模型名错）→ C-CH-8 要求可执行；② `auto_disabled` 被持久化却无任何自动恢复途径 → C-CH-7 定为运行期标记、启动重新评估；③ 零块终态时前端 `onTerminal` 找不到"进行中的助手气泡"，错误被静默丢弃 → C-APP-4 要求新建错误气泡。同时修复：`gateway.noChannelError` 翻译错误、`channels.ReviveAutoDisabled` 新增、`chat.ts onTerminal` 补零块分支 | 用户实测反馈"不对哇，没法进行对话，这块做的有问题" + 复现证据（`TERMINAL endReason=2 err=无可用渠道：default / grok-4.7（retry=0）`，账本仅 `user_message` 无任何助手事件） |
+| 2026-09-28 | **新增 C-CH-7 / C-CH-8 / C-APP-4** | 实机故障：唯一渠道被 `auto_ban` 置为 `auto_disabled` 后，应用表现为“发消息毫无反应、没法对话”。三处根因分别固化为契约：① 选路失败的错误文本零信息量（用户不知道是没配、被禁用还是模型名错）→ C-CH-8 要求可执行；② `auto_disabled` 被持久化却无任何自动恢复途径 → C-CH-7 定为运行期标记、启动重新评估；③ 零块终态时前端 `onTerminal` 找不到“进行中的助手气泡”，错误被静默丢弃 → C-APP-4 要求新建错误气泡。同时修复：`gateway.noChannelError` 翻译错误、`channels.ReviveAutoDisabled` 新增、`chat.ts onTerminal` 补零块分支 | 用户实测反馈“不对哇，没法进行对话，这块做的有问题” + 复现证据（`TERMINAL endReason=2 err=无可用渠道：default / grok-4.7（retry=0）`，账本仅 `user_message` 无任何助手事件） |
+| 2026-09-28 | **新增 C-UI-1 ~ C-UI-4** | 任务清单的呈现载体变更：由"消息流内联卡（`TodoCard`，随对话滚走）"改为"对话面板上的悬浮件（`FloatingTodo`：悬浮列表 ⇄ 悬浮图标，两态可拖动、位置与折叠态跨重启保留）"。数据契约不变（账本 `EventTodo` / 实时 `TodoEvent` / 单卡原地更新）；`groupMessages` 仍产出 `kind='todo'` 分组但两处渲染器都刻意跳过它（改由悬浮件渲染），`TodoCard.vue` 删除 | 用户反馈"任务清单最好是悬浮在这里（贴截图），点击就展开一个悬浮列表（可以拖动移动），也可以继续关闭成一个悬浮图标（可以拖动移动）" |

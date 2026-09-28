@@ -6,7 +6,6 @@ import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import AskCard from './AskCard.vue'
 import MarkdownBody from './MarkdownBody.vue'
-import TodoCard from './TodoCard.vue'
 import ToolCard from './ToolCard.vue'
 
 // 两种形态：
@@ -135,7 +134,7 @@ function fmtTime(at?: number): string {
       </template>
 
       <ToolCard v-else-if="seg.role === 'tool'" :m="seg" />
-      <TodoCard v-else-if="seg.role === 'todo'" :m="seg" />
+      <!-- role === 'todo' 刻意不渲染：任务清单由悬浮件（FloatingTodo）承载，不随对话滚走 -->
       <AskCard v-else-if="seg.role === 'ask'" :m="seg" />
       <ApprovalCard v-else-if="seg.role === 'approval'" :m="seg" />
     </template>

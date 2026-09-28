@@ -282,7 +282,7 @@ export const useChatStore = defineStore('chat', () => {
     op?: string
   }) {
     if (p.sessionID !== sessionId.value) return
-    if (p.name === 'todo') return // 任务清单由 onTodo/TodoCard 承载，不重复出工具卡
+    if (p.name === 'todo') return // 任务清单由 onTodo/FloatingTodo 承载，不重复出工具卡
     if (p.name === 'ask_user') return // 问答卡由 onAsk/AskCard 承载，答案已在卡上
     // 封存当前段：ReAct 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（onChunk 再开新段）
     const ast = inFlightAssistant()

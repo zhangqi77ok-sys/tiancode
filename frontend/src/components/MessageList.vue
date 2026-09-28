@@ -8,7 +8,6 @@ import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import AskCard from './AskCard.vue'
 import MessageBubble from './MessageBubble.vue'
-import TodoCard from './TodoCard.vue'
 import ToolCard from './ToolCard.vue'
 
 // 建议提示：点击回填输入框（由 App 把草稿传给 Composer）
@@ -87,11 +86,12 @@ const items = computed(() => groupMessages(store.messages))
 
     <template v-for="item in items" :key="item.key">
       <ToolCard v-if="item.kind === 'tool'" :m="item.m" />
-      <TodoCard v-else-if="item.kind === 'todo'" :m="item.m" />
+      <!-- kind === 'todo' 刻意不渲染：任务清单改由悬浮件（FloatingTodo 挂在对话面板上）
+           呈现，不再随消息流滚走。数据仍在 store/账本里（重放与实时同源），只是换了载体 -->
       <ApprovalCard v-else-if="item.kind === 'approval'" :m="item.m" />
       <AskCard v-else-if="item.kind === 'ask'" :m="item.m" />
       <MessageBubble v-else-if="item.kind === 'turn'" :m="item.run[0]" :run="item.run" />
-      <MessageBubble v-else :m="item.m" />
+      <MessageBubble v-else-if="item.kind === 'single'" :m="item.m" />
     </template>
   </div>
 
