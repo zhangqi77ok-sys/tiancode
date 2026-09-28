@@ -75,8 +75,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
 
 | 产物（`dist/`） | 说明 |
 | --- | --- |
-| `tiancode-setup-v0.2.9.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建**桌面与开始菜单**快捷方式与卸载项 |
-| `tiancode-v0.2.9-portable.zip` | 便携包（exe + README） |
+| `tiancode-setup-v0.2.10.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建**桌面与开始菜单**快捷方式与卸载项 |
+| `tiancode-v0.2.10-portable.zip` | 便携包（exe + README） |
 
 安装器支持 `-quiet`（静默，供脚本部署）、`-dir <目录>`（自定义安装位置）与
 `-no-desktop-shortcut`（只建开始菜单入口，供桌面受限或企业托管环境）；
