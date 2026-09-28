@@ -68,3 +68,6 @@ cmd/installer/payload/*
 # 取反规则必须放在本文件最后：gitignore 后匹配者优先。
 # ------------------------------------------------------------
 !vendor/**
+
+# agent 本地工作状态（brainstorm 服务端口/token、会话临时产物）
+.superpowers/
