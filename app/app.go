@@ -40,6 +40,14 @@ func New(chat *app.ChatService) *Bind {
 			"arguments": e.Arguments,
 		})
 	})
+	// 问答事件桥（0.2.15）：ask_user 的选项卡推给前端，答复经 ResolveAsk 回流
+	chat.SetAskHandler(func(e app.AskEvent) {
+		wruntime.EventsEmit(b.appCtx(), "chat:ask", map[string]any{
+			"id":       e.ID,
+			"question": e.Question,
+			"options":  e.Options,
+		})
+	})
 	return b
 }
 
@@ -95,6 +103,11 @@ func (b *Bind) SetApprovalPolicy(tools []string) error { return b.chat.SetApprov
 // 未知或已处理的 ID 返回错误——UI 会明确提示，绝不静默放行。
 func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 	return b.chat.ResolveApproval(id, approved, reason)
+}
+
+// ResolveAsk 提交用户对某次问答的答复（答案原样回流给模型继续推理）。
+func (b *Bind) ResolveAsk(id string, answer string) error {
+	return b.chat.ResolveAsk(id, answer)
 }
 
 // ListSessionSummaries 返回会话摘要（ID + 用户标题；标题来自账本事件）。

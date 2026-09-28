@@ -13,6 +13,9 @@ export interface ChatMessageDTO {
   title?: string
   op?: string
   diff?: string
+  // 问答卡（role='ask'）：问题与选项来自 tool_call 参数，Content 为用户答复
+  question?: string
+  options?: string[]
 }
 
 // 审批请求载荷（内核要"问"时推送；UI 渲染确认卡片，答复经 ResolveApproval 回流）。
@@ -129,6 +132,8 @@ interface WailsApp {
   ApprovalPolicy(): Promise<string[] | null>
   SetApprovalPolicy(tools: string[]): Promise<void>
   ResolveApproval(id: string, approved: boolean, reason: string): Promise<void>
+  // 问答交互（ask_user）：答案原样回流给模型继续推理
+  ResolveAsk(id: string, answer: string): Promise<void>
   ChannelPresets(): Promise<PresetDTO[] | null>
   AddChannel(input: ChannelInput): Promise<ChannelDTO | null>
   UpdateChannel(input: ChannelInput): Promise<void>
@@ -171,6 +176,7 @@ export function bridge(): WailsBridge {
         ApprovalPolicy: async () => [],
         SetApprovalPolicy: offlineWrite,
         ResolveApproval: offlineWrite,
+        ResolveAsk: offlineWrite,
         ExportSessionMarkdown: async () => '',
         GetWorkspace: async () => '',
         SetWorkspace: offlineWrite,

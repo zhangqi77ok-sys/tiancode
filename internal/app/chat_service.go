@@ -62,6 +62,10 @@ type ChatService struct {
 	approvalTools    []string                       // 需要审批的工具名（空 = 关闭）
 	approvalEmit     func(ApprovalEvent)            // 事件回调（壳层注入）
 	pendingApprovals map[string]chan agent.Decision // 未决请求：ID → 答复通道
+
+	// 问答交互状态（ask_user，0.2.15）：与审批同构的"问 → 等 → 答"配对
+	askEmit     func(AskEvent)         // 事件回调（壳层注入）
+	pendingAsks map[string]chan string // 未决请求：ID → 答复通道
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -90,6 +94,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 		factory:          providerfactory.New(),
 		ledgers:          make(map[string]*session.Ledger),
 		pendingApprovals: make(map[string]chan agent.Decision),
+		pendingAsks:      make(map[string]chan string),
 	}
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
@@ -144,7 +149,8 @@ func (s *ChatService) activate(ch llm.Channel) error {
 	// 已覆盖挂起场景，总预算只防极端失控。
 	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
 	s.agent = agent.NewLoop(rt, ch.Model, s.registry)
-	s.applyApproverLocked() // 渠道重建后重新装上审批器（策略变更必须对当前运行时生效）
+	s.agent.SetAsker(&uiAsker{svc: s}) // 问答通道随 agent 生命周期常开（无 UI 时模型收到引导性结果）
+	s.applyApproverLocked()            // 渠道重建后重新装上审批器（策略变更必须对当前运行时生效）
 	s.active = ch
 	return nil
 }
@@ -200,6 +206,9 @@ type ChatMessage struct {
 	Title string `json:"title,omitempty"`
 	Op    string `json:"op,omitempty"`
 	Diff  string `json:"diff,omitempty"`
+	// 问答卡（role="ask"）：问题与选项来自 tool_call 参数，答案在 Content
+	Question string   `json:"question,omitempty"`
+	Options  []string `json:"options,omitempty"`
 }
 
 // Replay 把会话账本投影为已确认消息列表，供前端恢复历史。
@@ -213,6 +222,12 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 	}
 	var out []ChatMessage
 	var segText, segThinking strings.Builder
+	// ask_user 的问答卡需要 tool_call（问题/选项）与 tool_result（答案）跨事件配对
+	type pendingAsk struct {
+		question string
+		options  []string
+	}
+	askCalls := map[string]pendingAsk{}
 	flushSegment := func() {
 		if strings.TrimSpace(segText.String()) != "" || segThinking.String() != "" {
 			out = append(out, ChatMessage{Role: "assistant", Content: segText.String(), Thinking: segThinking.String()})
@@ -242,8 +257,27 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			segThinking.WriteString(p.Thinking)
 		case session.EventToolCall:
 			flushSegment()
+			var p struct {
+				ID        string `json:"id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			if p.Name == "ask_user" {
+				var a struct {
+					Question string   `json:"question"`
+					Options  []string `json:"options"`
+				}
+				if err := json.Unmarshal([]byte(p.Arguments), &a); err != nil {
+					return err
+				}
+				askCalls[p.ID] = pendingAsk{question: a.Question, options: a.Options}
+			}
 		case session.EventToolResult:
 			var p struct {
+				ID      string `json:"id"`
 				Name    string `json:"name"`
 				Content string `json:"content"`
 				IsError bool   `json:"is_error"`
@@ -256,6 +290,18 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			}
 			if p.Name == "todo" {
 				return nil // 任务卡由 EventTodo 承载（单卡原地更新），工具结果卡不重复投影
+			}
+			if p.Name == "ask_user" {
+				// 问答卡：问题/选项取配对的 tool_call，答案即结果内容；孤儿结果用 Title 兜底
+				question, options := p.Title, []string(nil)
+				if pa, ok := askCalls[p.ID]; ok {
+					question, options = pa.question, pa.options
+					delete(askCalls, p.ID)
+				}
+				out = append(out, ChatMessage{
+					Role: "ask", Content: p.Content, Question: question, Options: options,
+				})
+				return nil
 			}
 			st := "success"
 			if p.IsError {

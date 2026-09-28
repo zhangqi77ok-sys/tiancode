@@ -12,6 +12,8 @@ export type RenderItem =
   | { kind: 'turn'; m: ChatMsg; tools: ChatMsg[]; key: string }
   | { kind: 'tool'; m: ChatMsg; key: string }
   | { kind: 'todo'; m: ChatMsg; key: string }
+  | { kind: 'approval'; m: ChatMsg; key: string }
+  | { kind: 'ask'; m: ChatMsg; key: string }
   | { kind: 'single'; m: ChatMsg; key: string }
 
 export function keyOf(i: number, id?: string): string {
@@ -28,6 +30,12 @@ export function groupMessages(msgs: ChatMsg[]): RenderItem[] {
       const tools: ChatMsg[] = []
       for (let j = i - 1; j >= 0 && msgs[j].role === 'tool'; j--) tools.unshift(msgs[j])
       out.push({ kind: 'turn', m, tools, key })
+    } else if (m.role === 'approval') {
+      // 审批卡独立渲染（专用组件，绝不冒充助手气泡——0.2.15 修掉拆分期的潜伏错渲染）
+      out.push({ kind: 'approval', m, key })
+    } else if (m.role === 'ask') {
+      // 问答卡独立渲染（待答交互态 / 已答展示态）
+      out.push({ kind: 'ask', m, key })
     } else if (m.role === 'todo') {
       // 任务清单卡独立渲染（单卡原地更新语义，不属于任何回合块）
       out.push({ kind: 'todo', m, key })

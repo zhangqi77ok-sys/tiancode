@@ -25,8 +25,10 @@ func newRegistry(workDir string) (*tools.Registry, error) {
 		func() error { return registry.Register(shelltool.New(shelltool.Options{Root: workDir})) },
 		func() error { return registry.Register(gittool.New(workDir)) },
 		func() error { return registry.Register(searchtool.New(workDir)) },
-		// todo：任务清单工具。定义进模型工具集，执行由 Loop 按名拦截（agent.runTodo）
+		// todo / ask_user：交互类工具。定义进模型工具集，执行由 Loop 按名拦截
+		//（todo → agent.runTodo；ask_user → Loop.runAsk 阻塞等 UI 答复）
 		func() error { return registry.Register(agent.NewTodoTool()) },
+		func() error { return registry.Register(agent.NewAskUserTool()) },
 	} {
 		if err := reg(); err != nil {
 			return nil, fmt.Errorf("register tool: %w", err)

@@ -54,6 +54,10 @@ onMounted(() => {
   bridge().runtime.EventsOn('chat:todo', (p: { sessionID: string; items: { text: string; status: string }[] }) => {
     store.onTodo({ sessionID: p.sessionID, items: p.items as TodoItem[] })
   })
+  // 问答卡：ask_user 载荷不带 sessionID（流式中禁止切换会话，卡片必属当前会话）
+  bridge().runtime.EventsOn('chat:ask', (p: { id: string; question: string; options?: string[] }) => {
+    store.onAsk(p)
+  })
   void store.init()
 })
 

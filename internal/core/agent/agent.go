@@ -57,6 +57,8 @@ type Loop struct {
 	phase    atomic.Int32
 	// approver 为 nil 表示不启用审批（默认关，ADR-0007）；经 SetApprover 注入
 	approver Approver
+	// asker 为 nil 表示问答通道未启用（ask_user 收到引导性结果）；经 SetAsker 注入
+	asker Asker
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -214,9 +216,11 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 	emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("step limit reached (%d steps)", MaxStepsPerTurn)})
 }
 
-// dispatchTool 工具执行分派：todo 由内核拦截（实时事件 + 落账），
-// 其余走审批闸门（默认关，ADR-0007）。
+// dispatchTool 工具执行分派：ask_user/todo 由内核拦截（交互语义），其余走审批闸门（默认关，ADR-0007）。
 func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *session.Ledger, forward func(llm.StreamChunk) bool) tools.ToolResult {
+	if call.Name == askToolName {
+		return l.runAsk(ctx, call)
+	}
 	if call.Name == todoToolName {
 		return runTodo(call, ledger, forward)
 	}

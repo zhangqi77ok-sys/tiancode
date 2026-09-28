@@ -46,7 +46,7 @@ describe('groupMessages', () => {
     expect(items[1]).toMatchObject({ kind: 'tool', m: { id: 'm-2' } })
   })
 
-  it('审批卡不打断归组：approval 之后的工具卡仍并入助手回合', () => {
+  it('审批卡独立渲染且不打断归组：approval 之后的工具卡仍并入助手回合', () => {
     const msgs = [
       msg({ role: 'user', id: 'm-1' }),
       msg({ role: 'approval', id: 'm-2', toolName: 'shell' }),
@@ -55,8 +55,23 @@ describe('groupMessages', () => {
     ]
     const items = groupMessages(msgs)
     expect(items).toHaveLength(3)
-    expect(items[1]).toMatchObject({ kind: 'single', m: { role: 'approval' } })
+    expect(items[1]).toMatchObject({ kind: 'approval', m: { id: 'm-2' } })
     expect(items[2]).toMatchObject({ kind: 'turn', tools: [msgs[2]] })
+  })
+
+  it('问答卡独立渲染，前后助手段各自成块', () => {
+    const msgs = [
+      msg({ role: 'user', id: 'm-1' }),
+      msg({ role: 'assistant', id: 'm-2', content: '先问一下' }),
+      msg({ role: 'ask', id: 'm-3', question: '选哪个？' }),
+      msg({ role: 'assistant', id: 'm-4', content: '按选择继续' }),
+    ]
+    const items = groupMessages(msgs)
+    expect(items).toHaveLength(4)
+    expect(items[1]).toMatchObject({ kind: 'turn', m: { id: 'm-2' } })
+    expect(items[2]).toMatchObject({ kind: 'ask', m: { id: 'm-3' } })
+    // 助手段统一为 turn 块（无工具卡时 tools 为空，渲染等同普通气泡）
+    expect(items[3]).toMatchObject({ kind: 'turn', m: { id: 'm-4' }, tools: [] })
   })
 
   it('多轮回合：各自的工具卡归属各自的助手', () => {

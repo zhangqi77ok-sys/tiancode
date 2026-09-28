@@ -13,7 +13,7 @@ export interface TodoItem {
 // role='tool' 为工具卡片（toolName/status 承载卡片数据）；
 // at 为消息时间戳（渲染 HH:MM）；term 记录终态枚举（UI 区分 取消/超时 与 错误）。
 export interface ChatMsg {
-  role: 'user' | 'assistant' | 'tool' | 'approval' | 'todo'
+  role: 'user' | 'assistant' | 'tool' | 'approval' | 'todo' | 'ask'
   content: string
   toolName?: string
   status?: string
@@ -26,6 +26,11 @@ export interface ChatMsg {
   op?: string
   // 任务清单数据（role='todo'）：todo 工具的全量快照，单卡原地更新
   todos?: TodoItem[]
+  // 问答卡数据（role='ask'）：askId 用于答复回流；answered 区分待答/已答
+  question?: string
+  options?: string[]
+  askId?: string
+  answered?: boolean
   // 审批卡片数据（role='approval'）：id 用于回传答复；args 为原始 JSON 原样展示
   approvalId?: string
   args?: string
@@ -114,6 +119,16 @@ export const useChatStore = defineStore('chat', () => {
           todos = [] // 旧数据/损坏数据容错：空清单，不阻塞恢复
         }
         return withId({ role: 'todo', content: '', todos })
+      }
+      // 问答卡：Content 为用户答复；问题/选项由账本 tool_call 配对投影，恢复即已答态
+      if (m.role === 'ask') {
+        return withId({
+          role: 'ask',
+          content: m.content,
+          question: m.question,
+          options: m.options,
+          answered: true,
+        })
       }
       return withId({
         role: m.role as ChatMsg['role'],
@@ -268,6 +283,7 @@ export const useChatStore = defineStore('chat', () => {
   }) {
     if (p.sessionID !== sessionId.value) return
     if (p.name === 'todo') return // 任务清单由 onTodo/TodoCard 承载，不重复出工具卡
+    if (p.name === 'ask_user') return // 问答卡由 onAsk/AskCard 承载，答案已在卡上
     // 封存当前段：ReAct 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（onChunk 再开新段）
     const ast = inFlightAssistant()
     if (ast) ast.streaming = false
@@ -297,6 +313,38 @@ export const useChatStore = defineStore('chat', () => {
     const card = withId({ role: 'todo', content: '', todos: p.items, at: Date.now() })
     const i = ast ? messages.value.indexOf(ast) : messages.value.length
     messages.value.splice(i, 0, card)
+  }
+
+  // 问答卡（ask_user）：插入待答卡片并封存当前段——叙事顺序 = 本轮文本 → 问答卡 → 回复
+  function onAsk(p: { id: string; question: string; options?: string[] }) {
+    const ast = inFlightAssistant()
+    if (ast) ast.streaming = false
+    messages.value.push(
+      withId({
+        role: 'ask',
+        content: '',
+        question: p.question,
+        options: p.options ?? [],
+        askId: p.id,
+        at: Date.now(),
+      }),
+    )
+  }
+
+  // 提交答复：失败必须可见（例如"已处理"），成功后卡片转已答态展示所选答案
+  async function resolveAsk(id: string, answer: string) {
+    error.value = ''
+    try {
+      await bridge().app.ResolveAsk(id, answer)
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      return
+    }
+    const card = messages.value.find((m) => m.askId === id)
+    if (card) {
+      card.answered = true
+      card.content = answer
+    }
   }
 
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
@@ -405,6 +453,8 @@ export const useChatStore = defineStore('chat', () => {
     onChunk,
     onTool,
     onTodo,
+    onAsk,
+    resolveAsk,
     onTerminal,
     queue,
     enqueue,

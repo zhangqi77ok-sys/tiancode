@@ -15,9 +15,12 @@ const h = vi.hoisted(() => ({
     title?: string
     op?: string
     diff?: string
+    question?: string
+    options?: string[]
   }[],
   resolved: [] as string[],
   sends: [] as string[],
+  resolvedAsks: [] as { id: string; answer: string }[],
 }))
 
 vi.mock('../wails', () => ({
@@ -41,6 +44,9 @@ vi.mock('../wails', () => ({
       ResolveApproval: async (id: string) => {
         h.resolved.push(id)
       },
+      ResolveAsk: async (id: string, answer: string) => {
+        h.resolvedAsks.push({ id, answer })
+      },
     },
     runtime: { EventsOn: () => {} },
   }),
@@ -59,6 +65,7 @@ describe('chat store', () => {
     h.replay = []
     h.resolved = []
     h.sends = []
+    h.resolvedAsks = []
   })
 
   // 开源惯例（open-webui/lobe-chat）：首轮结束用首条消息截断自动命名，侧栏不再裸奔会话 ID
@@ -327,6 +334,50 @@ describe('chat store', () => {
     await store.send('hi')
     store.onTool({ sessionID: store.sessionId, name: 'todo', status: 'success', summary: 'updated' })
     expect(store.messages.filter((m) => m.role === 'tool')).toHaveLength(0)
+  })
+
+  // 问答卡：chat:ask 插入待答卡并封存当前段；resolveAsk 成功后转已答态展示所选答案
+  it('onAsk 插入问答卡，resolveAsk 回流答复', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onChunk({ sessionID: store.sessionId, delta: '需要确认', thinking: '' })
+    store.onAsk({ id: 'ask-1', question: '选哪个方案？', options: ['方案 A', '方案 B'] })
+    const card = store.messages.at(-1)
+    expect(card).toMatchObject({ role: 'ask', question: '选哪个方案？', askId: 'ask-1' })
+    expect(card?.answered).toBeFalsy()
+    expect(store.messages.at(-2)?.streaming).toBe(false) // 当前段已封存
+    await store.resolveAsk('ask-1', '方案 A')
+    expect(h.resolvedAsks).toEqual([{ id: 'ask-1', answer: '方案 A' }])
+    expect(card?.answered).toBe(true)
+    expect(card?.content).toBe('方案 A')
+  })
+
+  // ask_user 工具卡不重复渲染（问答卡已承载）
+  it('onTool 忽略 ask_user 工具', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTool({ sessionID: store.sessionId, name: 'ask_user', status: 'success', summary: 'answered' })
+    expect(store.messages.filter((m) => m.role === 'tool')).toHaveLength(0)
+  })
+
+  // Replay 恢复问答卡为已答态（问题/选项由账本 tool_call 配对投影）
+  it('Replay 恢复问答卡为已答态', async () => {
+    h.summaries = [{ id: 's-1', title: '' }]
+    h.replay = [
+      { role: 'user', content: 'u' },
+      { role: 'ask', content: '方案 A', question: '选哪个？', options: ['方案 A'] },
+    ]
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.selectSession('s-1')
+    expect(store.messages[1]).toMatchObject({
+      role: 'ask',
+      content: '方案 A',
+      question: '选哪个？',
+      answered: true,
+    })
   })
 
   // 输入队列：running 期间的提交入队，终态后自动逐条发出

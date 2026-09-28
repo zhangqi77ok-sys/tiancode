@@ -882,3 +882,74 @@ func TestAgent_TodoRoundtrip(t *testing.T) {
 		t.Fatalf("EventTodo count = %d, want 1", n)
 	}
 }
+
+// ask_user 由 Loop 拦截：问题/选项经 Asker 端口到 UI，答案作为工具结果回填模型。
+func TestAgent_AskRoundtrip(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	registry := tools.NewRegistry()
+	if err := registry.Register(NewAskUserTool()); err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubAsker{answer: "方案 A"}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "a1", Name: "ask_user", ArgumentsDelta: `{"question":"选哪个方案？","options":["方案 A","方案 B"]}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "按方案 A 继续"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry)
+	loop.SetAsker(stub)
+	ch, err := loop.Run(context.Background(), ledger, "问一下")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+
+	if stub.got.Question != "选哪个方案？" || len(stub.got.Options) != 2 {
+		t.Fatalf("asker got = %+v", stub.got)
+	}
+	msgs := fr.reqs[1].Messages
+	if len(msgs) < 3 || msgs[2].Role != "tool" || msgs[2].Content != "方案 A" {
+		t.Fatalf("step-2 messages = %+v", msgs)
+	}
+}
+
+// asker 未注入：ask_user 收到引导性结果（非错误），模型据此自行决策而不是反复重试。
+func TestAgent_AskWithoutChannel(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	registry := tools.NewRegistry()
+	if err := registry.Register(NewAskUserTool()); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "a1", Name: "ask_user", ArgumentsDelta: `{"question":"q"}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "自行决定"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry) // 无 SetAsker
+	ch, err := loop.Run(context.Background(), ledger, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 3*time.Second)
+	if !strings.Contains(fr.reqs[1].Messages[2].Content, "unavailable") {
+		t.Fatalf("tool content = %q", fr.reqs[1].Messages[2].Content)
+	}
+}
+
+type stubAsker struct {
+	answer string
+	got    AskRequest
+}
+
+func (s *stubAsker) Ask(_ context.Context, req AskRequest) (string, error) {
+	s.got = req
+	return s.answer, nil
+}

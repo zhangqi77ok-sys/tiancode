@@ -4,6 +4,7 @@ import { useChatStore } from '../stores/chat'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages } from '../composables/messageGrouping'
 import ApprovalCard from './ApprovalCard.vue'
+import AskCard from './AskCard.vue'
 import MessageBubble from './MessageBubble.vue'
 import TodoCard from './TodoCard.vue'
 import ToolCard from './ToolCard.vue'
@@ -71,6 +72,8 @@ const items = computed(() => groupMessages(store.messages))
     <template v-for="item in items" :key="item.key">
       <ToolCard v-if="item.kind === 'tool'" :m="item.m" />
       <TodoCard v-else-if="item.kind === 'todo'" :m="item.m" />
+      <ApprovalCard v-else-if="item.kind === 'approval'" :m="item.m" />
+      <AskCard v-else-if="item.kind === 'ask'" :m="item.m" />
       <MessageBubble v-else-if="item.kind === 'turn'" :m="item.m" :tools="item.tools" />
       <MessageBubble v-else :m="item.m" />
     </template>
