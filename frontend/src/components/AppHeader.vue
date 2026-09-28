@@ -30,9 +30,11 @@ const activeChannelName = computed(
 )
 const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeId)
 
-// 切换工作区：弹系统目录选择框；状态收敛在 workspace store（侧栏"按空间分组"同源）
+// 切换工作区：弹系统目录选择框；状态收敛在 workspace store（侧栏"按空间分组"同源）。
+// 与侧栏"打开"同语义：切换空间即自动新建会话（归属新空间）
 async function switchWorkspace() {
-  await ws.pickAndSet()
+  const ok = await ws.pickAndSet()
+  if (ok) await store.newSession()
 }
 
 // 导出当前会话为 Markdown 并复制到剪贴板；剪贴板不可用时明确报错，不假装成功

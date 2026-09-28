@@ -37,10 +37,14 @@ function visible<T extends { id: string }>(items: T[], key: string): T[] {
   return expanded.value[key] ? items : items.slice(0, VIEW_LIMIT)
 }
 
-// 打开工作区：系统目录选择框 → 切换（新对话将归属该空间）
+// 打开工作区：系统目录选择框 → 切换 → 自动在该空间新建会话
+// （切换空间即开新对话：归属由首条消息落账本时的快照决定，天然记到新空间名下）
 async function openWorkspace() {
   const ok = await ws.pickAndSet()
-  if (ok) emit('close') // 窄屏抽屉收起；桌面端无副作用
+  if (ok) {
+    await store.newSession()
+    emit('close') // 窄屏抽屉收起；桌面端无副作用
+  }
 }
 
 // 重命名：对话框返回 null 视为放弃；60 字上限与后端契约一致
@@ -91,7 +95,7 @@ function select(id: string) {
       </button>
       <button
         class="chip shrink-0 gap-1.5 px-3"
-        title="打开工作区（切换后新建的对话将归属该空间）"
+        title="打开工作区（切换并自动新建对话）"
         @click="openWorkspace"
       >
         <AppIcon name="folder" :size="14" /> 打开
