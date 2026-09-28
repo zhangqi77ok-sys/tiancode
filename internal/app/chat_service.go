@@ -175,6 +175,11 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	if ag == nil {
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
 	}
+	// 记录本轮工作区快照：侧栏按空间分组取账本首个 workspace 事件，
+	// 会话归属 = 首次发送时的工作区（每轮都记，归属语义不受中途切换影响）。
+	if _, err := ledger.Append(session.EventWorkspace, map[string]string{"path": s.Workspace()}); err != nil {
+		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
+	}
 	return ag.Run(ctx, ledger, text)
 }
 

@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
+import { useWorkspaceStore } from '../stores/workspace'
 import { useToast } from '../composables/useToast'
-import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 import ChannelSettings from './ChannelSettings.vue'
 
@@ -13,15 +13,15 @@ const emit = defineEmits<{ (e: 'toggle-drawer'): void }>()
 
 const store = useChatStore()
 const channels = useChannelStore()
+const ws = useWorkspaceStore()
 const { push: toast } = useToast()
 
 const settingsOpen = ref(false)
-const workspace = ref('')
 const approvalOn = ref(false)
 
-// 顶栏只显示末级目录名（完整路径太长会挤掉状态区）
+// 顶栏只显示末级目录名（完整路径太长会挤掉状态区）；状态在 workspace store（侧栏分组同源）
 const workspaceName = computed(
-  () => workspace.value.split(/[\\/]/).filter(Boolean).pop() ?? '未设置工作区',
+  () => ws.path.split(/[\\/]/).filter(Boolean).pop() ?? '未设置工作区',
 )
 
 // 顶栏展示当前默认渠道：没有渠道时给出明确引导（而不是让用户对着发送键发呆）
@@ -30,17 +30,9 @@ const activeChannelName = computed(
 )
 const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeId)
 
-// 切换工作区：弹系统目录选择框（用户自己选，不再手敲路径）；
-// 工具受控根随即重建（后端契约：非法路径返回错误，不静默保留旧值）
+// 切换工作区：弹系统目录选择框；状态收敛在 workspace store（侧栏"按空间分组"同源）
 async function switchWorkspace() {
-  try {
-    const dir = await bridge().app.PickWorkspace()
-    if (!dir || dir === workspace.value) return // 用户取消或未变化
-    await bridge().app.SetWorkspace(dir)
-    workspace.value = (await bridge().app.GetWorkspace()) ?? ''
-  } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
-  }
+  await ws.pickAndSet()
 }
 
 // 导出当前会话为 Markdown 并复制到剪贴板；剪贴板不可用时明确报错，不假装成功
@@ -64,7 +56,7 @@ async function toggleApproval() {
 
 onMounted(async () => {
   await channels.load()
-  workspace.value = (await bridge().app.GetWorkspace()) ?? ''
+  await ws.refresh()
   approvalOn.value = (await store.loadApprovalPolicy()).length > 0
 })
 </script>

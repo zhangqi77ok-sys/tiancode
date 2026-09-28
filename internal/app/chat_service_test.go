@@ -275,3 +275,52 @@ drain:
 		t.Fatalf("Replay = %+v, want 仅 1 条 user（取消轮次不进历史）", msgs)
 	}
 }
+
+// 摘要携带归属工作区：侧栏按空间分组的数据源。
+// 账本首个 workspace 事件 = 会话归属；无该事件的旧会话 Workspace 为空。
+func TestSessionSummaries_CarryWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewChatService(Config{
+		DataDir: dir, WorkDir: ".", // WorkDir 必须真实存在（构造校验）；事件里的路径只是记录值
+		ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// 有快照的会话：归属取首个 workspace 事件
+	l, err := s.ledgerFor("s-20260928-130000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": "D:/proj/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": "D:/proj/b"}); err != nil {
+		t.Fatal(err)
+	}
+	// 无快照的会话（旧账本形态）：Workspace 为空
+	l2, err := s.ledgerFor("s-20260928-130001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l2.Append(session.EventUserMessage, map[string]string{"text": "旧会话"}); err != nil {
+		t.Fatal(err)
+	}
+
+	sums, err := s.SessionSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SessionSummary{}
+	for _, sm := range sums {
+		byID[sm.ID] = sm
+	}
+	if got := byID["s-20260928-130000"].Workspace; got != "D:/proj/a" {
+		t.Fatalf("workspace = %q, want D:/proj/a（归属取首个）", got)
+	}
+	if got := byID["s-20260928-130001"].Workspace; got != "" {
+		t.Fatalf("workspace = %q, want empty（旧账本兼容）", got)
+	}
+}

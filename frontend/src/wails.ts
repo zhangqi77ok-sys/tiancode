@@ -19,10 +19,12 @@ export interface ApprovalEventDTO {
   arguments: string
 }
 
-// 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）
+// 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）；
+// workspace 为空表示 0.2.6 前的旧账本（前端归入"未分组"）
 export interface SessionSummaryDTO {
   id: string
   title: string
+  workspace?: string
 }
 
 // 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）

@@ -11,10 +11,12 @@ import (
 	"tiancode/internal/core/session"
 )
 
-// SessionSummary 是会话列表项：ID + 用户标题（未重命名时 Title 为空）。
+// SessionSummary 是会话列表项：ID + 用户标题（未重命名时 Title 为空）+ 归属工作区
+// （账本首个 workspace 事件；旧会话为空，前端归入"未分组"）。
 type SessionSummary struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // maxTitleRunes 是标题长度上限：侧栏单行展示，过长既撑破布局也无法辨认。
@@ -89,7 +91,11 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取会话 %s 标题失败：%w", id, err)
 		}
-		out = append(out, SessionSummary{ID: id, Title: title})
+		ws, err := session.Workspace(s.cfg.DataDir, id)
+		if err != nil {
+			return nil, fmt.Errorf("读取会话 %s 工作区失败：%w", id, err)
+		}
+		out = append(out, SessionSummary{ID: id, Title: title, Workspace: ws})
 	}
 	return out, nil
 }
