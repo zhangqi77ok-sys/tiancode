@@ -350,6 +350,11 @@ body {
   border: 0;
   border-radius: 0;
 }
+/* hljs 主题（github.css）自带底色/内边距，交由 .code-block 统一，避免双层背景 */
+.markdown-body pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
 
 /* 细滚动条：原生滚动条在浅色 UI 上过于突兀（开源桌面聊天普遍自定义） */
 *::-webkit-scrollbar {

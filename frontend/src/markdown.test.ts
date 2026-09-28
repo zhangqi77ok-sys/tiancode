@@ -43,7 +43,20 @@ describe('renderMarkdown', () => {
     const html = renderMarkdown('```go\nx := 1\n```')
     expect(html).toContain('code-lang">go</span>')
     expect(html).toContain('data-copy')
-    expect(html).toContain('<pre><code>x := 1</code></pre>')
+    expect(html).toContain('class="hljs language-go"')
+  })
+
+  // 语法高亮：已注册语言输出 hljs 标记（AI 编程工具的代码可读性基线）
+  it('已注册语言的代码块带语法高亮', () => {
+    const html = renderMarkdown('```json\n{"a": 1}\n```')
+    expect(html).toContain('hljs-attr')
+    expect(html).toContain('language-json')
+  })
+
+  it('未注册语言回退转义、无高亮标记', () => {
+    const html = renderMarkdown('```weirdlang\n<x>\n```')
+    expect(html).toContain('&lt;x&gt;')
+    expect(html).not.toContain('hljs-attr')
   })
 
   // 原始 HTML 过白名单后渲染，而不是转义成文本（转义会让用户看到 <div> 原文）
