@@ -36,15 +36,37 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          # 为什么是 22 而不是 18：前端依赖树（vite 6 / vitest 5 / jsdom 29 及其传递依赖
+          # @asamuzakjp/*）的 engines 要求是 ^20.19.0 || ^22.12.0 || >=24.0.0，
+          # Node 18 上 npm ci 会刷一屏 EBADENGINE（0.2.21/0.2.22 的 CI 长期停在这个版本）；
+          # 本地开发用的也是 22，两边对齐才谈得上"CI 复现本地"。
+          node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       # 顺序不可调换：main.go 用 //go:embed all:frontend/dist 内嵌前端产物，
       # 必须先构建前端，后续 go build/vet/test 才拿到真实产物（而非空目录）。
-      - name: 前端 · 依赖
+      #
+      # 为什么装完依赖要自检原生二进制：npm 的 optionalDependencies 已知缺陷
+      # （npm/cli#4828）会让平台原生包（rollup/esbuild）在 CI 上装不出来，
+      # 表现为下一步构建报 "Cannot find native binding … Please try npm i again"，
+      # 而本地构建完全正常——门禁长期变红就没人看了（0.2.21/0.2.22 的 CI 就是如此，
+      # 真正的缺陷因而没人拦）。这里显式自检 + 重装一次，仍缺就明确失败：
+      # 让红色只代表"真的坏了"，不代表环境抖动。
+      - name: 前端 · 依赖（含原生二进制自检）
         working-directory: frontend
-        run: npm ci
+        shell: pwsh
+        run: |
+          npm ci
+          $native = "node_modules/@rollup/rollup-win32-x64-msvc"
+          if (-not (Test-Path $native)) {
+            Write-Host "缺少 rollup 原生绑定，重装一次（npm/cli#4828）"
+            npm i --no-audit --no-fund
+          }
+          if (-not (Test-Path $native)) {
+            Write-Host "::error::rollup 原生绑定仍缺失（$native），前端构建无法进行"
+            exit 1
+          }
 
       - name: 前端 · 构建（含 vue-tsc 类型检查，见 package.json build 脚本）
         working-directory: frontend
