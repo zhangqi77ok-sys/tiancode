@@ -13,9 +13,10 @@ function diffLineClass(line: string): string {
   return 'text-[var(--c-text-dim)]'
 }
 
-// 摘要截断：药丸内只示意，全文在展开区
+// 摘要截断：药丸内只示意（60 字符足够辨认是哪次调用），全文在展开区。
+// 0.2.11 曾放 200 字符：目录列举类摘要把药丸撑满整行，喧宾夺主（用户反馈）
 function chipText(s: string): string {
-  return s.length > 200 ? s.slice(0, 200) + '…' : s
+  return s.length > 60 ? s.slice(0, 60) + '…' : s
 }
 
 defineProps<{ m: ChatMsg }>()
@@ -40,7 +41,7 @@ const open = ref(false)
         class="h-1.5 w-1.5 shrink-0 rounded-full"
         :class="m.status === 'error' ? 'bg-[var(--c-err)]' : 'bg-[var(--c-ok)]'"
       ></span>
-      <span class="shrink-0 font-medium text-[var(--c-text)]">{{ m.toolName }}</span>
+      <span class="max-w-[40%] shrink-0 truncate font-medium text-[var(--c-text)]">{{ m.toolName }}</span>
       <span class="min-w-0 truncate">{{ chipText(m.content) }}</span>
       <AppIcon
         name="chevron-down"

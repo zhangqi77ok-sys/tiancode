@@ -77,10 +77,77 @@ func appendSetupLog(line string) {
 	fmt.Fprintf(f, "%s  %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
 }
 
+// closeRunningApp 安装/卸载前关闭正在运行的 tiancode（用户反馈：升级必须先关旧版）。
+//
+// Windows 下运行中的 exe 文件被锁定，writeFileAtomic 的 rename 与 os.Remove 都会失败，
+// 升级装不上、卸载卸不净。策略对齐主流安装器：先温和 taskkill（发 WM_CLOSE，给应用
+// 保存状态的机会），等 2s 仍存活再强杀；仍关不掉不阻断——后续文件操作若因占用失败
+// 会作为安装错误显式暴露，全过程落 setup.log 可查。
+func closeRunningApp() {
+	if !isAppRunning() {
+		return
+	}
+	appendSetupLog("检测到运行中的 tiancode，正在自动关闭…")
+	killApp(false)
+	if waitAppExit(2 * time.Second) {
+		appendSetupLog("tiancode 已正常退出")
+		return
+	}
+	killApp(true)
+	if waitAppExit(2 * time.Second) {
+		appendSetupLog("tiancode 未响应关闭请求，已强制结束")
+		return
+	}
+	warn("未能关闭运行中的 tiancode，安装可能因文件占用失败")
+}
+
+// isAppRunning 用 tasklist 查询应用进程是否存在。查询失败一律视为未运行：
+// 关闭是尽力而为的前置优化，探测失败不应让安装失败。
+func isAppRunning() bool {
+	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+appExeName, "/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return false
+	}
+	return tasklistReportsApp(string(out))
+}
+
+// tasklistReportsApp 解析 tasklist 输出判断目标进程是否在列（纯函数，可单测）。
+// 无匹配时 tasklist 输出本地化提示行（"信息: ..."/"INFO: ..."）且不含镜像名，
+// 以「输出中是否出现 tiancode.exe」为判据，天然兼容各语言系统。
+func tasklistReportsApp(out string) bool {
+	return strings.Contains(strings.ToLower(out), strings.ToLower(appExeName))
+}
+
+// killApp 结束应用进程；force=false 发 WM_CLOSE，true 为强杀。
+// 返回值不单独判错：结果统一由 waitAppExit 轮询确认，那是唯一的生效判据。
+func killApp(force bool) {
+	args := []string{"/IM", appExeName}
+	if force {
+		args = append(args, "/F")
+	}
+	cmd := exec.Command("taskkill", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
+	_ = cmd.Run()
+}
+
+// waitAppExit 轮询等待应用退出（时序判据见 docs/TESTING.md：轮询而非固定 sleep）。
+func waitAppExit(timeout time.Duration) bool {
+	for deadline := time.Now().Add(timeout); ; {
+		if !isAppRunning() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // doInstall 安装：写应用 exe → 复制自身（卸载入口）→ 快捷方式 → 注册表项。
 // desktopIcon 为 false 时跳过桌面快捷方式（仅开始菜单），供受限环境或脚本化部署选择。
 func doInstall(dir string, desktopIcon bool) error {
 	appendSetupLog(fmt.Sprintf("install v%s dir=%s desktopIcon=%v", version, dir, desktopIcon))
+
 	if len(appBinary) == 0 {
 		return fmt.Errorf("安装包损坏：内嵌程序为空（请重新运行 release.ps1 构建）")
 	}

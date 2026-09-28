@@ -53,6 +53,7 @@ func main() {
 	flag.Parse()
 
 	if *uninstall {
+		closeRunningApp() // 卸载同样先关应用：运行中的 exe 文件被锁，删除会失败
 		if err := doUninstall(*dirFlag); err != nil {
 			fail("卸载失败", err, *quiet)
 			return
@@ -69,6 +70,7 @@ func main() {
 			return
 		}
 	}
+	closeRunningApp() // 升级安装前先关闭运行中的旧版（0.2.11 用户反馈）
 	if err := doInstall(*dirFlag, !*noDesktop); err != nil {
 		fail("安装失败", err, *quiet)
 		return

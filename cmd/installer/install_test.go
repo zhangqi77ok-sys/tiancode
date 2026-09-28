@@ -194,3 +194,24 @@ func TestExpandEnvVars(t *testing.T) {
 		t.Errorf("未定义变量应展开为空，实际 %q", got)
 	}
 }
+
+// tasklist 解析判据：出现镜像名即认为在运行；本地化"无匹配"提示行不得误报。
+// 背景：无匹配时 tasklist 输出 "信息: 没有运行的任务匹配指定标准。"（中文系统）或
+// "INFO: ..."（英文系统），判据以镜像名出现为准，兼容各语言。
+func TestTasklistReportsApp(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"运行中（CSV 行）", "\"tiancode.exe\",\"1234\",\"Console\",\"1\",\"12,345 K\"\r\n", true},
+		{"中文系统无匹配提示", "信息: 没有运行的任务匹配指定的标准。\r\n", false},
+		{"英文系统无匹配提示", "INFO: No tasks are running which match the specified criteria.\r\n", false},
+		{"空输出", "", false},
+	}
+	for _, c := range cases {
+		if got := tasklistReportsApp(c.out); got != c.want {
+			t.Errorf("%s: tasklistReportsApp(%q) = %v, want %v", c.name, c.out, got, c.want)
+		}
+	}
+}
