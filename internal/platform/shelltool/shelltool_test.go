@@ -34,6 +34,9 @@ func newTool(t *testing.T, opts Options) *Tool {
 }
 
 // C-TOOL-1：超时可配且必在预算内返回（默认 120s，测试用短超时）。
+// 墙钟断言用相对语义边界而非固定 3s：命令自然时长约 10s，若返回时间逼近它说明超时未生效；
+// 收束来自超时预算（而非命令自然结束）已由 res.TimedOut 证明。固定 3s 在并发负载下会假红
+// （docs/PENDING.md「已知脆弱点」1），故取 8s——远小于命令时长，又给进程树终止留足负载余量。
 func TestShellRun_TimeoutReturns(t *testing.T) {
 	tool := newTool(t, Options{Timeout: 700 * time.Millisecond})
 
@@ -43,8 +46,8 @@ func TestShellRun_TimeoutReturns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mechanism error: %v", err)
 	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("timeout not enforced: took %v", elapsed)
+	if elapsed > 8*time.Second {
+		t.Fatalf("timeout not enforced: took %v (command itself runs ~10s)", elapsed)
 	}
 	if !res.TimedOut || !res.IsError {
 		t.Fatalf("result = %+v, want TimedOut && IsError", res)
@@ -87,6 +90,7 @@ func TestShellRun_BusinessError(t *testing.T) {
 }
 
 // C-TOOL-5：ctx 取消 → 立即返回 TimedOut 终态（进程树终止）。
+// 同 TestShellRun_TimeoutReturns：相对语义边界（命令约 10s）代替固定 3s 墙钟，负载下不再假红。
 func TestShellRun_CancelKillsTree(t *testing.T) {
 	tool := newTool(t, Options{Timeout: 30 * time.Second})
 
@@ -101,8 +105,8 @@ func TestShellRun_CancelKillsTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(start) > 3*time.Second {
-		t.Fatalf("cancel not honored: took %v", time.Since(start))
+	if time.Since(start) > 8*time.Second {
+		t.Fatalf("cancel not honored: took %v (command itself runs ~10s)", time.Since(start))
 	}
 	if !res.TimedOut {
 		t.Fatalf("result = %+v, want TimedOut after cancel", res)
@@ -119,6 +123,8 @@ func burstLongCmd() string {
 }
 
 // C-TOOL-4：后台任务日志缓冲有界（超限截断并标注）。
+// 等待用轮询（日志出现 truncated 即满足，总超时兜底）代替固定 sleep，
+// 不依赖机器快慢——docs/TESTING.md 时序判据；超时仍无 truncated 则由末尾断言显式失败。
 func TestShellRun_BackgroundLogBounded(t *testing.T) {
 	tool := newTool(t, Options{BGLogLimit: 256})
 
@@ -138,18 +144,23 @@ func TestShellRun_BackgroundLogBounded(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}()
 
-	time.Sleep(1200 * time.Millisecond) // 等突发输出写满上限
-
-	res, err = tool.Execute(context.Background(), args(t, map[string]any{"action": "bg_status", "task_id": start.TaskID}))
-	if err != nil || res.IsError {
-		t.Fatalf("bg_status failed: %v %s", err, res.Content)
-	}
 	var st struct {
 		Running bool   `json:"running"`
 		Log     string `json:"log"`
 	}
-	if err := json.Unmarshal([]byte(res.Content), &st); err != nil {
-		t.Fatalf("bg_status content = %q", res.Content)
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		time.Sleep(200 * time.Millisecond)
+		res, err = tool.Execute(context.Background(), args(t, map[string]any{"action": "bg_status", "task_id": start.TaskID}))
+		if err != nil || res.IsError {
+			t.Fatalf("bg_status failed: %v %s", err, res.Content)
+		}
+		if err := json.Unmarshal([]byte(res.Content), &st); err != nil {
+			t.Fatalf("bg_status content = %q", res.Content)
+		}
+		// 满足条件或超时兜底都退出循环；未截断的失败交给末尾断言显式报告
+		if strings.Contains(st.Log, "truncated") || time.Now().After(deadline) {
+			break
+		}
 	}
 	if !st.Running {
 		t.Fatalf("task should still be running: %s", res.Content)

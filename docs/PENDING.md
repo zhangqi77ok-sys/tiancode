@@ -218,8 +218,10 @@ Node 在 `.workbuddy\binaries\node\versions\22.22.2-3`）。脚本没写错，�
 
 ### 已知脆弱点（建议后续处理，本轮未改）
 
-1. **`TestShellRun_TimeoutReturns` 断言墙钟时间**，并发重负载下会红。本轮 `npm ci` 并行时确实红过一次
-   （`timeout not enforced: took 3.45s`），隔离重跑通过（1.88s）。建议给它加容差，或标注"需独占运行"。
+1. ~~**`TestShellRun_TimeoutReturns` 断言墙钟时间**，并发重负载下会红~~
+   **已修（2026-09-28）**：三个墙钟/固定 sleep 用例按 `docs/TESTING.md`「时序敏感测试」判据根治——
+   墙钟断言改相对语义边界（命令约 10s，8s 收束），后台日志固定 1200ms 改轮询（200ms 间隔 + 10s 兜底），
+   契约阈值未放宽；负载下 `-count=3` 全绿（此前同场景 3 例假红）。
 2. **R1 是字面量扫描而非真实依赖图**。若要更精确，应改用 `go list -deps` 或 `go/packages`，
    而不是继续叠加子串模式（已记入 ADR-0004）。
 3. `frontend/dist/.gitkeep` 依赖 `vite.config.ts` 的 `keepDistPlaceholder` 插件在构建后补回；

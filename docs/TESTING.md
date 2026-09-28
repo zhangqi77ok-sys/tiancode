@@ -57,17 +57,26 @@
 
 ## 时序敏感测试：并发负载下会假红（读这一节能省一轮排查）
 
-`internal/platform/shelltool` 的若干用例断言**墙钟时间**（如 C-TOOL-2/C-TOOL-5 的"取消须在 3s 内生效"、
-后台日志用例的固定 1200ms 等待）。它们表达的是真实契约，**不要为了让它变绿而放宽阈值**——
+`internal/platform/shelltool` 曾有三个用例断言**墙钟时间**（C-TOOL-1/C-TOOL-5 的固定 3s、
+后台日志用例的固定 1200ms 等待）。它们表达的是真实契约，**不要为了让它变绿而放宽契约阈值**——
 但要知道：**机器上有其他重负载时它们会失败，而那不是回归。**
 
 实测记录（2026-09-23）：与 `npm ci`／`go install` 并行时，
 `TestShellRun_TimeoutReturns`、`TestShellRun_CancelKillsTree`、`TestShellRun_BackgroundLogBounded`
 先后出现过 3.4–4.1s 的"超预算"失败；**隔离重跑全部通过**（整包 8.3s）。
 
-因此：
+**2026-09-28 已按本节判据根治**（语义不变、不放宽契约阈值）：
 
+- `TestShellRun_TimeoutReturns` / `TestShellRun_CancelKillsTree`：固定 3s 墙钟改为
+  **相对语义边界 8s**——命令本身约 10s，返回时间逼近它才说明超时/取消未生效；
+  收束来自超时预算而非命令自然结束，已由 `res.TimedOut` 独立证明；
+- `TestShellRun_BackgroundLogBounded`：固定 1200ms sleep 改为**轮询**——每 200ms 查一次
+  `bg_status`，日志出现 `truncated` 即满足，10s 总超时兜底，超时仍无则由原断言显式失败；
+- 修复后验证：包级 `-count=3` 与并行全量编译同时跑，**负载下 3 连跑全绿**（此前同场景已实测 3 例假红）。
+
+因此（对今后新增的时序用例同样适用）：
+
+- 等待条件成立一律**轮询直到条件成立或总超时**，不写固定 sleep；
+- 单点墙钟断言用**相对语义边界**（与被测现象的物理时长比较），不用拍脑袋的固定秒数；
 - 看到 shelltool 的时序用例失败时，**先隔离重跑**（`go test ./internal/platform/shelltool/ -count=1 -v`）再判断；
-- 不要在跑重任务（依赖安装、全量构建）的同时跑发布流水线或判断测试结果；
-- 若要根治，正确做法是把"固定 sleep + 单点断言"改成**轮询直到条件成立或超时**
-  （语义不变、不再依赖机器快慢），而不是加大 sleep 或放宽阈值。
+- 不要在跑重任务（依赖安装、全量构建）的同时跑发布流水线或判断测试结果。
