@@ -1,14 +1,15 @@
 @import "tailwindcss";
 
 /* ============================================================
-   设计令牌（单一定义源；方向依据参考图 Hyz Office 风格：
-   浅色柔和底 + 白色圆角卡片 + 紫罗兰主色 + 药丸控件 + 轻投影）
+   设计令牌（单一定义源）：浅色柔和底 + 白卡 + 紫罗兰主色 + 药丸控件。
    规则：组件一律引用令牌，禁止散落硬编码色值。
+   本版修订（UI 重建）：全部"作文字用"的颜色按 WCAG AA ≥4.5:1 实测取值
+   （对比度实测见 docs 交付记录）；功能色拆分为装饰色与文字色两套。
    ============================================================ */
 :root {
-  /* 主色：紫罗兰 */
-  --c-primary: #7c5cff;
-  --c-primary-hover: #6a4df2;
+  /* 主色：紫罗兰。白字对比度 6.24:1（旧值 #7c5cff 仅 4.35，不达 AA） */
+  --c-primary: #5f43e0;
+  --c-primary-hover: #5138c6;
   --c-primary-soft: #efeaff; /* 主色浅底：选中态/标签底 */
 
   /* 背景与表面 */
@@ -16,27 +17,36 @@
   --c-bg-tint: #eef0fa; /* 渐变第二层 */
   --c-surface: #ffffff; /* 卡片 */
   --c-surface-soft: #fafaff; /* 次级卡片/输入底 */
+  --c-bubble: #f4f3fc; /* 助手气泡底：与白卡区分，重建对话层级 */
   --c-border: #e9eaf2; /* 卡片描边 */
 
-  /* 文字 */
+  /* 文字（对 #ffffff 实测：dim 5.13 / faint 4.85） */
   --c-text: #1a1b2e;
   --c-text-dim: #6b6c82;
-  --c-text-faint: #9a9bb0;
+  --c-text-faint: #6f7085; /* 旧值 #9a9bb0 仅 2.73，作元信息文字不达 AA */
 
-  /* 功能色（浅底 + 前景成对） */
+  /* 功能色：base 仅用于圆点/描边/浅底等装饰；作文字必须用 -text（均 ≥4.5:1） */
   --c-ok: #22c55e;
   --c-ok-soft: #e8f8ee;
+  --c-ok-text: #15803d; /* 5.02 */
   --c-err: #ef4444;
   --c-err-soft: #fdeaea;
+  --c-err-text: #dc2626; /* 4.83 */
+  --c-err-text-hover: #b91c1c; /* 危险按钮 hover 深化 */
   --c-warn: #f59e0b;
   --c-warn-soft: #fdf3e3;
+  --c-warn-text: #b45309; /* 5.02 */
 
-  /* 圆角与投影 */
+  /* 圆角、投影、层级、动效 */
   --r-card: 18px;
   --r-input: 14px;
   --r-pill: 999px;
   --shadow-card: 0 8px 24px rgba(79, 70, 229, 0.08);
   --shadow-float: 0 12px 32px rgba(79, 70, 229, 0.14);
+  --z-overlay: 40; /* 抽屉/遮罩 */
+  --z-modal: 50; /* 模态对话框 */
+  --z-toast: 60; /* 全局通知，永远在模态之上 */
+  --dur-fast: 150ms;
 }
 
 body {
@@ -47,7 +57,7 @@ body {
     'Microsoft YaHei',
     system-ui,
     sans-serif;
-  /* 柔和渐变底：参考图的"空气感"来源 */
+  /* 柔和渐变底：视觉上的"空气感"来源 */
   background:
     radial-gradient(1200px 600px at 12% -10%, #ffffff 0%, rgba(255, 255, 255, 0) 60%),
     radial-gradient(900px 500px at 100% 0%, var(--c-primary-soft) 0%, rgba(239, 234, 255, 0) 55%),
@@ -55,92 +65,24 @@ body {
   min-height: 100vh;
 }
 
-/* 通用卡片：白底 + 细描边 + 轻投影 + 大圆角 */
-/* Markdown 内容（AI 回复）：代码块/列表/行内代码/表格排版。
-   为什么不用 typography 插件：只需少量对话场景规则，多一个依赖不划算。 */
-.md > div > :first-child {
-  margin-top: 0;
-}
-.md > div > :last-child {
-  margin-bottom: 0;
-}
-.md p {
-  margin: 0.5rem 0;
-}
-.md h1,
-.md h2,
-.md h3 {
-  margin: 0.75rem 0 0.4rem;
-  font-weight: 600;
-  line-height: 1.35;
-}
-.md h1 {
-  font-size: 1.05rem;
-}
-.md h2 {
-  font-size: 1rem;
-}
-.md h3 {
-  font-size: 0.95rem;
-}
-.md ul,
-.md ol {
-  margin: 0.5rem 0;
-  padding-left: 1.25rem;
-}
-.md ul {
-  list-style: disc;
-}
-.md ol {
-  list-style: decimal;
-}
-.md li {
-  margin: 0.15rem 0;
-}
-.md code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 0.85em;
-  background: var(--c-surface-soft);
-  border: 1px solid var(--c-border);
-  border-radius: 6px;
-  padding: 0.1rem 0.3rem;
-}
-.md pre {
-  margin: 0.6rem 0;
-  padding: 0.75rem 0.85rem;
-  overflow-x: auto;
-  background: var(--c-surface-soft);
-  border: 1px solid var(--c-border);
-  border-radius: var(--r-input);
-  line-height: 1.55;
-}
-.md pre code {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  font-size: 0.82rem;
-}
-.md blockquote {
-  margin: 0.5rem 0;
-  padding: 0.25rem 0.75rem;
-  border-left: 3px solid var(--c-primary);
-  color: var(--c-text-dim);
-}
-.md a {
-  color: var(--c-primary);
-  text-decoration: underline;
-}
-.md table {
-  border-collapse: collapse;
-  margin: 0.5rem 0;
-  font-size: 0.85rem;
-}
-.md th,
-.md td {
-  border: 1px solid var(--c-border);
-  padding: 0.25rem 0.5rem;
+/* 键盘焦点环：全局唯一标准（此前全库无焦点样式，键盘不可达） */
+:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
 }
 
+/* 减少动效偏好：关闭装饰性动画，保住信息本身 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 通用卡片：白底 + 细描边 + 轻投影 + 大圆角 */
 .card {
   background: var(--c-surface);
   border: 1px solid var(--c-border);
@@ -148,7 +90,7 @@ body {
   box-shadow: var(--shadow-card);
 }
 
-/* 药丸标签/建议项（参考图的 chip） */
+/* 药丸按钮/可点标签（仅限可交互元素——纯数据展示用 .stat，避免假可点） */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -159,15 +101,33 @@ body {
   background: var(--c-surface);
   color: var(--c-text-dim);
   font-size: 12px;
+  cursor: pointer;
   transition:
-    color 0.15s ease,
-    border-color 0.15s ease,
-    background 0.15s ease;
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    background var(--dur-fast) ease;
 }
 .chip:hover {
   color: var(--c-primary);
   border-color: var(--c-primary);
   background: var(--c-primary-soft);
+}
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 纯数据状态药丸：刻意没有 hover 态（不暗示可点） */
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  color: var(--c-text-dim);
+  font-size: 12px;
 }
 
 /* 主按钮（药丸） */
@@ -179,16 +139,30 @@ body {
   background: var(--c-primary);
   color: #fff;
   font-weight: 500;
+  cursor: pointer;
   transition:
-    background 0.15s ease,
-    box-shadow 0.15s ease;
+    background var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
 }
 .btn-primary:hover {
   background: var(--c-primary-hover);
   box-shadow: var(--shadow-float);
 }
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-/* 圆形图标按钮 */
+/* 危险操作按钮（删除会话/渠道等确认框） */
+.btn-danger {
+  background: var(--c-err-text);
+}
+.btn-danger:hover {
+  background: var(--c-err-text-hover);
+  box-shadow: none;
+}
+
+/* 圆形图标按钮（发送） */
 .btn-icon {
   display: inline-flex;
   align-items: center;
@@ -198,10 +172,34 @@ body {
   border-radius: var(--r-pill);
   background: var(--c-primary);
   color: #fff;
-  transition: background 0.15s ease;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 .btn-icon:hover {
   background: var(--c-primary-hover);
+}
+
+/* 幽灵行内按钮（会话行的重命名/删除）：
+   常驻可见（55% 不透明度）而非 hover 才出现——键盘/触屏用户也必须够得着 */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--c-text-dim);
+  opacity: 0.55;
+  cursor: pointer;
+  transition:
+    opacity var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    background var(--dur-fast) ease;
+}
+.btn-ghost:hover,
+.btn-ghost:focus-visible {
+  opacity: 1;
+  background: var(--c-surface-soft);
 }
 
 /* 流式光标 */
@@ -225,36 +223,101 @@ body {
   }
 }
 
-.prose-md pre {
-  overflow-x: auto;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--c-surface-soft);
-  border: 1px solid var(--c-border);
-  font-size: 12px;
-  line-height: 1.55;
+/* Markdown 正文：唯一一套排版规则（合并原 .md 与 .prose-md 双份真相） */
+.markdown-body > :first-child {
+  margin-top: 0;
 }
-.prose-md code {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 0.92em;
-}
-.prose-md a {
-  color: var(--c-primary);
-}
-.prose-md p {
-  margin: 0 0 0.6em;
-}
-.prose-md p:last-child {
+.markdown-body > :last-child {
   margin-bottom: 0;
 }
+.markdown-body p {
+  margin: 0.5rem 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  margin: 0.75rem 0 0.4rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.markdown-body h1 {
+  font-size: 1.05rem;
+}
+.markdown-body h2 {
+  font-size: 1rem;
+}
+.markdown-body h3 {
+  font-size: 0.95rem;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.markdown-body ul {
+  list-style: disc;
+}
+.markdown-body ol {
+  list-style: decimal;
+}
+.markdown-body li {
+  margin: 0.15rem 0;
+}
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--c-surface-soft);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  padding: 0.1rem 0.3rem;
+}
+.markdown-body pre {
+  margin: 0.6rem 0;
+  padding: 0.7rem 0.85rem;
+  overflow-x: auto;
+  background: var(--c-surface-soft);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.markdown-body pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.markdown-body blockquote {
+  margin: 0.5rem 0;
+  padding: 0.25rem 0.75rem;
+  border-left: 3px solid var(--c-primary);
+  color: var(--c-text-dim);
+}
+.markdown-body a {
+  color: var(--c-primary);
+  text-decoration: underline;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--c-border);
+  padding: 0.25rem 0.5rem;
+}
+
+/* 展开全文区（工具卡/思考过程）：等宽、限高、可滚动 */
 .tool-full {
   max-height: 240px;
   overflow: auto;
-  margin-top: 6px;
   padding: 10px 12px;
   border-radius: 12px;
   background: var(--c-surface-soft);
   border: 1px solid var(--c-border);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
+  line-height: 1.55;
   white-space: pre-wrap;
 }

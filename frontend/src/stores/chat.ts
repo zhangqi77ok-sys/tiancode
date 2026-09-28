@@ -20,6 +20,14 @@ export interface ChatMsg {
   term?: number
   streaming?: boolean
   error?: boolean
+  // 会话内唯一 id：列表 key 与折叠态的稳定锚点（下标会在工具卡插入时整体错位）
+  id?: string
+}
+
+// 消息序号：入库时统一发 id——Replay/事件/本地推送都走这一处
+let msgSeq = 0
+function withId<T extends Omit<ChatMsg, 'id'>>(m: T): ChatMsg {
+  return { ...m, id: `m-${++msgSeq}` }
 }
 
 // EndReason 与 core/llm 的枚举一一对应（经事件桥以 int 传输）。
@@ -78,13 +86,15 @@ export const useChatStore = defineStore('chat', () => {
     if (running.value) return // 进行中禁止切换，避免流式块串会话
     sessionId.value = id
     const history = (await bridge().app.Replay(id)) ?? []
-    messages.value = history.map((m) => ({
-      role: m.role as ChatMsg['role'],
-      content: m.content,
-      toolName: m.toolName,
-      status: m.status,
-      thinking: m.thinking,
-    }))
+    messages.value = history.map((m) =>
+      withId({
+        role: m.role as ChatMsg['role'],
+        content: m.content,
+        toolName: m.toolName,
+        status: m.status,
+        thinking: m.thinking,
+      }),
+    )
   }
 
   async function newSession() {
@@ -96,8 +106,8 @@ export const useChatStore = defineStore('chat', () => {
 
   async function send(text: string) {
     if (!sessionId.value) await newSession()
-    messages.value.push({ role: 'user', content: text, at: Date.now() })
-    messages.value.push({ role: 'assistant', content: '', streaming: true, at: Date.now() })
+    messages.value.push(withId({ role: 'user', content: text, at: Date.now() }))
+    messages.value.push(withId({ role: 'assistant', content: '', streaming: true, at: Date.now() }))
     running.value = true
     try {
       // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
@@ -120,14 +130,16 @@ export const useChatStore = defineStore('chat', () => {
 
   // 审批卡片：内核要"问"时插入一张带允许/拒绝按钮的卡片（ADR-0007）
   function onApproval(p: { id: string; toolName: string; arguments: string }) {
-    messages.value.push({
-      role: 'approval',
-      content: p.toolName,
-      toolName: p.toolName,
-      approvalId: p.id,
-      args: p.arguments,
-      at: Date.now(),
-    })
+    messages.value.push(
+      withId({
+        role: 'approval',
+        content: p.toolName,
+        toolName: p.toolName,
+        approvalId: p.id,
+        args: p.arguments,
+        at: Date.now(),
+      }),
+    )
   }
 
   // 提交答复：失败必须可见（例如"已处理"），绝不静默
@@ -179,14 +191,14 @@ export const useChatStore = defineStore('chat', () => {
     diff?: string
   }) {
     if (p.sessionID !== sessionId.value) return
-    const card: ChatMsg = {
-      role: 'tool',
+    const card = withId({
+      role: 'tool' as const,
       content: p.content || p.summary,
       toolName: p.name,
       status: p.status,
       diff: p.diff,
       at: Date.now(),
-    }
+    })
     // 插在流式助手之前，与 Replay 顺序一致：user → tool(s) → assistant
     const i = messages.value.findIndex((m) => m.role === 'assistant' && m.streaming)
     if (i >= 0) messages.value.splice(i, 0, card)

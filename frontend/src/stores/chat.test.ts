@@ -169,11 +169,25 @@ describe('chat store', () => {
     const store = useChatStore()
     await store.loadSessions()
     await store.selectSession('s-1')
-    expect(store.messages).toEqual([
+    // 只锁 Replay 映射契约：id 是入库时生成的稳定 key，不属于 Replay 契约，先剥掉再比
+    expect(store.messages.map(({ id: _ignored, ...rest }) => rest)).toEqual([
       { role: 'user', content: 'u' },
       { role: 'tool', content: 'file-x', toolName: 'fs', status: 'success' },
       { role: 'assistant', content: 'done', thinking: 'plan' },
     ])
+  })
+
+  // 稳定 id 契约：列表 key 与折叠态的锚点；工具卡插入后既有消息的 key 不得改变
+  it('每条入库消息都有唯一 id', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok' })
+    store.onApproval({ id: 'ap-1', toolName: 'shell', arguments: '{}' })
+    const ids = store.messages.map((m) => m.id)
+    expect(ids).toHaveLength(4)
+    expect(ids.every((x) => typeof x === 'string')).toBe(true)
+    expect(new Set(ids).size).toBe(4)
   })
 })
 
