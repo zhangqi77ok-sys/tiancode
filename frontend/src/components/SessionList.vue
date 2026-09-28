@@ -19,8 +19,8 @@ const dialogs = useDialogs()
 
 const VIEW_LIMIT = 5
 
-// 分区模型（纯函数 + 单测）：sections = 置顶 / 会话 / 空间
-const sections = computed(() => buildSidebar(store.summaries, store.sessions, ws.path))
+// 分区模型（纯函数 + 单测）：sections = 置顶 / 会话 / 空间；只镜像账本，草稿会话不可见
+const sections = computed(() => buildSidebar(store.summaries, ws.path))
 
 // 折叠状态：分区头与空间分组头共用（当前空间默认展开，其余默认收起；点击后以手动为准）
 const collapsed = ref<Record<string, boolean>>({})
@@ -37,8 +37,8 @@ function visible<T extends { id: string }>(items: T[], key: string): T[] {
   return expanded.value[key] ? items : items.slice(0, VIEW_LIMIT)
 }
 
-// 打开工作区：系统目录选择框 → 切换 → 自动在该空间新建会话
-// （切换空间即开新对话：归属由首条消息落账本时的快照决定，天然记到新空间名下）
+// 打开工作区：系统目录选择框 → 切换 → 回到草稿态（等于在该空间开新对话）。
+// 归属由首条消息落账本时的快照决定，天然记到新空间名下；草稿不进侧栏，反复切换不堆积空会话
 async function openWorkspace() {
   const ok = await ws.pickAndSet()
   if (ok) {

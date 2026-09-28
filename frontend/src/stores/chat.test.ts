@@ -112,8 +112,8 @@ describe('chat store', () => {
     expect(store.error).toContain('60')
   })
 
-  // 删除当前会话后必须新建空会话，避免界面停在不存在的会话上
-  it('删除当前会话后新建空会话', async () => {
+  // 删除当前会话后必须回到草稿态，避免界面停在不存在的会话上
+  it('删除当前会话后回到草稿态', async () => {
     h.summaries = [{ id: 's-1', title: '' }]
     const store = useChatStore()
     await store.loadSessions()
@@ -123,8 +123,22 @@ describe('chat store', () => {
     h.summaries = []
     await store.removeSession('s-1')
     expect(h.deleted).toEqual(['s-1'])
-    expect(store.sessionId).not.toBe('s-1')
+    expect(store.sessionId).toBe('')
     expect(store.messages).toEqual([])
+  })
+
+  // 0.2.9 回归修复：新会话是草稿——不占 ID、不进侧栏；反复"打开工作区/新建对话"
+  // 不得堆积空会话（伪会话曾被分组归到当前空间，重启才消失）。首聊发出时才领 ID 落地
+  it('newSession 是草稿：不占 ID 不进侧栏，首聊才落地', async () => {
+    h.summaries = [{ id: 's-1', title: '已有' }]
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.newSession()
+    await store.newSession() // 模拟连续切换工作区/新建对话
+    expect(store.sessionId).toBe('')
+    expect(store.sessions).toEqual(['s-1']) // 侧栏镜像账本，无伪会话堆积
+    await store.send('hi')
+    expect(store.sessionId).not.toBe('')
   })
 
   // 工具卡片携带结构化 diff（内核字段透传，UI 不解析文本）

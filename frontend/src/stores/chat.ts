@@ -50,7 +50,7 @@ function terminalLabel(reason: number, errText: string): string {
   }
 }
 
-// 生成本地时间会话 ID。为什么不用 Date.toISOString：其 UTC 时刻与本地时间观感不一致。
+// 生成本地时间会话 ID（草稿首聊落地时才领号）。为什么不用 Date.toISOString：其 UTC 时刻与本地时间观感不一致。
 function newSessionId(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
@@ -102,15 +102,17 @@ export const useChatStore = defineStore('chat', () => {
     )
   }
 
+  // 新会话 = 草稿：不生成 ID、不进侧栏（侧栏只镜像事件账本）。
+  // 修复 0.2.9 回归：反复"打开工作区/新建对话"会把从未落盘的伪会话堆进侧栏当前空间组，
+  // 重启才消失。首条消息发出时才在 send() 领 ID 落账本，经 loadSessions 进入侧栏。
   async function newSession() {
     if (running.value) return
-    sessionId.value = newSessionId()
+    sessionId.value = '' // '' 即草稿态
     messages.value = []
-    if (!sessions.value.includes(sessionId.value)) sessions.value.unshift(sessionId.value)
   }
 
   async function send(text: string) {
-    if (!sessionId.value) await newSession()
+    if (!sessionId.value) sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
     messages.value.push(withId({ role: 'user', content: text, at: Date.now() }))
     messages.value.push(withId({ role: 'assistant', content: '', streaming: true, at: Date.now() }))
     running.value = true

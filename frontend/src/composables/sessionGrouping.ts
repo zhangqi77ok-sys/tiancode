@@ -3,7 +3,8 @@ import type { SessionSummaryDTO } from '../wails'
 // 侧栏分区模型（纯函数，可单测）——三段式，对齐商用 AI 工具侧栏：
 // ① 置顶：钉住的会话永远最上；② 会话：未归属空间的会话（对应参考图"任务"）；
 // ③ 空间：按工作区分组（当前空间排最前、默认展开由组件控制，其余折叠）。
-// 归属/置顶来自账本事件；组内按最后活跃降序（新建未发送会话视为最新、排最前）。
+// 侧栏只镜像事件账本（summaries）：草稿会话在首聊落账本前不可见——
+// 0.2.9 曾让"新建未发送"的伪会话进当前空间组，反复切换工作区就堆积空会话（0.2.10 修复移除）。
 export interface SessionGroup {
   label: string
   workspace: string
@@ -22,18 +23,12 @@ function lastSegment(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? ''
 }
 
-// 组内排序：最后活跃降序；无摘要（新建未发送）视为最新
+// 组内排序：最后活跃降序；缺 lastActiveMs 视为最新
 function byRecency(a: SessionSummaryDTO, b: SessionSummaryDTO): number {
   return (b.lastActiveMs ?? Number.MAX_SAFE_INTEGER) - (a.lastActiveMs ?? Number.MAX_SAFE_INTEGER)
 }
 
-export function buildSidebar(
-  summaries: SessionSummaryDTO[],
-  ids: string[],
-  currentPath: string,
-): SidebarSection[] {
-  const byId = new Map(summaries.map((s) => [s.id, s]))
-
+export function buildSidebar(summaries: SessionSummaryDTO[], currentPath: string): SidebarSection[] {
   const pinned = summaries.filter((s) => s.pinned).sort(byRecency)
   const rest = summaries.filter((s) => !s.pinned)
 
@@ -53,23 +48,6 @@ export function buildSidebar(
     g.items.push(sm)
   }
   for (const g of spaceGroups.values()) g.items.sort(byRecency)
-
-  // 新建未发送的会话（无摘要）：有当前空间 → 该空间最上；未设置工作区 → "会话"区
-  const pseudo = ids.filter((id) => !byId.has(id)).map((id) => ({ id, title: '' }))
-  if (pseudo.length) {
-    if (currentPath) {
-      const label = lastSegment(currentPath)
-      let g = spaceGroups.get(currentPath)
-      if (!g) {
-        g = { label, workspace: currentPath, isCurrent: true, items: [] }
-        spaceGroups.set(currentPath, g)
-      }
-      g.isCurrent = true
-      g.items = [...pseudo, ...g.items]
-    } else {
-      untethered.unshift(...pseudo)
-    }
-  }
 
   const spaces = [...spaceGroups.values()]
   spaces.sort((a, b) => (a.isCurrent ? -1 : b.isCurrent ? 1 : a.label.localeCompare(b.label)))
