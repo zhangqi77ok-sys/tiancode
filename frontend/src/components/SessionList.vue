@@ -36,6 +36,10 @@ const expanded = ref<Record<string, boolean>>({})
 function visible<T extends { id: string }>(items: T[], key: string): T[] {
   return expanded.value[key] ? items : items.slice(0, VIEW_LIMIT)
 }
+// 查看更多点击：切换 expanded（0.2.10 曾误绑 toggle 折叠态——改的是另一张表，点击永远无效）
+function toggleMore(key: string) {
+  expanded.value[key] = !expanded.value[key]
+}
 
 // 打开工作区：系统目录选择框 → 切换 → 回到草稿态（等于在该空间开新对话）。
 // 归属由首条消息落账本时的快照决定，天然记到新空间名下；草稿不进侧栏，反复切换不堆积空会话
@@ -127,7 +131,7 @@ function select(id: string) {
           <button
             v-if="sec.items.length > VIEW_LIMIT"
             class="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-primary)] transition-colors hover:bg-[var(--c-primary-soft)]"
-            @click="toggle(sec.kind)"
+            @click="toggleMore(sec.kind)"
           >
             {{ expanded[sec.kind] ? '收起' : `查看更多 (${sec.items.length - VIEW_LIMIT})` }}
           </button>
@@ -178,7 +182,7 @@ function select(id: string) {
             <button
               v-if="g.items.length > VIEW_LIMIT && isOpen('fold:' + g.label, g.isCurrent)"
               class="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-primary)] transition-colors hover:bg-[var(--c-primary-soft)]"
-              @click="toggle('more:' + g.label)"
+              @click="toggleMore('more:' + g.label)"
             >
               {{ expanded['more:' + g.label] ? '收起' : `查看更多 (${g.items.length - VIEW_LIMIT})` }}
             </button>

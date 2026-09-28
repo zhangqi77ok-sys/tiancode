@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { bridge, type SessionSummaryDTO } from '../wails'
+import { useWorkspaceStore } from './workspace'
 
 // 会话消息的 UI 形态；streaming 标记流式中的临时消息，error 标记错误/取消态；
 // role='tool' 为工具卡片（toolName/status 承载卡片数据）；
@@ -111,8 +112,27 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
+  // 首聊即时入列：新会话发出第一条消息的瞬间就出现在侧栏并归属当前工作区，
+  // 不等回合结束（0.2.10 反馈：长任务跑完前侧栏看不到它，空间分组也一样迟到）。
+  // 这是本地待定摘要：标题/时间由回合结束后的 loadSessions 用账本真实数据校正；
+  // 自动命名逻辑不受影响（合成条目 title 为空 → 仍判为"未命名"→ 走自动命名）。
+  function announcePending() {
+    if (summaries.value.some((s) => s.id === sessionId.value)) return
+    const ws = useWorkspaceStore()
+    summaries.value.unshift({
+      id: sessionId.value,
+      title: '',
+      pinned: false,
+      workspace: ws.path || undefined,
+      lastActiveMs: Date.now(),
+    })
+  }
+
   async function send(text: string) {
-    if (!sessionId.value) sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
+    if (!sessionId.value) {
+      sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
+      announcePending()
+    }
     messages.value.push(withId({ role: 'user', content: text, at: Date.now() }))
     messages.value.push(withId({ role: 'assistant', content: '', streaming: true, at: Date.now() }))
     running.value = true

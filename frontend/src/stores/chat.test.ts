@@ -35,6 +35,7 @@ vi.mock('../wails', () => ({
 }))
 
 const { useChatStore, END_REASON } = await import('./chat')
+const { useWorkspaceStore } = await import('./workspace')
 
 describe('chat store', () => {
   beforeEach(() => {
@@ -139,6 +140,21 @@ describe('chat store', () => {
     expect(store.sessions).toEqual(['s-1']) // 侧栏镜像账本，无伪会话堆积
     await store.send('hi')
     expect(store.sessionId).not.toBe('')
+  })
+
+  // 0.2.10 反馈修复：会话要在首聊发出的瞬间就进侧栏并归属当前工作区，不等回合结束
+  //（长任务跑完前侧栏看不到它）。本地待定摘要随回合后的 loadSessions 被账本真实数据校正
+  it('首聊即时入列：send 瞬间侧栏可见并归属当前工作区', async () => {
+    useWorkspaceStore().path = 'D:/w/beta'
+    const store = useChatStore()
+    await store.send('hi')
+    const entry = store.summaries.find((s) => s.id === store.sessionId)
+    expect(entry?.workspace).toBe('D:/w/beta')
+    expect(entry?.title).toBe('') // 未命名 → 终态后走自动命名
+    // 回合结束后 loadSessions 用账本数据校正（mock 后端列表为空 → 本地待定条目被替换）
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.summaries.some((s) => s.id === store.sessionId)).toBe(false)
   })
 
   // 工具卡片携带结构化 diff（内核字段透传，UI 不解析文本）
