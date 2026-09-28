@@ -3,9 +3,9 @@ package adaptors
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
-	"net/http"
 	"testing"
 	"time"
 )

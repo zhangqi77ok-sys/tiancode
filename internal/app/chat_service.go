@@ -50,8 +50,8 @@ type Config struct {
 // ChatService 编排对话用例。
 type ChatService struct {
 	cfg      Config
-	pool     *channels.Pool    // 渠道池（多协议，含 Ability 索引）
-	gw       *gateway.Gateway  // 转发网关（选路/重试/协议分派），实现 llm.ProviderPort
+	pool     *channels.Pool   // 渠道池（多协议，含 Ability 索引）
+	gw       *gateway.Gateway // 转发网关（选路/重试/协议分派），实现 llm.ProviderPort
 	registry *tools.Registry
 
 	mu           sync.Mutex

@@ -29,7 +29,10 @@ func TestSelect_TieredByRetry(t *testing.T) {
 		testCh("mid", "m", 50, 1),
 		testCh("lo", "m", 10, 1),
 	)
-	cases := []struct{ retry int; want string }{{0, "hi"}, {1, "mid"}, {2, "lo"}, {9, "lo"}}
+	cases := []struct {
+		retry int
+		want  string
+	}{{0, "hi"}, {1, "mid"}, {2, "lo"}, {9, "lo"}}
 	for _, tc := range cases {
 		got, err := p.Select(Selection{Model: "m", Retry: tc.retry})
 		if err != nil {
@@ -85,7 +88,8 @@ func TestSelect_MultiCredentialRoundRobin(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []struct {
-		key string; idx int
+		key string
+		idx int
 	}{{"k1", 0}, {"k2", 1}, {"k3", 2}, {"k1", 0}}
 	for _, w := range want {
 		got, err := p.Select(Selection{Model: "m"})
