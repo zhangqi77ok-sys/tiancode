@@ -1,3 +1,10 @@
+// Package channels 是多协议渠道池：存储（channels.json v2）、Ability 索引与选路的数据层。
+//
+// 做什么：Channel 全量字段持久化（原子写）+ 多凭证状态（轮询/禁用）+ 旧格式自动迁移
+// （Ability 索引见 ability.go，选路见 selector.go）。索引不是第二份配置：
+// 进程启动与每次变更后按渠道全量重建，RebuildAbility 是显式修复入口。
+// 凭证纪律：Credential 是不透明字符串（单 Key / 换行分隔多 Key / OAuth JSON / AK|SK 复合），
+// 本层只做"按行拆分与下标选择"，绝不解释内容；解释权在适配器（internal/platform/adaptors）。
 package channels
 
 import (

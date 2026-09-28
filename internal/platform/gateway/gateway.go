@@ -110,8 +110,7 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 
 		resp, err := adv.DoRequest(ctx, rc, hdr, body)
 		if err != nil {
-			lastErr = err
-			g.onChannelFault(sel) // 网络失败 = 渠道级故障
+			lastErr = mergeBanErr(err, g.onChannelFault(sel)) // 网络失败 = 渠道级故障
 			exclude = append(exclude, sel.ChannelID)
 			tier++
 			continue
@@ -122,15 +121,13 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			resp.Body.Close()
 			switch {
 			case isChannelFaultStatus(resp.StatusCode):
-				lastErr = serr
-				g.onChannelFault(sel)
+				lastErr = mergeBanErr(serr, g.onChannelFault(sel))
 				exclude = append(exclude, sel.ChannelID)
 				tier++
 				continue
 			case isCredentialFaultStatus(resp.StatusCode) && sel.CredentialIndex >= 0:
 				// 凭证级故障：auto_ban 禁当前 Key；同档重试（轮询游标已推进到下一条）
-				lastErr = serr
-				g.onCredentialFault(sel)
+				lastErr = mergeBanErr(serr, g.onCredentialFault(sel))
 				continue
 			default:
 				g.terminal(ctx, out, serr, &forwarded)
@@ -163,7 +160,7 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			}
 		}
 		if idleRetry {
-			g.onChannelFault(sel)
+			lastErr = mergeBanErr(lastErr, g.onChannelFault(sel))
 			exclude = append(exclude, sel.ChannelID)
 			tier++
 			continue
@@ -174,23 +171,32 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 }
 
 // onChannelFault 渠道级故障的 auto_ban 处置：多凭证只禁当前一条；单凭证禁整个渠道。
-func (g *Gateway) onChannelFault(sel channels.Selected) {
+// 返回值是禁用动作自身的失败（如持久化失败）——由调用方并入终态错误文本，
+// 绝不静默丢弃（禁用失败意味着下次请求可能仍打到坏渠道，用户必须能看见）。
+func (g *Gateway) onChannelFault(sel channels.Selected) error {
 	if !sel.AutoBan {
-		return
+		return nil
 	}
 	if sel.CredentialIndex >= 0 {
-		_ = g.Pool.BanCredential(sel.ChannelID, sel.CredentialIndex)
-		return
+		return g.Pool.BanCredential(sel.ChannelID, sel.CredentialIndex)
 	}
-	_ = g.Pool.AutoDisable(sel.ChannelID)
+	return g.Pool.AutoDisable(sel.ChannelID)
 }
 
-// onCredentialFault 凭证级故障的 auto_ban 处置：只禁当前这条 Key。
-func (g *Gateway) onCredentialFault(sel channels.Selected) {
+// onCredentialFault 凭证级故障的 auto_ban 处置：只禁当前这条 Key（失败语义同上）。
+func (g *Gateway) onCredentialFault(sel channels.Selected) error {
 	if !sel.AutoBan || sel.CredentialIndex < 0 {
-		return
+		return nil
 	}
-	_ = g.Pool.BanCredential(sel.ChannelID, sel.CredentialIndex)
+	return g.Pool.BanCredential(sel.ChannelID, sel.CredentialIndex)
+}
+
+// mergeBanErr 把 auto_ban 自身的失败并入 lastErr，随终态错误可见。
+func mergeBanErr(lastErr, banErr error) error {
+	if banErr == nil {
+		return lastErr
+	}
+	return fmt.Errorf("%v; auto_ban: %v", lastErr, banErr)
 }
 
 // isChannelFaultStatus 报告状态码是否属于渠道级可重试故障（429 / 5xx）。
