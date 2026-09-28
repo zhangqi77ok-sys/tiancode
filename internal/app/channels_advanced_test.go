@@ -224,3 +224,124 @@ func TestChatService_TestChannelSingleRequest(t *testing.T) {
 		t.Fatalf("测试请求次数 = %d, want 1（诊断请求不放大）", calls)
 	}
 }
+
+// 渠道级鉴权端到端（0.2.20）：五种形态打到真实上游，断言实际发出/收到的头与 URL。
+// 这是"支持多种 auth"的核心契约：Bearer / api-key 头 / 无前缀 Authorization /
+// URL 参数 / 无鉴权——覆盖大量中转与自建网关的非标准鉴权。
+func TestChatService_ChannelAuthModes(t *testing.T) {
+	cases := []struct {
+		name   string
+		auth   *llm.AuthConfig
+		assert func(t *testing.T, h http.Header, rawQuery string)
+	}{
+		{"默认 Bearer（协议默认不变）", nil, func(t *testing.T, h http.Header, _ string) {
+			if got := h.Get("Authorization"); got != "Bearer k1" {
+				t.Fatalf("Authorization = %q", got)
+			}
+		}},
+		{"api-key 头（Azure 风格）", &llm.AuthConfig{Type: llm.AuthHeader, Name: "api-key", Value: "{api_key}"}, func(t *testing.T, h http.Header, _ string) {
+			if got := h.Get("api-key"); got != "k1" {
+				t.Fatalf("api-key = %q", got)
+			}
+			if h.Get("Authorization") != "" {
+				t.Fatal("覆盖后不得残留协议默认 Authorization（否则上游可能取错凭证）")
+			}
+		}},
+		{"无 Bearer 前缀的 Authorization", &llm.AuthConfig{Type: llm.AuthHeader, Name: "Authorization", Value: "{api_key}"}, func(t *testing.T, h http.Header, _ string) {
+			if got := h.Get("Authorization"); got != "k1" {
+				t.Fatalf("Authorization = %q, want 裸凭证", got)
+			}
+		}},
+		{"URL 查询参数（Vertex/Gemini 风格）", &llm.AuthConfig{Type: llm.AuthQuery, Name: "key", Value: "{api_key}"}, func(t *testing.T, h http.Header, rawQuery string) {
+			if h.Get("Authorization") != "" {
+				t.Fatal("query 型不得设鉴权头")
+			}
+			if !strings.Contains(rawQuery, "key=k1") {
+				t.Fatalf("rawQuery = %q, want 含 key=k1", rawQuery)
+			}
+		}},
+		{"无鉴权（前置代理已鉴权）", &llm.AuthConfig{Type: llm.AuthNone}, func(t *testing.T, h http.Header, _ string) {
+			if h.Get("Authorization") != "" || h.Get("api-key") != "" {
+				t.Fatal("none 不得携带任何鉴权头")
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotHdr http.Header
+			var gotQuery string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHdr = r.Header.Clone()
+				gotQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(testSSEOK))
+			}))
+			t.Cleanup(srv.Close)
+
+			s := newChannelService(t, Config{})
+			added, err := s.AddChannel(llm.Channel{
+				Name: "auth", Protocol: llm.ProtocolOpenAI, BaseURL: srv.URL, Model: "m1", APIKey: "k1",
+				Auth: tc.auth,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := s.TestChannel(context.Background(), added.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !res.OK {
+				t.Fatalf("测试应通过（上游为正常 SSE）：%+v", res)
+			}
+			tc.assert(t, gotHdr, gotQuery)
+		})
+	}
+}
+
+// 鉴权配置校验：缺名称的 header/query 在保存期拒绝（fail-fast，不留"首次请求才炸"）。
+func TestChatService_ChannelAuthValidation(t *testing.T) {
+	s := newChannelService(t, Config{})
+	base := llm.Channel{Name: "v", Protocol: llm.ProtocolOpenAI, BaseURL: "https://gw/v1", Model: "m1"}
+	for _, bad := range []*llm.AuthConfig{
+		{Type: llm.AuthHeader},
+		{Type: llm.AuthQuery},
+		{Type: "magic"},
+	} {
+		in := base
+		in.Auth = bad
+		if _, err := s.AddChannel(in); err == nil {
+			t.Fatalf("非法鉴权配置必须拒绝：%+v", bad)
+		}
+	}
+	// 合法形态放行
+	in := base
+	in.Auth = &llm.AuthConfig{Type: llm.AuthHeader, Name: "api-key", Value: "{api_key}"}
+	if _, err := s.AddChannel(in); err != nil {
+		t.Fatalf("合法鉴权配置应放行：%v", err)
+	}
+}
+
+// 头覆写 {api_key} 插值端到端：把任意头变成鉴权头（new-api 同款逃生门）。
+func TestChatService_HeaderOverrideRendersAPIKey(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(testSSEOK))
+	}))
+	t.Cleanup(srv.Close)
+	s := newChannelService(t, Config{})
+	added, err := s.AddChannel(llm.Channel{
+		Name: "h", Protocol: llm.ProtocolOpenAI, BaseURL: srv.URL, Model: "m1", APIKey: "k7",
+		HeaderOverride: map[string]string{"X-Auth": "Token {api_key}", "X-Static": "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TestChannel(context.Background(), added.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("X-Auth") != "Token k7" || got.Get("X-Static") != "1" {
+		t.Fatalf("头覆写插值失败：%q / %q", got.Get("X-Auth"), got.Get("X-Static"))
+	}
+}

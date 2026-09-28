@@ -57,9 +57,19 @@ export interface ChannelDTO {
   modelMapping?: Record<string, string>
   paramOverride?: Record<string, unknown>
   headerOverride?: Record<string, string>
+  // 渠道级鉴权（0.2.20）：缺省 = 协议默认（openai → Bearer；anthropic → x-api-key）
+  auth?: AuthDTO
   // 凭证摘要（列表卡片"N 条 · M 禁用"；逐条管理走 ListCredentials）
   credentialCount?: number
   credentialDisabled?: number
+}
+
+// 渠道级鉴权配置：type = default|bearer|header|query|none；
+// name 为请求头名/URL 参数名；value 支持 {api_key} 占位符（空 = 仅凭证）
+export interface AuthDTO {
+  type: string
+  name?: string
+  value?: string
 }
 
 // 单条凭证管理视图（脱敏预览；明文永不出现在前端）
@@ -109,6 +119,8 @@ export interface ChannelInput {
   modelMapping?: Record<string, string>
   paramOverride?: Record<string, unknown>
   headerOverride?: Record<string, string>
+  // 渠道级鉴权（0.2.20）：undefined/type=default = 协议默认
+  auth?: AuthDTO
 }
 
 // createAppStub 生成"调用即明确报错"的桩。

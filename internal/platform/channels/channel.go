@@ -1,5 +1,7 @@
 package channels
 
+import "tiancode/internal/core/llm"
+
 // 渠道状态：enabled 可用；manually_disabled 用户手动停用；auto_disabled 上游故障自动禁用。
 const (
 	StatusEnabled          = "enabled"
@@ -37,6 +39,9 @@ type Channel struct {
 	// Extra：协议专用且不参与检索（azure api-version、区域、账号 ID 等）。
 	Extra   map[string]string `json:"extra,omitempty"`
 	AutoBan bool              `json:"autoBan"`
+	// Auth 是渠道级鉴权配置（0.2.20）：nil = 协议默认；选路原样透传到适配器，
+	// 池层不解释（与 Credential 同一纪律——鉴权形态的解释权在适配器）。
+	Auth *llm.AuthConfig `json:"auth,omitempty"`
 }
 
 // CredentialState 记录多凭证的启用状态与轮询下标（与按行拆分的凭证一一对应）。

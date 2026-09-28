@@ -40,6 +40,55 @@ type Channel struct {
 	ModelMapping   map[string]string `json:"modelMapping,omitempty"`   // 下游模型名 → 上游真实模型名
 	ParamOverride  map[string]any    `json:"paramOverride,omitempty"`  // 请求体覆写（网关合并）
 	HeaderOverride map[string]string `json:"headerOverride,omitempty"` // 请求头覆写（网关合并）
+	// Auth 是渠道级鉴权配置（0.2.20）：nil = 协议默认（openai → Bearer；anthropic → x-api-key）。
+	Auth *AuthConfig `json:"auth,omitempty"`
+}
+
+// AuthConfig 是渠道级鉴权配置：独立于协议——适配器决定"怎么发请求"，
+// 鉴权决定"拿什么证明身份"。为什么需要它：大量中转/自建网关不用标准鉴权头
+// （api-key 头、无 Bearer 前缀的 Authorization、URL 参数 key、完全无鉴权），
+// 此前三种情形都无法接入（header_override 不支持凭证插值，写死密钥会破坏多 Key 轮询）。
+// 设计参照 new-api AdvancedCustom 的 Auth{type,name,value} 三字段，并提升为所有渠道通用。
+type AuthConfig struct {
+	// Type：default（协议默认）| bearer | header | query | none
+	Type string `json:"type"`
+	// Name 是请求头名或 URL 参数名（type=header/query 时必填）
+	Name string `json:"name,omitempty"`
+	// Value 是值模板，支持 {api_key} 占位符（如 "Bearer {api_key}"、"Token {api_key}"）；
+	// 空 = 仅凭证本身（"api-key: <key>" 形态）
+	Value string `json:"value,omitempty"`
+}
+
+// 鉴权方式（AuthConfig.Type 的取值）。
+const (
+	AuthDefault = "default" // 跟随协议默认
+	AuthBearer  = "bearer"  // Authorization: Bearer <key>
+	AuthHeader  = "header"  // 自定义请求头 Name: Value
+	AuthQuery   = "query"   // URL 查询参数 Name=Value
+	AuthNone    = "none"    // 不发任何鉴权（如本地网关前置代理已鉴权）
+)
+
+// Validate 校验鉴权配置合法性：保存时早失败，而不是首次请求才报错。
+func (a *AuthConfig) Validate() error {
+	if a == nil {
+		return nil
+	}
+	switch a.Type {
+	case "", AuthDefault, AuthBearer, AuthNone:
+		return nil
+	case AuthHeader:
+		if strings.TrimSpace(a.Name) == "" {
+			return fmt.Errorf("鉴权方式 header 需要指定请求头名称")
+		}
+		return nil
+	case AuthQuery:
+		if strings.TrimSpace(a.Name) == "" {
+			return fmt.Errorf("鉴权方式 query 需要指定 URL 参数名称")
+		}
+		return nil
+	default:
+		return fmt.Errorf("不支持的鉴权方式 %q（可用：default/bearer/header/query/none）", a.Type)
+	}
 }
 
 // ChannelView 是渠道的外发视图（UI/事件用）：密钥脱敏，只告知是否已配置。
@@ -84,5 +133,5 @@ func ValidateChannel(c Channel) error {
 	if !c.Protocol.Valid() {
 		return fmt.Errorf("不支持的 protocol %q（当前仅支持 %s）", c.Protocol, ProtocolOpenAI)
 	}
-	return nil
+	return c.Auth.Validate()
 }

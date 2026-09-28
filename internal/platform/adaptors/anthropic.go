@@ -34,14 +34,16 @@ func (Anthropic) Type() string           { return "anthropic" }
 func (Anthropic) DefaultBaseURL() string { return "https://api.anthropic.com/v1" }
 
 func (Anthropic) GetRequestURL(rc RouteContext) string {
-	return strings.TrimSuffix(rc.BaseURL, "/") + "/messages"
+	return WithAuthQuery(strings.TrimSuffix(rc.BaseURL, "/")+"/messages", rc)
 }
 
+// SetupHeaders 设置内容头与鉴权：缺省 x-api-key（Anthropic 原生形态），
+// 渠道可覆盖为 Bearer 或任意头（很多中转把 Claude 放在 Authorization: Bearer 之后）。
 func (a Anthropic) SetupHeaders(rc RouteContext, hdr http.Header) error {
 	hdr.Set("Content-Type", "application/json")
 	hdr.Set("Accept", "text/event-stream")
-	if rc.Credential != "" {
-		hdr.Set("x-api-key", rc.Credential)
+	if err := ApplyAuth(rc, hdr, AuthDefaultAnthropicKey); err != nil {
+		return err
 	}
 	version := a.Version
 	if version == "" {

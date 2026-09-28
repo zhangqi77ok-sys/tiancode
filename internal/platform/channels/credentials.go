@@ -81,6 +81,7 @@ func (p *Pool) Probe(id string) (Selected, error) {
 			Extra:           c.Extra,
 			AutoBan:         c.AutoBan,
 			Priority:        c.Priority,
+			Auth:            c.Auth,
 		}
 		if len(keys) == 1 {
 			sel.Credential = keys[0]

@@ -37,6 +37,7 @@ func toView(c channels.Channel) llm.ChannelView {
 			ModelMapping:   c.ModelMapping,
 			ParamOverride:  c.ParamOverride,
 			HeaderOverride: c.HeaderOverride,
+			Auth:           c.Auth,
 		},
 		HasKey: strings.TrimSpace(c.Credential) != "",
 	}
@@ -94,6 +95,7 @@ func poolChannel(ch llm.Channel) channels.Channel {
 		ModelMapping:   ch.ModelMapping,
 		ParamOverride:  ch.ParamOverride,
 		HeaderOverride: ch.HeaderOverride,
+		Auth:           ch.Auth,
 	}
 }
 
@@ -171,6 +173,7 @@ func (s *ChatService) UpdateChannel(id string, upd llm.Channel) error {
 	existing.ModelMapping = upd.ModelMapping
 	existing.ParamOverride = upd.ParamOverride
 	existing.HeaderOverride = upd.HeaderOverride
+	existing.Auth = upd.Auth
 	if err := llm.ValidateChannel(upd); err != nil {
 		return err
 	}
@@ -226,7 +229,7 @@ func (s *ChatService) TestChannel(ctx context.Context, id string) (TestResult, e
 		ChannelID: sel.ChannelID, Type: sel.Type, BaseURL: sel.BaseURL,
 		Credential: sel.Credential, Extra: sel.Extra,
 		HeaderOverride: sel.HeaderOverride, ParamOverride: sel.ParamOverride,
-		Model: model,
+		Auth: sel.Auth, Model: model,
 	}
 	if mapped := sel.ModelMapping[model]; mapped != "" {
 		rc.Model = mapped // 测试必须用上游真实模型名（映射后的），否则"生产可用、测试报错"
@@ -251,7 +254,7 @@ func (s *ChatService) TestChannel(ctx context.Context, id string) (TestResult, e
 	if err := adv.SetupHeaders(rc, hdr); err != nil {
 		return TestResult{Model: model, Error: "构造鉴权头失败：" + err.Error()}, nil
 	}
-	adaptors.ApplyHeaderOverride(hdr, sel.HeaderOverride)
+	adaptors.ApplyHeaderOverride(hdr, sel.HeaderOverride, sel.Credential)
 
 	tctx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()

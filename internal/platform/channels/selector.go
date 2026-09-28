@@ -3,6 +3,8 @@ package channels
 import (
 	"errors"
 	"fmt"
+
+	"tiancode/internal/core/llm"
 )
 
 // Selection 是一次选路请求。
@@ -33,6 +35,7 @@ type Selected struct {
 	Extra           map[string]string
 	AutoBan         bool
 	Priority        int
+	Auth            *llm.AuthConfig // 渠道级鉴权配置（nil = 协议默认）
 }
 
 // ErrNoChannel 是明确的无可用渠道错误。
@@ -159,6 +162,7 @@ func (p *Pool) pickCredential(ch *Channel) Selected {
 		Extra:           ch.Extra,
 		AutoBan:         ch.AutoBan,
 		Priority:        ch.Priority,
+		Auth:            ch.Auth,
 	}
 	keys := splitCredential(ch.Credential)
 	if len(keys) == 1 {

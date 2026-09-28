@@ -32,6 +32,9 @@ type ChannelDTO struct {
 	ParamOverride  map[string]any    `json:"paramOverride,omitempty"`
 	HeaderOverride map[string]string `json:"headerOverride,omitempty"`
 
+	// Auth 是渠道级鉴权配置（0.2.20）：nil = 协议默认（openai → Bearer；anthropic → x-api-key）
+	Auth *llm.AuthConfig `json:"auth,omitempty"`
+
 	// 凭证摘要：列表卡片显示"N 条 · M 禁用"（逐条管理走 ListCredentials）
 	CredentialCount    int `json:"credentialCount"`
 	CredentialDisabled int `json:"credentialDisabled"`
@@ -78,6 +81,7 @@ type ChannelInput struct {
 	ModelMapping   map[string]string `json:"modelMapping"`
 	ParamOverride  map[string]any    `json:"paramOverride"`
 	HeaderOverride map[string]string `json:"headerOverride"`
+	Auth           *llm.AuthConfig   `json:"auth"`
 }
 
 func (in ChannelInput) toDomain() llm.Channel {
@@ -98,6 +102,7 @@ func (in ChannelInput) toDomain() llm.Channel {
 		ModelMapping:   in.ModelMapping,
 		ParamOverride:  in.ParamOverride,
 		HeaderOverride: in.HeaderOverride,
+		Auth:           in.Auth,
 	}
 }
 
@@ -117,6 +122,7 @@ func fromView(v llm.ChannelView, activeID string) ChannelDTO {
 		ModelMapping:   v.ModelMapping,
 		ParamOverride:  v.ParamOverride,
 		HeaderOverride: v.HeaderOverride,
+		Auth:           v.Auth,
 
 		CredentialCount:    v.CredentialCount,
 		CredentialDisabled: v.CredentialDisabled,

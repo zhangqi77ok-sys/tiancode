@@ -26,17 +26,16 @@ func (OpenAI) Type() string           { return "openai" }
 func (OpenAI) DefaultBaseURL() string { return "https://api.openai.com/v1" }
 
 func (OpenAI) GetRequestURL(rc RouteContext) string {
-	return strings.TrimSuffix(rc.BaseURL, "/") + "/chat/completions"
+	return WithAuthQuery(strings.TrimSuffix(rc.BaseURL, "/")+"/chat/completions", rc)
 }
 
-// SetupHeaders 解释凭证：Bearer 令牌；空凭证合法（部分本地网关如 Ollama 不需要）。
+// SetupHeaders 设置内容头与鉴权：鉴权形态由渠道配置决定（缺省 Bearer 令牌，
+// 可配 api-key 头 / 无前缀 Authorization / URL 参数 / 无鉴权）；空凭证合法
+// （部分本地网关如 Ollama 不需要）。
 func (OpenAI) SetupHeaders(rc RouteContext, hdr http.Header) error {
 	hdr.Set("Content-Type", "application/json")
 	hdr.Set("Accept", "text/event-stream")
-	if rc.Credential != "" {
-		hdr.Set("Authorization", "Bearer "+rc.Credential)
-	}
-	return nil
+	return ApplyAuth(rc, hdr, AuthDefaultBearer)
 }
 
 func (a OpenAI) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte, error) {

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,8 @@ type RouteContext struct {
 	Extra          map[string]string // 协议专用配置（如 azure api-version）
 	HeaderOverride map[string]string
 	ParamOverride  map[string]any
+	// Auth 是渠道级鉴权配置（0.2.20）：nil/空 = 协议默认；解释权在本层（ApplyAuth）。
+	Auth *llm.AuthConfig
 }
 
 // Adaptor 是同步对话协议的适配器接口（转换边界，参照 new-api Adaptor 形态）。
@@ -160,8 +163,90 @@ func ApplyParamOverride(body []byte, override map[string]any) ([]byte, error) {
 }
 
 // ApplyHeaderOverride 把 header_override 合并进请求头（网关在 SetupHeaders 之后调用）。
-func ApplyHeaderOverride(hdr http.Header, override map[string]string) {
+// 0.2.20：值支持 {api_key} 占位符——用户可用头覆写把任意头变成鉴权头
+// （如 "api-key: {api_key}"、无 Bearer 前缀的 "Authorization: {api_key}"），
+// 且多 Key 轮询下凭证始终是最新选出的那条（写死密钥会破坏轮询）。
+func ApplyHeaderOverride(hdr http.Header, override map[string]string, credential string) {
 	for k, v := range override {
-		hdr.Set(k, v)
+		hdr.Set(k, RenderAuthValue(v, credential))
 	}
+}
+
+// ---- 渠道级鉴权（0.2.20）----
+
+// AuthDefaultBearer 是 Bearer 形态协议（openai 及兼容族）的默认鉴权。
+// 为什么默认值仍由适配器给出：鉴权形态是协议知识（Bearer 头 vs x-api-key），
+// 渠道级配置只是覆盖项——不配置时行为与历史完全一致（向后兼容）。
+var AuthDefaultBearer = llm.AuthConfig{Type: llm.AuthBearer}
+
+// AuthDefaultAnthropicKey 是 Anthropic Messages 协议的默认鉴权（x-api-key）。
+var AuthDefaultAnthropicKey = llm.AuthConfig{Type: llm.AuthHeader, Name: "x-api-key", Value: "{api_key}"}
+
+// ApplyAuth 构造上游鉴权头：渠道显式配置优先，否则用协议默认（def）。
+// 语义（对齐 new-api AdvancedCustom 的 Auth 并提升为通用能力）：
+//   - nil / default → def
+//   - none          → 不设任何鉴权头（覆盖协议默认）
+//   - bearer        → Authorization: Bearer <凭证>
+//   - header        → Name: Render(Value)（Value 空 = 仅凭证）
+//   - query         → 不设头（由 WithAuthQuery 拼 URL；此处仅校验名称）
+//
+// 空凭证一律不设鉴权头（本地网关如 Ollama 合法）。query 型在此校验名称——
+// SetupHeaders 在 URL 构造之前被调用，缺名必须显式报错而非静默裸奔。
+func ApplyAuth(rc RouteContext, hdr http.Header, def llm.AuthConfig) error {
+	auth := def
+	if rc.Auth != nil && rc.Auth.Type != "" && rc.Auth.Type != llm.AuthDefault {
+		auth = *rc.Auth
+	}
+	switch auth.Type {
+	case llm.AuthNone:
+		return nil
+	case llm.AuthQuery:
+		if strings.TrimSpace(auth.Name) == "" {
+			return fmt.Errorf("鉴权方式 query 缺少 URL 参数名称")
+		}
+		return nil
+	case llm.AuthBearer:
+		if rc.Credential != "" {
+			hdr.Set("Authorization", "Bearer "+rc.Credential)
+		}
+		return nil
+	case llm.AuthHeader:
+		if strings.TrimSpace(auth.Name) == "" {
+			return fmt.Errorf("鉴权方式 header 缺少请求头名称")
+		}
+		if rc.Credential != "" {
+			hdr.Set(auth.Name, RenderAuthValue(auth.Value, rc.Credential))
+		}
+		return nil
+	default:
+		return fmt.Errorf("不支持的鉴权方式 %q（可用：default/bearer/header/query/none）", auth.Type)
+	}
+}
+
+// WithAuthQuery 把 query 型鉴权参数拼进 URL（GetRequestURL 内调用，自动选 ? 或 &）。
+// 非 query 型、无凭证、缺名称时原样返回（缺名称由 ApplyAuth 显式报错）。
+func WithAuthQuery(url string, rc RouteContext) string {
+	auth := rc.Auth
+	if auth == nil || auth.Type != llm.AuthQuery || rc.Credential == "" {
+		return url
+	}
+	name := strings.TrimSpace(auth.Name)
+	if name == "" {
+		return url
+	}
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	return url + sep + neturl.QueryEscape(name) + "=" + neturl.QueryEscape(RenderAuthValue(auth.Value, rc.Credential))
+}
+
+// RenderAuthValue 渲染鉴权值模板：{api_key} → 凭证；空模板 = 仅凭证本身。
+// 与 new-api 的 header override 词法一致（只支持 {api_key}）：模板能力越大，
+// 误配置与注入面越大；需要更多变量时再加。
+func RenderAuthValue(tpl, credential string) string {
+	if tpl == "" {
+		return credential
+	}
+	return strings.ReplaceAll(tpl, "{api_key}", credential)
 }

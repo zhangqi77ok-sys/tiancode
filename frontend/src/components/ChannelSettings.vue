@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useDialogs } from '../composables/useDialogs'
-import type { ChannelDTO, CredentialDTO } from '../wails'
+import type { AuthDTO, ChannelDTO, CredentialDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
 
@@ -35,8 +35,17 @@ const emptyForm = () => ({
   mappingText: '',
   headerText: '',
   paramText: '',
+  // 0.2.20：鉴权方式（default = 协议默认；header/query 需要名称 + 值模板）
+  authType: 'default',
+  authName: '',
+  authValue: '',
 })
 const form = ref(emptyForm())
+
+// 协议默认鉴权的展示文案（表单下拉第一项；实际形态由后端适配器决定）
+const protocolDefaultAuth = computed(() =>
+  form.value.protocol === 'anthropic' ? 'x-api-key' : 'Authorization: Bearer',
+)
 
 // 协议默认地址提示（选 anthropic 时给用户可照抄的地址）
 const protocolHint = computed(() =>
@@ -106,7 +115,19 @@ function fillFrom(ch: ChannelDTO) {
     mappingText: serializeKV(ch.modelMapping),
     headerText: serializeKV(ch.headerOverride),
     paramText: ch.paramOverride && Object.keys(ch.paramOverride).length ? JSON.stringify(ch.paramOverride, null, 2) : '',
+    authType: ch.auth?.type && ch.auth.type !== 'default' ? ch.auth.type : 'default',
+    authName: ch.auth?.name ?? '',
+    authValue: ch.auth?.value ?? '',
   }
+}
+
+// authLabel 列表徽章文案：非默认鉴权才显示（默认不占视觉）
+function authLabel(a?: AuthDTO): string {
+  if (!a || !a.type || a.type === 'default') return ''
+  if (a.type === 'bearer') return 'Bearer'
+  if (a.type === 'none') return '无鉴权'
+  if (a.type === 'query') return `参数 ${a.name}`
+  return `头 ${a.name}`
 }
 
 function startEdit(ch: ChannelDTO) {
@@ -180,6 +201,19 @@ async function save() {
       return
     }
   }
+  // 鉴权：default 不入库（保留协议默认语义）；header/query 必须有名称
+  let auth: AuthDTO | undefined
+  if (form.value.authType !== 'default') {
+    if ((form.value.authType === 'header' || form.value.authType === 'query') && !form.value.authName.trim()) {
+      store.error = form.value.authType === 'header' ? '自定义鉴权需要填写请求头名称' : '自定义鉴权需要填写 URL 参数名称'
+      return
+    }
+    auth = {
+      type: form.value.authType,
+      name: form.value.authName.trim() || undefined,
+      value: form.value.authValue.trim() || undefined,
+    }
+  }
   await store.save({
     id: form.value.id,
     name: form.value.name,
@@ -195,6 +229,7 @@ async function save() {
     modelMapping: Object.keys(mapping).length ? mapping : undefined,
     headerOverride: Object.keys(headers).length ? headers : undefined,
     paramOverride: Object.keys(params).length ? params : undefined,
+    auth,
   })
   if (!store.error) {
     view.value = 'list'
@@ -317,6 +352,12 @@ onMounted(async () => {
                 <span v-else class="stat border-[var(--c-warn)] px-2 py-0.5 text-xs text-[var(--c-warn-text)]">
                   未配置凭证
                 </span>
+                <span
+                  v-if="authLabel(ch.auth)"
+                  class="stat px-2 py-0.5 text-xs"
+                  title="渠道级鉴权方式（覆盖协议默认）"
+                  >鉴权 {{ authLabel(ch.auth) }}</span
+                >
                 <span
                   class="stat px-2 py-0.5 text-xs"
                   :class="
@@ -451,6 +492,45 @@ onMounted(async () => {
           >
             管理已存凭证（查看/禁用/启用）
           </button>
+
+          <!-- 鉴权方式（0.2.20）：覆盖协议默认，兼容各种中转/自建网关的鉴权形态 -->
+          <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label class="block">
+              <span class="mb-1 block text-xs text-[var(--c-text-dim)]">鉴权方式</span>
+              <select
+                v-model="form.authType"
+                class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
+              >
+                <option value="default">跟随协议默认（{{ protocolDefaultAuth }}）</option>
+                <option value="bearer">Bearer 令牌（Authorization: Bearer）</option>
+                <option value="header">自定义请求头</option>
+                <option value="query">URL 查询参数</option>
+                <option value="none">无鉴权（前置代理已鉴权）</option>
+              </select>
+            </label>
+            <template v-if="form.authType === 'header' || form.authType === 'query'">
+              <label class="block">
+                <span class="mb-1 block text-xs text-[var(--c-text-dim)]">
+                  {{ form.authType === 'header' ? '请求头名称' : 'URL 参数名称' }}
+                </span>
+                <input
+                  v-model="form.authName"
+                  class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 font-mono text-sm"
+                  :placeholder="form.authType === 'header' ? 'api-key' : 'key'"
+                />
+              </label>
+              <label class="block sm:col-span-2">
+                <span class="mb-1 block text-xs text-[var(--c-text-dim)]">
+                  值模板（支持 {api_key} 占位符；留空 = 仅凭证本身）
+                </span>
+                <input
+                  v-model="form.authValue"
+                  class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 font-mono text-sm"
+                  placeholder="Token {api_key}"
+                />
+              </label>
+            </template>
+          </div>
         </div>
 
         <!-- ③ 模型与路由 -->

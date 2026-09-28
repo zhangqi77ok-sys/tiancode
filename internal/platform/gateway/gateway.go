@@ -78,6 +78,7 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			ChannelID: sel.ChannelID, Type: sel.Type, BaseURL: sel.BaseURL,
 			Credential: sel.Credential, Extra: sel.Extra,
 			HeaderOverride: sel.HeaderOverride, ParamOverride: sel.ParamOverride,
+			Auth: sel.Auth, // 渠道级鉴权配置（nil = 协议默认）
 		}
 		// model_mapping：下游模型名 → 上游真实模型名；无映射原样传递
 		rc.Model = req.Model
@@ -106,7 +107,7 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			g.terminal(ctx, out, fmt.Errorf("构造鉴权头失败（%s）：%w", sel.Type, err), &forwarded)
 			return
 		}
-		adaptors.ApplyHeaderOverride(hdr, sel.HeaderOverride)
+		adaptors.ApplyHeaderOverride(hdr, sel.HeaderOverride, sel.Credential)
 
 		resp, err := adv.DoRequest(ctx, rc, hdr, body)
 		if err != nil {
