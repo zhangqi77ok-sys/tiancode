@@ -32,10 +32,12 @@ type Bind struct {
 // New 装配壳层。
 func New(chat *app.ChatService) *Bind {
 	b := &Bind{chat: chat, cancels: make(map[string]context.CancelFunc)}
-	// 审批事件桥（ADR-0007）：内核要"问"时推给前端，前端答复经 ResolveApproval 回流
+	// 审批事件桥（ADR-0007）：内核要"问"时推给前端，前端答复经 ResolveApproval 回流。
+	// sessionID 随载荷下发（0.2.25 多会话）：后台会话的审批卡要归位到它自己的会话。
 	chat.SetApprovalHandler(func(e app.ApprovalEvent) {
 		wruntime.EventsEmit(b.appCtx(), "chat:approval", map[string]string{
 			"id":        e.ID,
+			"sessionID": e.SessionID,
 			"toolName":  e.ToolName,
 			"arguments": e.Arguments,
 		})
@@ -43,9 +45,10 @@ func New(chat *app.ChatService) *Bind {
 	// 问答事件桥（0.2.15）：ask_user 的选项卡推给前端，答复经 ResolveAsk 回流
 	chat.SetAskHandler(func(e app.AskEvent) {
 		wruntime.EventsEmit(b.appCtx(), "chat:ask", map[string]any{
-			"id":       e.ID,
-			"question": e.Question,
-			"options":  e.Options,
+			"id":        e.ID,
+			"sessionID": e.SessionID,
+			"question":  e.Question,
+			"options":   e.Options,
 		})
 	})
 	return b

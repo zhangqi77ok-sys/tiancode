@@ -11,10 +11,13 @@ import (
 )
 
 // AskEvent 是发给 UI 的问答请求（UI 渲染选项卡，答复经 ResolveAsk 回流）。
+// SessionID 标明请求来自哪个会话（多会话并行后，后台会话的问答卡必须归位到
+// 它自己的会话，见 approval.go 同款注释）。
 type AskEvent struct {
-	ID       string   `json:"id"`
-	Question string   `json:"question"`
-	Options  []string `json:"options"` // 可空 = 自由回答
+	ID        string   `json:"id"`
+	SessionID string   `json:"sessionID"`
+	Question  string   `json:"question"`
+	Options   []string `json:"options"` // 可空 = 自由回答
 }
 
 // SetAskHandler 注入问答事件回调（壳层负责推送到前端）；nil 表示只等不通知（测试用）。
@@ -45,8 +48,10 @@ func (s *ChatService) ResolveAsk(id string, answer string) error {
 }
 
 // uiAsker 是 agent.Asker 的编排层实现：发事件 → 等答复 → 返回答案。
+// sessionID 是发起这轮对话的会话（随轮注入，见 ChatService.newAgentWith）。
 type uiAsker struct {
-	svc *ChatService
+	svc       *ChatService
+	sessionID string
 }
 
 // askSeq 生成请求 ID（进程内唯一即可，仅用于 UI 与答复配对）。
@@ -65,7 +70,7 @@ func (a *uiAsker) Ask(ctx context.Context, req agent.AskRequest) (string, error)
 	a.svc.mu.Unlock()
 
 	if emit != nil {
-		emit(AskEvent{ID: id, Question: req.Question, Options: req.Options})
+		emit(AskEvent{ID: id, SessionID: a.sessionID, Question: req.Question, Options: req.Options})
 	}
 
 	select {

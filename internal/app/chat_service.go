@@ -60,8 +60,7 @@ type ChatService struct {
 	registry *tools.Registry
 
 	mu           sync.Mutex
-	agent        *agent.Loop // 随激活模型重建；无激活渠道时为 nil（Send 给出可读错误）
-	defaultModel string      // 当前轮次使用的模型名（激活渠道的首个模型）
+	defaultModel string // 当前轮次使用的模型名（激活渠道的首个模型）
 	ledgers      map[string]*session.Ledger
 	// revived 是本次启动从"自动禁用"恢复的渠道展示名（壳层写日志；空 = 无）。
 	// 为什么留痕：恢复动作改变了用户上次看到的渠道状态，静默改变用户配置观感不可接受。
@@ -243,17 +242,29 @@ func (s *ChatService) SaveExtensions(f catalog.File) error {
 	return s.extensions.Save(f)
 }
 
-// activate 由当前默认模型构建运行时与 agent；这是唯一与"具体渠道"耦合的装配点。
-// 多协议网关承担选路/重试/协议分派：这里只需要知道用哪个模型名发问。
+// activate 记录当前默认模型。这是唯一与"具体渠道"耦合的装配点：
+// 多协议网关承担选路/重试/协议分派，这里只需要知道用哪个模型名发问。
+//
+// 为什么不再在这里构建 agent：agent.Loop 的 phase 是"单轮互斥"锁（ADR-0005），
+// 整应用共用一个 Loop 就意味着同时只能跑一轮——多会话并行对话（0.2.25）要求
+// 每轮独立。改为每次 Send 现场构建（见 newAgent），循环除 phase 外无状态，
+// 会话历史都在账本里，按轮新建只是一个小结构体。
 func (s *ChatService) activate(model string) error {
+	s.defaultModel = model
+	return nil
+}
+
+// newAgentWith 用锁内取好的快照构建这一轮独立的 ReAct 循环（多会话并行的前提，
+// 见 activate 注释）。sessionID 随轮注入审批器/问答器：后台会话的"要审批/在提问"
+// 事件必须能归属到它自己的会话，否则会错插进当前正在看的会话里。
+func (s *ChatService) newAgentWith(model string, registry *tools.Registry, approver agent.Approver, sessionID string) *agent.Loop {
 	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（适配器内 60s）
 	// 已覆盖挂起场景，总预算只防极端失控。
 	rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{Total: 10 * time.Minute})
-	s.agent = agent.NewLoop(rt, model, s.registry)
-	s.agent.SetAsker(&uiAsker{svc: s}) // 问答通道随 agent 生命周期常开（无 UI 时模型收到引导性结果）
-	s.applyApproverLocked()            // 渠道重建后重新装上审批器（策略变更必须对当前运行时生效）
-	s.defaultModel = model
-	return nil
+	ag := agent.NewLoop(rt, model, registry)
+	ag.SetAsker(&uiAsker{svc: s, sessionID: sessionID}) // 问答通道常开（无 UI 时模型收到引导性结果）
+	ag.SetApprover(approver)                            // 审批器随轮注入，策略变更对下一轮生效
+	return ag
 }
 
 // DeleteSession 删除会话及其账本文件。
@@ -271,17 +282,24 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 }
 
 // Send 发送一条用户消息，返回流式块通道（恰好一个 EndReason 终态后关闭）。
+// 多会话并行（0.2.25）：不同会话可以同时各跑各的轮次——每轮独立 agent、独立账本句柄，
+// 互不串流；同一会话的并发发送仍由前端排队（同一 Loop 的 phase 互斥兜底）。
 func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
-	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读 agent，避免自锁
+	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
 	}
+	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
+	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()
-	ag := s.agent
+	model := s.defaultModel
+	registry := s.registry
+	approver := s.approverFor(sessionID)
 	s.mu.Unlock()
-	if ag == nil {
+	if model == "" {
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
 	}
+	ag := s.newAgentWith(model, registry, approver, sessionID)
 	if err := s.applyExtensionPreface(ctx, ag); err != nil {
 		return nil, err
 	}

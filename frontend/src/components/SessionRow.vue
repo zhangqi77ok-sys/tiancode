@@ -54,7 +54,7 @@ const store = useChatStore()
     <button
       v-if="props.pinned"
       class="btn-ghost shrink-0 text-[var(--c-primary)] opacity-100"
-      :disabled="store.running"
+      :disabled="props.running"
       title="取消置顶"
       aria-label="取消置顶"
       @click="emit('pin', false)"
@@ -66,7 +66,7 @@ const store = useChatStore()
       <button
         v-if="!props.pinned"
         class="btn-ghost shrink-0"
-        :disabled="store.running"
+        :disabled="props.running"
         title="置顶"
         aria-label="置顶"
         @click="emit('pin', true)"
@@ -75,7 +75,7 @@ const store = useChatStore()
       </button>
       <button
         class="btn-ghost shrink-0"
-        :disabled="store.running"
+        :disabled="props.running"
         title="重命名会话"
         aria-label="重命名会话"
         @click="emit('rename')"
@@ -84,7 +84,7 @@ const store = useChatStore()
       </button>
       <button
         class="btn-ghost shrink-0 hover:text-[var(--c-err-text)]"
-        :disabled="store.running"
+        :disabled="props.running"
         title="删除会话"
         aria-label="删除会话"
         @click="emit('remove')"

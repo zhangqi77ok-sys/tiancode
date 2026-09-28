@@ -18,8 +18,12 @@ const h = vi.hoisted(() => ({
     question?: string
     options?: string[]
   }[],
+  // 多会话：按会话 ID 定制重放（缺省回落 h.replay）
+  replayById: {} as Record<string, { role: string; content: string }[]>,
   resolved: [] as string[],
   sends: [] as string[],
+  // 多会话：记录每次 Send 的目标会话（断言后台会话的队列续发归属）
+  sendCalls: [] as { sessionID: string; text: string }[],
   resolvedAsks: [] as { id: string; answer: string }[],
 }))
 
@@ -27,8 +31,9 @@ vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
       ListSessionSummaries: async () => h.summaries,
-      Replay: async () => h.replay,
-      Send: async (_sessionID: string, text: string) => {
+      Replay: async (id: string) => h.replayById[id] ?? h.replay,
+      Send: async (sessionID: string, text: string) => {
+        h.sendCalls.push({ sessionID, text })
         h.sends.push(text)
       },
       Stop: async () => {},
@@ -63,8 +68,10 @@ describe('chat store', () => {
     h.deleted = []
     h.renamed = []
     h.replay = []
+    h.replayById = {}
     h.resolved = []
     h.sends = []
+    h.sendCalls = []
     h.resolvedAsks = []
   })
 
@@ -453,6 +460,88 @@ describe('chat store', () => {
     expect(store.queue.map((q) => q.text)).toEqual(['一', '二'])
     store.removeQueued(store.queue[0].id)
     expect(store.queue.map((q) => q.text)).toEqual(['二'])
+  })
+
+  // —— 多会话并行（0.2.25）：运行中自由切换，事件各归各位 ——
+
+  it('后台会话的增量落在它自己的缓冲里，切回去原地接着看', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('A 的第一问')
+    const a = store.sessionId
+    await store.newSession() // A 还在跑也允许新建（多会话核心诉求）
+    await store.send('B 的问题')
+    // A 的增量/工具事件到达时，正在看的是 B
+    store.onChunk({ sessionID: a, delta: 'A 回答', thinking: '' })
+    store.onTool({ sessionID: a, name: 'fs', status: 'success', summary: 'ok' })
+    expect(store.messages.map((m) => m.content)).toEqual(['B 的问题']) // 当前视图不含 A 的内容
+    await store.selectSession(a) // 切回 A：缓冲原样保留（不重放、不覆盖）
+    expect(store.messages.map((m) => m.content)).toEqual(['A 的第一问', 'A 回答', 'ok'])
+    expect(store.messages.some((m) => m.role === 'tool')).toBe(true)
+  })
+
+  it('后台会话的终态不丢也不串：A 结束不影响 B 的运行', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('A 问')
+    const a = store.sessionId
+    await store.newSession()
+    await store.send('B 问')
+    store.onChunk({ sessionID: a, delta: 'A 半截', thinking: '' })
+    store.onTerminal({ sessionID: a, endReason: END_REASON.ERROR, error: '渠道故障' })
+    expect(store.isRunning(a)).toBe(false)
+    expect(store.isRunning(store.sessionId)).toBe(true) // B 仍在后台跑
+    expect(store.messages.at(-1)?.content).toBe('B 问') // 当前视图不受 A 终态影响
+    await store.selectSession(a)
+    const last = store.messages.at(-1)
+    expect(last?.error).toBe(true)
+    expect(last?.content).toContain('渠道故障')
+  })
+
+  it('审批卡按 sessionID 归位到后台会话', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('A')
+    const a = store.sessionId
+    await store.newSession()
+    await store.send('B')
+    store.onApproval({ id: 'ap-9', sessionID: a, toolName: 'shell', arguments: '{}' })
+    expect(store.messages.some((m) => m.role === 'approval')).toBe(false) // 不插进当前视图
+    await store.selectSession(a)
+    expect(store.messages.some((m) => m.approvalId === 'ap-9')).toBe(true)
+  })
+
+  it('后台会话的队列续发仍发给它自己', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('A 第一条')
+    const a = store.sessionId
+    store.enqueue('A 排队第二条')
+    await store.newSession()
+    await store.send('B 的问题')
+    store.onTerminal({ sessionID: a, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sendCalls.at(-1)).toEqual({ sessionID: a, text: 'A 排队第二条' })
+  })
+
+  it('删除运行中的会话被拒绝且错误可见', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('跑着呢')
+    const id = store.sessionId
+    await store.removeSession(id)
+    expect(store.error).toContain('正在运行')
+    expect(h.deleted).toEqual([])
+  })
+
+  it('切换回已有缓冲的会话不重放覆盖（后台跑过的现场保留）', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('现场消息')
+    const id = store.sessionId
+    h.replayById[id] = [{ role: 'user', content: '账本里的旧消息' }] // 若误重放会被覆盖
+    await store.selectSession(id)
+    expect(store.messages.map((m) => m.content)).toEqual(['现场消息'])
   })
 })
 

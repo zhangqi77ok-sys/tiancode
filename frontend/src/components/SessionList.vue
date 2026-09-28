@@ -50,9 +50,9 @@ function toggleMore(key: string) {
 }
 
 // 打开工作区：系统目录选择框 → 切换 → 回到草稿态（等于在该空间开新对话）。
-// 归属由首条消息落账本时的快照决定，天然记到新空间名下；草稿不进侧栏，反复切换不堆积空会话
+// 归属由首条消息落账本时的快照决定，天然记到新空间名下；草稿不进侧栏，反复切换不堆积空会话。
+// 多会话（0.2.25）：进行中的轮次持有自己的工具集快照，切工作区不再影响它们，无需禁止。
 async function openWorkspace() {
-  if (store.running) return
   const ok = await ws.pickAndSet()
   if (ok) {
     await store.newSession()
@@ -61,9 +61,8 @@ async function openWorkspace() {
 }
 
 // 在已有工作区新建会话（空间组头 ＋）：直接切入（无目录选择器）→ 草稿。
-// 这是"灵活选择已有工作区新建会话"的最短路径；运行中禁止（切工作区会重建工具集）
+// 这是"灵活选择已有工作区新建会话"的最短路径。
 async function newInWorkspace(dir: string) {
-  if (store.running) return
   await ws.setPath(dir)
   await store.newSession()
   emit('close')
@@ -71,7 +70,6 @@ async function newInWorkspace(dir: string) {
 
 // 重命名：对话框返回 null 视为放弃；60 字上限与后端契约一致
 async function rename(id: string) {
-  if (store.running) return
   const next = await dialogs.prompt({
     title: '重命名会话',
     message: '会话标题（最多 60 字）',
@@ -82,9 +80,9 @@ async function rename(id: string) {
   await store.renameSession(id, next)
 }
 
-// 删除：不可逆操作，先确认（消息删除后无法从界面找回）
+// 删除：不可逆操作，先确认（消息删除后无法从界面找回）。
+// 运行中的会话由 store.removeSession 显式拒绝（错误可见），不在这里静默拦。
 async function remove(id: string) {
-  if (store.running) return
   const ok = await dialogs.confirm({
     title: '删除会话',
     message: `删除会话「${store.titleOf(id)}」？\n该会话的全部消息将被移除，且无法恢复。`,
@@ -139,7 +137,7 @@ function select(id: string) {
               :title="sm.title || sm.id"
               :last-active-ms="sm.lastActiveMs"
               :pinned="sm.pinned"
-              :running="store.running && store.sessionId === sm.id"
+              :running="store.isRunning(sm.id)"
               @select="select(sm.id)"
               @pin="(p) => store.pinSession(sm.id, p)"
               @rename="rename(sm.id)"
@@ -194,7 +192,6 @@ function select(id: string) {
                 class="shrink-0 rounded p-0.5 text-[var(--c-text-faint)] opacity-0 transition-opacity hover:text-[var(--c-primary)] focus-visible:opacity-100 group-hover:opacity-100"
                 :title="`在 ${g.label} 新建对话`"
                 :aria-label="`在 ${g.label} 新建对话`"
-                :disabled="store.running"
                 @click="newInWorkspace(g.workspace)"
               >
                 <AppIcon name="plus" :size="12" />
@@ -209,7 +206,7 @@ function select(id: string) {
                 :title="sm.title || sm.id"
                 :last-active-ms="sm.lastActiveMs"
                 :pinned="sm.pinned"
-                :running="store.running && store.sessionId === sm.id"
+                :running="store.isRunning(sm.id)"
                 @select="select(sm.id)"
                 @pin="(p) => store.pinSession(sm.id, p)"
                 @rename="rename(sm.id)"

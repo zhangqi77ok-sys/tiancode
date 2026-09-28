@@ -85,16 +85,23 @@ onMounted(() => {
       store.onTool(p)
     },
   )
-  bridge().runtime.EventsOn('chat:approval', (p: { id: string; toolName: string; arguments: string }) => {
-    store.onApproval(p)
-  })
+  // 审批卡片：sessionID 把卡片归位到发起它的会话（后台会话要审批时不能插到当前视图）
+  bridge().runtime.EventsOn(
+    'chat:approval',
+    (p: { id: string; sessionID?: string; toolName: string; arguments: string }) => {
+      store.onApproval(p)
+    },
+  )
   bridge().runtime.EventsOn('chat:todo', (p: { sessionID: string; items: { text: string; status: string }[] }) => {
     store.onTodo({ sessionID: p.sessionID, items: p.items as TodoItem[] })
   })
-  // 问答卡：ask_user 载荷不带 sessionID（流式中禁止切换会话，卡片必属当前会话）
-  bridge().runtime.EventsOn('chat:ask', (p: { id: string; question: string; options?: string[] }) => {
-    store.onAsk(p)
-  })
+  // 问答卡：sessionID 把卡片归位到发起它的会话（与审批同款，0.2.25 多会话）
+  bridge().runtime.EventsOn(
+    'chat:ask',
+    (p: { id: string; sessionID?: string; question: string; options?: string[] }) => {
+      store.onAsk(p)
+    },
+  )
   void store.init()
   void useCatalogStore().load()
 })

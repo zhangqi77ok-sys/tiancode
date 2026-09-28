@@ -12,8 +12,11 @@ import (
 )
 
 // ApprovalEvent 是发给 UI 的审批请求（UI 渲染确认卡片）。
+// SessionID 标明请求来自哪个会话：多会话并行（0.2.25）后，后台会话的审批卡
+// 必须能归位到它自己的会话，而不是插进当前正在看的会话。
 type ApprovalEvent struct {
 	ID        string `json:"id"`
+	SessionID string `json:"sessionID"`
 	ToolName  string `json:"toolName"`
 	Arguments string `json:"arguments"` // 原始 JSON，原样展示，不解析（ADR-0007 第 2 条）
 }
@@ -35,8 +38,9 @@ func (s *ChatService) ApprovalPolicy() []string {
 }
 
 // SetApprovalPolicy 设置需要审批的工具清单；传空即关闭审批（默认关，ADR-0007 第 1 条）。
-// 会同步重建审批器并**持久化到用户级配置**：策略变更必须立刻生效，
-// 且重启后仍然有效（否则用户每次启动都要重开开关，属于基础体验缺失）。
+// **持久化到用户级配置**：策略变更立刻生效且重启后仍有效（否则用户每次启动都要重开
+// 开关，属于基础体验缺失）。生效语义：agent 改为每轮独立构建（多会话并行），
+// 审批器随轮注入，因此变更从**下一轮**开始生效；进行中的轮次维持开跑时的策略。
 func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 	cleaned := make([]string, 0, len(toolNames))
 	for _, n := range toolNames {
@@ -53,20 +57,17 @@ func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 		return fmt.Errorf("保存审批策略失败：%w", err)
 	}
 	s.approvalTools = cleaned
-	s.applyApproverLocked()
 	return nil
 }
 
-// applyApproverLocked 依据策略装上/卸下审批器（调用方持锁）。
-func (s *ChatService) applyApproverLocked() {
-	if s.agent == nil {
-		return // 未配置渠道：agent 尚未构建，activate 时会再应用
-	}
+// approverFor 返回当前策略对应的审批器（调用方持锁；nil = 审批关闭，行为回到"零干扰"）。
+// 为什么不再是"装到 agent 上"：agent 每轮独立构建（多会话并行），审批器随轮注入；
+// sessionID 让审批事件能归属到发起它的会话。
+func (s *ChatService) approverFor(sessionID string) agent.Approver {
 	if len(s.approvalTools) == 0 {
-		s.agent.SetApprover(nil) // 关闭：卸掉审批器，行为回到"零干扰"
-		return
+		return nil
 	}
-	s.agent.SetApprover(&uiApprover{svc: s})
+	return &uiApprover{svc: s, sessionID: sessionID}
 }
 
 // ResolveApproval 提交用户对某次审批请求的答复。
@@ -92,8 +93,10 @@ func (s *ChatService) ResolveApproval(id string, approved bool, reason string) e
 }
 
 // uiApprover 是 agent.Approver 的编排层实现：发事件 → 等答复 → 返回决策。
+// sessionID 是发起这轮对话的会话（随轮注入，见 ChatService.newAgentWith）。
 type uiApprover struct {
-	svc *ChatService
+	svc       *ChatService
+	sessionID string
 }
 
 // approvalSeq 生成请求 ID（进程内唯一即可，仅用于 UI 与答复配对）。
@@ -117,7 +120,7 @@ func (a *uiApprover) Review(ctx context.Context, req agent.ApprovalRequest) (age
 	a.svc.mu.Unlock()
 
 	if emit != nil {
-		emit(ApprovalEvent{ID: id, ToolName: req.ToolName, Arguments: req.Arguments})
+		emit(ApprovalEvent{ID: id, SessionID: a.sessionID, ToolName: req.ToolName, Arguments: req.Arguments})
 	}
 
 	select {

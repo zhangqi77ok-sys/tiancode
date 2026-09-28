@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"context"
 	"fmt"
 	"net/http"
@@ -427,5 +428,88 @@ func TestChatService_ReplayTodoInPlace(t *testing.T) {
 	}
 	if !strings.Contains(msgs[1].Content, `"status":"done"`) || strings.Contains(msgs[1].Content, "pending") {
 		t.Fatalf("todo content = %s, want latest snapshot", msgs[1].Content)
+	}
+}
+
+// 多会话并行（0.2.25）：两个会话同时各跑各的轮次，互不阻塞、互不串流。
+// 上游故意等两路请求都到齐才放行——若后端仍是"一轮占住全局"，第二路请求永远
+// 不会发出，测试会超时失败（并行性由此断言，而不是靠时序碰运气）。
+func TestChatService_ConcurrentSessionsRunInParallel(t *testing.T) {
+	const sessions = 2
+	var mu sync.Mutex
+	arrived := 0
+	allArrived := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		arrived++
+		if arrived == sessions {
+			close(allArrived)
+		}
+		mu.Unlock()
+		select {
+		case <-allArrived:
+		case <-time.After(10 * time.Second):
+			http.Error(w, "timeout: second session never started", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"ok"}}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	s := newChannelService(t, Config{
+		DataDir: t.TempDir(), BaseURL: srv.URL, APIKey: "sk-t", Model: "m1",
+	})
+
+	type outcome struct {
+		end llm.EndReason
+		err error
+	}
+	done := make(chan outcome, sessions)
+	for i := 0; i < sessions; i++ {
+		sid := fmt.Sprintf("s-par-%d", i)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			ch, err := s.Send(ctx, sid, "并行提问")
+			if err != nil {
+				done <- outcome{err: err}
+				return
+			}
+			var o outcome
+			for c := range ch {
+				if c.EndReason != llm.EndNone {
+					o.end, o.err = c.EndReason, c.Err
+				}
+			}
+			done <- o
+		}()
+	}
+	for i := 0; i < sessions; i++ {
+		select {
+		case o := <-done:
+			if o.err != nil {
+				t.Fatalf("并行轮次失败：%v", o.err)
+			}
+			if o.end != llm.EndDone {
+				t.Fatalf("终态 = %d (err=%v)，期望 EndDone", o.end, o.err)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("超时：并行会话未能在预算内完成（后端可能仍在串行执行）")
+		}
+	}
+
+	// 互不串流：每个账本恰好自己的一条 user + 一条 assistant，没有对方的增量
+	for i := 0; i < sessions; i++ {
+		sid := fmt.Sprintf("s-par-%d", i)
+		msgs, err := s.Replay(sid)
+		if err != nil {
+			t.Fatalf("Replay(%s): %v", sid, err)
+		}
+		if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" {
+			t.Fatalf("%s 账本被串写：%+v", sid, msgs)
+		}
 	}
 }

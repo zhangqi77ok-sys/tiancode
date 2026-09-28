@@ -145,12 +145,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <span class="stat" :class="store.running ? 'text-[var(--c-primary)]' : ''">
+      <span class="stat" :class="store.anyRunning ? 'text-[var(--c-primary)]' : ''">
         <span
           class="h-1.5 w-1.5 rounded-full"
-          :class="store.running ? 'animate-pulse bg-[var(--c-primary)]' : 'bg-[var(--c-text-faint)]'"
+          :class="store.anyRunning ? 'animate-pulse bg-[var(--c-primary)]' : 'bg-[var(--c-text-faint)]'"
         ></span>
-        {{ store.running ? '运行中' : '空闲' }}
+        {{ store.anyRunning ? '运行中' : '空闲' }}
       </span>
       <button
         class="chip"
