@@ -39,6 +39,9 @@ type RouteContext struct {
 	ParamOverride  map[string]any
 	// Auth 是渠道级鉴权配置（0.2.20）：nil/空 = 协议默认；解释权在本层（ApplyAuth）。
 	Auth *llm.AuthConfig
+	// Proxy 是上游代理（0.2.22）：http(s)://host:port；空 = 直连。
+	// 由网关从全局配置注入（OAuth 授权与推理共用同一出口策略）。
+	Proxy string
 }
 
 // Adaptor 是同步对话协议的适配器接口（转换边界，参照 new-api Adaptor 形态）。

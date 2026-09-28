@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tiancode/internal/core/llm"
+	"tiancode/internal/platform/netproxy"
 	"tiancode/internal/platform/openaiprovider"
 )
 
@@ -44,7 +45,11 @@ func (a OpenAI) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte, er
 }
 
 func (a OpenAI) DoRequest(ctx context.Context, rc RouteContext, hdr http.Header, body []byte) (*http.Response, error) {
-	return DoJSON(ctx, a.HTTPClient, a.GetRequestURL(rc), hdr, body)
+	client, err := netproxy.Client(a.HTTPClient, rc.Proxy)
+	if err != nil {
+		return nil, err
+	}
+	return DoJSON(ctx, client, a.GetRequestURL(rc), hdr, body)
 }
 
 // ConvertResponse 复用 openaiprovider 的流引擎（空闲看门狗/发送逃生/恰好一个终态）。

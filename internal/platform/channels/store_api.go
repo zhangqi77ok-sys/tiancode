@@ -3,6 +3,7 @@ package channels
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -141,6 +142,34 @@ func (p *Pool) SetApprovalTools(tools []string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.approvalTools = tools
+	return p.persistLocked()
+}
+
+// Proxy 返回全局上游代理（空 = 直连）。
+func (p *Pool) Proxy() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.proxy
+}
+
+// SetProxy 保存全局上游代理。只接受 http/https 代理（socks5 需要额外依赖，未支持——
+// 显式拒绝优于"静默按直连处理"：静默会让地区封锁类错误极难排查）。
+func (p *Pool) SetProxy(proxy string) error {
+	proxy = strings.TrimSpace(proxy)
+	if proxy != "" {
+		u, err := url.Parse(proxy)
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("代理地址无效：%q（示例 http://127.0.0.1:7897）", proxy)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+		default:
+			return fmt.Errorf("不支持的代理协议 %q（当前仅支持 http/https 代理；Clash 的 mixed/HTTP 端口均可）", u.Scheme)
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.proxy = proxy
 	return p.persistLocked()
 }
 

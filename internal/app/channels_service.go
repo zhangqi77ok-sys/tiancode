@@ -243,6 +243,7 @@ func (s *ChatService) TestChannel(ctx context.Context, id string) (TestResult, e
 		Credential: sel.Credential, Extra: sel.Extra,
 		HeaderOverride: sel.HeaderOverride, ParamOverride: sel.ParamOverride,
 		Auth: sel.Auth, Model: model,
+		Proxy: s.pool.Proxy(), // 全局上游代理（测试与生产同一出口策略）
 	}
 	if mapped := sel.ModelMapping[model]; mapped != "" {
 		rc.Model = mapped // 测试必须用上游真实模型名（映射后的），否则"生产可用、测试报错"

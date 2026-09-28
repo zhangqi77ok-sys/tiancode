@@ -484,11 +484,56 @@ function backToForm() {
   view.value = 'form'
 }
 
+// ---- 网络代理（0.2.22）----
+// 国内网络访问 ChatGPT 必须经代理：授权与对话共用这一出口配置。
+const proxyText = ref('')
+const proxyInfo = ref<{ ip: string; country: string } | null>(null)
+const proxyBusy = ref(false)
+const proxyMsg = ref('')
+
+async function loadProxy() {
+  try {
+    proxyText.value = (await bridge().app.GetProxy()) ?? ''
+  } catch {
+    // 读取失败不阻断面板（用户仍可重新填写保存）
+  }
+}
+
+async function saveProxy() {
+  proxyBusy.value = true
+  proxyMsg.value = ''
+  proxyInfo.value = null
+  try {
+    await bridge().app.SetProxy(proxyText.value.trim())
+    proxyMsg.value = proxyText.value.trim() ? '已保存：授权与对话都将经该代理' : '已保存：恢复直连'
+  } catch (e) {
+    proxyMsg.value = String(e instanceof Error ? e.message : e)
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
+// 检查出口：显示代理的实际出口 IP 与地区（判断节点是否被上游支持）
+async function checkProxy() {
+  proxyBusy.value = true
+  proxyMsg.value = ''
+  proxyInfo.value = null
+  try {
+    const info = await bridge().app.CheckProxy(proxyText.value.trim())
+    if (info) proxyInfo.value = info
+  } catch (e) {
+    proxyMsg.value = String(e instanceof Error ? e.message : e)
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
 onBeforeUnmount(stopCodexPoll)
 
 onMounted(async () => {
   await store.load()
   await store.loadPresets()
+  await loadProxy()
 })
 </script>
 
@@ -500,6 +545,30 @@ onMounted(async () => {
       class="mx-5 mt-4 rounded-xl border border-[var(--c-err)] bg-[var(--c-err-soft)] px-3 py-2 text-xs text-[var(--c-err-text)]"
     >
       {{ store.error }}
+    </div>
+
+    <!-- 网络代理（0.2.22）：国内访问 ChatGPT 必须经代理；授权与对话共用此出口 -->
+    <div class="mx-5 mt-4 rounded-xl border border-[var(--c-border)] px-3 py-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="shrink-0 text-xs text-[var(--c-text-dim)]">网络代理</span>
+        <input
+          v-model="proxyText"
+          placeholder="http://127.0.0.1:7897（国内访问 ChatGPT 必需；留空 = 直连）"
+          class="min-w-0 flex-1 rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-1.5 text-xs"
+        />
+        <button class="chip shrink-0" :disabled="proxyBusy" @click="saveProxy">保存</button>
+        <button class="chip shrink-0" :disabled="proxyBusy" title="探测出口 IP 与地区" @click="checkProxy">
+          检查出口
+        </button>
+      </div>
+      <p
+        v-if="proxyMsg || proxyInfo"
+        class="mt-1 text-xs"
+        :class="proxyInfo ? 'text-[var(--c-ok-text)]' : 'text-[var(--c-text-dim)]'"
+      >
+        <template v-if="proxyInfo">✓ 出口 {{ proxyInfo.ip }}（地区 {{ proxyInfo.country }}）</template>
+        <template v-else>{{ proxyMsg }}</template>
+      </p>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-5">

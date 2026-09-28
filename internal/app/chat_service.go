@@ -109,6 +109,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 		return nil, err
 	}
 	codexClient := codexauth.NewClient(nil)
+	codexClient.ProxyFunc = pool.Proxy // 授权端点与推理端点共用同一出口（全局代理）
 	s := &ChatService{
 		cfg:              cfg,
 		pool:             pool,

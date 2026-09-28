@@ -15,6 +15,7 @@ import (
 
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/codexauth"
+	"tiancode/internal/platform/netproxy"
 )
 
 // Codex 是 OpenAI Codex（ChatGPT 订阅账号）协议适配器。
@@ -150,7 +151,11 @@ func (a Codex) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte, err
 }
 
 func (a Codex) DoRequest(ctx context.Context, rc RouteContext, hdr http.Header, body []byte) (*http.Response, error) {
-	return DoJSON(ctx, a.HTTPClient, a.GetRequestURL(rc), hdr, body)
+	client, err := netproxy.Client(a.HTTPClient, rc.Proxy)
+	if err != nil {
+		return nil, err
+	}
+	return DoJSON(ctx, client, a.GetRequestURL(rc), hdr, body)
 }
 
 // ConvertResponse 校验 HTTP 状态并启动 Codex SSE 流解析。

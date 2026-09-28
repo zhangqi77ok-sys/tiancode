@@ -121,6 +121,12 @@ export interface CodexCredentialDTO {
   expiresAt?: number
 }
 
+// 代理出口探测结果（IP 与地区：确认节点是否符合上游要求）
+export interface ProxyInfoDTO {
+  ip: string
+  country: string
+}
+
 export interface ChannelListDTO {
   channels: ChannelDTO[]
   activeId: string
@@ -240,6 +246,10 @@ interface WailsApp {
   ): Promise<CodexBindResultDTO | null>
   ImportCodexCredential(channelID: string, name: string, raw: string): Promise<CodexBindResultDTO | null>
   CodexCredentialOf(channelID: string): Promise<CodexCredentialDTO | null>
+  // 全局上游代理（0.2.22）：ChatGPT 授权与对话共用同一出口
+  GetProxy(): Promise<string | null>
+  SetProxy(proxy: string): Promise<void>
+  CheckProxy(proxy: string): Promise<ProxyInfoDTO | null>
 }
 
 interface WailsRuntime {
@@ -347,6 +357,9 @@ export function bridge(): WailsBridge {
         BindCodexOAuth: offlineWrite,
         ImportCodexCredential: offlineWrite,
         CodexCredentialOf: async () => ({ bound: false }),
+        GetProxy: async () => '',
+        SetProxy: offlineWrite,
+        CheckProxy: offlineWrite,
       },
       runtime: { EventsOn: () => {} },
     }

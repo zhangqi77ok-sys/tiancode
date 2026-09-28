@@ -28,6 +28,10 @@ type fileFormat struct {
 	Channels      []Channel `json:"channels"`
 	ActiveID      string    `json:"activeId"`
 	ApprovalTools []string  `json:"approvalTools,omitempty"`
+	// Proxy 是全局上游代理（0.2.22）：http(s)://host:port；空 = 直连。
+	// 为什么全局而非仅渠道级：OAuth 授权发生在"还没有渠道"的时刻，
+	// 且地区封锁是整条出口链路的问题（授权与推理会被同一地区策略拒绝）。
+	Proxy string `json:"proxy,omitempty"`
 }
 
 // DefaultPath 返回渠道配置路径（沿用旧路径，升级即原地迁移）。
@@ -46,6 +50,7 @@ type Pool struct {
 	channels      []*Channel
 	activeID      string
 	approvalTools []string
+	proxy         string                      // 全局上游代理（空 = 直连）
 	byGroupModel  map[string]map[string][]int // group → model → channels 下标（priority 降序）
 }
 
@@ -116,11 +121,12 @@ func (p *Pool) setLocked(ff fileFormat) {
 	}
 	p.activeID = ff.ActiveID
 	p.approvalTools = ff.ApprovalTools
+	p.proxy = ff.Proxy
 }
 
 // persistLocked 原子写入当前状态（C-CH-5：temp + fsync + rename，崩溃不留半文件）。
 func (p *Pool) persistLocked() error {
-	ff := fileFormat{Version: 2, ActiveID: p.activeID, ApprovalTools: p.approvalTools}
+	ff := fileFormat{Version: 2, ActiveID: p.activeID, ApprovalTools: p.approvalTools, Proxy: p.proxy}
 	ff.Channels = make([]Channel, 0, len(p.channels))
 	for _, c := range p.channels {
 		ff.Channels = append(ff.Channels, *c)

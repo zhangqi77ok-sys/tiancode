@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tiancode/internal/core/llm"
+	"tiancode/internal/platform/netproxy"
 )
 
 // Anthropic 是 Anthropic Messages 协议适配器（/v1/messages + SSE）。
@@ -162,7 +163,11 @@ func (a Anthropic) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte,
 }
 
 func (a Anthropic) DoRequest(ctx context.Context, rc RouteContext, hdr http.Header, body []byte) (*http.Response, error) {
-	return DoJSON(ctx, a.HTTPClient, a.GetRequestURL(rc), hdr, body)
+	client, err := netproxy.Client(a.HTTPClient, rc.Proxy)
+	if err != nil {
+		return nil, err
+	}
+	return DoJSON(ctx, client, a.GetRequestURL(rc), hdr, body)
 }
 
 // ConvertResponse 解析 Anthropic SSE（message_start / content_block_* / message_delta /

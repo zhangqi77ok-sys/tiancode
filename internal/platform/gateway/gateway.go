@@ -78,7 +78,8 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			ChannelID: sel.ChannelID, Type: sel.Type, BaseURL: sel.BaseURL,
 			Credential: sel.Credential, Extra: sel.Extra,
 			HeaderOverride: sel.HeaderOverride, ParamOverride: sel.ParamOverride,
-			Auth: sel.Auth, // 渠道级鉴权配置（nil = 协议默认）
+			Auth:  sel.Auth,       // 渠道级鉴权配置（nil = 协议默认）
+			Proxy: g.Pool.Proxy(), // 全局上游代理（空 = 直连）
 		}
 		// model_mapping：下游模型名 → 上游真实模型名；无映射原样传递
 		rc.Model = req.Model

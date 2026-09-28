@@ -25,6 +25,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"tiancode/internal/platform/netproxy"
 )
 
 // 授权常量（对齐 Codex CLI 公开客户端；改动需同步说明文档）。
@@ -118,6 +120,17 @@ type Client struct {
 	HTTP *http.Client
 	// TokenEndpoint 覆盖令牌端点（测试注入 httptest）；空 = 生产端点。
 	TokenEndpoint string
+	// ProxyFunc 动态返回上游代理（每次请求读取：代理是运行时可变配置）。
+	// 授权端点与推理端点必须共用同一出口——否则会出现"浏览器能登录、
+	// 换码却按直连 IP 被地区拒绝"（0.2.21 实机错误）。
+	ProxyFunc func() string
+}
+
+func (c *Client) proxy() string {
+	if c.ProxyFunc != nil {
+		return c.ProxyFunc()
+	}
+	return ""
 }
 
 // NewClient 构造客户端（nil 用默认客户端，超时 30s）。
@@ -168,7 +181,12 @@ func (c *Client) postForm(ctx context.Context, form url.Values) (TokenResponse, 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", clientUA)
 	req.Header.Set("originator", clientOriginator)
-	resp, err := c.HTTP.Do(req)
+	// 走全局代理（若有）：授权端点与推理端点必须同一出口
+	client, err := netproxy.Client(c.HTTP, c.proxy())
+	if err != nil {
+		return TokenResponse{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return TokenResponse{}, fmt.Errorf("连接授权服务器失败：%w", err)
 	}
@@ -178,7 +196,14 @@ func (c *Client) postForm(ctx context.Context, form url.Values) (TokenResponse, 
 		return TokenResponse{}, fmt.Errorf("读取授权响应失败：%w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return TokenResponse{}, fmt.Errorf("授权服务器返回 HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		detail := strings.TrimSpace(string(body))
+		// 地区限制是可读化程度最低、最需要指引的错误（用户看不出"出口 IP 被拒"）：
+		// 明确指向代理配置，避免反复重试授权。
+		if strings.Contains(detail, "unsupported_country_region_territory") {
+			return TokenResponse{}, fmt.Errorf(
+				"OpenAI 拒绝了当前网络出口（地区不受支持）：请在「渠道管理」面板顶部配置网络代理（如 http://127.0.0.1:7897）后重试授权")
+		}
+		return TokenResponse{}, fmt.Errorf("授权服务器返回 HTTP %d：%s", resp.StatusCode, detail)
 	}
 	var out TokenResponse
 	if err := json.Unmarshal(body, &out); err != nil {
