@@ -261,10 +261,16 @@ func (s *ChatService) TestChannel(ctx context.Context, id string) (TestResult, e
 	if err != nil {
 		return TestResult{Model: model, Ms: ms(), Error: err.Error()}, nil
 	}
+	// 正常路径由 ConvertResponse 的流阶段接管 body；本 defer 兜底错误/提前返回路径
+	//（http.Body.Close 幂等，重复关闭无害）
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		_ = resp.Body.Close()
-		return TestResult{Model: model, Ms: ms(), Error: fmt.Sprintf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(b)))}, nil
+		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		detail := strings.TrimSpace(string(b))
+		if detail == "" && readErr != nil {
+			detail = readErr.Error() // 错误详情读取失败也要给出原因，不留空错误
+		}
+		return TestResult{Model: model, Ms: ms(), Error: fmt.Sprintf("HTTP %d：%s", resp.StatusCode, detail)}, nil
 	}
 	stream, err := adv.ConvertResponse(tctx, rc, resp)
 	if err != nil {
