@@ -51,6 +51,15 @@ async function openWorkspace() {
   }
 }
 
+// 在已有工作区新建会话（空间组头 ＋）：直接切入（无目录选择器）→ 草稿。
+// 这是"灵活选择已有工作区新建会话"的最短路径；运行中禁止（切工作区会重建工具集）
+async function newInWorkspace(dir: string) {
+  if (store.running) return
+  await ws.setPath(dir)
+  await store.newSession()
+  emit('close')
+}
+
 // 重命名：对话框返回 null 视为放弃；60 字上限与后端契约一致
 async function rename(id: string) {
   if (store.running) return
@@ -92,7 +101,7 @@ function select(id: string) {
     <div class="mb-3 flex gap-1.5">
       <button
         class="btn-primary min-w-0 flex-1 gap-1.5 py-2 text-sm"
-        title="在当前工作区新建对话"
+        :title="ws.path ? `在当前工作区（${ws.path}）新建对话` : '新建通用对话（未选择工作区）'"
         @click="store.newSession(); emit('close')"
       >
         <AppIcon name="plus" :size="14" /> 新建对话
@@ -144,26 +153,45 @@ function select(id: string) {
             <AppIcon name="folder" :size="11" /> {{ sec.label }} ({{ sec.groups.length }})
           </div>
           <div v-for="g in sec.groups" :key="g.label" class="mb-1">
-            <button
-              class="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)]"
-              :aria-expanded="isOpen('fold:' + g.label, g.isCurrent)"
-              @click="toggle('fold:' + g.label)"
+            <!-- 组头：折叠按钮 + 在该工作区新建（hover/focus 显现，不挤占常态视觉） -->
+            <div
+              class="group flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)]"
             >
-              <AppIcon
-                name="chevron-down"
-                :size="10"
-                class="shrink-0 transition-transform"
-                :class="isOpen('fold:' + g.label, g.isCurrent) ? '' : '-rotate-90'"
-              />
-              <AppIcon name="folder" :size="11" class="shrink-0" :class="g.isCurrent ? 'text-[var(--c-primary)]' : ''" />
-              <span
-                class="min-w-0 flex-1 truncate"
-                :class="g.isCurrent ? 'font-medium text-[var(--c-primary)]' : ''"
+              <button
+                class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                :aria-expanded="isOpen('fold:' + g.label, g.isCurrent)"
+                @click="toggle('fold:' + g.label)"
               >
-                {{ g.label }}
-              </span>
-              <span class="shrink-0 text-[10px] text-[var(--c-text-faint)]">{{ g.items.length }}</span>
-            </button>
+                <AppIcon
+                  name="chevron-down"
+                  :size="10"
+                  class="shrink-0 transition-transform"
+                  :class="isOpen('fold:' + g.label, g.isCurrent) ? '' : '-rotate-90'"
+                />
+                <AppIcon
+                  name="folder"
+                  :size="11"
+                  class="shrink-0"
+                  :class="g.isCurrent ? 'text-[var(--c-primary)]' : ''"
+                />
+                <span
+                  class="min-w-0 flex-1 truncate"
+                  :class="g.isCurrent ? 'font-medium text-[var(--c-primary)]' : ''"
+                >
+                  {{ g.label }}
+                </span>
+                <span class="shrink-0 text-[10px] text-[var(--c-text-faint)]">{{ g.items.length }}</span>
+              </button>
+              <button
+                class="shrink-0 rounded p-0.5 text-[var(--c-text-faint)] opacity-0 transition-opacity hover:text-[var(--c-primary)] focus-visible:opacity-100 group-hover:opacity-100"
+                :title="`在 ${g.label} 新建对话`"
+                :aria-label="`在 ${g.label} 新建对话`"
+                :disabled="store.running"
+                @click="newInWorkspace(g.workspace)"
+              >
+                <AppIcon name="plus" :size="12" />
+              </button>
+            </div>
 
             <div v-if="isOpen('fold:' + g.label, g.isCurrent)" class="mt-0.5 space-y-0.5">
               <SessionRow

@@ -76,15 +76,15 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("chat service: data dir required")
 	}
-	if cfg.WorkDir == "" {
-		return nil, errors.New("chat service: work dir required")
-	}
-	// 工作区必须是已存在的目录：fs/shell/git 的受控根都指向它，
+	// 工作区可为空 = 纯对话模式（默认态：无本地文件工具，只保留 todo/ask 交互工具）。
+	// 非空必须是已存在的目录：fs/shell/git 的受控根都指向它，
 	// 不存在时"启动看似正常、首次读写才报错"最难排查（实机事故）。
-	if info, err := os.Stat(cfg.WorkDir); err != nil {
-		return nil, fmt.Errorf("工作区不可用（%s）：请把配置里的 workspace 改成已存在的目录", cfg.WorkDir)
-	} else if !info.IsDir() {
-		return nil, fmt.Errorf("工作区不是目录（%s）", cfg.WorkDir)
+	if cfg.WorkDir != "" {
+		if info, err := os.Stat(cfg.WorkDir); err != nil {
+			return nil, fmt.Errorf("工作区不可用（%s）：请把配置里的 workspace 改成已存在的目录", cfg.WorkDir)
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("工作区不是目录（%s）", cfg.WorkDir)
+		}
 	}
 	if cfg.ChannelsPath == "" {
 		cfg.ChannelsPath = channels.DefaultPath()

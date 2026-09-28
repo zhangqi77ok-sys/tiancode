@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -22,8 +22,33 @@ const approvalOn = ref(false)
 
 // 顶栏只显示末级目录名（完整路径太长会挤掉状态区）；状态在 workspace store（侧栏分组同源）
 const workspaceName = computed(
-  () => ws.path.split(/[\\/]/).filter(Boolean).pop() ?? '未设置工作区',
+  () => ws.path.split(/[\\/]/).filter(Boolean).pop() ?? '选择工作区',
 )
+
+// ---- 工作区菜单（默认无工作区：进入/切换/退出都要显式、快速）----
+const wsMenuOpen = ref(false)
+const wsMenuRef = ref<HTMLElement | null>(null)
+
+// 最近工作区：从会话摘要的归属去重（当前排最前）——不需要后端新接口，
+// 侧栏空间分组的数据源即"用户用过哪些工作区"的事实
+const recentWorkspaces = computed(() => {
+  const set = new Set<string>()
+  if (ws.path) set.add(ws.path)
+  for (const s of store.summaries) if (s.workspace) set.add(s.workspace)
+  return [...set]
+})
+
+function onDocMousedown(e: MouseEvent) {
+  if (!wsMenuOpen.value) return
+  const el = wsMenuRef.value
+  if (el && !el.contains(e.target as Node)) wsMenuOpen.value = false
+}
+
+// 进入已有工作区（无目录选择器）：只切换不强制新建——用户可继续历史会话或点"新建对话"
+async function enterWorkspace(dir: string) {
+  wsMenuOpen.value = false
+  await ws.setPath(dir)
+}
 
 // 顶栏展示当前默认渠道：没有渠道时给出明确引导（而不是让用户对着发送键发呆）
 const activeChannelName = computed(
@@ -36,6 +61,19 @@ const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeI
 async function switchWorkspace() {
   const ok = await ws.pickAndSet()
   if (ok) await store.newSession()
+}
+
+// 选择其他目录并新建对话（菜单项）：语义同 switchWorkspace
+async function pickWorkspace() {
+  wsMenuOpen.value = false
+  await switchWorkspace()
+}
+
+// 退出工作区：纯对话模式（本地文件工具下线），之后的会话无归属落"会话"区
+async function exitWorkspace() {
+  wsMenuOpen.value = false
+  await ws.clear()
+  await store.newSession()
 }
 
 // 导出当前会话为 Markdown 并复制到剪贴板；剪贴板不可用时明确报错，不假装成功
@@ -61,7 +99,10 @@ onMounted(async () => {
   await channels.load()
   await ws.refresh()
   approvalOn.value = (await store.loadApprovalPolicy()).length > 0
+  document.addEventListener('mousedown', onDocMousedown)
 })
+
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
 </script>
 
 <template>
@@ -97,9 +138,54 @@ onMounted(async () => {
       >
         <AppIcon name="download" :size="13" /> 导出
       </button>
-      <button class="chip" title="切换工作区" @click="switchWorkspace">
-        <AppIcon name="folder" :size="13" /> {{ workspaceName }}
-      </button>
+      <!-- 工作区：默认未选择；菜单内进入已有工作区 / 选新目录 / 退出纯对话 -->
+      <div ref="wsMenuRef" class="relative">
+        <button
+          class="chip"
+          :class="ws.path ? '' : 'border-dashed text-[var(--c-text-dim)]'"
+          aria-haspopup="menu"
+          :aria-expanded="wsMenuOpen"
+          :title="ws.path ? `当前工作区：${ws.path}` : '未选择工作区（纯对话）· 点击进入'"
+          @click="wsMenuOpen = !wsMenuOpen"
+        >
+          <AppIcon name="folder" :size="13" /> {{ workspaceName }}
+        </button>
+        <div
+          v-if="wsMenuOpen"
+          role="menu"
+          class="absolute right-0 top-full z-40 mt-1 w-80 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        >
+          <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">工作区（选中后新建的对话归属它）</div>
+          <p v-if="!recentWorkspaces.length" class="px-2 py-1.5 text-xs text-[var(--c-text-dim)]">
+            还没有工作区——选择目录后，新对话将归属它；不选则按通用会话处理
+          </p>
+          <button
+            v-for="w in recentWorkspaces"
+            :key="w"
+            role="menuitem"
+            class="menu-item"
+            @click="enterWorkspace(w)"
+          >
+            <AppIcon name="folder" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="min-w-0 flex-1 truncate text-left">{{ w }}</span>
+            <span v-if="w === ws.path" class="shrink-0 text-[10px] text-[var(--c-primary)]">当前</span>
+          </button>
+          <div class="my-1 h-px bg-[var(--c-border)]"></div>
+          <button role="menuitem" class="menu-item" @click="pickWorkspace">
+            <AppIcon name="folder" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="flex-1 text-left">选择其他目录并新建对话…</span>
+          </button>
+          <button
+            v-if="ws.path"
+            role="menuitem"
+            class="menu-item text-[var(--c-err-text)]"
+            @click="exitWorkspace"
+          >
+            <AppIcon name="x" :size="13" class="shrink-0" />
+            <span class="flex-1 text-left">退出工作区（纯对话）</span>
+          </button>
+        </div>
+      </div>
       <button
         class="chip"
         :class="approvalOn ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"

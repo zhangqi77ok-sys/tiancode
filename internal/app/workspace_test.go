@@ -30,13 +30,16 @@ func TestChatService_SetWorkspace(t *testing.T) {
 	if err := s.SetWorkspace(file); err == nil {
 		t.Fatal("file path must be rejected")
 	}
-	// 空白
-	if err := s.SetWorkspace("   "); err == nil {
-		t.Fatal("blank must be rejected")
-	}
-
 	// 被拒绝的调用不得改变当前工作区（否则 UI 与实际不一致）
 	if got := s.Workspace(); got != dir {
 		t.Fatalf("failed switch must not mutate workspace: %q", got)
+	}
+
+	// 空白 = 退出工作区（0.2.18 语义：空串清除；纯对话模式）——TrimSpace 后为空即退出
+	if err := s.SetWorkspace("   "); err != nil {
+		t.Fatalf("空白应视为退出工作区：%v", err)
+	}
+	if got := s.Workspace(); got != "" {
+		t.Fatalf("退出后 Workspace() = %q, want 空", got)
 	}
 }

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
+import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages } from '../composables/messageGrouping'
+import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import AskCard from './AskCard.vue'
 import MessageBubble from './MessageBubble.vue'
@@ -13,12 +15,21 @@ import ToolCard from './ToolCard.vue'
 const emit = defineEmits<{ (e: 'suggest', text: string): void }>()
 
 const store = useChatStore()
+const ws = useWorkspaceStore()
 
-const suggestions = [
-  '介绍这个项目',
-  '读取 go.mod 前 5 行并复述 module 名',
-  '运行 go test ./internal/core/tools/',
-]
+// 空态里的"选择工作区"主行动：选择目录 → 切换 → 开新对话（与顶栏/侧栏同语义）
+async function pickWorkspace() {
+  const ok = await ws.pickAndSet()
+  if (ok) await store.newSession()
+}
+
+// 建议按"有没有工作区"分两组：无工作区时本地工具未注册（纯对话），
+// 给"读文件/跑测试"类提示词等于指引模型撞墙——文案必须与实际能力一致
+const suggestions = computed(() =>
+  ws.path
+    ? ['介绍这个项目', '读取 go.mod 前 5 行并复述 module 名', '运行 go test ./internal/core/tools/']
+    : ['写一个 Python 快排并解释思路', '解释常见的正则陷阱', '对比 Redis 与 Memcached 的差异'],
+)
 
 const scroller = ref<HTMLElement | null>(null)
 const { anchored, onScroll, toBottom } = useAutoScroll(scroller)
@@ -61,12 +72,17 @@ const items = computed(() => groupMessages(store.messages))
   >
     <!-- 空状态 + 建议 chips -->
     <div v-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4">
-      <p class="text-sm text-[var(--c-text-dim)]">发一条消息开始，或试试：</p>
+      <p class="text-sm text-[var(--c-text-dim)]">
+        {{ ws.path ? '发一条消息开始，或试试：' : '未选择工作区 · 纯对话模式（文件与命令工具不可用）' }}
+      </p>
       <div class="flex flex-wrap justify-center gap-2">
         <button v-for="s in suggestions" :key="s" class="chip" @click="emit('suggest', s)">
           {{ s }}
         </button>
       </div>
+      <button v-if="!ws.path" class="chip gap-1.5 border-[var(--c-primary)] text-[var(--c-primary)]" @click="pickWorkspace">
+        <AppIcon name="folder" :size="13" /> 选择工作区（解锁文件与命令工具）
+      </button>
     </div>
 
     <template v-for="item in items" :key="item.key">

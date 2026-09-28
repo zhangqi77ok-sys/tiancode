@@ -174,16 +174,12 @@ func TestEnsureDefault_CreatesUsableConfig(t *testing.T) {
 	}
 }
 
-// Validate：只要求 workspace（渠道信息由 channels.json 持有）。
-func TestValidate_OnlyWorkspaceRequired(t *testing.T) {
-	err := Validate(File{BaseURL: "u", Model: "m"})
-	if err == nil {
-		t.Fatal("missing workspace must fail validation")
+// Validate：当前无硬前提（0.2.18 起工作区在应用内选择，配置文件字段全部可选）。
+func TestValidate_NoHardRequirement(t *testing.T) {
+	// 空配置也必须通过：默认无工作区是合法状态（纯对话），工作区由用户显式进入
+	if err := Validate(File{}); err != nil {
+		t.Fatalf("空配置必须通过校验：%v", err)
 	}
-	if !strings.Contains(err.Error(), "workspace") {
-		t.Fatalf("err = %v, want mentions workspace", err)
-	}
-	// 仅 workspace 即可通过：网关信息是可选迁移来源（用户可能只在应用内配渠道）
 	if err := Validate(File{Workspace: "w"}); err != nil {
 		t.Fatalf("workspace-only config must pass: %v", err)
 	}

@@ -192,6 +192,22 @@ select {
   color: #fff;
 }
 
+/* 弹出菜单条目（顶栏工作区菜单等） */
+.menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 7px 8px;
+  font-size: 13px;
+  color: var(--c-text);
+  transition: background-color 120ms;
+}
+.menu-item:hover {
+  background: var(--c-surface-soft);
+}
+
 /* 圆形图标按钮（发送） */
 .btn-icon {
   display: inline-flex;

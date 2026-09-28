@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // ErrNotFound 表示配置文件不存在（调用方据此进入首次运行引导）。
@@ -143,12 +142,9 @@ func EnsureDefault(path string) (File, bool, error) {
 }
 
 // Validate 校验配置有效性，返回人类可读的缺失说明（供首次运行引导展示）。
-// 只要求 workspace：模型渠道已由"渠道管理"（channels.json）持有，
-// BaseURL/APIKey/Model 在本文件里退化为**迁移来源**（可选）。
-// 若在此强制它们，等于把"渠道已配置好"的用户挡在启动门槛外。
-func Validate(f File) error {
-	if strings.TrimSpace(f.Workspace) == "" {
-		return fmt.Errorf("配置缺少字段：%s", "workspace")
-	}
+// 0.2.18 起无硬前提：工作区由用户在应用内显式选择（默认无工作区=纯对话），
+// 本文件的 workspace 字段退化为历史记录/迁移来源（与 BaseURL/APIKey/Model 同纪律）。
+// 保留函数与调用点：将来出现真正的硬前提（如许可证）在此追加。
+func Validate(_ File) error {
 	return nil
 }

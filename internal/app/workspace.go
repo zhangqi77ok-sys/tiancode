@@ -2,7 +2,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -18,18 +17,27 @@ import (
 // newRegistry 按工作区构造工具集（fs/shell/git/search 的受控根）。
 // 抽成函数是为了让"启动装配"与"运行期切换工作区"共用同一段装配逻辑，
 // 避免两处漂移（切换后工具集与启动时不一致是隐蔽 bug）。
+//
+// workDir 为空 = 纯对话模式：只注册交互类工具，本地文件工具全部下线——
+// 空根会退化成进程 cwd（等于把安装目录暴露给模型），这是安全红线，
+// 宁可不给工具也不越界。
 func newRegistry(workDir string) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
-	for _, reg := range []func() error{
-		func() error { return registry.Register(fstool.New(workDir)) },
-		func() error { return registry.Register(shelltool.New(shelltool.Options{Root: workDir})) },
-		func() error { return registry.Register(gittool.New(workDir)) },
-		func() error { return registry.Register(searchtool.New(workDir)) },
+	regs := []func() error{
 		// todo / ask_user：交互类工具。定义进模型工具集，执行由 Loop 按名拦截
 		//（todo → agent.runTodo；ask_user → Loop.runAsk 阻塞等 UI 答复）
 		func() error { return registry.Register(agent.NewTodoTool()) },
 		func() error { return registry.Register(agent.NewAskUserTool()) },
-	} {
+	}
+	if strings.TrimSpace(workDir) != "" {
+		regs = append(regs,
+			func() error { return registry.Register(fstool.New(workDir)) },
+			func() error { return registry.Register(shelltool.New(shelltool.Options{Root: workDir})) },
+			func() error { return registry.Register(gittool.New(workDir)) },
+			func() error { return registry.Register(searchtool.New(workDir)) },
+		)
+	}
+	for _, reg := range regs {
 		if err := reg(); err != nil {
 			return nil, fmt.Errorf("register tool: %w", err)
 		}
@@ -45,18 +53,19 @@ func (s *ChatService) Workspace() string {
 }
 
 // SetWorkspace 切换工作区：校验目录 → 重建工具集 → 按当前激活渠道重建 agent。
+// dir 为空串 = 退出工作区（纯对话模式）：本地文件工具下线，用于"不选择工作区新建会话"。
 // 为什么必须重建 agent：工具持有工作区根（受控范围），只改 cfg 不改工具集，
 // 会出现"界面显示新目录、读写仍打到旧目录"的最坏情况。
 func (s *ChatService) SetWorkspace(dir string) error {
-	if strings.TrimSpace(dir) == "" {
-		return errors.New("工作区不能为空")
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("工作区不可用：%w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("工作区不是目录：%s", dir)
+	dir = strings.TrimSpace(dir)
+	if dir != "" {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("工作区不可用：%w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("工作区不是目录：%s", dir)
+		}
 	}
 
 	s.mu.Lock()

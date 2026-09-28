@@ -97,6 +97,9 @@ func loadConfig(path string) (app.Config, error) {
 		Model:   merged.Model,
 		// 数据目录固定用户级（与安装目录解耦，卸载不删会话）
 		DataDir: configfile.DataDir(),
-		WorkDir: merged.Workspace,
+		// 默认无工作区（纯对话）：工作区由用户在 UI 里显式进入（顶栏选择 / 侧栏空间组 ＋）。
+		// 配置里的 workspace 不再开机自动应用——"默认没有选择工作区，选了才归属"；
+		// 需要固定工作区的场景由用户每次进入（会话归属仍以首条消息落账时的快照为准）。
+		WorkDir: "",
 	}, nil
 }

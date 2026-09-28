@@ -43,13 +43,12 @@ func TestChatService_PersistErrorPropagates(t *testing.T) {
 // 装配校验：缺关键配置必须在构造期失败（fail-fast），不留半装配实例。
 func TestChatService_ConfigValidation(t *testing.T) {
 	// 注意：BaseURL/Model 不再是必填（渠道配置是唯一事实源，且允许先启动后配置渠道）；
-	// 只有数据目录与工作区是硬前提。
+	// 数据目录是硬前提；工作区可为空（= 纯对话，见 0.2.18 反馈语义）。
 	cases := []struct {
 		name string
 		cfg  Config
 	}{
 		{"missing datadir", Config{WorkDir: "."}},
-		{"missing workdir", Config{DataDir: t.TempDir()}},
 		// 不存在的目录必须早失败：否则启动看似正常，直到第一次写文件才报错（实机踩过）
 		{"nonexistent workdir", Config{DataDir: t.TempDir(), WorkDir: filepath.Join(t.TempDir(), "nope")}},
 	}
@@ -57,6 +56,31 @@ func TestChatService_ConfigValidation(t *testing.T) {
 		if _, err := NewChatService(tc.cfg); err == nil {
 			t.Fatalf("%s: expected error", tc.name)
 		}
+	}
+}
+
+// 空工作区是合法状态（默认无工作区 → 纯对话）：能启动、能退出回纯对话。
+func TestChatService_EmptyWorkspaceIsValid(t *testing.T) {
+	s, err := NewChatService(Config{
+		DataDir:      t.TempDir(),
+		ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
+	if err != nil {
+		t.Fatalf("空工作区必须可启动（纯对话模式）：%v", err)
+	}
+	defer s.Close()
+	if got := s.Workspace(); got != "" {
+		t.Fatalf("Workspace() = %q, want 空", got)
+	}
+	// 从有工作区退出：SetWorkspace("") 清空且不报错（UI 的"退出工作区"入口）
+	if err := s.SetWorkspace(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWorkspace(""); err != nil {
+		t.Fatalf("退出工作区应合法：%v", err)
+	}
+	if got := s.Workspace(); got != "" {
+		t.Fatalf("退出后 Workspace() = %q, want 空", got)
 	}
 }
 
