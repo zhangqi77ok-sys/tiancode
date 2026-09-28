@@ -4,10 +4,15 @@
 package app
 
 import (
+	"tiancode/internal/app"
 	"tiancode/internal/core/llm"
 )
 
 // ChannelDTO 是渠道的 IPC 视图（密钥永不出现在这里，只有 HasKey）。
+// 0.2.19 契约修复：池能力面（models/priority/weight/status）与高级字段
+// （autoBan/modelMapping/paramOverride/headerOverride）此前只存在于前端类型，
+// 绑定层解析时静默丢弃（json 未知字段不报错）——UI 上的设置从未生效。
+// 本 DTO 与 frontend/src/wails.ts 的 ChannelDTO 一一对应，改一处必须同步另一处。
 type ChannelDTO struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -16,12 +21,33 @@ type ChannelDTO struct {
 	Model    string `json:"model"`
 	HasKey   bool   `json:"hasKey"`
 	Active   bool   `json:"active"`
+
+	Models   []string `json:"models"`
+	Priority int      `json:"priority"`
+	Weight   int      `json:"weight"`
+	Status   string   `json:"status"`
+
+	AutoBan        bool              `json:"autoBan"`
+	ModelMapping   map[string]string `json:"modelMapping,omitempty"`
+	ParamOverride  map[string]any    `json:"paramOverride,omitempty"`
+	HeaderOverride map[string]string `json:"headerOverride,omitempty"`
+
+	// 凭证摘要：列表卡片显示"N 条 · M 禁用"（逐条管理走 ListCredentials）
+	CredentialCount    int `json:"credentialCount"`
+	CredentialDisabled int `json:"credentialDisabled"`
 }
 
 // ChannelListDTO 是渠道列表结果（含激活渠道 ID）。
 type ChannelListDTO struct {
 	Channels []ChannelDTO `json:"channels"`
 	ActiveID string       `json:"activeId"`
+}
+
+// CredentialDTO 是单条凭证的管理视图（脱敏预览；明文永不出现在这里）。
+type CredentialDTO struct {
+	Index   int    `json:"index"`
+	Preview string `json:"preview"`
+	Enabled bool   `json:"enabled"`
 }
 
 // PresetDTO 是内置渠道模板（供设置面板下拉）。
@@ -42,6 +68,16 @@ type ChannelInput struct {
 	BaseURL  string `json:"baseUrl"`
 	Model    string `json:"model"`
 	APIKey   string `json:"apiKey"`
+
+	Models   []string `json:"models"`
+	Priority int      `json:"priority"`
+	Weight   int      `json:"weight"`
+	Status   string   `json:"status"`
+
+	AutoBan        bool              `json:"autoBan"`
+	ModelMapping   map[string]string `json:"modelMapping"`
+	ParamOverride  map[string]any    `json:"paramOverride"`
+	HeaderOverride map[string]string `json:"headerOverride"`
 }
 
 func (in ChannelInput) toDomain() llm.Channel {
@@ -52,6 +88,38 @@ func (in ChannelInput) toDomain() llm.Channel {
 		BaseURL:  in.BaseURL,
 		Model:    in.Model,
 		APIKey:   in.APIKey,
+
+		Models:   in.Models,
+		Priority: in.Priority,
+		Weight:   in.Weight,
+		Status:   in.Status,
+
+		AutoBan:        in.AutoBan,
+		ModelMapping:   in.ModelMapping,
+		ParamOverride:  in.ParamOverride,
+		HeaderOverride: in.HeaderOverride,
+	}
+}
+
+// fromView 把领域视图映射为 IPC DTO（唯一映射点：ListChannels 与 AddChannel 共用）。
+func fromView(v llm.ChannelView, activeID string) ChannelDTO {
+	return ChannelDTO{
+		ID: v.ID, Name: v.Name, Protocol: string(v.Protocol),
+		BaseURL: v.BaseURL, Model: v.Model, HasKey: v.HasKey,
+		Active: v.ID == activeID,
+
+		Models:   v.Models,
+		Priority: v.Priority,
+		Weight:   v.Weight,
+		Status:   v.Status,
+
+		AutoBan:        v.AutoBan,
+		ModelMapping:   v.ModelMapping,
+		ParamOverride:  v.ParamOverride,
+		HeaderOverride: v.HeaderOverride,
+
+		CredentialCount:    v.CredentialCount,
+		CredentialDisabled: v.CredentialDisabled,
 	}
 }
 
@@ -63,11 +131,7 @@ func (b *Bind) ListChannels() (ChannelListDTO, error) {
 	}
 	out := ChannelListDTO{Channels: make([]ChannelDTO, 0, len(views)), ActiveID: activeID}
 	for _, v := range views {
-		out.Channels = append(out.Channels, ChannelDTO{
-			ID: v.ID, Name: v.Name, Protocol: string(v.Protocol),
-			BaseURL: v.BaseURL, Model: v.Model, HasKey: v.HasKey,
-			Active: v.ID == activeID,
-		})
+		out.Channels = append(out.Channels, fromView(v, activeID))
 	}
 	return out, nil
 }
@@ -115,4 +179,27 @@ func (b *Bind) SetActiveChannel(id string) error {
 // DiscoverModels 按渠道信息拉取上游模型列表（不落盘，失败不影响已保存配置）。
 func (b *Bind) DiscoverModels(in ChannelInput) ([]string, error) {
 	return b.chat.DiscoverModels(b.appCtx(), in.toDomain())
+}
+
+// TestChannel 测试渠道连通性（走真实链路，失败无副作用——不触发 auto_ban）。
+func (b *Bind) TestChannel(id string) (app.TestResult, error) {
+	return b.chat.TestChannel(b.appCtx(), id)
+}
+
+// ListCredentials 返回渠道凭证管理视图（脱敏预览 + 启用态）。
+func (b *Bind) ListCredentials(id string) ([]CredentialDTO, error) {
+	infos, err := b.chat.ChannelCredentials(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CredentialDTO, 0, len(infos))
+	for _, it := range infos {
+		out = append(out, CredentialDTO{Index: it.Index, Preview: it.Preview, Enabled: it.Enabled})
+	}
+	return out, nil
+}
+
+// SetCredentialEnabled 启用/禁用单条凭证（启用=自动禁用后的恢复途径）。
+func (b *Bind) SetCredentialEnabled(id string, index int, enabled bool) error {
+	return b.chat.SetCredentialEnabled(id, index, enabled)
 }

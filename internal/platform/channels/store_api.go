@@ -147,6 +147,7 @@ func splitCredential(cred string) []string {
 
 // BanCredential 禁用指定下标的凭证；全部凭证不可用时渠道转 auto_disabled
 // （spec auto_ban 语义：多凭证只禁当前一条，全部失败才禁渠道）。
+// 恢复途径：SetCredentialEnabled（凭证管理 UI 的"启用"）。
 func (p *Pool) BanCredential(id string, idx int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -155,19 +156,11 @@ func (p *Pool) BanCredential(id string, idx int) error {
 			continue
 		}
 		keys := splitCredential(c.Credential)
-		if c.CredentialState == nil || len(c.CredentialState.Disabled) < len(keys) {
-			grown := make([]bool, len(keys))
-			if c.CredentialState != nil {
-				copy(grown, c.CredentialState.Disabled)
-			}
-			c.CredentialState = &CredentialState{Disabled: grown, Next: c.CredentialState.Next}
-		}
+		ensureStateLocked(c, len(keys))
 		if idx >= 0 && idx < len(c.CredentialState.Disabled) {
 			c.CredentialState.Disabled[idx] = true
 		}
-		if remainingEnabled(keys, c.CredentialState) == 0 {
-			c.Status = StatusAutoDisabled
-		}
+		p.syncStatusByCredentialsLocked(c, keys)
 		p.rebuildAbilityLocked()
 		return p.persistLocked()
 	}

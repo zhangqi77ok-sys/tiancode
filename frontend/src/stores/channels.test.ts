@@ -7,6 +7,11 @@ const h = vi.hoisted(() => ({
   list: { channels: [] as unknown[], activeId: '' },
   failAdd: false,
   failDiscover: false,
+  // 0.2.19：渠道测试与凭证管理
+  failTest: false,
+  testResult: null as unknown,
+  creds: [] as { index: number; preview: string; enabled: boolean }[],
+  credCalls: [] as { id: string; index: number; enabled: boolean }[],
 }))
 
 vi.mock('../wails', () => ({
@@ -30,6 +35,19 @@ vi.mock('../wails', () => ({
         if (h.failDiscover) throw new Error('上游返回 HTTP 500')
         return ['a-model', 'z-model']
       },
+      TestChannel: async (id: string) => {
+        h.calls.push('TestChannel')
+        if (h.failTest) throw new Error(`渠道不存在：${id}`)
+        return h.testResult
+      },
+      ListCredentials: async () => {
+        h.calls.push('ListCredentials')
+        return h.creds
+      },
+      SetCredentialEnabled: async (id: string, index: number, enabled: boolean) => {
+        h.calls.push('SetCredentialEnabled')
+        h.credCalls.push({ id, index, enabled })
+      },
     },
     runtime: { EventsOn: () => {} },
   }),
@@ -46,6 +64,10 @@ describe('channels store', () => {
     h.list = { channels: [], activeId: '' }
     h.failAdd = false
     h.failDiscover = false
+    h.failTest = false
+    h.testResult = null
+    h.creds = []
+    h.credCalls.length = 0
   })
 
   // 写后必须重新拉取：界面只反映后端已落盘状态（不做乐观更新）
@@ -87,5 +109,42 @@ describe('channels store', () => {
     await store.discover(input)
     expect(store.models).toEqual(['a-model', 'z-model'])
     expect(store.error).toBe('')
+  })
+
+  // 测试结果按渠道留存：列表行内"✓ 42ms · 模型 · 回显"的数据源
+  it('测试结果按渠道留存', async () => {
+    const store = useChannelStore()
+    h.testResult = { ok: true, ms: 42, model: 'm1', reply: 'pong' }
+    await store.test('c1')
+    expect(store.testResults.c1?.ok).toBe(true)
+    expect(store.testResults.c1?.ms).toBe(42)
+    expect(store.testing).toBe('')
+  })
+
+  // 机制错误（渠道不存在等）走 error 条；业务失败（上游 500）留在结果里——两类错误出口不同
+  it('测试机制错误走 error 条且不写入结果', async () => {
+    const store = useChannelStore()
+    h.failTest = true
+    await store.test('c1')
+    expect(store.error).toContain('渠道不存在')
+    expect(store.testResults.c1).toBeUndefined()
+    expect(store.testing).toBe('')
+  })
+
+  // 凭证启停后必须刷新凭证视图与渠道列表（渠道状态联动：全禁→自动禁用、恢复→启用）
+  it('凭证启停放行并刷新凭证与渠道列表', async () => {
+    const store = useChannelStore()
+    h.creds = [
+      { index: 0, preview: 'sk-a…z', enabled: true },
+      { index: 1, preview: '••••', enabled: false },
+    ]
+    await store.loadCredentials('c1')
+    expect(store.credChannel).toBe('c1')
+    expect(store.credentials.length).toBe(2)
+
+    h.calls.length = 0
+    await store.setCredentialEnabled('c1', 1, true)
+    expect(h.credCalls).toEqual([{ id: 'c1', index: 1, enabled: true }])
+    expect(h.calls).toEqual(['SetCredentialEnabled', 'ListCredentials', 'ListChannels'])
   })
 })

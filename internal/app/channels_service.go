@@ -8,7 +8,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/adaptors"
@@ -30,6 +33,10 @@ func toView(c channels.Channel) llm.ChannelView {
 			ID: c.ID, Name: c.Name, Protocol: llm.Protocol(c.Type),
 			BaseURL: c.BaseURL, Model: model,
 			Models: c.Models, Priority: c.Priority, Weight: c.Weight, Status: c.Status,
+			AutoBan:        c.AutoBan,
+			ModelMapping:   c.ModelMapping,
+			ParamOverride:  c.ParamOverride,
+			HeaderOverride: c.HeaderOverride,
 		},
 		HasKey: strings.TrimSpace(c.Credential) != "",
 	}
@@ -37,17 +44,28 @@ func toView(c channels.Channel) llm.ChannelView {
 }
 
 // Channels 返回渠道脱敏视图列表与激活渠道 ID（C-CH-6：密钥不出编排层）。
+// 附凭证摘要（总数/禁用数）：列表卡片直接显示"3 条 · 1 禁用"，无需逐渠道再查。
 func (s *ChatService) Channels() ([]llm.ChannelView, string, error) {
 	list := s.pool.List()
 	views := make([]llm.ChannelView, 0, len(list))
 	for _, c := range list {
-		views = append(views, toView(c))
+		v := toView(c)
+		if creds, err := s.pool.Credentials(c.ID); err == nil {
+			v.CredentialCount = len(creds)
+			for _, cr := range creds {
+				if !cr.Enabled {
+					v.CredentialDisabled++
+				}
+			}
+		}
+		views = append(views, v)
 	}
 	return views, s.pool.ActiveID(), nil
 }
 
 // poolChannel 把 DTO 转成池渠道（新渠道默认：default 组、priority 100、enabled）。
 // models 为空时回退主模型；priority 0 视为未填（默认 100）；status 空视为 enabled。
+// 0.2.19：高级字段（autoBan/映射/覆写）随行——此前 IPC 契约断层导致 UI 设置被丢弃。
 func poolChannel(ch llm.Channel) channels.Channel {
 	models := cleanModels(ch.Models)
 	if len(models) == 0 && strings.TrimSpace(ch.Model) != "" {
@@ -62,16 +80,20 @@ func poolChannel(ch llm.Channel) channels.Channel {
 		status = channels.StatusEnabled
 	}
 	return channels.Channel{
-		ID:         ch.ID,
-		Type:       string(ch.Protocol),
-		Name:       ch.Name,
-		BaseURL:    ch.BaseURL,
-		Credential: ch.APIKey,
-		Models:     models,
-		Groups:     []string{channels.DefaultGroup},
-		Status:     status,
-		Priority:   priority,
-		Weight:     ch.Weight,
+		ID:             ch.ID,
+		Type:           string(ch.Protocol),
+		Name:           ch.Name,
+		BaseURL:        ch.BaseURL,
+		Credential:     ch.APIKey,
+		Models:         models,
+		Groups:         []string{channels.DefaultGroup},
+		Status:         status,
+		Priority:       priority,
+		Weight:         ch.Weight,
+		AutoBan:        ch.AutoBan,
+		ModelMapping:   ch.ModelMapping,
+		ParamOverride:  ch.ParamOverride,
+		HeaderOverride: ch.HeaderOverride,
 	}
 }
 
@@ -120,7 +142,8 @@ func (s *ChatService) registryAdaptor(typ string) (adaptors.Adaptor, error) {
 }
 
 // UpdateChannel 更新渠道。密钥留空 = 保持原密钥：UI 不回显密钥（脱敏）。
-// 高级字段（priority/weight/mapping/extra 等）不在本表单里，原值保留。
+// 0.2.19：高级字段（autoBan/映射/覆写）随表单落盘——此前"不在本表单里，原值保留"
+// 的注释掩盖了 IPC 绑定层丢字段的事实，UI 上的优先级/权重/状态/模型列表其实从未生效。
 func (s *ChatService) UpdateChannel(id string, upd llm.Channel) error {
 	existing, ok := s.pool.Get(id)
 	if !ok {
@@ -144,6 +167,10 @@ func (s *ChatService) UpdateChannel(id string, upd llm.Channel) error {
 	if upd.Status != "" {
 		existing.Status = upd.Status
 	}
+	existing.AutoBan = upd.AutoBan
+	existing.ModelMapping = upd.ModelMapping
+	existing.ParamOverride = upd.ParamOverride
+	existing.HeaderOverride = upd.HeaderOverride
 	if err := llm.ValidateChannel(upd); err != nil {
 		return err
 	}
@@ -157,6 +184,130 @@ func (s *ChatService) UpdateChannel(id string, upd llm.Channel) error {
 		return s.activate(existing.Models[0])
 	}
 	return nil
+}
+
+// TestResult 是一次渠道连通性测试的结果（UI 行内展示：延迟/回显/错误）。
+type TestResult struct {
+	OK    bool   `json:"ok"`
+	Ms    int64  `json:"ms"`
+	Model string `json:"model"`
+	Reply string `json:"reply,omitempty"` // 上游首个文本片段（截断）——证明真的回了内容
+	Error string `json:"error,omitempty"`
+}
+
+// testTimeout 是单次渠道测试的超时上限（诊断请求，不合适等待过久）。
+const testTimeout = 20 * time.Second
+
+// TestChannel 用一条最小请求验证渠道连通性（参照 new-api Test Connection：走真实链路）。
+// 链路：Probe（跳过状态过滤、不扰动轮询游标）→ 适配器五段（含 model_mapping 与覆写）→ 真实 HTTP。
+// 刻意不经 gateway 的 auto_ban：手动测试是诊断行为，失败不产生副作用——
+// 否则"测一次坏渠道就被自动禁用还得手动救"，测试把渠道测坏了是反直觉的。
+func (s *ChatService) TestChannel(ctx context.Context, id string) (TestResult, error) {
+	ch, ok := s.pool.Get(id)
+	if !ok {
+		return TestResult{}, fmt.Errorf("渠道不存在：%s", id)
+	}
+	model := ""
+	if len(ch.Models) > 0 {
+		model = ch.Models[0]
+	}
+	if model == "" {
+		return TestResult{}, errors.New("渠道未声明模型，无法测试")
+	}
+	adv, err := s.registryAdaptor(ch.Type)
+	if err != nil {
+		return TestResult{}, err
+	}
+	sel, err := s.pool.Probe(id)
+	if err != nil {
+		return TestResult{}, err
+	}
+	rc := adaptors.RouteContext{
+		ChannelID: sel.ChannelID, Type: sel.Type, BaseURL: sel.BaseURL,
+		Credential: sel.Credential, Extra: sel.Extra,
+		HeaderOverride: sel.HeaderOverride, ParamOverride: sel.ParamOverride,
+		Model: model,
+	}
+	if mapped := sel.ModelMapping[model]; mapped != "" {
+		rc.Model = mapped // 测试必须用上游真实模型名（映射后的），否则"生产可用、测试报错"
+	}
+	if rc.BaseURL == "" {
+		base, err := s.gw.Reg.DefaultBaseURL(sel.Type)
+		if err != nil {
+			return TestResult{}, err
+		}
+		rc.BaseURL = base
+	}
+
+	req := llm.ChatRequest{Model: model, Messages: []llm.Message{{Role: "user", Content: "ping"}}}
+	body, err := adv.ConvertRequest(rc, req)
+	if err != nil {
+		return TestResult{Model: model, Error: "构造请求失败：" + err.Error()}, nil
+	}
+	if body, err = adaptors.ApplyParamOverride(body, sel.ParamOverride); err != nil {
+		return TestResult{Model: model, Error: err.Error()}, nil
+	}
+	hdr := http.Header{}
+	if err := adv.SetupHeaders(rc, hdr); err != nil {
+		return TestResult{Model: model, Error: "构造鉴权头失败：" + err.Error()}, nil
+	}
+	adaptors.ApplyHeaderOverride(hdr, sel.HeaderOverride)
+
+	tctx, cancel := context.WithTimeout(ctx, testTimeout)
+	defer cancel()
+	start := time.Now()
+	ms := func() int64 { return time.Since(start).Milliseconds() }
+	resp, err := adv.DoRequest(tctx, rc, hdr, body)
+	if err != nil {
+		return TestResult{Model: model, Ms: ms(), Error: err.Error()}, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		_ = resp.Body.Close()
+		return TestResult{Model: model, Ms: ms(), Error: fmt.Sprintf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(b)))}, nil
+	}
+	stream, err := adv.ConvertResponse(tctx, rc, resp)
+	if err != nil {
+		return TestResult{Model: model, Ms: ms(), Error: err.Error()}, nil
+	}
+	reply := ""
+	for chunk := range stream {
+		if reply == "" && chunk.Delta != "" {
+			reply = chunk.Delta
+		}
+		if chunk.EndReason != llm.EndNone {
+			if chunk.EndReason == llm.EndDone {
+				return TestResult{OK: true, Ms: ms(), Model: model, Reply: trimRunes(reply, 60)}, nil
+			}
+			msg := "流未正常结束"
+			if chunk.Err != nil {
+				msg = chunk.Err.Error()
+			}
+			return TestResult{Model: model, Ms: ms(), Error: msg}, nil
+		}
+	}
+	// 流关闭但未见终态：显式报错而非假装成功（与流式三终态纪律一致）
+	return TestResult{Model: model, Ms: ms(), Error: "上游流提前关闭（无终态）"}, nil
+}
+
+// trimRunes 按 rune 截断（中文安全），超出加省略号。
+func trimRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// ChannelCredentials 返回渠道的凭证管理视图（脱敏预览 + 启用态）。
+func (s *ChatService) ChannelCredentials(id string) ([]channels.CredentialInfo, error) {
+	return s.pool.Credentials(id)
+}
+
+// SetCredentialEnabled 启用/禁用单条凭证（禁用=手动摘除坏 Key；
+// 启用=自动禁用后的恢复途径），渠道状态按剩余可用凭证数自动联动。
+func (s *ChatService) SetCredentialEnabled(id string, index int, enabled bool) error {
+	return s.pool.SetCredentialEnabled(id, index, enabled)
 }
 
 // DeleteChannel 删除渠道。激活渠道必须拒绝——否则运行时下一步就无渠道可用（C-CH-2）。

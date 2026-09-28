@@ -69,9 +69,9 @@ func TestBind_AppCtxFallback(t *testing.T) {
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
 		"AddChannel", "ApprovalPolicy", "ChannelPresets", "DeleteChannel", "DeleteSession", "DiscoverModels",
-		"ExportSessionMarkdown", "GetWorkspace", "ListChannels", "ListSessionSummaries",
+		"ExportSessionMarkdown", "GetWorkspace", "ListChannels", "ListCredentials", "ListSessionSummaries",
 		"ListSessions", "PickWorkspace", "PinSession", "RenameSession", "Replay", "ResolveApproval", "ResolveAsk", "Send", "SetActiveChannel",
-		"SetApprovalPolicy", "SetWorkspace", "Stop", "UpdateChannel",
+		"SetApprovalPolicy", "SetCredentialEnabled", "SetWorkspace", "Stop", "TestChannel", "UpdateChannel",
 	}
 	bindType := reflect.TypeOf(&Bind{})
 	got := make([]string, 0, bindType.NumMethod())

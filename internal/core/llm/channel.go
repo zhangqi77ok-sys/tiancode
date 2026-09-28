@@ -35,12 +35,20 @@ type Channel struct {
 	Priority int      `json:"priority,omitempty"` // 越大越优先（新建默认 100）
 	Weight   int      `json:"weight,omitempty"`   // 同优先级内加权随机（0 = 默认 100）
 	Status   string   `json:"status,omitempty"`   // 空 = enabled
+	// 高级字段（0.2.19，池同名透传）：
+	AutoBan        bool              `json:"autoBan,omitempty"`        // 上游故障自动禁用（渠道级/凭证级）
+	ModelMapping   map[string]string `json:"modelMapping,omitempty"`   // 下游模型名 → 上游真实模型名
+	ParamOverride  map[string]any    `json:"paramOverride,omitempty"`  // 请求体覆写（网关合并）
+	HeaderOverride map[string]string `json:"headerOverride,omitempty"` // 请求头覆写（网关合并）
 }
 
 // ChannelView 是渠道的外发视图（UI/事件用）：密钥脱敏，只告知是否已配置。
 type ChannelView struct {
 	Channel
 	HasKey bool `json:"hasKey"`
+	// 凭证摘要（0.2.19）：列表卡片一眼看到"3 条 · 1 禁用"（逐条管理走凭证视图）。
+	CredentialCount    int `json:"credentialCount"`
+	CredentialDisabled int `json:"credentialDisabled"`
 }
 
 // Sanitized 返回脱敏视图（C-CH-6：密钥绝不出现在日志/事件中）。

@@ -52,6 +52,30 @@ export interface ChannelDTO {
   weight?: number
   /** enabled | manually_disabled | auto_disabled */
   status?: string
+  // 高级字段（0.2.19）：auto_ban 与网关改写；此前绑定层丢字段，UI 设置从未生效
+  autoBan?: boolean
+  modelMapping?: Record<string, string>
+  paramOverride?: Record<string, unknown>
+  headerOverride?: Record<string, string>
+  // 凭证摘要（列表卡片"N 条 · M 禁用"；逐条管理走 ListCredentials）
+  credentialCount?: number
+  credentialDisabled?: number
+}
+
+// 单条凭证管理视图（脱敏预览；明文永不出现在前端）
+export interface CredentialDTO {
+  index: number
+  preview: string
+  enabled: boolean
+}
+
+// 渠道连通性测试结果（走真实链路；失败无副作用）
+export interface TestResultDTO {
+  ok: boolean
+  ms: number
+  model: string
+  reply?: string
+  error?: string
 }
 
 export interface ChannelListDTO {
@@ -80,6 +104,11 @@ export interface ChannelInput {
   priority?: number
   weight?: number
   status?: string
+  // 高级字段（0.2.19）：随表单落盘（此前绑定层丢字段——契约断层）
+  autoBan?: boolean
+  modelMapping?: Record<string, string>
+  paramOverride?: Record<string, unknown>
+  headerOverride?: Record<string, string>
 }
 
 // createAppStub 生成"调用即明确报错"的桩。
@@ -151,6 +180,10 @@ interface WailsApp {
   DeleteChannel(id: string): Promise<void>
   SetActiveChannel(id: string): Promise<void>
   DiscoverModels(input: ChannelInput): Promise<string[] | null>
+  // 渠道测试与凭证管理（0.2.19）
+  TestChannel(id: string): Promise<TestResultDTO | null>
+  ListCredentials(id: string): Promise<CredentialDTO[] | null>
+  SetCredentialEnabled(id: string, index: number, enabled: boolean): Promise<void>
 }
 
 interface WailsRuntime {
@@ -238,6 +271,9 @@ export function bridge(): WailsBridge {
         DeleteChannel: offlineWrite,
         SetActiveChannel: offlineWrite,
         DiscoverModels: offlineWrite,
+        TestChannel: offlineWrite,
+        ListCredentials: async () => [],
+        SetCredentialEnabled: offlineWrite,
       },
       runtime: { EventsOn: () => {} },
     }
