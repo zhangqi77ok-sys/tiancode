@@ -112,6 +112,7 @@
 - [ ] **四环人工验收**仍属 M5 遗留（需人工 + 真实模型渠道，见 `PENDING.md`）；本里程碑不替代该项
 - [x] `scripts/release.ps1` 发布 `0.2.0`（2026-09-28 实跑：六道门禁全绿——16 包 ok 含负载下 shelltool 15.3s、arch_check PASS、前端 3.10s；产出 `dist/tiancode-setup-v0.2.0.exe` 10.82MB 与 `tiancode-v0.2.0-portable.zip` 3.63MB，便携包内容已抽验；本地发布，未打 tag/未推送）
 - [x] `scripts/release.ps1` 发布 `0.2.1`（2026-09-28 实跑：门禁全绿——16 包 ok、ARCH CHECK PASS、前端 61 模块 3.14s；**UI 视觉重建随包交付**——AA 达标配色/全局焦点环/对话框与通知体系/响应式抽屉/流式节流渲染；产出 `dist/tiancode-setup-v0.2.1.exe` 10.85MB 与 `tiancode-v0.2.1-portable.zip` 3.64MB；本地发布，未打 tag/未推送）
+- [x] `scripts/release.ps1` 发布 `0.2.2`（2026-09-28 实跑：门禁全绿——16 包 ok、ARCH CHECK PASS、前端 2.88s；随包交付两项用户反馈修复——工具卡并入助手回合块（视觉时序：思考→执行→回复）、工作区改系统目录选择框（`Bind.PickWorkspace`，端点契约测试同步）；产出 `dist/tiancode-setup-v0.2.2.exe` 10.85MB 与 `tiancode-v0.2.2-portable.zip` 3.64MB；本地发布，未打 tag/未推送）
 
 ### 已闭环：golangci-lint 零告警
 
