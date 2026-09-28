@@ -19,6 +19,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 
 	"tiancode/internal/core/tools"
 )
@@ -64,8 +67,12 @@ func New(opts Options) *Tool {
 func (t *Tool) Name() string { return "shell" }
 
 // Description 实现工具端口。
+// 为什么写明 shell 类型：模型曾把 PowerShell 语法（Get-ChildItem）喂给 cmd.exe
+// 导致 exit 255（0.2.4 实测）——工具描述必须显式告知 shell 类型，模型才能选对命令。
 func (t *Tool) Description() string {
-	return "执行命令（run：前台，默认 120s 超时并返回部分输出；bg_start/bg_status/bg_kill：后台任务）"
+	return "执行命令（Windows 为 cmd.exe：用 dir/find/type 等内置命令，不要用 Get-ChildItem 等 PowerShell 语法；Unix 为 sh）。" +
+		"run：前台，默认 120s 超时并返回部分输出；bg_start/bg_status/bg_kill：后台任务。" +
+		"输出已按系统代码页自动解码为 UTF-8。"
 }
 
 // Schema 实现工具端口。
@@ -193,4 +200,19 @@ func killTreeFor(cmd *exec.Cmd) func() error {
 // businessErrf 构造模型可见的业务失败。
 func businessErrf(format string, a ...any) tools.ToolResult {
 	return tools.ToolResult{Content: fmt.Sprintf(format, a...), IsError: true}
+}
+
+// decodeConsoleOutput 把控制台输出解码为 UTF-8 文本。
+// 中文 Windows 的 cmd 输出是 OEM 代码页（简中 = GBK/CP936），直接按 UTF-8 解释会得到
+// 满屏替换符（0.2.4 实测）。策略对齐开源工具（VS Code terminal 等）：
+// 合法 UTF-8 原样通过；否则按 GBK 解码；都解不开就原样返回（宁可乱码可见，不静默造数据）。
+func decodeConsoleOutput(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	out, err := simplifiedchinese.GBK.NewDecoder().Bytes(b)
+	if err != nil {
+		return string(b)
+	}
+	return string(out)
 }

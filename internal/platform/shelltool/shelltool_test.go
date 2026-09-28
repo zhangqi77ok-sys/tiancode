@@ -172,3 +172,24 @@ func TestShellRun_BackgroundLogBounded(t *testing.T) {
 		t.Fatalf("truncation must be marked: %q", st.Log)
 	}
 }
+
+// 控制台输出解码：中文 Windows 的 cmd 输出为 OEM 代码页（简中 = GBK/CP936），
+// 直接按 UTF-8 解释会得到满屏替换符（0.2.4 实测：find/dir 输出全是乱码，模型无法工作）。
+// 策略对齐开源工具（VS Code terminal / open-interpreter 等）：
+// 合法 UTF-8 原样通过；否则按 GBK 解码。测试用固定 GBK 字节，不依赖机器代码页。
+func TestDecodeConsoleOutput_GBKFallback(t *testing.T) {
+	// "中文" 的 GBK 字节：D6 D0 CE C4
+	if got := decodeConsoleOutput([]byte{0xD6, 0xD0, 0xCE, 0xC4}); got != "中文" {
+		t.Fatalf("GBK decode = %q, want 中文", got)
+	}
+	// 合法 UTF-8 原样通过（PowerShell/现代工具输出已是 UTF-8，不得二次转码）
+	if got := decodeConsoleOutput([]byte("héllo 世界")); got != "héllo 世界" {
+		t.Fatalf("UTF-8 passthrough = %q", got)
+	}
+	if got := decodeConsoleOutput(nil); got != "" {
+		t.Fatalf("empty = %q, want empty", got)
+	}
+	if got := decodeConsoleOutput([]byte("plain ascii")); got != "plain ascii" {
+		t.Fatalf("ascii = %q", got)
+	}
+}

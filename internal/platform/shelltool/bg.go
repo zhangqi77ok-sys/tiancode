@@ -48,7 +48,8 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 func (b *boundedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := b.buf.String()
+	// 控制台输出按系统代码页解码（中文 Windows 为 GBK），前台 run 与后台日志同修
+	s := decodeConsoleOutput(b.buf.Bytes())
 	if b.truncated {
 		s += "\n... [truncated]"
 	}
