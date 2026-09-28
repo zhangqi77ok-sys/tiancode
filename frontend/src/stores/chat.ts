@@ -20,6 +20,8 @@ export interface ChatMsg {
   term?: number
   streaming?: boolean
   error?: boolean
+  // 本轮耗时（毫秒，terminal 时计算）：AI 工具标配的耗时反馈
+  durationMs?: number
   // 会话内唯一 id：列表 key 与折叠态的稳定锚点（下标会在工具卡插入时整体错位）
   id?: string
 }
@@ -29,6 +31,9 @@ let msgSeq = 0
 function withId<T extends Omit<ChatMsg, 'id'>>(m: T): ChatMsg {
   return { ...m, id: `m-${++msgSeq}` }
 }
+
+// 本轮开始时间（send 时置位，terminal 时计算耗时展示；0 表示无进行中轮次）
+let turnStartedAt = 0
 
 // EndReason 与 core/llm 的枚举一一对应（经事件桥以 int 传输）。
 export const END_REASON = { DONE: 1, ERROR: 2, CANCELLED: 3, IDLE_TIMEOUT: 4 } as const
@@ -109,6 +114,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push(withId({ role: 'user', content: text, at: Date.now() }))
     messages.value.push(withId({ role: 'assistant', content: '', streaming: true, at: Date.now() }))
     running.value = true
+    turnStartedAt = Date.now()
     try {
       // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
       await bridge().app.Send(sessionId.value, text)
@@ -215,6 +221,11 @@ export const useChatStore = defineStore('chat', () => {
       if (p.endReason !== END_REASON.DONE) {
         ast.error = true
         ast.content += (ast.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
+      }
+      // 本轮耗时（Cline 惯例）：send 置位、terminal 收算；无进行中轮次（测试直插）不计
+      if (turnStartedAt > 0) {
+        ast.durationMs = Date.now() - turnStartedAt
+        turnStartedAt = 0
       }
     }
     // 首轮结束自动命名会话（开源惯例：open-webui/lobe-chat 以首条消息截断作标题，

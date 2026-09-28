@@ -17,6 +17,15 @@ function autoGrow(e: Event) {
   t.style.height = Math.min(t.scrollHeight, MAX_INPUT_HEIGHT_PX) + 'px'
 }
 
+// Enter 发送 / Shift+Enter 换行（ChatGPT/Cursor/Cline 通用惯例，替代旧版 Ctrl+Enter）。
+// isComposing 保护：中文输入法选词时的 Enter 是候选确认，不是发送意图——必须放行。
+function onComposerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    void submit()
+  }
+}
+
 async function submit() {
   const text = draft.value.trim()
   if (!text || store.running) return
@@ -34,8 +43,8 @@ async function submit() {
       rows="1"
       aria-label="消息输入框"
       class="max-h-32 min-w-0 flex-1 resize-none rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 transition-colors focus:border-[var(--c-primary)]"
-      placeholder="输入消息…（Ctrl+Enter 发送）"
-      @keydown.ctrl.enter.prevent="submit"
+      placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+      @keydown="onComposerKeydown"
       @input="autoGrow"
     ></textarea>
     <button v-if="store.running" class="btn-primary h-10 shrink-0 gap-2 px-4 text-sm" @click="store.stop()">

@@ -59,6 +59,8 @@ describe('chat store', () => {
     expect(h.renamed[0].id).toBe(store.sessionId)
     expect(h.renamed[0].title.length).toBeLessThanOrEqual(20)
     expect(h.renamed[0].title).not.toContain('\n')
+    // send() 起算的轮次耗时在 terminal 时落到助手消息上（send 直插场景才有）
+    expect(store.messages.find((m) => m.role === 'assistant')?.durationMs).toBeGreaterThanOrEqual(0)
   })
 
   it('已有标题的会话终态后不自动覆盖', async () => {

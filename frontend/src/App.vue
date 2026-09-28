@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from './stores/chat'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
@@ -15,7 +15,17 @@ const store = useChatStore()
 const drawerOpen = ref(false) // 窄屏会话抽屉
 const draft = ref('') // 输入草稿：建议 chips 回填、Composer 双向绑定
 
+// Esc 中断生成（Claude/ChatGPT 惯例）。模态（渠道设置/对话框）打开时，
+// BaseModal 在捕获层拦截 Esc 并停止传播，这里的冒泡监听不会误触发。
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && store.running) {
+    e.preventDefault()
+    store.stop()
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeydown)
   // 先接线再 init：流式事件由 store 的会话守卫（sessionID 比对）兜住，不会串会话
   bridge().runtime.EventsOn('chat:chunk', (p: { sessionID: string; delta: string; thinking: string }) => {
     store.onChunk(p)
@@ -33,6 +43,10 @@ onMounted(() => {
     store.onApproval(p)
   })
   void store.init()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>
 

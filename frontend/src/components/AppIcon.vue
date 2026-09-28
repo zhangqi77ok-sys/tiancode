@@ -17,6 +17,7 @@ type IconName =
   | 'alert'
   | 'refresh'
   | 'menu'
+  | 'copy'
 
 withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 16 })
 
@@ -45,6 +46,10 @@ const PATHS: Record<IconName, string[]> = {
   ],
   refresh: ['M21 12a9 9 0 1 1-2.64-6.36', 'M21 3v6h-6'],
   menu: ['M4 6h16', 'M4 12h16', 'M4 18h16'],
+  copy: [
+    'M10 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z',
+    'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2',
+  ],
 }
 </script>
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import type { ChatMsg } from '../stores/chat'
+import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
 import MarkdownBody from './MarkdownBody.vue'
 import ToolCard from './ToolCard.vue'
@@ -9,6 +10,18 @@ const props = defineProps<{ m: ChatMsg; tools?: ChatMsg[] }>()
 
 // 用户/助手消息二选一渲染（role 在入库后不再变化）
 const isUser = props.m.role === 'user'
+
+const { push: toast } = useToast()
+
+// 复制助手回复全文（Markdown 原文——开源聊天 UI 的消息级标配动作）
+async function copyMessage() {
+  try {
+    await navigator.clipboard.writeText(props.m.content)
+    toast('info', '已复制回复')
+  } catch {
+    toast('error', '复制失败：剪贴板不可用')
+  }
+}
 
 // 思考折叠：流式中默认展开，终态自动收起；用户手动开合后以手动为准
 const thinkingOpen = ref(!!props.m.streaming)
@@ -42,6 +55,15 @@ function fmtTime(at?: number): string {
   <div v-else class="flex flex-col items-start gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
       <span class="font-medium">AGENT</span><span>{{ fmtTime(m.at) }}</span>
+      <span v-if="m.durationMs" class="text-[var(--c-text-faint)]">· {{ (m.durationMs / 1000).toFixed(1) }}s</span>
+      <button
+        class="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-[var(--c-text-faint)] opacity-60 transition-opacity hover:text-[var(--c-primary)] hover:opacity-100"
+        title="复制回复"
+        aria-label="复制回复"
+        @click="copyMessage"
+      >
+        <AppIcon name="copy" :size="12" />
+      </button>
     </div>
 
     <button
