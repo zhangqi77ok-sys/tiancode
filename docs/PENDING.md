@@ -216,7 +216,7 @@ Node 在 `.workbuddy\binaries\node\versions\22.22.2-3`）。脚本没写错，�
 | 无 `wails.json` | `wails build` / `wails dev` 不可用，只能 `go build -tags desktop,production` 直出；README 已注明"wails CLI 可选" |
 | 平台仅 Windows | `cmd/installer`、`app/dialog`、`shelltool/kill` 均有 stub/降级分支 |
 
-### 已知脆弱点（建议后续处理，本轮未改）
+### 已知脆弱点（第 1 条已修，2~3 建议后续处理）
 
 1. ~~**`TestShellRun_TimeoutReturns` 断言墙钟时间**，并发重负载下会红~~
    **已修（2026-09-28）**：三个墙钟/固定 sleep 用例按 `docs/TESTING.md`「时序敏感测试」判据根治——
@@ -243,6 +243,8 @@ Node 在 `.workbuddy\binaries\node\versions\22.22.2-3`）。脚本没写错，�
 - `scripts/install-smoke.ps1` 会**真实创建/删除桌面与开始菜单快捷方式**，并改写共享卸载注册项——
   但它自带测前备份与还原（注册表键值+类型、同名 `.lnk`、`config.json`），跑完机器回到测前状态。
   本机已跑通并验证还原成功。
-- **本轮遗留一处未做**：`%LOCALAPPDATA%\Programs\tiancode` 中仍有 v0.0.1 的孤儿 `uninstall.exe`
+- ~~**本轮遗留一处未做**：`%LOCALAPPDATA%\Programs\tiancode` 中仍有 v0.0.1 的孤儿 `uninstall.exe`
   （1.8MB，指向旧版卸载器，新安装器不使用它）。它无害但易混淆，**需用户决定是否删除**
-  （属删除用户文件，不宜代为执行）。
+  （属删除用户文件，不宜代为执行）。~~
+  **已闭环（2026-09-28 实查）**：该目录现已无 `uninstall.exe`（仅 `tiancode.exe`、`tiancode-setup.exe`，
+  均为 2026-09-24 写入），孤儿文件已不存在（成因未考，非本轮所删），无需再删。

@@ -110,7 +110,7 @@
 - [x] 新契约测试先红后绿；既有 `go test ./...` 与 `frontend` vitest 不回退
 - [x] 文档与代码同一批提交：`CONTRACTS` / `ARCHITECTURE` / `MILESTONES` / `TESTING` / `PENDING` + ADR-0008；`VERSION`=`0.2.0`
 - [ ] **四环人工验收**仍属 M5 遗留（需人工 + 真实模型渠道，见 `PENDING.md`）；本里程碑不替代该项
-- [ ] `scripts/release.ps1` 发布 `0.2.0`（独立发布步骤，非本实现批次）
+- [x] `scripts/release.ps1` 发布 `0.2.0`（2026-09-28 实跑：六道门禁全绿——16 包 ok 含负载下 shelltool 15.3s、arch_check PASS、前端 3.10s；产出 `dist/tiancode-setup-v0.2.0.exe` 10.82MB 与 `tiancode-v0.2.0-portable.zip` 3.63MB，便携包内容已抽验；本地发布，未打 tag/未推送）
 
 ### 已闭环：golangci-lint 零告警
 
