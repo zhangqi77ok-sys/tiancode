@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
     diff?: string
   }[],
   resolved: [] as string[],
+  sends: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
@@ -24,7 +25,9 @@ vi.mock('../wails', () => ({
     app: {
       ListSessionSummaries: async () => h.summaries,
       Replay: async () => h.replay,
-      Send: async () => {},
+      Send: async (_sessionID: string, text: string) => {
+        h.sends.push(text)
+      },
       Stop: async () => {},
       RenameSession: async (id: string, title: string) => {
         if (h.failRename) throw new Error('会话标题过长（最多 60 字）')
@@ -55,6 +58,7 @@ describe('chat store', () => {
     h.renamed = []
     h.replay = []
     h.resolved = []
+    h.sends = []
   })
 
   // 开源惯例（open-webui/lobe-chat）：首轮结束用首条消息截断自动命名，侧栏不再裸奔会话 ID
@@ -69,8 +73,7 @@ describe('chat store', () => {
     expect(h.renamed[0].id).toBe(store.sessionId)
     expect(h.renamed[0].title.length).toBeLessThanOrEqual(20)
     expect(h.renamed[0].title).not.toContain('\n')
-    // send() 起算的轮次耗时在 terminal 时落到助手消息上（send 直插场景才有）
-    expect(store.messages.find((m) => m.role === 'assistant')?.durationMs).toBeGreaterThanOrEqual(0)
+    // 0.2.14 起助手消息按 ReAct 轮次按需分段创建，本测试无流式块 → 无助手段
   })
 
   it('已有标题的会话终态后不自动覆盖', async () => {
@@ -214,21 +217,22 @@ describe('chat store', () => {
     expect(store.messages[0]).toMatchObject({ role: 'tool', toolName: 'fs', status: 'success', content: 'abcdef' })
   })
 
-  // 工具卡插在流式助手之前后，后续 delta/thinking/终态仍必须落到该助手上
-  it('工具卡插入后仍把流式增量写到助手消息', async () => {
+  // 工具卡封存当前段并插其后，后续 delta/thinking/终态必须落到新开的段上
+  it('直插场景下工具卡不吞后续流式增量', async () => {
     const store = useChatStore()
     await store.newSession()
     store.messages.push({ role: 'user', content: 'run' })
-    store.messages.push({ role: 'assistant', content: '', streaming: true })
+    store.messages.push({ role: 'assistant', content: '半段', streaming: true })
     store.running = true
     store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok', content: 'file' })
     store.onChunk({ sessionID: store.sessionId, delta: 'done', thinking: 'plan' })
     store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
-    expect(store.messages.map((m) => m.role)).toEqual(['user', 'tool', 'assistant'])
-    expect(store.messages[1]).toMatchObject({ role: 'tool', toolName: 'fs', content: 'file' })
-    expect(store.messages[2].content).toBe('done')
-    expect(store.messages[2].thinking).toBe('plan')
-    expect(store.messages[2].streaming).toBe(false)
+    expect(store.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(store.messages[1]).toMatchObject({ content: '半段', streaming: false })
+    expect(store.messages[2]).toMatchObject({ role: 'tool', toolName: 'fs', content: 'file' })
+    expect(store.messages[3].content).toBe('done')
+    expect(store.messages[3].thinking).toBe('plan')
+    expect(store.messages[3].streaming).toBe(false)
     expect(store.running).toBe(false)
   })
 
@@ -273,10 +277,86 @@ describe('chat store', () => {
     await store.send('hi')
     store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok' })
     store.onApproval({ id: 'ap-1', toolName: 'shell', arguments: '{}' })
+    // 0.2.14：助手消息按需分段，本流程无流式块 → user + tool + approval 三条
     const ids = store.messages.map((m) => m.id)
-    expect(ids).toHaveLength(4)
+    expect(ids).toHaveLength(3)
     expect(ids.every((x) => typeof x === 'string')).toBe(true)
-    expect(new Set(ids).size).toBe(4)
+    expect(new Set(ids).size).toBe(3)
+  })
+
+  // ReAct 段落化：工具事件封存当前段并插卡其后，后续增量落新段——
+  // 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（不再全部堆进一个气泡）
+  it('工具事件封存当前段，后续增量开新段', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onChunk({ sessionID: store.sessionId, delta: '先看一眼', thinking: '思考一' })
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok', title: 'a.txt', op: 'read' })
+    store.onChunk({ sessionID: store.sessionId, delta: '再看', thinking: '思考二' })
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    expect(store.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(store.messages[1]).toMatchObject({ content: '先看一眼', thinking: '思考一', streaming: false })
+    expect(store.messages[2]).toMatchObject({ role: 'tool', title: 'a.txt', op: 'read' })
+    expect(store.messages[3]).toMatchObject({ content: '再看', thinking: '思考二', streaming: false })
+    // 轮次耗时落到最后一段助手消息上（send 起算、terminal 收算）
+    expect(store.messages[3].durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  // 任务清单：单卡原地更新（同会话只保留一张，位置保留首次出现处）
+  it('onTodo 插入并原地更新任务卡', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTodo({
+      sessionID: store.sessionId,
+      items: [
+        { text: 'a', status: 'pending' },
+        { text: 'b', status: 'in_progress' },
+      ],
+    })
+    store.onTodo({ sessionID: store.sessionId, items: [{ text: 'a', status: 'done' }] })
+    const todoCards = store.messages.filter((m) => m.role === 'todo')
+    expect(todoCards).toHaveLength(1)
+    expect(todoCards[0].todos).toEqual([{ text: 'a', status: 'done' }])
+  })
+
+  // todo 工具卡不再重复渲染（任务卡由 TodoCard 承载）
+  it('onTool 忽略 todo 工具', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTool({ sessionID: store.sessionId, name: 'todo', status: 'success', summary: 'updated' })
+    expect(store.messages.filter((m) => m.role === 'tool')).toHaveLength(0)
+  })
+
+  // 输入队列：running 期间的提交入队，终态后自动逐条发出
+  it('终态后自动发出队列首条', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('第一条')
+    store.enqueue('排队的第二条')
+    store.enqueue('排队的第三条')
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sends).toEqual(['第一条', '排队的第二条']) // 首条 send 也经桥记录
+    expect(store.queue.map((q) => q.text)).toEqual(['排队的第三条'])
+    // 发出后消息流以新用户消息开头进入下一轮
+    expect(store.messages.at(-1)?.role).toBe('user')
+    expect(store.messages.at(-1)?.content).toBe('排队的第二条')
+  })
+
+  it('队列置顶/取回编辑/删除', async () => {
+    const store = useChatStore()
+    store.enqueue('一')
+    store.enqueue('二')
+    store.enqueue('三')
+    store.promoteQueued(store.queue[2].id) // 三 → 最前
+    expect(store.queue.map((q) => q.text)).toEqual(['三', '一', '二'])
+    const t = store.editQueued(store.queue[0].id)
+    expect(t).toBe('三')
+    expect(store.queue.map((q) => q.text)).toEqual(['一', '二'])
+    store.removeQueued(store.queue[0].id)
+    expect(store.queue.map((q) => q.text)).toEqual(['二'])
   })
 })
 

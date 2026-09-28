@@ -3,11 +3,17 @@ import { ref } from 'vue'
 import { bridge, type SessionSummaryDTO } from '../wails'
 import { useWorkspaceStore } from './workspace'
 
+// 任务清单单项（todo 工具的全量快照）
+export interface TodoItem {
+  text: string
+  status: 'pending' | 'in_progress' | 'done'
+}
+
 // 会话消息的 UI 形态；streaming 标记流式中的临时消息，error 标记错误/取消态；
 // role='tool' 为工具卡片（toolName/status 承载卡片数据）；
 // at 为消息时间戳（渲染 HH:MM）；term 记录终态枚举（UI 区分 取消/超时 与 错误）。
 export interface ChatMsg {
-  role: 'user' | 'assistant' | 'tool' | 'approval'
+  role: 'user' | 'assistant' | 'tool' | 'approval' | 'todo'
   content: string
   toolName?: string
   status?: string
@@ -18,6 +24,8 @@ export interface ChatMsg {
   // （read/write/edit/list/exec/search/git）。旧账本缺省 → 卡片回退工具名渲染
   title?: string
   op?: string
+  // 任务清单数据（role='todo'）：todo 工具的全量快照，单卡原地更新
+  todos?: TodoItem[]
   // 审批卡片数据（role='approval'）：id 用于回传答复；args 为原始 JSON 原样展示
   approvalId?: string
   args?: string
@@ -96,8 +104,18 @@ export const useChatStore = defineStore('chat', () => {
     if (running.value) return // 进行中禁止切换，避免流式块串会话
     sessionId.value = id
     const history = (await bridge().app.Replay(id)) ?? []
-    messages.value = history.map((m) =>
-      withId({
+    messages.value = history.map((m) => {
+      // 任务卡：Content 为 items JSON（Replay 投影只保留最新快照）
+      if (m.role === 'todo') {
+        let todos: TodoItem[] = []
+        try {
+          todos = JSON.parse(m.content) as TodoItem[]
+        } catch {
+          todos = [] // 旧数据/损坏数据容错：空清单，不阻塞恢复
+        }
+        return withId({ role: 'todo', content: '', todos })
+      }
+      return withId({
         role: m.role as ChatMsg['role'],
         content: m.content,
         toolName: m.toolName,
@@ -106,8 +124,8 @@ export const useChatStore = defineStore('chat', () => {
         title: m.title,
         op: m.op,
         diff: m.diff,
-      }),
-    )
+      })
+    })
   }
 
   // 新会话 = 草稿：不生成 ID、不进侧栏（侧栏只镜像事件账本）。
@@ -141,7 +159,8 @@ export const useChatStore = defineStore('chat', () => {
       announcePending()
     }
     messages.value.push(withId({ role: 'user', content: text, at: Date.now() }))
-    messages.value.push(withId({ role: 'assistant', content: '', streaming: true, at: Date.now() }))
+    // 不预建助手占位：助手消息按 ReAct 轮次由 onChunk 按需分段创建（0.2.14），
+    // 每轮的思考/文本归属各自轮次，不再全部堆进同一个气泡
     running.value = true
     turnStartedAt = Date.now()
     try {
@@ -153,6 +172,11 @@ export const useChatStore = defineStore('chat', () => {
         ast.streaming = false
         ast.error = true
         ast.content = `⚠ 出错了：${String(e)}`
+      } else {
+        // 任何块都未到达就失败（如渠道未配置）：错误必须可见，不静默
+        messages.value.push(
+          withId({ role: 'assistant', content: `⚠ 出错了：${String(e)}`, error: true, at: Date.now() }),
+        )
       }
       running.value = false
     }
@@ -222,8 +246,12 @@ export const useChatStore = defineStore('chat', () => {
   // 事件桥回调（App.vue onMounted 绑定）。
   function onChunk(p: { sessionID: string; delta: string; thinking: string }) {
     if (p.sessionID !== sessionId.value) return
-    const ast = inFlightAssistant()
-    if (!ast) return
+    let ast = inFlightAssistant()
+    if (!ast) {
+      // ReAct 新轮次：无进行中助手则新开一段——工具卡之后的增量落进下一段
+      ast = withId({ role: 'assistant', content: '', streaming: true, at: Date.now() })
+      messages.value.push(ast)
+    }
     ast.content += p.delta
     if (p.thinking) ast.thinking = (ast.thinking || '') + p.thinking
   }
@@ -239,6 +267,10 @@ export const useChatStore = defineStore('chat', () => {
     op?: string
   }) {
     if (p.sessionID !== sessionId.value) return
+    if (p.name === 'todo') return // 任务清单由 onTodo/TodoCard 承载，不重复出工具卡
+    // 封存当前段：ReAct 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（onChunk 再开新段）
+    const ast = inFlightAssistant()
+    if (ast) ast.streaming = false
     const card = withId({
       role: 'tool' as const,
       content: p.content || p.summary,
@@ -249,10 +281,22 @@ export const useChatStore = defineStore('chat', () => {
       op: p.op,
       at: Date.now(),
     })
-    // 插在流式助手之前，与 Replay 顺序一致：user → tool(s) → assistant
-    const i = messages.value.findIndex((m) => m.role === 'assistant' && m.streaming)
-    if (i >= 0) messages.value.splice(i, 0, card)
-    else messages.value.push(card)
+    const i = ast ? messages.value.indexOf(ast) + 1 : messages.value.length
+    messages.value.splice(i, 0, card)
+  }
+
+  // 任务清单：单卡原地更新（同会话只保留一张，位置保留首次出现处）
+  function onTodo(p: { sessionID: string; items: TodoItem[] }) {
+    if (p.sessionID !== sessionId.value) return
+    const existing = messages.value.find((m) => m.role === 'todo')
+    if (existing) {
+      existing.todos = p.items
+      return
+    }
+    const ast = inFlightAssistant()
+    const card = withId({ role: 'todo', content: '', todos: p.items, at: Date.now() })
+    const i = ast ? messages.value.indexOf(ast) : messages.value.length
+    messages.value.splice(i, 0, card)
   }
 
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
@@ -282,6 +326,9 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       void loadSessions() // 新会话首聊后进入列表
     }
+    // 队列：本轮结束自动发出下一条
+    const next = queue.value.shift()
+    if (next) void send(next.text)
   }
 
   // 删除会话：删除后若删的是当前会话，则新建空会话
@@ -314,6 +361,27 @@ export const useChatStore = defineStore('chat', () => {
     if (sessionId.value && running.value) bridge().app.Stop(sessionId.value)
   }
 
+  // 输入队列（0.2.14）：回合进行中的提交依次排队，终态后自动逐条发出（绝不与进行中轮次并发）
+  let queueSeq = 0
+  const queue = ref<{ id: number; text: string }[]>([])
+  function enqueue(text: string) {
+    queue.value.push({ id: ++queueSeq, text })
+  }
+  function removeQueued(id: number) {
+    queue.value = queue.value.filter((q) => q.id !== id)
+  }
+  function promoteQueued(id: number) {
+    const i = queue.value.findIndex((q) => q.id === id)
+    if (i > 0) queue.value.unshift(...queue.value.splice(i, 1))
+  }
+  // 取回编辑：返回文本并出队（调用方负责放回输入框）
+  function editQueued(id: number): string | undefined {
+    const q = queue.value.find((x) => x.id === id)
+    if (!q) return undefined
+    removeQueued(id)
+    return q.text
+  }
+
   async function init() {
     await loadSessions()
     if (sessions.value.length) await selectSession(sessions.value[0])
@@ -336,7 +404,13 @@ export const useChatStore = defineStore('chat', () => {
     send,
     onChunk,
     onTool,
+    onTodo,
     onTerminal,
+    queue,
+    enqueue,
+    removeQueued,
+    promoteQueued,
+    editQueued,
     removeSession,
     exportMarkdown,
     onApproval,

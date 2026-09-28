@@ -175,7 +175,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
 				return
 			}
-			result := l.execToolWithApproval(ctx, call) // 审批闸门（默认关，ADR-0007）
+			result := l.dispatchTool(ctx, call, ledger, forward)
 			if _, err := ledger.Append(session.EventToolResult, map[string]any{
 				"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
 				// UI 语义标签与结构化 diff 一并落账：Replay 恢复的历史工具卡才有
@@ -212,6 +212,15 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 	}
 	// 步数耗尽：以 EndError 收束（不写锚点——轮次未完成，已有 delta 留在账本）
 	emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("step limit reached (%d steps)", MaxStepsPerTurn)})
+}
+
+// dispatchTool 工具执行分派：todo 由内核拦截（实时事件 + 落账），
+// 其余走审批闸门（默认关，ADR-0007）。
+func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *session.Ledger, forward func(llm.StreamChunk) bool) tools.ToolResult {
+	if call.Name == todoToolName {
+		return runTodo(call, ledger, forward)
+	}
+	return l.execToolWithApproval(ctx, call)
 }
 
 // consumeStream 消费一步的流：增量落账本并上抛，累计工具调用分片。

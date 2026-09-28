@@ -103,7 +103,8 @@ func TestChatService_ReplayProjectsAnchors(t *testing.T) {
 	}
 }
 
-// C-APP-3：Replay 投影 tool 卡与 assistant thinking。
+// C-APP-3：Replay 投影 tool 卡、assistant thinking，并按 ReAct 轮次分段——
+// 每轮的思考/中间文本是独立 assistant 段（tool_call 为边界），不再全部挂到最后一条。
 func TestChatService_ReplayIncludesTools(t *testing.T) {
 	dir := t.TempDir()
 	l, err := session.OpenLedger(dir, "s1")
@@ -146,21 +147,25 @@ func TestChatService_ReplayIncludesTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 3 {
+	// 分段契约：user → 段1(x+plan-a) → tool 卡 → 终段(done+plan-b)
+	if len(msgs) != 4 {
 		t.Fatalf("len=%d %+v", len(msgs), msgs)
 	}
 	if msgs[0].Role != "user" || msgs[0].Content != "u1" {
 		t.Fatalf("msgs[0]=%+v", msgs[0])
 	}
-	if msgs[1].Role != "tool" || msgs[1].ToolName != "fs" || msgs[1].Status != "success" || msgs[1].Content != "file-x" {
-		t.Fatalf("msgs[1]=%+v", msgs[1])
+	if msgs[1].Role != "assistant" || msgs[1].Content != "x" || msgs[1].Thinking != "plan-a" {
+		t.Fatalf("段1 应为独立助手段 msgs[1]=%+v", msgs[1])
+	}
+	if msgs[2].Role != "tool" || msgs[2].ToolName != "fs" || msgs[2].Status != "success" || msgs[2].Content != "file-x" {
+		t.Fatalf("msgs[2]=%+v", msgs[2])
 	}
 	// 语义标签与 diff 必须投影（历史工具卡渲染"install.go（修改）+ 查看变更"的数据源）
-	if msgs[1].Title != "install.go" || msgs[1].Op != "edit" || msgs[1].Diff == "" {
-		t.Fatalf("msgs[1] title/op/diff = %q/%q/%q", msgs[1].Title, msgs[1].Op, msgs[1].Diff)
+	if msgs[2].Title != "install.go" || msgs[2].Op != "edit" || msgs[2].Diff == "" {
+		t.Fatalf("msgs[2] title/op/diff = %q/%q/%q", msgs[2].Title, msgs[2].Op, msgs[2].Diff)
 	}
-	if msgs[2].Role != "assistant" || msgs[2].Content != "done" || msgs[2].Thinking != "plan-aplan-b" {
-		t.Fatalf("msgs[2]=%+v", msgs[2])
+	if msgs[3].Role != "assistant" || msgs[3].Content != "done" || msgs[3].Thinking != "plan-b" {
+		t.Fatalf("终段 msgs[3]=%+v", msgs[3])
 	}
 
 	md, err := s.ExportSessionMarkdown("s1")
@@ -342,5 +347,61 @@ func TestSessionSummaries_CarryWorkspace(t *testing.T) {
 	}
 	if byID["s-20260928-130001"].LastActiveMs <= 0 {
 		t.Fatalf("lastActiveMs = %d, want >0（user_message 已写入）", byID["s-20260928-130001"].LastActiveMs)
+	}
+}
+
+// 任务清单 Replay：EventTodo 只投影最新一条并原位更新；todo 的 tool_call/tool_result 不重复投影。
+func TestChatService_ReplayTodoInPlace(t *testing.T) {
+	dir := t.TempDir()
+	l, err := session.OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventUserMessage, map[string]string{"text": "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventTodo, map[string]any{
+		"items": []map[string]string{{"text": "a", "status": "pending"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventToolCall, map[string]string{"id": "c1", "name": "todo", "arguments": "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventToolResult, map[string]any{
+		"id": "c1", "name": "todo", "content": "todo list updated: 0/1 done", "is_error": false,
+		"title": "任务清单", "op": "todo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventTodo, map[string]any{
+		"items": []map[string]string{{"text": "a", "status": "done"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewChatService(Config{
+		DataDir: dir, WorkDir: ".", ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	msgs, err := s.Replay("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// user → todo（最新快照，原位）；todo 的工具卡不投影
+	if len(msgs) != 2 {
+		t.Fatalf("len=%d %+v", len(msgs), msgs)
+	}
+	if msgs[1].Role != "todo" {
+		t.Fatalf("msgs[1]=%+v", msgs[1])
+	}
+	if !strings.Contains(msgs[1].Content, `"status":"done"`) || strings.Contains(msgs[1].Content, "pending") {
+		t.Fatalf("todo content = %s, want latest snapshot", msgs[1].Content)
 	}
 }

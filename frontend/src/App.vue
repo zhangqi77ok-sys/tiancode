@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { useChatStore } from './stores/chat'
+import { useChatStore, type TodoItem } from './stores/chat'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
 import Composer from './components/Composer.vue'
@@ -50,6 +50,9 @@ onMounted(() => {
   )
   bridge().runtime.EventsOn('chat:approval', (p: { id: string; toolName: string; arguments: string }) => {
     store.onApproval(p)
+  })
+  bridge().runtime.EventsOn('chat:todo', (p: { sessionID: string; items: { text: string; status: string }[] }) => {
+    store.onTodo({ sessionID: p.sessionID, items: p.items as TodoItem[] })
   })
   void store.init()
 })

@@ -11,6 +11,7 @@ import type { ChatMsg } from '../stores/chat'
 export type RenderItem =
   | { kind: 'turn'; m: ChatMsg; tools: ChatMsg[]; key: string }
   | { kind: 'tool'; m: ChatMsg; key: string }
+  | { kind: 'todo'; m: ChatMsg; key: string }
   | { kind: 'single'; m: ChatMsg; key: string }
 
 export function keyOf(i: number, id?: string): string {
@@ -27,6 +28,9 @@ export function groupMessages(msgs: ChatMsg[]): RenderItem[] {
       const tools: ChatMsg[] = []
       for (let j = i - 1; j >= 0 && msgs[j].role === 'tool'; j--) tools.unshift(msgs[j])
       out.push({ kind: 'turn', m, tools, key })
+    } else if (m.role === 'todo') {
+      // 任务清单卡独立渲染（单卡原地更新语义，不属于任何回合块）
+      out.push({ kind: 'todo', m, key })
     } else if (m.role === 'tool') {
       // 属于"后面紧跟助手消息的连续段"的工具卡由该助手统一渲染，这里跳过；
       // 判定方式：从本卡向后走完连续工具段，若段尾是助手消息则本卡必被并入

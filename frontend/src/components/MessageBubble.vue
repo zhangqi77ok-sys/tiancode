@@ -85,7 +85,9 @@ function fmtTime(at?: number): string {
     <!-- 工具执行卡：时序位于思考之后、回复正文之前（思考 → 执行 → 回复） -->
     <ToolCard v-for="(t, ti) in tools" :key="t.id ?? 'ti-' + ti" :m="t" />
 
+    <!-- 纯思考段（ReAct 分段后 content 可能为空）只渲染深度思考块，不出空气泡 -->
     <div
+      v-if="m.content || m.error || m.term === 3 || m.term === 4"
       class="max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6"
       :class="
         m.term === 3 || m.term === 4

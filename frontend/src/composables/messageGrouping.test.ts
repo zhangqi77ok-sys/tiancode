@@ -78,4 +78,17 @@ describe('groupMessages', () => {
     const items = groupMessages([msg({ role: 'user' })])
     expect(items[0].key).toBe('i-0')
   })
+
+  it('任务清单卡独立渲染，不打断工具卡归组', () => {
+    const msgs = [
+      msg({ role: 'user', id: 'm-1' }),
+      msg({ role: 'todo', id: 'm-2' }),
+      msg({ role: 'tool', id: 'm-3', content: 'out' }),
+      msg({ role: 'assistant', id: 'm-4', content: '答' }),
+    ]
+    const items = groupMessages(msgs)
+    expect(items).toHaveLength(3)
+    expect(items[1]).toMatchObject({ kind: 'todo', m: { id: 'm-2' } })
+    expect(items[2]).toMatchObject({ kind: 'turn', tools: [msgs[2]] })
+  })
 })

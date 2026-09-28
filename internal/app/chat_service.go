@@ -203,15 +203,23 @@ type ChatMessage struct {
 }
 
 // Replay 把会话账本投影为已确认消息列表，供前端恢复历史。
-// 投影 user_message / tool_result / assistant_message；delta 文本不进历史，
-// thinking 累加到下一条 assistant（与 agent.deriveMessages 同一语义）。
+// 投影 user_message / tool_result / assistant_message / todo。
+// 思考与文本按"轮次"分段（ReAct 叙事）：以 tool_call 为边界 flush——
+// 每轮的思考与中间文本归属产生它们的轮次，不再全部挂到最后一条 assistant。
 func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 	ledger, err := s.ledgerFor(sessionID)
 	if err != nil {
 		return nil, err
 	}
 	var out []ChatMessage
-	var thinking strings.Builder
+	var segText, segThinking strings.Builder
+	flushSegment := func() {
+		if strings.TrimSpace(segText.String()) != "" || segThinking.String() != "" {
+			out = append(out, ChatMessage{Role: "assistant", Content: segText.String(), Thinking: segThinking.String()})
+		}
+		segText.Reset()
+		segThinking.Reset()
+	}
 	err = ledger.Replay(func(ev session.Event) error {
 		switch ev.Kind() {
 		case session.EventUserMessage:
@@ -230,7 +238,10 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
 			}
-			thinking.WriteString(p.Thinking)
+			segText.WriteString(p.Text)
+			segThinking.WriteString(p.Thinking)
+		case session.EventToolCall:
+			flushSegment()
 		case session.EventToolResult:
 			var p struct {
 				Name    string `json:"name"`
@@ -243,6 +254,9 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
 			}
+			if p.Name == "todo" {
+				return nil // 任务卡由 EventTodo 承载（单卡原地更新），工具结果卡不重复投影
+			}
 			st := "success"
 			if p.IsError {
 				st = "error"
@@ -251,6 +265,32 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 				Role: "tool", Content: p.Content, ToolName: p.Name, Status: st,
 				Title: p.Title, Op: p.Op, Diff: p.Diff,
 			})
+		case session.EventTodo:
+			var p struct {
+				Items []struct {
+					Text   string `json:"text"`
+					Status string `json:"status"`
+				} `json:"items"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			b, err := json.Marshal(p.Items)
+			if err != nil {
+				return err
+			}
+			// 单卡原地更新：保留首次出现位置，内容取最新快照（与实时 UI 语义一致）
+			replaced := false
+			for i := range out {
+				if out[i].Role == "todo" {
+					out[i].Content = string(b)
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				out = append(out, ChatMessage{Role: "todo", Content: string(b)})
+			}
 		case session.EventAssistantMsg:
 			var p struct {
 				Text string `json:"text"`
@@ -258,8 +298,9 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
 			}
-			out = append(out, ChatMessage{Role: "assistant", Content: p.Text, Thinking: thinking.String()})
-			thinking.Reset()
+			segText.Reset() // 锚点文本为准（与 delta 累计应等价），思考用累计值
+			out = append(out, ChatMessage{Role: "assistant", Content: p.Text, Thinking: segThinking.String()})
+			segThinking.Reset()
 		}
 		return nil
 	})

@@ -170,6 +170,20 @@ func (b *Bind) Send(sessionID, text string) error {
 				"summary":   c.ToolEvent.Summary,
 				"content":   c.ToolEvent.Content,
 				"diff":      c.ToolEvent.Diff, // 编辑类工具的结构化 diff（无变更时为空串）
+				// 语义标签（0.2.13 曾漏发，实时卡只能回退工具名；此处补齐与 Replay 对齐）
+				"title": c.ToolEvent.Title,
+				"op":    c.ToolEvent.Op,
+			})
+		}
+		if c.Todo != nil {
+			// 任务清单动态：前端单卡原地更新
+			items := make([]map[string]string, len(c.Todo.Items))
+			for i, it := range c.Todo.Items {
+				items[i] = map[string]string{"text": it.Text, "status": it.Status}
+			}
+			wruntime.EventsEmit(ctx, "chat:todo", map[string]any{
+				"sessionID": sessionID,
+				"items":     items,
 			})
 		}
 		if c.EndReason != llm.EndNone {

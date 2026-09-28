@@ -821,3 +821,64 @@ func TestAgent_SyntheticIDsForLegacyLedger(t *testing.T) {
 		t.Fatalf("msgs[2] = %+v", msgs[2])
 	}
 }
+
+// todo 工具由 Loop 按名拦截：落 EventTodo、实时推 TodoEvent、结果回填模型上下文。
+func TestAgent_TodoRoundtrip(t *testing.T) {
+	ledger, dir := newTestLedger(t)
+	defer ledger.Close()
+
+	registry := tools.NewRegistry()
+	if err := registry.Register(NewTodoTool()); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "t1", Name: "todo", ArgumentsDelta: `{"items":[{"text":"a","status":"pending"}]}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "planned"}, {EndReason: llm.EndDone}},
+	}}
+	loop := NewLoop(fr, "m", registry)
+	ch, err := loop.Run(context.Background(), ledger, "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := drain(t, ch, 3*time.Second)
+
+	todoEvents := 0
+	for _, c := range chunks {
+		if c.Todo != nil {
+			todoEvents++
+			if len(c.Todo.Items) != 1 || c.Todo.Items[0].Text != "a" || c.Todo.Items[0].Status != "pending" {
+				t.Fatalf("todo event = %+v", c.Todo)
+			}
+		}
+	}
+	if todoEvents != 1 {
+		t.Fatalf("todo events = %d, want 1", todoEvents)
+	}
+	// 结果回填模型上下文（工具轮合法续步）
+	msgs := fr.reqs[1].Messages
+	if len(msgs) < 3 || msgs[2].Role != "tool" || !strings.Contains(msgs[2].Content, "todo list updated") {
+		t.Fatalf("step-2 messages = %+v", msgs)
+	}
+	// EventTodo 落账
+	l2, err := session.OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	n := 0
+	if err := l2.Replay(func(ev session.Event) error {
+		if ev.Kind() != session.EventTodo {
+			return nil
+		}
+		n++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("EventTodo count = %d, want 1", n)
+	}
+}
