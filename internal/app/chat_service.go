@@ -82,6 +82,7 @@ type ChatService struct {
 	extensions *catalog.Store
 	skillTool  *exttools.SkillTool
 	mcpTool    *exttools.MCPTool
+	extManage  *exttools.ManageTool
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -141,6 +142,13 @@ func NewChatService(cfg Config) (*ChatService, error) {
 		return f
 	})
 	s.mcpTool = exttools.NewMCP(s.skillTool.Load)
+	// 扩展自管理（0.2.26）：模型可以自己增删 MCP/Skill。与设置面板走同一个
+	// extensions.json 实例；保存后的钩子关闭旧 MCP 会话，让下一次调用按新配置拉起。
+	s.extManage = exttools.NewManage(s.extensions, s.mcpTool, func() {
+		if s.mcpTool != nil {
+			s.mcpTool.Close()
+		}
+	})
 	registry, err := newRegistry(cfg.WorkDir)
 	if err != nil {
 		return nil, err
@@ -204,7 +212,14 @@ func (s *ChatService) attachExtensions(reg *tools.Registry) error {
 	if err := reg.Register(s.skillTool); err != nil {
 		return err
 	}
-	return reg.Register(s.mcpTool)
+	if err := reg.Register(s.mcpTool); err != nil {
+		return err
+	}
+	if s.extManage != nil {
+		// 扩展自管理（0.2.26）：用户让 AI"加个 MCP/技能"时，模型自己完成配置
+		return reg.Register(s.extManage)
+	}
+	return nil
 }
 
 func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop) error {

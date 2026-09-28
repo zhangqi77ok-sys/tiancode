@@ -41,6 +41,7 @@ func Preface(f catalog.File) string {
 	b.WriteString("\n要用的时候才这样调用：\n")
 	b.WriteString("- 技能：调用 skill，参数 name 为技能名。返回的是做法说明，读完再决定怎么做。\n")
 	b.WriteString("- MCP：调用 mcp，参数 server 为服务器名，tool 为该服务器上的工具名，arguments 为参数对象。还不知道工具名时，把 tool 设为 list，只取清单，不要接着执行。服务器在你真正调用时才启动。\n")
+	b.WriteString("- 用户让你添加/删除 MCP 服务器或技能时：调用 ext_manage（mcp_add/mcp_remove/skill_add/skill_remove，先 mcp_list/skill_list 确认名称），加完把验证结果转告用户。用户没要求时不要擅自增删。\n")
 	if len(skills) > 0 {
 		b.WriteString("\n技能（名称：何时考虑用它）：\n")
 		for _, s := range skills {
@@ -222,6 +223,31 @@ func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpcli
 	}
 	t.hub.Store(spec.Name, c)
 	return c, nil
+}
+
+// ProbeServer 连接单台 stdio 服务器并返回其公布的工具名（ext_manage 添加后的验证用）。
+// 连接失败时把刚拉起的会话从 hub 摘掉：留着一个连不上的客户端只会让下次调用更难排查。
+func (t *MCPTool) ProbeServer(ctx context.Context, spec catalog.Server) ([]string, error) {
+	if spec.Transport == "http" || (spec.URL != "" && spec.Command == "") {
+		return nil, fmt.Errorf("远程服务器不支持自动列工具（%s），请直接指定 tool 调用", strings.TrimSpace(spec.URL))
+	}
+	c, err := t.stdioClient(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	list, err := c.ListTools(ctx)
+	if err != nil {
+		if closeErr := c.Close(); closeErr != nil {
+			return nil, fmt.Errorf("%v（关闭：%v）", err, closeErr)
+		}
+		t.hub.Delete(spec.Name)
+		return nil, err
+	}
+	names := make([]string, 0, len(list))
+	for _, tool := range list {
+		names = append(names, tool.Name)
+	}
+	return names, nil
 }
 
 // Probe 连接已启用的 stdio MCP，收集工具名。失败记在 errs 里，不中断其它服务器。

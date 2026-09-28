@@ -122,6 +122,18 @@
 | C-UI-5 | 前端运行态**按会话隔离**：流式/工具/todo/终态事件按 sessionID 路由进各自缓冲（后台会话不再被丢弃）；切回有缓冲的会话**不重放覆盖**；运行中允许切换/新建会话；删除运行中的会话必须显式拒绝且错误可见；队列续发仍发给原会话 | `chat.test.ts: 后台会话的增量落在它自己的缓冲里…/后台会话的终态不丢也不串…/删除运行中的会话被拒绝且错误可见/后台会话的队列续发仍发给它自己/切换回已有缓冲的会话不重放覆盖` |
 | C-UI-6 | 会话 ID **进程内唯一**（含毫秒与计数器）：ID 即账本文件名，同秒重复会让两个会话串写同一份账本 | `chat.test.ts: 后台会话的增量落在它自己的缓冲里…`（两会话不同 ID 才能通过） |
 
+### C-EXT：扩展自管理（0.2.26）
+
+> 用户需求："让 AI 添加 mcp、skill 数据时能让 AI 自己添加"。此前扩展只能用户手动配，
+> 模型的 fs 工具又被工作区约束（extensions.json 在 %APPDATA%，越界即拒绝）。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-EXT-1 | 模型可经 `ext_manage` 增删 MCP/Skill，与设置面板走**同一条存储路径**（同一 catalog.Store + 保存后关闭旧 MCP 会话）：AI 改的、界面看到的、下一轮注入前言的，是同一份事实源 | `TestManage_McpAddPersistsAndProbes` / `TestManage_McpRemoveAndUnknown`（落盘钩子计数） |
+| C-EXT-2 | `mcp_add` **现场连接验证**并把该服务器公布的工具带回给模型；验证失败**不回滚**（配置已保存），错误原文可见 | `TestManage_McpAddPersistsAndProbes` / `TestManage_McpAddKeepsConfigWhenProbeFails` |
+| C-EXT-3 | 重名 / 缺 command(url) / 删除不存在 → 报错必须**可执行**（引导先 list 确认） | `TestManage_McpAddRejectsDuplicateAndMissing` / `TestManage_SkillAddRemoveRoundtrip` |
+| C-EXT-4 | 前言提示 `ext_manage` 的存在（模型发现路径），并告诫"用户没要求时不要擅自增删" | `TestPrefaceMentionsSelfManage` |
+
 ## C-SES 扩展：会话删除 / 重命名 / 导出
 
 ## C-SES 扩展：会话删除 / 重命名 / 导出
@@ -184,3 +196,4 @@
 | 2026-09-28 | **新增 C-CH-7 / C-CH-8 / C-APP-4** | 实机故障：唯一渠道被 `auto_ban` 置为 `auto_disabled` 后，应用表现为“发消息毫无反应、没法对话”。三处根因分别固化为契约：① 选路失败的错误文本零信息量（用户不知道是没配、被禁用还是模型名错）→ C-CH-8 要求可执行；② `auto_disabled` 被持久化却无任何自动恢复途径 → C-CH-7 定为运行期标记、启动重新评估；③ 零块终态时前端 `onTerminal` 找不到“进行中的助手气泡”，错误被静默丢弃 → C-APP-4 要求新建错误气泡。同时修复：`gateway.noChannelError` 翻译错误、`channels.ReviveAutoDisabled` 新增、`chat.ts onTerminal` 补零块分支 | 用户实测反馈“不对哇，没法进行对话，这块做的有问题” + 复现证据（`TERMINAL endReason=2 err=无可用渠道：default / grok-4.7（retry=0）`，账本仅 `user_message` 无任何助手事件） |
 | 2026-09-28 | **新增 C-UI-1 ~ C-UI-4** | 任务清单的呈现载体变更：由"消息流内联卡（`TodoCard`，随对话滚走）"改为"对话面板上的悬浮件（`FloatingTodo`：悬浮列表 ⇄ 悬浮图标，两态可拖动、位置与折叠态跨重启保留）"。数据契约不变（账本 `EventTodo` / 实时 `TodoEvent` / 单卡原地更新）；`groupMessages` 仍产出 `kind='todo'` 分组但两处渲染器都刻意跳过它（改由悬浮件渲染），`TodoCard.vue` 删除 | 用户反馈"任务清单最好是悬浮在这里（贴截图），点击就展开一个悬浮列表（可以拖动移动），也可以继续关闭成一个悬浮图标（可以拖动移动）" |
 | 2026-09-28 | **新增 C-APP-5 / C-APP-6 / C-UI-5 / C-UI-6** | 多会话并行对话（用户反馈："一个会话在运行就其他的没法操作"）：后端 agent 改为每轮独立构建（原 `agent.Loop.phase` 是全应用单轮互斥锁）；审批/问答事件带 sessionID 归位；前端运行态按会话隔离（事件路由、切换不重放、删除运行中会话显式拒绝、队列续发归属原会话）。顺带修一个测试抓到的真 bug：会话 ID 精确到秒，同一秒新建的两个会话共用一个账本文件 | 用户需求 + `TestChatService_ConcurrentSessionsRunInParallel`（上游等两路到齐，串行必超时） |
+| 2026-09-28 | **新增 C-EXT-1 ~ C-EXT-4** | 新工具 `ext_manage`：用户让 AI"添加 mcp、skill 数据"时，AI 自己完成配置（与设置面板同一条 catalog.Store 存储路径 + 保存后关闭旧 MCP 会话）；mcp_add 现场连接验证并带回工具清单，验证失败不回滚；重名/缺参报错可执行 | 用户需求 |
