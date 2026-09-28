@@ -2,14 +2,15 @@ import type { ChatMsg } from '../stores/chat'
 
 // 消息列表渲染分组（纯函数，可单测）。
 //
-// 规则（0.2.3 实测事故的修正）：
-// - 助手消息向前收集"紧邻的连续工具卡"并入同一回合块：思考 → 工具执行 → 回复正文；
-// - 工具卡永远渲染为 ToolCard——绝不落入 MessageBubble（否则整份工具输出会被
-//   渲染成助手气泡，实流中 tool1 的下一个是兄弟工具卡，曾把 go.mod 全文糊成回复）；
-// - 一张工具卡要么并入回合块、要么独立渲染，绝不允许双重渲染；
-// - 孤立工具卡（后面不再跟助手消息，如被截断的轮次）独立渲染，仍可折叠查看全文。
+// 规则（0.2.16 用户反馈修正）：
+// - 一个 agent 回合 = 从首个助手段起、直到下一条用户消息之前的**整段**：
+//   助手段 / 工具卡 / 任务卡 / 问答卡 / 审批卡全部并入同一条 run——
+//   视觉上是"一个输出"（单一 AGENT 头 + 内部按 ReAct 顺序排布的段落流），
+//   但叙事顺序保留：思考 → 文本 → 工具卡 → 思考 → …
+// - 孤立工具卡（回合被截断、前面没有助手）独立渲染，仍可折叠查看全文；
+// - 所有卡（工具/任务/问答/审批）必须由所属 run 或独立分支恰好渲染一次，绝不重复。
 export type RenderItem =
-  | { kind: 'turn'; m: ChatMsg; tools: ChatMsg[]; key: string }
+  | { kind: 'turn'; run: ChatMsg[]; key: string }
   | { kind: 'tool'; m: ChatMsg; key: string }
   | { kind: 'todo'; m: ChatMsg; key: string }
   | { kind: 'approval'; m: ChatMsg; key: string }
@@ -26,25 +27,24 @@ export function groupMessages(msgs: ChatMsg[]): RenderItem[] {
     const m = msgs[i]
     const key = keyOf(i, m.id)
     if (m.role === 'assistant') {
-      // 向前收集连续工具卡（遇到 user/approval/assistant 即停）
-      const tools: ChatMsg[] = []
-      for (let j = i - 1; j >= 0 && msgs[j].role === 'tool'; j--) tools.unshift(msgs[j])
-      out.push({ kind: 'turn', m, tools, key })
+      // 一个回合：向后连续收集，直到下一条用户消息为止
+      const run: ChatMsg[] = [m]
+      let j = i + 1
+      while (j < msgs.length && msgs[j].role !== 'user') {
+        run.push(msgs[j])
+        j++
+      }
+      out.push({ kind: 'turn', run, key })
+      i = j - 1
+    } else if (m.role === 'todo') {
+      out.push({ kind: 'todo', m, key })
     } else if (m.role === 'approval') {
-      // 审批卡独立渲染（专用组件，绝不冒充助手气泡——0.2.15 修掉拆分期的潜伏错渲染）
       out.push({ kind: 'approval', m, key })
     } else if (m.role === 'ask') {
-      // 问答卡独立渲染（待答交互态 / 已答展示态）
       out.push({ kind: 'ask', m, key })
-    } else if (m.role === 'todo') {
-      // 任务清单卡独立渲染（单卡原地更新语义，不属于任何回合块）
-      out.push({ kind: 'todo', m, key })
     } else if (m.role === 'tool') {
-      // 属于"后面紧跟助手消息的连续段"的工具卡由该助手统一渲染，这里跳过；
-      // 判定方式：从本卡向后走完连续工具段，若段尾是助手消息则本卡必被并入
-      let j = i
-      while (msgs[j] && msgs[j].role === 'tool') j++
-      if (msgs[j]?.role !== 'assistant') out.push({ kind: 'tool', m, key })
+      // 能走到这里说明工具卡前面没有助手（回合被截断）：独立渲染
+      out.push({ kind: 'tool', m, key })
     } else {
       out.push({ kind: 'single', m, key })
     }

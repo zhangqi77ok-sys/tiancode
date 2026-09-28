@@ -74,7 +74,7 @@ const items = computed(() => groupMessages(store.messages))
       <TodoCard v-else-if="item.kind === 'todo'" :m="item.m" />
       <ApprovalCard v-else-if="item.kind === 'approval'" :m="item.m" />
       <AskCard v-else-if="item.kind === 'ask'" :m="item.m" />
-      <MessageBubble v-else-if="item.kind === 'turn'" :m="item.m" :tools="item.tools" />
+      <MessageBubble v-else-if="item.kind === 'turn'" :m="item.run[0]" :run="item.run" />
       <MessageBubble v-else :m="item.m" />
     </template>
   </div>

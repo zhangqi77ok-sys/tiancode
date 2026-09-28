@@ -162,6 +162,36 @@ body {
   box-shadow: none;
 }
 
+/* ---- 无边框窗口（自绘标题栏）---- */
+/* Wails v2 以 --wails-draggable 标记拖拽区：标题栏整体 drag，
+   所有交互元素显式 no-drag，否则点击会被当成拖窗吞掉 */
+button,
+a,
+input,
+textarea,
+select {
+  --wails-draggable: no-drag;
+}
+
+.win-btn {
+  display: inline-flex;
+  height: 30px;
+  width: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--c-text-dim);
+  transition: background-color 120ms, color 120ms;
+}
+.win-btn:hover {
+  background: var(--c-surface-soft);
+  color: var(--c-text);
+}
+.win-btn-close:hover {
+  background: var(--c-err-text);
+  color: #fff;
+}
+
 /* 圆形图标按钮（发送） */
 .btn-icon {
   display: inline-flex;

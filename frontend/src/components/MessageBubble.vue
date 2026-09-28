@@ -1,36 +1,54 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
+import ApprovalCard from './ApprovalCard.vue'
+import AskCard from './AskCard.vue'
 import MarkdownBody from './MarkdownBody.vue'
+import TodoCard from './TodoCard.vue'
 import ToolCard from './ToolCard.vue'
 
-const props = defineProps<{ m: ChatMsg; tools?: ChatMsg[] }>()
+// 两种形态：
+// - 用户消息（role=user）：单气泡，右对齐；
+// - agent 回合（run）：单一消息头 + 内部段落流（思考 → 文本 → 工具卡 → 思考 → …）——
+//   整个回合是"一个输出"，不再每个助手段各起一个 AGENT 头（0.2.16 用户反馈）。
+const props = defineProps<{ m: ChatMsg; run?: ChatMsg[] }>()
 
-// 用户/助手消息二选一渲染（role 在入库后不再变化）
-const isUser = props.m.role === 'user'
+const segments = computed<ChatMsg[]>(() => props.run ?? [props.m])
+const isUser = computed(() => props.m.role === 'user')
 
 const { push: toast } = useToast()
 
-// 复制助手回复全文（Markdown 原文——开源聊天 UI 的消息级标配动作）
+// 思考折叠：按段独立记忆；流式段默认展开，终态后回到折叠（用户手动开合后以手动为准）
+const thinkingOpen = ref<Record<string, boolean>>({})
+function segKey(seg: ChatMsg, i: number): string {
+  return seg.id ?? `seg-${i}`
+}
+function isThinkingOpen(seg: ChatMsg, i: number): boolean {
+  return thinkingOpen.value[segKey(seg, i)] ?? !!seg.streaming
+}
+function toggleThinking(seg: ChatMsg, i: number) {
+  thinkingOpen.value[segKey(seg, i)] = !isThinkingOpen(seg, i)
+}
+
+// 回合头：时间取首个助手段；耗时取各段之和（通常只有终段带）
+const startedAt = computed(() => segments.value.find((s) => s.role === 'assistant')?.at)
+const durationMs = computed(() => segments.value.reduce((a, s) => a + (s.durationMs ?? 0), 0))
+
 async function copyMessage() {
+  const text = segments.value
+    .filter((s) => s.role === 'assistant')
+    .map((s) => s.content)
+    .filter(Boolean)
+    .join('\n\n')
   try {
-    await navigator.clipboard.writeText(props.m.content)
+    await navigator.clipboard.writeText(text)
     toast('info', '已复制回复')
   } catch {
     toast('error', '复制失败：剪贴板不可用')
   }
 }
-
-// 思考折叠：流式中默认展开，终态自动收起；用户手动开合后以手动为准
-const thinkingOpen = ref(!!props.m.streaming)
-watch(
-  () => props.m.streaming,
-  (s, old) => {
-    if (old === true && s === false) thinkingOpen.value = false
-  },
-)
 
 function fmtTime(at?: number): string {
   if (!at) return ''
@@ -51,11 +69,11 @@ function fmtTime(at?: number): string {
     </div>
   </div>
 
-  <!-- 助手消息：浅紫气泡（与卡片底色区分，修掉旧版层级塌陷）；错误/取消/超时为纯文本 -->
+  <!-- agent 回合：单一消息头 + 段落流，整体是一个输出 -->
   <div v-else class="flex flex-col items-start gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
-      <span class="font-medium">AGENT</span><span>{{ fmtTime(m.at) }}</span>
-      <span v-if="m.durationMs" class="text-[var(--c-text-faint)]">· {{ (m.durationMs / 1000).toFixed(1) }}s</span>
+      <span class="font-medium">AGENT</span><span>{{ fmtTime(startedAt) }}</span>
+      <span v-if="durationMs" class="text-[var(--c-text-faint)]">· {{ (durationMs / 1000).toFixed(1) }}s</span>
       <button
         class="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-[var(--c-text-faint)] opacity-60 transition-opacity hover:text-[var(--c-primary)] hover:opacity-100"
         title="复制回复"
@@ -66,49 +84,60 @@ function fmtTime(at?: number): string {
       </button>
     </div>
 
-    <button
-      v-if="m.thinking"
-      class="chip text-xs"
-      :aria-expanded="thinkingOpen"
-      @click="thinkingOpen = !thinkingOpen"
-    >
-      <AppIcon
-        name="chevron-down"
-        :size="12"
-        class="transition-transform"
-        :class="thinkingOpen ? '' : '-rotate-90'"
-      />
-      深度思考
-    </button>
-    <pre v-if="m.thinking && thinkingOpen" class="tool-full max-w-[85%] text-[var(--c-text-dim)]">{{ m.thinking }}</pre>
+    <!-- 段落流：ReAct 顺序原样保留，不做二次归并 -->
+    <template v-for="(seg, i) in segments" :key="seg.id ?? 'seg-' + i">
+      <template v-if="seg.role === 'assistant'">
+        <button
+          v-if="seg.thinking"
+          class="chip text-xs"
+          :aria-expanded="isThinkingOpen(seg, i)"
+          @click="toggleThinking(seg, i)"
+        >
+          <AppIcon
+            name="chevron-down"
+            :size="12"
+            class="transition-transform"
+            :class="isThinkingOpen(seg, i) ? '' : '-rotate-90'"
+          />
+          深度思考
+        </button>
+        <pre
+          v-if="seg.thinking && isThinkingOpen(seg, i)"
+          class="tool-full max-w-[85%] text-[var(--c-text-dim)]"
+          >{{ seg.thinking }}</pre
+        >
 
-    <!-- 工具执行卡：时序位于思考之后、回复正文之前（思考 → 执行 → 回复） -->
-    <ToolCard v-for="(t, ti) in tools" :key="t.id ?? 'ti-' + ti" :m="t" />
-
-    <!-- 纯思考段（ReAct 分段后 content 可能为空）只渲染深度思考块，不出空气泡 -->
-    <div
-      v-if="m.content || m.error || m.term === 3 || m.term === 4"
-      class="max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6"
-      :class="
-        m.term === 3 || m.term === 4
-          ? 'border-[var(--c-warn)] bg-[var(--c-warn-soft)]'
-          : m.error
-            ? 'border-[var(--c-err)] bg-[var(--c-err-soft)]'
-            : 'border-[var(--c-border)] bg-[var(--c-bubble)]'
-      "
-    >
-      <div v-if="m.error || m.term === 3 || m.term === 4" class="flex items-start gap-2 whitespace-pre-wrap">
-        <AppIcon
-          name="alert"
-          :size="14"
-          class="mt-1 shrink-0"
-          :class="m.term === 3 || m.term === 4 ? 'text-[var(--c-warn-text)]' : 'text-[var(--c-err-text)]'"
-        />
-        <span>{{ m.content }}</span>
-      </div>
-      <template v-else>
-        <MarkdownBody :content="m.content" :streaming="m.streaming" />
+        <!-- 纯思考段（无正文）不出空气泡 -->
+        <div
+          v-if="seg.content || seg.error || seg.term === 3 || seg.term === 4"
+          class="max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6"
+          :class="
+            seg.term === 3 || seg.term === 4
+              ? 'border-[var(--c-warn)] bg-[var(--c-warn-soft)]'
+              : seg.error
+                ? 'border-[var(--c-err)] bg-[var(--c-err-soft)]'
+                : 'border-[var(--c-border)] bg-[var(--c-bubble)]'
+          "
+        >
+          <div v-if="seg.error || seg.term === 3 || seg.term === 4" class="flex items-start gap-2 whitespace-pre-wrap">
+            <AppIcon
+              name="alert"
+              :size="14"
+              class="mt-1 shrink-0"
+              :class="seg.term === 3 || seg.term === 4 ? 'text-[var(--c-warn-text)]' : 'text-[var(--c-err-text)]'"
+            />
+            <span>{{ seg.content }}</span>
+          </div>
+          <template v-else>
+            <MarkdownBody :content="seg.content" :streaming="seg.streaming" />
+          </template>
+        </div>
       </template>
-    </div>
+
+      <ToolCard v-else-if="seg.role === 'tool'" :m="seg" />
+      <TodoCard v-else-if="seg.role === 'todo'" :m="seg" />
+      <AskCard v-else-if="seg.role === 'ask'" :m="seg" />
+      <ApprovalCard v-else-if="seg.role === 'approval'" :m="seg" />
+    </template>
   </div>
 </template>

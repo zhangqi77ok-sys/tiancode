@@ -158,6 +158,34 @@ const offlineWrite = async (): Promise<never> => {
   throw new Error('浏览器调试模式：未连接本地内核，无法修改配置')
 }
 
+// ---- 无边框窗口控制（自绘标题栏）----
+// Wails 运行时注入 window.runtime；浏览器调试模式没有它——?. 静默降级，
+// 绝不假装动作成功（页面内没有可替代窗口操作，报错也无用户可行动作）。
+interface WailsWindowRuntime {
+  WindowMinimize?: () => void
+  WindowToggleMaximise?: () => void
+  WindowClose?: () => void
+}
+
+function windowRuntime(): WailsWindowRuntime {
+  return ((window as unknown as { runtime?: WailsWindowRuntime }).runtime ?? {}) as WailsWindowRuntime
+}
+
+// winMinimize 最小化窗口。
+export function winMinimize(): void {
+  windowRuntime().WindowMinimize?.()
+}
+
+// winToggleMaximize 最大化/还原窗口。
+export function winToggleMaximize(): void {
+  windowRuntime().WindowToggleMaximise?.()
+}
+
+// winClose 关闭窗口。
+export function winClose(): void {
+  windowRuntime().WindowClose?.()
+}
+
 // bridge 返回类型化的 wails 注入对象。三种情形：
 //  1. 未注入 go（纯浏览器 vite dev）→ 读操作空数据、写操作显式报错的调试桩；
 //  2. 注入了 go 但解析不到绑定（路径/版本不匹配）→ 全部调用抛可读原因，绝不静默返回空数据；

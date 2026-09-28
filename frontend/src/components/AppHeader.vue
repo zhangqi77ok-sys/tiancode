@@ -4,6 +4,7 @@ import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useToast } from '../composables/useToast'
+import { winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
 import ChannelSettings from './ChannelSettings.vue'
 
@@ -64,11 +65,18 @@ onMounted(async () => {
 </script>
 
 <template>
-  <header class="flex flex-wrap items-center justify-between gap-2">
-    <div class="flex min-w-0 items-baseline gap-2">
+  <!-- 无边框窗口的标题栏：整条可拖拽（交互元素在 CSS 里统一 no-drag） -->
+  <header class="flex flex-wrap items-center justify-between gap-2" style="--wails-draggable: drag">
+    <div class="flex min-w-0 items-center gap-2">
       <button class="btn-ghost md:hidden" aria-label="会话列表" @click="emit('toggle-drawer')">
         <AppIcon name="menu" :size="18" />
       </button>
+      <!-- 品牌 Logo：T 字标（内联，无外部资源） -->
+      <span
+        class="grid h-7 w-7 shrink-0 select-none place-items-center rounded-[10px] bg-[var(--c-primary)] text-[15px] font-bold text-white shadow-sm"
+        aria-hidden="true"
+        >T</span
+      >
       <h1 class="text-[20px] font-semibold tracking-tight">tiancode</h1>
       <span class="hidden text-xs text-[var(--c-text-dim)] sm:inline">桌面 AI 编程智能体</span>
     </div>
@@ -110,6 +118,19 @@ onMounted(async () => {
       >
         <AppIcon name="sliders" :size="13" /> {{ hasChannel ? activeChannelName : '未配置渠道 · 点击设置' }}
       </button>
+
+      <!-- 窗口控制（无边框自绘）：最小化 / 最大化还原 / 关闭 -->
+      <div class="ml-1 flex shrink-0 items-center gap-0.5">
+        <button class="win-btn" aria-label="最小化" title="最小化" @click="winMinimize">
+          <AppIcon name="minus" :size="14" />
+        </button>
+        <button class="win-btn" aria-label="最大化或还原" title="最大化 / 还原" @click="winToggleMaximize">
+          <AppIcon name="stop" :size="11" />
+        </button>
+        <button class="win-btn win-btn-close" aria-label="关闭窗口" title="关闭" @click="winClose">
+          <AppIcon name="x" :size="14" />
+        </button>
+      </div>
     </div>
 
     <ChannelSettings v-if="settingsOpen" @close="settingsOpen = false" />

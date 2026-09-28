@@ -3,13 +3,14 @@ import { useChatStore } from '../stores/chat'
 import { relativeTime } from '../composables/relativeTime'
 import AppIcon from './AppIcon.vue'
 
-// 会话行：标题（两行：标题 + 相对时间）+ 行内操作（置顶/重命名/删除，常驻 55% 透明度）。
+// 会话行：标题（两行：标题 + 相对时间）+ 右侧运行状态（运行中/空闲）+ 行内操作。
 // 置顶/会话/空间三个分区共用同一行组件，避免三份拷贝漂移。
 const props = defineProps<{
   id: string
   title: string
   lastActiveMs?: number
   pinned?: boolean
+  running?: boolean
 }>()
 const emit = defineEmits<{
   (e: 'select'): void
@@ -42,6 +43,22 @@ const store = useChatStore()
         {{ relativeTime(props.lastActiveMs) }}
       </span>
     </button>
+    <!-- 每行右侧：该会话的运行状态（运行中 = 脉冲点 + 文案；空闲 = 静默点） -->
+    <span
+      v-if="props.running"
+      class="flex shrink-0 items-center gap-1 pl-1 text-[10px] font-medium text-[var(--c-primary)]"
+      title="该会话正在运行"
+    >
+      <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--c-primary)]"></span>
+      运行中
+    </span>
+    <span
+      v-else
+      class="shrink-0 pl-1 text-[10px] text-[var(--c-text-faint)]"
+      title="该会话空闲"
+    >
+      <span class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--c-border)]"></span>
+    </span>
     <button
       class="btn-ghost shrink-0"
       :class="props.pinned ? 'text-[var(--c-primary)] opacity-100' : ''"

@@ -46,9 +46,12 @@ func main() {
 
 	bind := shell.New(chat)
 	err = wails.Run(&options.App{
-		Title:  "tiancode",
-		Width:  1280,
-		Height: 800,
+		Title: "tiancode",
+		// 无边框：标题栏由前端自绘（品牌 logo + 窗口控制按钮都在应用内），
+		// 去掉系统标题栏这条"外框"，视觉上是一块完整的应用面板
+		Frameless: true,
+		Width:     1280,
+		Height:    800,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
