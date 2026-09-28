@@ -16,6 +16,7 @@ import (
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/adaptors"
 	"tiancode/internal/platform/channels"
+	"tiancode/internal/platform/codexauth"
 	"tiancode/internal/platform/openaiprovider"
 )
 
@@ -220,6 +221,18 @@ func (s *ChatService) TestChannel(ctx context.Context, id string) (TestResult, e
 	adv, err := s.registryAdaptor(ch.Type)
 	if err != nil {
 		return TestResult{}, err
+	}
+	// 凭证临期先续期：否则诊断结果反映的是过期凭证（误导用户"渠道坏了"）。
+	// 续期失败不阻断测试——真实失败原因（401 等）由测试结果本身呈现。
+	if cred, isOAuth := codexauth.Parse(ch.Credential); isOAuth && cred.NeedsRefresh(time.Now()) {
+		if refreshed, rerr := codexauth.RefreshCredential(ctx, s.codexClient, cred); rerr == nil {
+			if js, jerr := refreshed.JSON(); jerr == nil {
+				if uerr := s.pool.UpdateCredential(id, js); uerr != nil {
+					return TestResult{Model: model, Error: "凭证续期写回失败：" + uerr.Error()}, nil
+				}
+				ch.Credential = js
+			}
+		}
 	}
 	sel, err := s.pool.Probe(id)
 	if err != nil {

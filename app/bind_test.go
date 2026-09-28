@@ -68,10 +68,10 @@ func TestBind_AppCtxFallback(t *testing.T) {
 // 少一个会让 UI 静默失效，多一个说明有未接线方法。
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
-		"AddChannel", "ApprovalPolicy", "ChannelPresets", "DeleteChannel", "DeleteSession", "DiscoverModels",
-		"ExportSessionMarkdown", "GetWorkspace", "ListChannels", "ListCredentials", "ListSessionSummaries",
-		"ListSessions", "PickWorkspace", "PinSession", "RenameSession", "Replay", "ResolveApproval", "ResolveAsk", "Send", "SetActiveChannel",
-		"SetApprovalPolicy", "SetCredentialEnabled", "SetWorkspace", "Stop", "TestChannel", "UpdateChannel",
+		"AddChannel", "ApprovalPolicy", "BindCodexOAuth", "ChannelPresets", "CodexCredentialOf", "DeleteChannel", "DeleteSession", "DiscoverModels",
+		"ExportSessionMarkdown", "GetWorkspace", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
+		"ListSessions", "PickWorkspace", "PinSession", "PollCodexOAuth", "RenameSession", "Replay", "ResolveApproval", "ResolveAsk", "Send", "SetActiveChannel",
+		"SetApprovalPolicy", "SetCredentialEnabled", "SetWorkspace", "StartCodexOAuth", "Stop", "TestChannel", "UpdateChannel",
 	}
 	bindType := reflect.TypeOf(&Bind{})
 	got := make([]string, 0, bindType.NumMethod())

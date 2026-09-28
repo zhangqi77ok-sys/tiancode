@@ -19,8 +19,13 @@ const ProtocolOpenAI Protocol = "openai"
 // ProtocolAnthropic 表示 Anthropic Messages 协议（/v1/messages + SSE）。
 const ProtocolAnthropic Protocol = "anthropic"
 
+// ProtocolCodex 表示 OpenAI Codex（ChatGPT 订阅）协议：Responses API + OAuth 账号凭证。
+const ProtocolCodex Protocol = "codex"
+
 // Valid 报告协议是否已实现。未实现的协议必须显式拒绝，绝不静默降级。
-func (p Protocol) Valid() bool { return p == ProtocolOpenAI || p == ProtocolAnthropic }
+func (p Protocol) Valid() bool {
+	return p == ProtocolOpenAI || p == ProtocolAnthropic || p == ProtocolCodex
+}
 
 // Channel 是一个模型渠道（对外 DTO 形态；池模型见 platform/channels.Channel）。
 type Channel struct {
@@ -121,7 +126,9 @@ func ValidateChannel(c Channel) error {
 	if strings.TrimSpace(c.Name) == "" {
 		missing = append(missing, "name")
 	}
-	if strings.TrimSpace(c.BaseURL) == "" {
+	// baseUrl 仅 Codex 协议可空（上游入口固定，由适配器默认提供）；其余协议要求显式地址，
+	// 避免"忘填地址"静默打到官方端点——那是拿用户凭证打错地方。
+	if strings.TrimSpace(c.BaseURL) == "" && c.Protocol != ProtocolCodex {
 		missing = append(missing, "baseUrl")
 	}
 	if strings.TrimSpace(c.Model) == "" && len(c.Models) == 0 {

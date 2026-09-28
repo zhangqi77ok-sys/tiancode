@@ -58,6 +58,20 @@ func (p *Pool) Delete(id string) error {
 	return p.persistLocked()
 }
 
+// UpdateCredential 只更新渠道凭证（OAuth 自动续期用）：不动其他字段与凭证状态表。
+// 为什么单独一个方法：Save 是全量 upsert（调用方要组装整个渠道），续期只换一个字符串。
+func (p *Pool) UpdateCredential(id, credential string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.channels {
+		if c.ID == id {
+			c.Credential = credential
+			return p.persistLocked()
+		}
+	}
+	return fmt.Errorf("渠道不存在：%s", id)
+}
+
 // Get 取渠道（含凭证等敏感字段；仅网关与编排层内部使用，对外视图必须脱敏）。
 func (p *Pool) Get(id string) (Channel, bool) {
 	p.mu.Lock()

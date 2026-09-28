@@ -88,6 +88,39 @@ export interface TestResultDTO {
   error?: string
 }
 
+// ---- Codex（ChatGPT 订阅）账号授权（0.2.21）----
+
+// 授权启动结果：authUrl 为 auth.openai.com 原始链接；desktopUrl 为 chatgpt.com 包装
+//（默认打开它）；listening=true 时本机 1455 回环已就绪（浏览器授权后自动完成）
+export interface CodexStartDTO {
+  sessionId: string
+  authUrl: string
+  desktopUrl: string
+  listening: boolean
+}
+
+// 授权状态：pending（等待）| done（凭证就绪待绑定）| error
+export interface CodexStatusDTO {
+  state: string
+  error?: string
+  display?: string
+}
+
+// 绑定结果（凭证不回显：只有脱敏摘要）
+export interface CodexBindResultDTO {
+  channelId: string
+  name: string
+  display: string
+  created: boolean
+}
+
+// 渠道的 ChatGPT 账号绑定摘要（渠道管理回显）
+export interface CodexCredentialDTO {
+  bound: boolean
+  display?: string
+  expiresAt?: number
+}
+
 export interface ChannelListDTO {
   channels: ChannelDTO[]
   activeId: string
@@ -196,6 +229,17 @@ interface WailsApp {
   TestChannel(id: string): Promise<TestResultDTO | null>
   ListCredentials(id: string): Promise<CredentialDTO[] | null>
   SetCredentialEnabled(id: string, index: number, enabled: boolean): Promise<void>
+  // Codex（ChatGPT 订阅）账号授权（0.2.21）
+  StartCodexOAuth(): Promise<CodexStartDTO | null>
+  PollCodexOAuth(sessionID: string): Promise<CodexStatusDTO | null>
+  BindCodexOAuth(
+    sessionID: string,
+    channelID: string,
+    name: string,
+    codeOrURL: string,
+  ): Promise<CodexBindResultDTO | null>
+  ImportCodexCredential(channelID: string, name: string, raw: string): Promise<CodexBindResultDTO | null>
+  CodexCredentialOf(channelID: string): Promise<CodexCredentialDTO | null>
 }
 
 interface WailsRuntime {
@@ -225,10 +269,22 @@ interface WailsWindowRuntime {
   WindowToggleMaximise?: () => void
   Quit?: () => void
   WindowClose?: () => void // 兼容别名
+  BrowserOpenURL?: (url: string) => void
 }
 
 function windowRuntime(): WailsWindowRuntime {
   return ((window as unknown as { runtime?: WailsWindowRuntime }).runtime ?? {}) as WailsWindowRuntime
+}
+
+// openExternal 用系统默认浏览器打开链接（Codex 账号授权跳转）。
+// 浏览器调试模式没有 Wails runtime：降级 window.open（开发可用，不静默失败）。
+export function openExternal(url: string): void {
+  const rt = windowRuntime()
+  if (rt.BrowserOpenURL) {
+    rt.BrowserOpenURL(url)
+    return
+  }
+  window.open(url, '_blank')
 }
 
 // winMinimize 最小化窗口。
@@ -286,6 +342,11 @@ export function bridge(): WailsBridge {
         TestChannel: offlineWrite,
         ListCredentials: async () => [],
         SetCredentialEnabled: offlineWrite,
+        StartCodexOAuth: offlineWrite,
+        PollCodexOAuth: async () => ({ state: 'pending' }),
+        BindCodexOAuth: offlineWrite,
+        ImportCodexCredential: offlineWrite,
+        CodexCredentialOf: async () => ({ bound: false }),
       },
       runtime: { EventsOn: () => {} },
     }

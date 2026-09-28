@@ -28,6 +28,7 @@ import (
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/adaptors"
 	"tiancode/internal/platform/channels"
+	"tiancode/internal/platform/codexauth"
 	"tiancode/internal/platform/configfile"
 	"tiancode/internal/platform/gateway"
 )
@@ -67,6 +68,10 @@ type ChatService struct {
 	// 问答交互状态（ask_user，0.2.15）：与审批同构的"问 → 等 → 答"配对
 	askEmit     func(AskEvent)         // 事件回调（壳层注入）
 	pendingAsks map[string]chan string // 未决请求：ID → 答复通道
+
+	// codexAuth 管理 ChatGPT 订阅账号的 OAuth 授权会话与 1455 回环监听（0.2.21）
+	codexAuth   *codexauth.Manager
+	codexClient *codexauth.Client
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -100,10 +105,16 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	if err := reg.Register(adaptors.Anthropic{}); err != nil {
 		return nil, err
 	}
+	if err := reg.Register(adaptors.Codex{}); err != nil {
+		return nil, err
+	}
+	codexClient := codexauth.NewClient(nil)
 	s := &ChatService{
 		cfg:              cfg,
 		pool:             pool,
 		gw:               gateway.New(pool, reg),
+		codexAuth:        codexauth.NewManager(codexClient),
+		codexClient:      codexClient,
 		ledgers:          make(map[string]*session.Ledger),
 		pendingApprovals: make(map[string]chan agent.Decision),
 		pendingAsks:      make(map[string]chan string),
@@ -185,6 +196,10 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	s.mu.Unlock()
 	if ag == nil {
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
+	}
+	// ChatGPT 订阅凭证临期先自动续期（失败明确阻断：过期凭证发出去只会得到难解读的 401）
+	if err := s.ensureCodexFresh(ctx); err != nil {
+		return nil, err
 	}
 	// 记录本轮工作区快照：侧栏按空间分组取账本首个 workspace 事件，
 	// 会话归属 = 首次发送时的工作区（每轮都记，归属语义不受中途切换影响）。
@@ -376,9 +391,12 @@ func (s *ChatService) ledgerFor(sessionID string) (*session.Ledger, error) {
 
 // Close 关闭全部缓存的账本句柄（应用退出时调用；Windows 下不关闭会导致数据文件无法删除）。
 func (s *ChatService) Close() error {
+	var firstErr error
+	if s.codexAuth != nil {
+		firstErr = s.codexAuth.Close() // 释放 1455 回环监听（失败向上传播）
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var firstErr error
 	for id, l := range s.ledgers {
 		if err := l.Close(); err != nil && firstErr == nil {
 			firstErr = err

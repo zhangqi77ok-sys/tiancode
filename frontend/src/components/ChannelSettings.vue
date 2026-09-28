@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useDialogs } from '../composables/useDialogs'
+import { bridge, openExternal } from '../wails'
 import type { AuthDTO, ChannelDTO, CredentialDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
@@ -17,8 +18,11 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useChannelStore()
 const dialogs = useDialogs()
 
-const view = ref<'list' | 'form' | 'keys'>('list')
+const view = ref<'list' | 'form' | 'keys' | 'codex'>('list')
 const editingID = ref('')
+
+// 已绑定 ChatGPT 账号摘要（codex 渠道编辑时回显；空 = 未绑定/非 codex）
+const boundAccount = ref('')
 
 const emptyForm = () => ({
   id: '',
@@ -44,15 +48,24 @@ const form = ref(emptyForm())
 
 // 协议默认鉴权的展示文案（表单下拉第一项；实际形态由后端适配器决定）
 const protocolDefaultAuth = computed(() =>
-  form.value.protocol === 'anthropic' ? 'x-api-key' : 'Authorization: Bearer',
+  form.value.protocol === 'anthropic'
+    ? 'x-api-key'
+    : form.value.protocol === 'codex'
+      ? 'ChatGPT 账号 OAuth（自动）'
+      : 'Authorization: Bearer',
 )
 
-// 协议默认地址提示（选 anthropic 时给用户可照抄的地址）
-const protocolHint = computed(() =>
-  form.value.protocol === 'anthropic'
-    ? 'Anthropic Messages 协议：地址形如 https://api.anthropic.com/v1'
-    : 'OpenAI 兼容协议：地址形如 https://api.deepseek.com/v1',
-)
+// 协议默认地址提示（按协议给用户可照抄的地址/说明）
+const protocolHint = computed(() => {
+  switch (form.value.protocol) {
+    case 'anthropic':
+      return 'Anthropic Messages 协议：地址形如 https://api.anthropic.com/v1'
+    case 'codex':
+      return 'Codex 协议（ChatGPT 订阅）：地址留空走官方入口 chatgpt.com/backend-api/codex'
+    default:
+      return 'OpenAI 兼容协议：地址形如 https://api.deepseek.com/v1'
+  }
+})
 
 // parseKV 解析"每行 键=值"文本（空行与 # 注释忽略）——模型映射与请求头覆写共用
 function parseKV(text: string): Record<string, string> {
@@ -130,11 +143,20 @@ function authLabel(a?: AuthDTO): string {
   return `头 ${a.name}`
 }
 
-function startEdit(ch: ChannelDTO) {
+async function startEdit(ch: ChannelDTO) {
   reset()
   editingID.value = ch.id
   fillFrom(ch)
   view.value = 'form'
+  // codex 渠道回显已绑定账号（凭证本身绝不回显，只有脱敏摘要）
+  if (ch.protocol === 'codex') {
+    try {
+      const info = await bridge().app.CodexCredentialOf(ch.id)
+      boundAccount.value = info?.bound ? (info.display ?? '') : ''
+    } catch {
+      boundAccount.value = ''
+    }
+  }
 }
 
 // 复制渠道（参照 new-api Copy Channel）：除密钥外全部预填，名称加"副本"后缀
@@ -296,6 +318,174 @@ async function setAllCreds(enabled: boolean) {
   }
 }
 
+// ---- ChatGPT 账号授权（Codex，0.2.21）----
+// 桌面增强：本机 1455 回环监听 → 浏览器授权完成后轮询自动绑定；
+// 回环不可用（端口占用）时用手动粘贴回调兜底；Token/JSON 通道直接导入。
+const codexTab = ref<'oauth' | 'token'>('oauth')
+const codex = ref({
+  sessionId: '',
+  authUrl: '',
+  desktopUrl: '',
+  listening: false,
+  pasted: '',
+  importText: '',
+  busy: false,
+  error: '',
+  done: false,
+  display: '',
+  channelID: '', // '' = 新建 Codex 渠道；非空 = 更新该渠道凭证
+  targetLabel: '',
+})
+let codexTimer: number | undefined
+
+function stopCodexPoll() {
+  if (codexTimer !== undefined) {
+    window.clearInterval(codexTimer)
+    codexTimer = undefined
+  }
+}
+
+function openCodexAuth() {
+  stopCodexPoll()
+  codex.value = {
+    sessionId: '',
+    authUrl: '',
+    desktopUrl: '',
+    listening: false,
+    pasted: '',
+    importText: '',
+    busy: false,
+    error: '',
+    done: false,
+    display: '',
+    channelID: form.value.id,
+    targetLabel: form.value.id
+      ? `绑定到「${form.value.name || form.value.id}」`
+      : '将新建一条 Codex 渠道',
+  }
+  codexTab.value = 'oauth'
+  view.value = 'codex'
+}
+
+// 发起授权：拿授权链接 → 打开系统浏览器 → 开始轮询等待（回环自动收码）
+async function startCodexAuth() {
+  codex.value.busy = true
+  codex.value.error = ''
+  try {
+    const info = await bridge().app.StartCodexOAuth()
+    if (!info) return
+    Object.assign(codex.value, {
+      sessionId: info.sessionId,
+      authUrl: info.authUrl,
+      desktopUrl: info.desktopUrl,
+      listening: info.listening,
+    })
+    openExternal(info.desktopUrl)
+    stopCodexPoll()
+    codexTimer = window.setInterval(() => void pollCodex(), 1200)
+  } catch (e) {
+    codex.value.error = String(e instanceof Error ? e.message : e)
+  } finally {
+    codex.value.busy = false
+  }
+}
+
+// 轮询授权状态：done 即自动绑定（凭证不出后端，摘要回填展示）
+async function pollCodex() {
+  if (!codex.value.sessionId || codex.value.done) return
+  try {
+    const st = await bridge().app.PollCodexOAuth(codex.value.sessionId)
+    if (!st) return
+    if (st.state === 'done') {
+      await bindCodex('')
+    } else if (st.state === 'error') {
+      stopCodexPoll()
+      codex.value.error = st.error || '授权失败'
+    }
+  } catch {
+    // 轮询单次失败静默重试（下一次 tick 继续）；持续失败由用户重新发起
+  }
+}
+
+async function bindCodex(codeOrURL: string) {
+  codex.value.busy = true
+  codex.value.error = ''
+  try {
+    const res = await bridge().app.BindCodexOAuth(
+      codex.value.sessionId,
+      codex.value.channelID,
+      form.value.name,
+      codeOrURL,
+    )
+    if (!res) return
+    stopCodexPoll()
+    codex.value.done = true
+    codex.value.display = res.display
+    // 绑定到新建渠道：表单切到该渠道（用户可继续改模型名/备注）
+    if (res.created) {
+      editingID.value = res.channelId
+      form.value.id = res.channelId
+      if (!form.value.name) form.value.name = res.name
+    }
+    boundAccount.value = res.display
+    await store.load()
+  } catch (e) {
+    stopCodexPoll()
+    codex.value.error = String(e instanceof Error ? e.message : e)
+  } finally {
+    codex.value.busy = false
+  }
+}
+
+// 手动粘贴回调兜底：完整 URL / query 串 / 裸 code 都接受（后端解析并校验 state）
+async function submitCodexPaste() {
+  const v = codex.value.pasted.trim()
+  if (!v) return
+  await bindCodex(v)
+}
+
+// Token / JSON 通道：auth.json / access_token / refresh_token（后端识别 + 必要时刷新）
+async function importCodex() {
+  codex.value.busy = true
+  codex.value.error = ''
+  try {
+    const res = await bridge().app.ImportCodexCredential(
+      codex.value.channelID,
+      form.value.name,
+      codex.value.importText,
+    )
+    if (!res) return
+    codex.value.done = true
+    codex.value.display = res.display
+    if (res.created) {
+      editingID.value = res.channelId
+      form.value.id = res.channelId
+      if (!form.value.name) form.value.name = res.name
+    }
+    boundAccount.value = res.display
+    await store.load()
+  } catch (e) {
+    codex.value.error = String(e instanceof Error ? e.message : e)
+  } finally {
+    codex.value.busy = false
+  }
+}
+
+async function copyAuthUrl() {
+  try {
+    await navigator.clipboard.writeText(codex.value.desktopUrl)
+  } catch {
+    codex.value.error = '复制失败：当前环境剪贴板不可用'
+  }
+}
+
+function backToForm() {
+  stopCodexPoll()
+  view.value = 'form'
+}
+
+onBeforeUnmount(stopCodexPoll)
+
 onMounted(async () => {
   await store.load()
   await store.loadPresets()
@@ -448,6 +638,7 @@ onMounted(async () => {
             >
               <option value="openai">OpenAI 兼容（/chat/completions）</option>
               <option value="anthropic">Anthropic Messages（/v1/messages）</option>
+              <option value="codex">OpenAI Codex（ChatGPT 订阅账号 /responses）</option>
             </select>
           </label>
 
@@ -484,14 +675,24 @@ onMounted(async () => {
               :placeholder="editingID ? '已配置，留空则不变' : 'sk-…（多个则换行分隔）'"
             ></textarea>
           </label>
-          <button
-            v-if="editingID && form.id"
-            class="chip mt-2"
-            type="button"
-            @click="openCredentials(form.id, 'form')"
-          >
-            管理已存凭证（查看/禁用/启用）
-          </button>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              class="chip border-[var(--c-primary)] text-[var(--c-primary)]"
+              type="button"
+              title="ChatGPT 订阅账号 OAuth 授权，或粘贴 auth.json / token"
+              @click="openCodexAuth"
+            >
+              {{ boundAccount ? `已绑定 ${boundAccount} · 换号/重新授权` : '用 ChatGPT 账号授权 / 粘贴 Token' }}
+            </button>
+            <button
+              v-if="editingID && form.id"
+              class="chip"
+              type="button"
+              @click="openCredentials(form.id, 'form')"
+            >
+              管理已存凭证（查看/禁用/启用）
+            </button>
+          </div>
 
           <!-- 鉴权方式（0.2.20）：覆盖协议默认，兼容各种中转/自建网关的鉴权形态 -->
           <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -640,6 +841,113 @@ onMounted(async () => {
           <button class="btn-primary px-5 py-2 text-sm" :disabled="store.busy" @click="save">
             {{ store.busy ? '保存中…' : '保存' }}
           </button>
+        </div>
+      </div>
+
+      <!-- ================= 视图 4：ChatGPT 账号授权（Codex） ================= -->
+      <div v-else-if="view === 'codex'" class="space-y-4">
+        <div class="flex items-center gap-2">
+          <button class="chip shrink-0" @click="backToForm">← 返回</button>
+          <div class="min-w-0 flex-1 truncate text-sm font-medium">ChatGPT 账号绑定</div>
+          <span class="stat shrink-0 px-2 py-0.5 text-xs">{{ codex.targetLabel }}</span>
+        </div>
+
+        <!-- 通道切换：OAuth 授权 / Token·JSON 粘贴 -->
+        <div class="flex gap-1 rounded-xl bg-[var(--c-surface-soft)] p-1 text-xs">
+          <button
+            class="flex-1 rounded-lg py-1.5 transition-colors"
+            :class="codexTab === 'oauth' ? 'bg-[var(--c-surface)] font-medium shadow-sm' : 'text-[var(--c-text-dim)]'"
+            @click="codexTab = 'oauth'"
+          >
+            OAuth 授权
+          </button>
+          <button
+            class="flex-1 rounded-lg py-1.5 transition-colors"
+            :class="codexTab === 'token' ? 'bg-[var(--c-surface)] font-medium shadow-sm' : 'text-[var(--c-text-dim)]'"
+            @click="codexTab = 'token'"
+          >
+            Token / JSON
+          </button>
+        </div>
+
+        <!-- OAuth 授权通道 -->
+        <div v-if="codexTab === 'oauth'" class="space-y-3">
+          <p class="text-xs text-[var(--c-text-dim)]">
+            在浏览器中登录 ChatGPT（订阅账号）完成授权。
+            {{
+              codex.listening
+                ? '本机已监听回调端口：授权完成后将自动绑定，无需手动操作。'
+                : '回调端口被占用：授权后请把浏览器地址栏的回调地址粘贴到下方。'
+            }}
+          </p>
+          <button
+            class="btn-primary w-full gap-2 py-2.5 text-sm"
+            :disabled="codex.busy || codex.done"
+            @click="startCodexAuth"
+          >
+            {{ codex.busy && !codex.sessionId ? '准备中…' : codex.sessionId ? '重新打开授权页' : '在浏览器中打开授权页' }}
+          </button>
+
+          <div v-if="codex.sessionId" class="space-y-2">
+            <div class="flex items-center gap-2">
+              <input
+                readonly
+                :value="codex.authUrl"
+                class="min-w-0 flex-1 truncate rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 font-mono text-[11px]"
+              />
+              <button class="chip shrink-0" @click="copyAuthUrl">复制链接</button>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                v-model="codex.pasted"
+                :disabled="codex.done"
+                placeholder="粘贴回调地址或授权码（自动完成失败时使用）"
+                class="min-w-0 flex-1 rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-xs"
+              />
+              <button
+                class="chip shrink-0"
+                :disabled="codex.busy || codex.done || !codex.pasted.trim()"
+                @click="submitCodexPaste"
+              >
+                我已授权，继续
+              </button>
+            </div>
+            <p
+              class="text-xs"
+              :class="
+                codex.error ? 'text-[var(--c-err-text)]' : codex.done ? 'text-[var(--c-ok-text)]' : 'text-[var(--c-text-faint)]'
+              "
+            >
+              {{ codex.error || (codex.done ? `✓ 已绑定 ${codex.display}` : '等待授权完成…（授权成功后此处自动更新）') }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Token / JSON 粘贴通道 -->
+        <div v-else class="space-y-3">
+          <p class="text-xs text-[var(--c-text-dim)]">
+            粘贴 Codex 的 auth.json 全文、access_token（at-…）或 refresh_token；
+            系统会自动识别、必要时用 refresh_token 换取新凭证。
+          </p>
+          <textarea
+            v-model="codex.importText"
+            rows="5"
+            autocomplete="off"
+            class="w-full resize-none rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 font-mono text-xs"
+            placeholder='{"tokens":{"access_token":"…","refresh_token":"…"}} 或直接粘贴 rt-… / access_token'
+          ></textarea>
+          <button
+            class="btn-primary w-full py-2.5 text-sm"
+            :disabled="codex.busy || !codex.importText.trim()"
+            @click="importCodex"
+          >
+            {{ codex.busy ? '校验中…' : '校验并绑定' }}
+          </button>
+          <p v-if="codex.error" class="text-xs text-[var(--c-err-text)]">{{ codex.error }}</p>
+          <p v-else-if="codex.done" class="text-xs text-[var(--c-ok-text)]">✓ 已绑定 {{ codex.display }}</p>
+          <p v-else class="text-xs text-[var(--c-text-faint)]">
+            提示：Codex CLI 的凭证文件位于 ~/.codex/auth.json（可直接整文件粘贴）。
+          </p>
         </div>
       </div>
 
