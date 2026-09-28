@@ -311,6 +311,62 @@ body {
   padding: 0.25rem 0.5rem;
 }
 
+/* 代码块：语言标签 + 复制按钮头部（开源聊天 UI 标配），由 markdown.ts 渲染结构 */
+.markdown-body .code-block {
+  margin: 0.6rem 0;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--c-surface-soft);
+}
+.markdown-body .code-block .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-surface);
+  font-size: 11px;
+  color: var(--c-text-faint);
+}
+.markdown-body .code-block .code-copy {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: var(--c-text-dim);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  transition:
+    color var(--dur-fast) ease,
+    background var(--dur-fast) ease;
+}
+.markdown-body .code-block .code-copy:hover {
+  color: var(--c-primary);
+  background: var(--c-primary-soft);
+}
+.markdown-body .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* 细滚动条：原生滚动条在浅色 UI 上过于突兀（开源桌面聊天普遍自定义） */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--c-border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--c-text-faint);
+}
+
 /* 展开全文区（工具卡/思考过程）：等宽、限高、可滚动 */
 .tool-full {
   max-height: 240px;

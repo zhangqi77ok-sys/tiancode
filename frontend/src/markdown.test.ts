@@ -38,6 +38,14 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('第一行\n第二行')).toContain('<br')
   })
 
+  // 代码块带语言标签与复制按钮（开源聊天 UI 标配），按钮须经消毒存活
+  it('代码块带语言标签与复制按钮', () => {
+    const html = renderMarkdown('```go\nx := 1\n```')
+    expect(html).toContain('code-lang">go</span>')
+    expect(html).toContain('data-copy')
+    expect(html).toContain('<pre><code>x := 1</code></pre>')
+  })
+
   // 原始 HTML 过白名单后渲染，而不是转义成文本（转义会让用户看到 <div> 原文）
   it('白名单内 HTML 渲染、危险标签剥除', () => {
     const html = renderMarkdown('<b>加粗</b><script>alert(1)</script>')

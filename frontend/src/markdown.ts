@@ -2,7 +2,7 @@
 // 为什么必须消毒：渲染的是模型输出（不可信）。原始 HTML 不转义成文本（那会让用户
 // 看到 <div> 原文），而是交给末端 DOMPurify 白名单——对齐开源实践（Streamdown/open-webui）。
 // GFM + breaks:true 是聊天场景惯例：模型输出的单个换行就是换行，不与后续段落黏连。
-import { Marked } from 'marked'
+import { Marked, type Tokens } from 'marked'
 import DOMPurify from 'dompurify'
 
 function escapeHtml(s: string): string {
@@ -28,6 +28,22 @@ const md = new Marked()
 md.use({
   walkTokens(token) {
     scrubDangerousHref(token as { type: string; href?: string })
+  },
+  renderer: {
+    // 代码块包装：语言标签 + 复制按钮（开源聊天 UI 标配）。
+    // button/class/data-* 均在 DOMPurify 白名单内，能过末端消毒；点击由 MarkdownBody 事件委托处理。
+    code({ text, lang }: Tokens.Code): string {
+      const label = (lang || '').trim().split(/\s+/)[0] || 'text'
+      return (
+        '<div class="code-block">' +
+        '<div class="code-head"><span class="code-lang">' +
+        escapeHtml(label) +
+        '</span><button type="button" class="code-copy" data-copy>复制</button></div>' +
+        '<pre><code>' +
+        escapeHtml(text) +
+        '</code></pre></div>'
+      )
+    },
   },
   tokenizer: {
     // 在闭合标签处截断 script/style/pre/textarea，其后同一行的 markdown 仍会正常词法解析。
