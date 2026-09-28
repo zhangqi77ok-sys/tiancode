@@ -202,14 +202,17 @@ body {
   background: var(--c-surface-soft);
 }
 
-/* 流式光标 */
-.caret {
+/* 流式光标：内联在最后一个块级子元素末尾（开源聊天 UI 通用做法），不单独占行；
+   内容为空（:empty）时也可见，避免"空气泡" */
+.md-caret > :last-child::after,
+.md-caret:empty::after {
+  content: '';
   display: inline-block;
   width: 6px;
-  height: 15px;
+  height: 1em;
   margin-left: 3px;
   border-radius: 2px;
-  vertical-align: middle;
+  vertical-align: text-bottom;
   background: var(--c-text-faint);
   animation: caret-pulse 1s ease-in-out infinite;
 }

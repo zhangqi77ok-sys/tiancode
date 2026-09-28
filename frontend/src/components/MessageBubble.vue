@@ -84,7 +84,6 @@ function fmtTime(at?: number): string {
       </div>
       <template v-else>
         <MarkdownBody :content="m.content" :streaming="m.streaming" />
-        <span v-if="m.streaming" class="caret"></span>
       </template>
     </div>
   </div>
