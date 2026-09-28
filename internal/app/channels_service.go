@@ -19,7 +19,7 @@ import (
 // Presets 返回内置渠道模板（只读，供设置面板下拉）。
 func (s *ChatService) Presets() []channels.Preset { return channels.Presets() }
 
-// toView 把池渠道映射为旧 DTO 脱敏视图（UI 契约不变）。
+// toView 把池渠道映射为脱敏视图（密钥不出编排层；池能力面随视图带出供设置面板管理）。
 func toView(c channels.Channel) llm.ChannelView {
 	model := ""
 	if len(c.Models) > 0 {
@@ -29,6 +29,7 @@ func toView(c channels.Channel) llm.ChannelView {
 		Channel: llm.Channel{
 			ID: c.ID, Name: c.Name, Protocol: llm.Protocol(c.Type),
 			BaseURL: c.BaseURL, Model: model,
+			Models: c.Models, Priority: c.Priority, Weight: c.Weight, Status: c.Status,
 		},
 		HasKey: strings.TrimSpace(c.Credential) != "",
 	}
@@ -45,19 +46,48 @@ func (s *ChatService) Channels() ([]llm.ChannelView, string, error) {
 	return views, s.pool.ActiveID(), nil
 }
 
-// poolChannel 把旧 DTO 转成池渠道（新渠道走默认值：default 组、priority 100、enabled）。
+// poolChannel 把 DTO 转成池渠道（新渠道默认：default 组、priority 100、enabled）。
+// models 为空时回退主模型；priority 0 视为未填（默认 100）；status 空视为 enabled。
 func poolChannel(ch llm.Channel) channels.Channel {
+	models := cleanModels(ch.Models)
+	if len(models) == 0 && strings.TrimSpace(ch.Model) != "" {
+		models = []string{strings.TrimSpace(ch.Model)}
+	}
+	priority := ch.Priority
+	if priority == 0 {
+		priority = 100
+	}
+	status := ch.Status
+	if status == "" {
+		status = channels.StatusEnabled
+	}
 	return channels.Channel{
 		ID:         ch.ID,
 		Type:       string(ch.Protocol),
 		Name:       ch.Name,
 		BaseURL:    ch.BaseURL,
 		Credential: ch.APIKey,
-		Models:     []string{ch.Model},
+		Models:     models,
 		Groups:     []string{channels.DefaultGroup},
-		Status:     channels.StatusEnabled,
-		Priority:   100,
+		Status:     status,
+		Priority:   priority,
+		Weight:     ch.Weight,
 	}
+}
+
+// cleanModels 归一化模型列表（去空白/去重/保序）。
+func cleanModels(in []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, m := range in {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
 }
 
 // AddChannel 新增渠道：校验 + 协议可用性检查通过才落盘。
@@ -102,7 +132,18 @@ func (s *ChatService) UpdateChannel(id string, upd llm.Channel) error {
 	existing.Type = string(upd.Protocol)
 	existing.Name = upd.Name
 	existing.BaseURL = upd.BaseURL
-	existing.Models = []string{upd.Model}
+	models := cleanModels(upd.Models)
+	if len(models) == 0 && strings.TrimSpace(upd.Model) != "" {
+		models = []string{strings.TrimSpace(upd.Model)}
+	}
+	existing.Models = models
+	if upd.Priority != 0 {
+		existing.Priority = upd.Priority
+	}
+	existing.Weight = upd.Weight
+	if upd.Status != "" {
+		existing.Status = upd.Status
+	}
 	if err := llm.ValidateChannel(upd); err != nil {
 		return err
 	}

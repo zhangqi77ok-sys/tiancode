@@ -22,14 +22,19 @@ const ProtocolAnthropic Protocol = "anthropic"
 // Valid 报告协议是否已实现。未实现的协议必须显式拒绝，绝不静默降级。
 func (p Protocol) Valid() bool { return p == ProtocolOpenAI || p == ProtocolAnthropic }
 
-// Channel 是一个模型渠道。
+// Channel 是一个模型渠道（对外 DTO 形态；池模型见 platform/channels.Channel）。
 type Channel struct {
 	ID       string   `json:"id"`       // 稳定标识（生成后不变，供激活引用）
 	Name     string   `json:"name"`     // 用户可见名称
 	Protocol Protocol `json:"protocol"` // 协议（决定适配器）
 	BaseURL  string   `json:"baseUrl"`  // 网关根地址（含 /v1）
-	APIKey   string   `json:"apiKey"`   // 密钥（仅存本机）
-	Model    string   `json:"model"`    // 该渠道默认模型
+	APIKey   string   `json:"apiKey"`   // 凭证（仅存本机；多凭证换行分隔）
+	Model    string   `json:"model"`    // 主模型（= Models[0]，兼容旧 DTO）
+	// 多协议渠道层字段（0.2.17）：可选，缺省走池默认
+	Models   []string `json:"models,omitempty"`   // 该渠道声明的全部模型
+	Priority int      `json:"priority,omitempty"` // 越大越优先（新建默认 100）
+	Weight   int      `json:"weight,omitempty"`   // 同优先级内加权随机（0 = 默认 100）
+	Status   string   `json:"status,omitempty"`   // 空 = enabled
 }
 
 // ChannelView 是渠道的外发视图（UI/事件用）：密钥脱敏，只告知是否已配置。
@@ -62,7 +67,7 @@ func ValidateChannel(c Channel) error {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		missing = append(missing, "baseUrl")
 	}
-	if strings.TrimSpace(c.Model) == "" {
+	if strings.TrimSpace(c.Model) == "" && len(c.Models) == 0 {
 		missing = append(missing, "model")
 	}
 	if len(missing) > 0 {

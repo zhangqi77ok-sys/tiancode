@@ -72,7 +72,7 @@ function fmtTime(at?: number): string {
   <!-- agent 回合：单一消息头 + 段落流，整体是一个输出 -->
   <div v-else class="flex flex-col items-start gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
-      <span class="font-medium">AGENT</span><span>{{ fmtTime(startedAt) }}</span>
+      <span class="font-medium">tiantian</span><span>{{ fmtTime(startedAt) }}</span>
       <span v-if="durationMs" class="text-[var(--c-text-faint)]">· {{ (durationMs / 1000).toFixed(1) }}s</span>
       <button
         class="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-[var(--c-text-faint)] opacity-60 transition-opacity hover:text-[var(--c-primary)] hover:opacity-100"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useDialogs } from '../composables/useDialogs'
 import type { ChannelDTO } from '../wails'
@@ -8,20 +8,40 @@ import BaseModal from './BaseModal.vue'
 
 // 渠道设置面板：列表 + 表单两态，宿主为 BaseModal（Esc/焦点陷阱/遮罩统一处理）。
 // 交互纪律：保存/删除/切换后以后端返回的列表为准（不做乐观更新）；
-// 密钥输入框永远留空并提示"留空保持原密钥"——密钥不回显是安全约束，不是偷懒。
+// 凭证输入框永远留空并提示"留空保持原凭证"——凭证不回显是安全约束。
+// 0.2.17：表单对齐多协议渠道层——协议类型、多凭证（换行分隔）、多模型、优先级/权重、启停。
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useChannelStore()
 const dialogs = useDialogs()
 
 const showForm = ref(false)
 const editingID = ref('')
-const form = ref({ id: '', name: '', protocol: 'openai', baseUrl: '', model: '', apiKey: '' })
+
+const emptyForm = () => ({
+  id: '',
+  name: '',
+  protocol: 'openai',
+  baseUrl: '',
+  apiKey: '',
+  modelsText: '',
+  priority: 100,
+  weight: 0,
+  status: 'enabled',
+})
+const form = ref(emptyForm())
+
+// 协议默认地址提示（选 anthropic 时给用户可照抄的地址）
+const protocolHint = computed(() =>
+  form.value.protocol === 'anthropic'
+    ? 'Anthropic Messages 协议：地址形如 https://api.anthropic.com/v1'
+    : 'OpenAI 兼容协议：地址形如 https://api.deepseek.com/v1',
+)
 
 function reset() {
   store.clearError()
   store.models = []
   editingID.value = ''
-  form.value = { id: '', name: '', protocol: 'openai', baseUrl: '', model: '', apiKey: '' }
+  form.value = emptyForm()
 }
 
 function startCreate() {
@@ -32,7 +52,18 @@ function startCreate() {
 function startEdit(ch: ChannelDTO) {
   reset()
   editingID.value = ch.id
-  form.value = { id: ch.id, name: ch.name, protocol: ch.protocol, baseUrl: ch.baseUrl, model: ch.model, apiKey: '' }
+  const models = ch.models?.length ? ch.models : [ch.model].filter(Boolean)
+  form.value = {
+    id: ch.id,
+    name: ch.name,
+    protocol: ch.protocol,
+    baseUrl: ch.baseUrl,
+    apiKey: '',
+    modelsText: models.join('\n'),
+    priority: ch.priority || 100,
+    weight: ch.weight || 0,
+    status: ch.status === 'manually_disabled' ? 'manually_disabled' : ch.status === 'auto_disabled' ? 'auto_disabled' : 'enabled',
+  }
   showForm.value = true
 }
 
@@ -41,12 +72,53 @@ function applyPreset(key: string) {
   if (!p) return
   form.value.protocol = p.protocol
   if (p.baseUrl) form.value.baseUrl = p.baseUrl
-  if (p.suggestedModel) form.value.model = p.suggestedModel
+  if (p.suggestedModel) form.value.modelsText = p.suggestedModel
   if (!form.value.name) form.value.name = p.name
 }
 
+// 同步模型：把上游发现的模型填入多行文本框（用户可删减），不做静默替换
+async function discover() {
+  await store.discover({
+    id: form.value.id,
+    name: form.value.name,
+    protocol: form.value.protocol,
+    baseUrl: form.value.baseUrl,
+    model: firstModel(),
+    apiKey: form.value.apiKey,
+  })
+  if (store.models.length) form.value.modelsText = store.models.join('\n')
+}
+
+function parsedModels(): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of form.value.modelsText.split(/[\n,]/)) {
+    const m = line.trim()
+    if (!m || seen.has(m)) continue
+    seen.add(m)
+    out.push(m)
+  }
+  return out
+}
+
+function firstModel(): string {
+  return parsedModels()[0] ?? ''
+}
+
 async function save() {
-  await store.save(form.value)
+  const models = parsedModels()
+  await store.save({
+    id: form.value.id,
+    name: form.value.name,
+    protocol: form.value.protocol,
+    baseUrl: form.value.baseUrl,
+    apiKey: form.value.apiKey,
+    model: models[0] ?? '',
+    models,
+    priority: form.value.priority,
+    weight: form.value.weight,
+    status: form.value.status,
+  })
   if (!store.error) {
     showForm.value = false
     reset()
@@ -67,6 +139,12 @@ async function remove(ch: ChannelDTO) {
     showForm.value = false
     reset()
   }
+}
+
+function statusLabel(ch: ChannelDTO): string {
+  if (ch.status === 'auto_disabled') return '已自动禁用'
+  if (ch.status === 'manually_disabled') return '已停用'
+  return '启用'
 }
 
 onMounted(async () => {
@@ -111,16 +189,36 @@ onMounted(async () => {
             <div class="flex flex-wrap items-center gap-2">
               <span class="truncate text-sm font-medium">{{ ch.name }}</span>
               <span v-if="ch.active" class="stat px-2 py-0.5 text-xs text-[var(--c-primary)]">默认</span>
+              <span class="stat px-2 py-0.5 text-xs">{{ ch.protocol }}</span>
               <span
                 class="stat px-2 py-0.5 text-xs"
                 :class="ch.hasKey ? '' : 'border-[var(--c-warn)] text-[var(--c-warn-text)]'"
               >
-                {{ ch.hasKey ? '已配置密钥' : '未配置密钥' }}
+                {{ ch.hasKey ? '已配置凭证' : '未配置凭证' }}
               </span>
+              <span
+                class="stat px-2 py-0.5 text-xs"
+                :class="
+                  ch.status === 'auto_disabled'
+                    ? 'border-[var(--c-err)] text-[var(--c-err-text)]'
+                    : ch.status === 'manually_disabled'
+                      ? 'text-[var(--c-text-faint)]'
+                      : 'text-[var(--c-ok-text)]'
+                "
+                >{{ statusLabel(ch) }}</span
+              >
             </div>
-            <div class="mt-1 truncate text-xs text-[var(--c-text-faint)]">{{ ch.baseUrl }} · {{ ch.model }}</div>
+            <div class="mt-1 truncate text-xs text-[var(--c-text-faint)]">
+              {{ ch.baseUrl || '默认地址' }} · {{ (ch.models?.length ? ch.models : [ch.model]).join(' / ') }} ·
+              优先级 {{ ch.priority ?? 100 }} · 权重 {{ ch.weight || '默认' }}
+            </div>
           </div>
-          <button v-if="!ch.active" class="chip shrink-0" :disabled="store.busy" @click="store.activate(ch.id)">
+          <button
+            v-if="!ch.active && ch.status === 'enabled'"
+            class="chip shrink-0"
+            :disabled="store.busy"
+            @click="store.activate(ch.id)"
+          >
             设为默认
           </button>
           <button class="chip shrink-0" :disabled="store.busy" @click="startEdit(ch)">编辑</button>
@@ -153,6 +251,17 @@ onMounted(async () => {
           </label>
 
           <label class="block">
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">协议类型</span>
+            <select
+              v-model="form.protocol"
+              class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
+            >
+              <option value="openai">OpenAI 兼容（/chat/completions）</option>
+              <option value="anthropic">Anthropic Messages（/v1/messages）</option>
+            </select>
+          </label>
+
+          <label class="block">
             <span class="mb-1 block text-xs text-[var(--c-text-dim)]">名称</span>
             <input
               v-model="form.name"
@@ -161,19 +270,21 @@ onMounted(async () => {
             />
           </label>
 
-          <label class="block">
-            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">API Key{{ editingID ? '（留空保持原密钥）' : '' }}</span>
-            <input
+          <label class="block sm:col-span-2">
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">
+              凭证{{ editingID ? '（留空保持原凭证）' : '' }} · 多个 Key 每行一个（轮询负载均衡、失败自动禁用）
+            </span>
+            <textarea
               v-model="form.apiKey"
-              type="password"
+              rows="2"
               autocomplete="off"
-              class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
-              :placeholder="editingID ? '已配置，留空则不变' : 'sk-…'"
-            />
+              class="w-full resize-none rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 font-mono text-sm"
+              :placeholder="editingID ? '已配置，留空则不变' : 'sk-…（多个则换行分隔）'"
+            ></textarea>
           </label>
 
           <label class="block sm:col-span-2">
-            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">网关地址（含 /v1）</span>
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">网关地址（{{ protocolHint }}）</span>
             <input
               v-model="form.baseUrl"
               class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
@@ -182,24 +293,53 @@ onMounted(async () => {
           </label>
 
           <label class="block sm:col-span-2">
-            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">模型</span>
-            <div class="flex gap-2">
-              <input
-                v-model="form.model"
-                list="model-options"
-                class="min-w-0 flex-1 rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
-                placeholder="deepseek-chat"
-              />
-              <datalist id="model-options">
-                <option v-for="m in store.models" :key="m" :value="m" />
-              </datalist>
-              <button class="chip shrink-0" :disabled="store.busy || !form.baseUrl" @click="store.discover(form)">
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">模型（每行一个；首个为默认）</span>
+            <textarea
+              v-model="form.modelsText"
+              rows="2"
+              class="w-full resize-none rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 font-mono text-sm"
+              placeholder="deepseek-chat"
+            ></textarea>
+            <span class="mt-1 flex items-center gap-2">
+              <button class="chip" :disabled="store.busy || !form.baseUrl" @click="discover">
                 <AppIcon name="refresh" :size="13" /> 同步模型
               </button>
-            </div>
-            <span v-if="store.models.length" class="mt-1 block text-xs text-[var(--c-text-faint)]">
-              已获取 {{ store.models.length }} 个模型，点击输入框可选择
+              <span v-if="store.models.length" class="text-xs text-[var(--c-text-faint)]">
+                已获取 {{ store.models.length }} 个模型，已填入上方可删减
+              </span>
             </span>
+          </label>
+
+          <label class="block">
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">优先级（越大越优先）</span>
+            <input
+              v-model.number="form.priority"
+              type="number"
+              min="0"
+              class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
+            />
+          </label>
+
+          <label class="block">
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">权重（同优先级内加权随机，0 = 默认）</span>
+            <input
+              v-model.number="form.weight"
+              type="number"
+              min="0"
+              class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
+            />
+          </label>
+
+          <label class="block sm:col-span-2">
+            <span class="mb-1 block text-xs text-[var(--c-text-dim)]">状态</span>
+            <select
+              v-model="form.status"
+              class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
+            >
+              <option value="enabled">启用</option>
+              <option value="manually_disabled">停用（不参与选路）</option>
+              <option v-if="form.status === 'auto_disabled'" value="auto_disabled">已自动禁用（改为启用可恢复）</option>
+            </select>
           </label>
         </div>
 

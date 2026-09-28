@@ -46,6 +46,12 @@ export interface ChannelDTO {
   model: string
   hasKey: boolean
   active: boolean
+  // 多协议渠道层（0.2.17）：池模型能力面
+  models?: string[]
+  priority?: number
+  weight?: number
+  /** enabled | manually_disabled | auto_disabled */
+  status?: string
 }
 
 export interface ChannelListDTO {
@@ -69,6 +75,11 @@ export interface ChannelInput {
   baseUrl: string
   model: string
   apiKey: string
+  // 多协议渠道层（0.2.17）：多模型/优先级/权重/启停；缺省走池默认（models=[model]、priority=100）
+  models?: string[]
+  priority?: number
+  weight?: number
+  status?: string
 }
 
 // createAppStub 生成"调用即明确报错"的桩。
@@ -159,12 +170,16 @@ const offlineWrite = async (): Promise<never> => {
 }
 
 // ---- 无边框窗口控制（自绘标题栏）----
-// Wails 运行时注入 window.runtime；浏览器调试模式没有它——?. 静默降级，
-// 绝不假装动作成功（页面内没有可替代窗口操作，报错也无用户可行动作）。
+// Wails v2 运行时注入 window.runtime。注意两点（0.2.16 实机事故）：
+//   - 方法名是英式拼写 WindowMinimise/WindowToggleMaximise（美式拼写不存在 → 静默无效果）；
+//   - v2 没有 WindowClose，关闭应用用 Quit()。
+// 浏览器调试模式没有 runtime——?. 静默降级（无用户可行动的报错）。
 interface WailsWindowRuntime {
-  WindowMinimize?: () => void
+  WindowMinimise?: () => void
+  WindowMinimize?: () => void // 兼容旧/别名写法
   WindowToggleMaximise?: () => void
-  WindowClose?: () => void
+  Quit?: () => void
+  WindowClose?: () => void // 兼容别名
 }
 
 function windowRuntime(): WailsWindowRuntime {
@@ -173,7 +188,8 @@ function windowRuntime(): WailsWindowRuntime {
 
 // winMinimize 最小化窗口。
 export function winMinimize(): void {
-  windowRuntime().WindowMinimize?.()
+  const rt = windowRuntime()
+  ;(rt.WindowMinimise ?? rt.WindowMinimize)?.()
 }
 
 // winToggleMaximize 最大化/还原窗口。
@@ -181,9 +197,10 @@ export function winToggleMaximize(): void {
   windowRuntime().WindowToggleMaximise?.()
 }
 
-// winClose 关闭窗口。
+// winClose 关闭应用（v2 的关闭入口是 Quit）。
 export function winClose(): void {
-  windowRuntime().WindowClose?.()
+  const rt = windowRuntime()
+  ;(rt.Quit ?? rt.WindowClose)?.()
 }
 
 // bridge 返回类型化的 wails 注入对象。三种情形：
