@@ -67,8 +67,8 @@ func (s *ChatService) SetWorkspace(dir string) error {
 	}
 	s.registry = registry
 	s.cfg.WorkDir = dir
-	if s.active.ID == "" {
+	if s.defaultModel == "" {
 		return nil // 尚无激活渠道：配置好渠道后自然使用新工作区
 	}
-	return s.activate(s.active)
+	return s.activate(s.defaultModel)
 }

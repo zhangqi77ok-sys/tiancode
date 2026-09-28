@@ -13,12 +13,14 @@ import (
 type Protocol string
 
 // ProtocolOpenAI 表示 OpenAI 兼容协议（/chat/completions + SSE）。
-// 为什么第一版只有它：主流网关（OpenAI/DeepSeek/通义/智谱/豆包/Kimi/Ollama）
-// 都提供 OpenAI 兼容端点，一个适配器覆盖绝大多数渠道（YAGNI）。
+// 主流网关（OpenAI/DeepSeek/通义/智谱/豆包/Kimi/Ollama）都提供 OpenAI 兼容端点。
 const ProtocolOpenAI Protocol = "openai"
 
+// ProtocolAnthropic 表示 Anthropic Messages 协议（/v1/messages + SSE）。
+const ProtocolAnthropic Protocol = "anthropic"
+
 // Valid 报告协议是否已实现。未实现的协议必须显式拒绝，绝不静默降级。
-func (p Protocol) Valid() bool { return p == ProtocolOpenAI }
+func (p Protocol) Valid() bool { return p == ProtocolOpenAI || p == ProtocolAnthropic }
 
 // Channel 是一个模型渠道。
 type Channel struct {

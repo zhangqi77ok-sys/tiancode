@@ -26,9 +26,10 @@ import (
 	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/adaptors"
 	"tiancode/internal/platform/channels"
 	"tiancode/internal/platform/configfile"
-	"tiancode/internal/platform/providerfactory"
+	"tiancode/internal/platform/gateway"
 )
 
 // Config 是对话服务的装配配置。
@@ -49,14 +50,14 @@ type Config struct {
 // ChatService 编排对话用例。
 type ChatService struct {
 	cfg      Config
-	store    *channels.Store
-	factory  *providerfactory.Factory
+	pool     *channels.Pool    // 渠道池（多协议，含 Ability 索引）
+	gw       *gateway.Gateway  // 转发网关（选路/重试/协议分派），实现 llm.ProviderPort
 	registry *tools.Registry
 
-	mu      sync.Mutex
-	agent   *agent.Loop // 随激活渠道重建；无激活渠道时为 nil（Send 给出可读错误）
-	active  llm.Channel
-	ledgers map[string]*session.Ledger
+	mu           sync.Mutex
+	agent        *agent.Loop // 随激活模型重建；无激活渠道时为 nil（Send 给出可读错误）
+	defaultModel string      // 当前轮次使用的模型名（激活渠道的首个模型）
+	ledgers      map[string]*session.Ledger
 
 	// 审批闸门状态（ADR-0007，默认关闭）
 	approvalTools    []string                       // 需要审批的工具名（空 = 关闭）
@@ -88,10 +89,21 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	if cfg.ChannelsPath == "" {
 		cfg.ChannelsPath = channels.DefaultPath()
 	}
+	pool := channels.NewPool(cfg.ChannelsPath)
+	if err := pool.Load(); err != nil {
+		return nil, err
+	}
+	reg := adaptors.NewRegistry()
+	if err := reg.Register(adaptors.OpenAI{}); err != nil {
+		return nil, err
+	}
+	if err := reg.Register(adaptors.Anthropic{}); err != nil {
+		return nil, err
+	}
 	s := &ChatService{
 		cfg:              cfg,
-		store:            channels.NewStore(cfg.ChannelsPath),
-		factory:          providerfactory.New(),
+		pool:             pool,
+		gw:               gateway.New(pool, reg),
 		ledgers:          make(map[string]*session.Ledger),
 		pendingApprovals: make(map[string]chan agent.Decision),
 		pendingAsks:      make(map[string]chan string),
@@ -110,48 +122,41 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	return s, nil
 }
 
-// bootstrapChannels 加载渠道配置；首次运行从 Config 迁移（C-CH-1）。
+// bootstrapChannels 加载渠道池；首次运行从 Config 迁移（C-CH-1）。
 // 为什么要迁移：老用户升级不该被迫二次配置（config.json 里已有网关信息）。
 func (s *ChatService) bootstrapChannels() error {
-	cfg, err := s.store.Load()
-	if err != nil {
-		return err
-	}
 	// 审批策略（用户设置）与渠道无关，必须**在任一提前返回之前**恢复：
 	// 曾放在 active 检查之后，导致"没有渠道时策略丢失"（测试当场抓到）。
-	s.approvalTools = cfg.ApprovalTools
-	if len(cfg.Channels) == 0 {
-		migrated, ok := channels.MigrateFromConfig(configfile.File{
+	s.approvalTools = s.pool.ApprovalTools()
+	model, ok := s.pool.DefaultModel()
+	if !ok {
+		migrated, ok2 := channels.MigrateFromConfig(configfile.File{
 			BaseURL: s.cfg.BaseURL, APIKey: s.cfg.APIKey, Model: s.cfg.Model,
 		})
-		if !ok {
+		if !ok2 {
 			return nil // 无渠道且无迁移来源：合法状态，UI 引导添加
 		}
-		if err := s.store.Save(migrated); err != nil {
+		if err := s.pool.Save(migrated); err != nil {
 			return fmt.Errorf("persist migrated channel: %w", err)
 		}
-		cfg = migrated
+		if err := s.pool.SetActive(migrated.ID); err != nil {
+			return err
+		}
+		model = migrated.Models[0]
 	}
-	active, ok := cfg.Active()
-	if !ok {
-		return nil // 有渠道但无激活项：同样合法（等用户选择）
-	}
-	return s.activate(active)
+	return s.activate(model)
 }
 
-// activate 由渠道构建运行时与 agent；这是唯一与"具体渠道"耦合的装配点。
-func (s *ChatService) activate(ch llm.Channel) error {
-	prov, err := s.factory.NewProvider(ch)
-	if err != nil {
-		return err
-	}
-	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（provider 内 60s）
+// activate 由当前默认模型构建运行时与 agent；这是唯一与"具体渠道"耦合的装配点。
+// 多协议网关承担选路/重试/协议分派：这里只需要知道用哪个模型名发问。
+func (s *ChatService) activate(model string) error {
+	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（适配器内 60s）
 	// 已覆盖挂起场景，总预算只防极端失控。
-	rt := llm.NewChatRuntime(prov, llm.TimeoutBudget{Total: 10 * time.Minute})
-	s.agent = agent.NewLoop(rt, ch.Model, s.registry)
+	rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{Total: 10 * time.Minute})
+	s.agent = agent.NewLoop(rt, model, s.registry)
 	s.agent.SetAsker(&uiAsker{svc: s}) // 问答通道随 agent 生命周期常开（无 UI 时模型收到引导性结果）
 	s.applyApproverLocked()            // 渠道重建后重新装上审批器（策略变更必须对当前运行时生效）
-	s.active = ch
+	s.defaultModel = model
 	return nil
 }
 

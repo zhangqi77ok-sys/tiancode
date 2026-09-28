@@ -49,12 +49,7 @@ func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// 先落盘再改内存：落盘失败时内存保持不变，避免"界面显示已开、重启却没了"
-	cfg, err := s.store.Load()
-	if err != nil {
-		return err
-	}
-	cfg.ApprovalTools = cleaned
-	if err := s.store.Save(cfg); err != nil {
+	if err := s.pool.SetApprovalTools(cleaned); err != nil {
 		return fmt.Errorf("保存审批策略失败：%w", err)
 	}
 	s.approvalTools = cleaned

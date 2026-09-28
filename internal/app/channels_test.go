@@ -70,9 +70,9 @@ func TestChatService_ChannelCRUDValidation(t *testing.T) {
 	if _, err := s.AddChannel(llm.Channel{Name: "坏", Protocol: llm.ProtocolOpenAI, BaseURL: "", Model: "m"}); err == nil {
 		t.Fatal("invalid channel must be rejected")
 	}
-	// 未实现协议 → 拒绝（含协议名）
-	_, err = s.AddChannel(llm.Channel{Name: "x", Protocol: "anthropic", BaseURL: "https://a", Model: "m"})
-	if err == nil || !strings.Contains(err.Error(), "anthropic") {
+	// 未实现协议 → 拒绝（含协议名）。anthropic 已实现（0.2.16 起），此处用仍未实现的 gemini 验证拒绝路径
+	_, err = s.AddChannel(llm.Channel{Name: "x", Protocol: "gemini", BaseURL: "https://a", Model: "m"})
+	if err == nil || !strings.Contains(err.Error(), "gemini") {
 		t.Fatalf("unsupported protocol must be rejected with name: %v", err)
 	}
 

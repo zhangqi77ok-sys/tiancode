@@ -123,15 +123,21 @@ func New(opts Options) *Provider {
 	return &Provider{opts: opts}
 }
 
-// StreamChat 发起流式对话补全（实现 core/llm.ProviderPort）。
-// HTTP 非 2xx 以 error 返回（流未开始）——该形态是 ChatRuntime 流前重试（C-RT-1）的前提。
-func (p *Provider) StreamChat(ctx context.Context, req llm.ChatRequest) (<-chan llm.StreamChunk, error) {
-	payload, err := json.Marshal(wireRequest{
+// MarshalChatRequest 把统一请求序列化为 OpenAI 私有格式（model 由调用方填好，
+// 通常是 model_mapping 改写后的上游真实模型名）。导出给多协议网关的 OpenAI 适配器复用。
+func MarshalChatRequest(req llm.ChatRequest) ([]byte, error) {
+	return json.Marshal(wireRequest{
 		Model:    req.Model,
 		Messages: toWireMessages(req.Messages),
 		Tools:    toWireTools(req.Tools),
 		Stream:   true,
 	})
+}
+
+// StreamChat 发起流式对话补全（实现 core/llm.ProviderPort）。
+// HTTP 非 2xx 以 error 返回（流未开始）——该形态是 ChatRuntime 流前重试（C-RT-1）的前提。
+func (p *Provider) StreamChat(ctx context.Context, req llm.ChatRequest) (<-chan llm.StreamChunk, error) {
+	payload, err := MarshalChatRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -157,9 +163,16 @@ func (p *Provider) StreamChat(ctx context.Context, req llm.ChatRequest) (<-chan 
 		return nil, fmt.Errorf("upstream returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
+	return p.ParseSSE(ctx, resp.Body), nil
+}
+
+// ParseSSE 从已建立的 SSE 响应体解析流式块（导出给多协议网关的 OpenAI 适配器复用
+// 同一引擎：空闲看门狗 / 发送逃生 / 恰好一个终态）。
+// 契约与 StreamChat 的流阶段一致：恰好一个终态后 close；body 由本函数负责关闭。
+func (p *Provider) ParseSSE(ctx context.Context, body io.ReadCloser) <-chan llm.StreamChunk {
 	out := make(chan llm.StreamChunk)
-	go p.stream(ctx, resp.Body, out)
-	return out, nil
+	go p.stream(ctx, body, out)
+	return out
 }
 
 // streamState 记录流处理过程中的终态决策。
