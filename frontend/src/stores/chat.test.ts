@@ -5,6 +5,7 @@ const h = vi.hoisted(() => ({
   summaries: [] as { id: string; title: string }[],
   failRename: false,
   deleted: [] as string[],
+  renamed: [] as { id: string; title: string }[],
   replay: [] as { role: string; content: string; toolName?: string; status?: string; thinking?: string }[],
   resolved: [] as string[],
 }))
@@ -16,8 +17,9 @@ vi.mock('../wails', () => ({
       Replay: async () => h.replay,
       Send: async () => {},
       Stop: async () => {},
-      RenameSession: async () => {
+      RenameSession: async (id: string, title: string) => {
         if (h.failRename) throw new Error('会话标题过长（最多 60 字）')
+        h.renamed.push({ id, title })
       },
       DeleteSession: async (id: string) => {
         h.deleted.push(id)
@@ -40,8 +42,34 @@ describe('chat store', () => {
     h.summaries = []
     h.failRename = false
     h.deleted = []
+    h.renamed = []
     h.replay = []
     h.resolved = []
+  })
+
+  // 开源惯例（open-webui/lobe-chat）：首轮结束用首条消息截断自动命名，侧栏不再裸奔会话 ID
+  it('首轮结束自动命名会话（首条消息截断 20 字）', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    const long = '这是一条很长很长的第一条消息用来验证自动命名会截断到二十个字为止后续不进入标题'
+    await store.send(long)
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.renamed).toHaveLength(1)
+    expect(h.renamed[0].id).toBe(store.sessionId)
+    expect(h.renamed[0].title.length).toBeLessThanOrEqual(20)
+    expect(h.renamed[0].title).not.toContain('\n')
+  })
+
+  it('已有标题的会话终态后不自动覆盖', async () => {
+    h.summaries = [{ id: 's-x', title: '我的标题' }]
+    const store = useChatStore()
+    await store.loadSessions() // 镜像真实 init 路径：summaries 先就位，titleOf 才能判出"已命名"
+    await store.selectSession('s-x')
+    await store.send('新问题')
+    store.onTerminal({ sessionID: 's-x', endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.renamed).toHaveLength(0)
   })
 
   // 审批卡片：原始参数原样落地 → 答复后卡片转已决（防重复点击）

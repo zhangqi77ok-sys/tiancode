@@ -217,7 +217,16 @@ export const useChatStore = defineStore('chat', () => {
         ast.content += (ast.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
       }
     }
-    void loadSessions() // 新会话首聊后进入列表
+    // 首轮结束自动命名会话（开源惯例：open-webui/lobe-chat 以首条消息截断作标题，
+    // 侧栏不再裸奔会话 ID）；用户重命名过的不覆盖——titleOf 回退会话 ID 即"未命名"判据。
+    // 失败会落进 error 位（可见），不静默。
+    const firstUser = messages.value.find((m) => m.role === 'user')?.content ?? ''
+    const title = firstUser.replace(/\s+/g, ' ').trim().slice(0, 20)
+    if (title && titleOf(p.sessionID) === p.sessionID) {
+      void renameSession(p.sessionID, title) // 内部成功后刷新摘要列表
+    } else {
+      void loadSessions() // 新会话首聊后进入列表
+    }
   }
 
   // 删除会话：删除后若删的是当前会话，则新建空会话
