@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/adaptors"
@@ -82,6 +83,43 @@ func collect(t *testing.T, ch <-chan llm.StreamChunk) (string, llm.StreamChunk) 
 		text.WriteString(c.Delta)
 	}
 	return text.String(), terminal
+}
+
+func TestGateway_CancelDoesNotRetry(t *testing.T) {
+	var calls int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			close(release)
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	g := newGateway(t, chanOf("a", "m", 100, func(c *channels.Channel) { c.BaseURL = srv.URL }))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := g.StreamChat(ctx, llm.ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-release:
+	case <-time.After(2 * time.Second):
+		t.Fatal("请求没有发出")
+	}
+	cancel()
+	_, terminal := collect(t, ch)
+	if terminal.EndReason != llm.EndCancelled {
+		t.Fatalf("terminal=%+v, want EndCancelled（calls=%d）", terminal, atomic.LoadInt32(&calls))
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("取消后仍重试：calls=%d", got)
+	}
 }
 
 // 完成标准：高 priority 渠道失败后，重试落到低 priority 渠道（不同渠道），调用方无感。

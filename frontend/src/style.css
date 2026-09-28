@@ -90,6 +90,23 @@ body {
   box-shadow: var(--shadow-card);
 }
 
+/* 表单输入（MCP / Skill）。必须是块级满宽，否则标签和输入框会挤在同一行。 */
+.field-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: var(--r-input);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-soft);
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--c-text);
+}
+.field-input:focus {
+  border-color: var(--c-primary);
+  outline: none;
+}
+
 /* 药丸按钮/可点标签（仅限可交互元素——纯数据展示用 .stat，避免假可点） */
 .chip {
   display: inline-flex;

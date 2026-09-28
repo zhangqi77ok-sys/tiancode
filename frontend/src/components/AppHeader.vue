@@ -9,8 +9,9 @@ import AppIcon from './AppIcon.vue'
 
 // 顶栏：品牌 + 运行状态 + 导出/工作区/命令确认/渠道设置。
 // 纯状态展示用 .stat（无 hover 态），可点操作用 .chip——不制造假可点。
+const props = defineProps<{ navOpen?: boolean }>()
 const emit = defineEmits<{
-  (e: 'toggle-drawer'): void
+  (e: 'toggle-nav'): void
   (e: 'open-channels'): void
 }>()
 
@@ -45,21 +46,33 @@ function onDocMousedown(e: MouseEvent) {
   if (el && !el.contains(e.target as Node)) wsMenuOpen.value = false
 }
 
-// 进入已有工作区（无目录选择器）：只切换不强制新建——用户可继续历史会话或点"新建对话"
+function workspaceBusy(): boolean {
+  if (!store.running) return false
+  toast('error', '正在生成，暂不能切换工作区')
+  return true
+}
+
+// 进入已有工作区：切换工具根并回到草稿。不改当前这场对话的工具——否则侧栏仍挂在旧空间，读写已经打到新目录。
 async function enterWorkspace(dir: string) {
   wsMenuOpen.value = false
-  await ws.setPath(dir)
+  if (workspaceBusy() || dir === ws.path) return
+  const ok = await ws.setPath(dir)
+  if (ok) await store.newSession()
 }
 
 // 顶栏展示当前默认渠道：没有渠道时给出明确引导（而不是让用户对着发送键发呆）
-const activeChannelName = computed(
-  () => channels.list.find((c) => c.active)?.name ?? '未配置渠道',
-)
+const activeChannelName = computed(() => channels.activeChannel?.name ?? '')
 const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeId)
+const channelChip = computed(() => {
+  if (!hasChannel.value) return '未配置渠道 · 点击设置'
+  const model = channels.activeModel
+  return model ? `${activeChannelName.value} · ${model}` : activeChannelName.value || '未命名渠道'
+})
 
 // 切换工作区：弹系统目录选择框；状态收敛在 workspace store（侧栏"按空间分组"同源）。
 // 与侧栏"打开"同语义：切换空间即回到草稿开新对话（归属由首条消息落账本时决定）
 async function switchWorkspace() {
+  if (workspaceBusy()) return
   const ok = await ws.pickAndSet()
   if (ok) await store.newSession()
 }
@@ -73,6 +86,7 @@ async function pickWorkspace() {
 // 退出工作区：纯对话模式（本地文件工具下线），之后的会话无归属落"会话"区
 async function exitWorkspace() {
   wsMenuOpen.value = false
+  if (workspaceBusy()) return
   await ws.clear()
   await store.newSession()
 }
@@ -110,7 +124,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
   <!-- 无边框窗口的标题栏：整条可拖拽（交互元素在 CSS 里统一 no-drag） -->
   <header class="flex flex-wrap items-center justify-between gap-2" style="--wails-draggable: drag">
     <div class="flex min-w-0 items-center gap-2">
-      <button class="btn-ghost md:hidden" aria-label="会话列表" @click="emit('toggle-drawer')">
+      <!-- 只保留这一个：logo 左侧拉开导航。会话栏始终在左侧，不再另放一颗同样的按钮 -->
+      <button
+        class="btn-ghost"
+        :aria-expanded="!!props.navOpen"
+        aria-controls="app-nav"
+        :aria-label="props.navOpen ? '关闭导航' : '打开导航'"
+        @click="emit('toggle-nav')"
+      >
         <AppIcon name="menu" :size="18" />
       </button>
       <!-- 品牌 Logo：T 字标（内联，无外部资源） -->
@@ -156,7 +177,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
           role="menu"
           class="absolute right-0 top-full z-40 mt-1 w-80 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
         >
-          <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">工作区（选中后新建的对话归属它）</div>
+          <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">工作区（点选后打开新对话，当前这场不会改目录）</div>
           <p v-if="!recentWorkspaces.length" class="px-2 py-1.5 text-xs text-[var(--c-text-dim)]">
             还没有工作区——选择目录后，新对话将归属它；不选则按通用会话处理
           </p>
@@ -200,10 +221,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
         class="chip"
         :class="hasChannel ? '' : 'border-[var(--c-warn)] text-[var(--c-warn-text)]'"
         aria-haspopup="dialog"
-        title="模型渠道管理"
+        :title="hasChannel ? `当前模型：${channels.activeModel || '未填'} · ${activeChannelName}` : '模型渠道管理'"
         @click="emit('open-channels')"
       >
-        <AppIcon name="sliders" :size="13" /> {{ hasChannel ? activeChannelName : '未配置渠道 · 点击设置' }}
+        <AppIcon name="sliders" :size="13" />
+        <span class="max-w-[16rem] truncate">{{ channelChip }}</span>
       </button>
 
       <!-- 窗口控制（无边框自绘）：最小化 / 最大化还原 / 关闭 -->

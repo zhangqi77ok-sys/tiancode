@@ -59,11 +59,21 @@ type Loop struct {
 	approver Approver
 	// asker 为 nil 表示问答通道未启用（ask_user 收到引导性结果）；经 SetAsker 注入
 	asker Asker
+	// preface 是每轮前置的系统说明（技能与 MCP 清单）。不写入账本，随配置变化。
+	preface string
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
 func NewLoop(rt llm.ChatRuntime, model string, registry *tools.Registry) *Loop {
 	return &Loop{runtime: rt, model: model, registry: registry}
+}
+
+// SetPreface 设置每轮对话开头的系统说明。空串表示不插入。
+func (l *Loop) SetPreface(text string) {
+	if l == nil {
+		return
+	}
+	l.preface = text
 }
 
 // Phase 返回当前轮次状态。
@@ -90,6 +100,9 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string)
 	if err != nil {
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("derive history: %w", err)
+	}
+	if text := strings.TrimSpace(l.preface); text != "" {
+		msgs = append([]llm.Message{{Role: "system", Content: text}}, msgs...)
 	}
 	var toolDefs []llm.ToolDef
 	if l.registry != nil {
@@ -133,6 +146,10 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 
 	var sb strings.Builder // 当前步已确认落盘的助手文本
 	for step := 1; step <= MaxStepsPerTurn; step++ {
+		if err := ctx.Err(); err != nil {
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: err})
+			return
+		}
 		ch, err := l.runtime.Chat(ctx, llm.ChatRequest{
 			Model:    l.model,
 			Messages: msgs,

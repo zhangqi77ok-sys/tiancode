@@ -80,6 +80,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	runCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, "git", gitArgs...)
+	hideConsole(cmd)
 	cmd.Dir = t.root
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf

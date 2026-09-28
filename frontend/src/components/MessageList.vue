@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useChannelStore } from '../stores/channels'
 import { useChatStore } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
@@ -14,6 +15,7 @@ import ToolCard from './ToolCard.vue'
 const emit = defineEmits<{ (e: 'suggest', text: string): void }>()
 
 const store = useChatStore()
+const channels = useChannelStore()
 const ws = useWorkspaceStore()
 
 // 空态里的"选择工作区"主行动：选择目录 → 切换 → 开新对话（与顶栏/侧栏同语义）
@@ -26,8 +28,8 @@ async function pickWorkspace() {
 // 给"读文件/跑测试"类提示词等于指引模型撞墙——文案必须与实际能力一致
 const suggestions = computed(() =>
   ws.path
-    ? ['介绍这个项目', '读取 go.mod 前 5 行并复述 module 名', '运行 go test ./internal/core/tools/']
-    : ['写一个 Python 快排并解释思路', '解释常见的正则陷阱', '对比 Redis 与 Memcached 的差异'],
+    ? ['介绍这个项目', '这个目录里最值得先看的是什么', '指出这里最明显的一处风险']
+    : ['写一个快排并解释思路', '帮我看这段报错可能是什么原因', '把下面的需求拆成可执行的步骤'],
 )
 
 const scroller = ref<HTMLElement | null>(null)
@@ -62,6 +64,7 @@ const items = computed(() => groupMessages(store.messages))
 </script>
 
 <template>
+  <div class="relative flex min-h-0 flex-1 flex-col">
   <div
     ref="scroller"
     class="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4"
@@ -72,7 +75,11 @@ const items = computed(() => groupMessages(store.messages))
     <!-- 空状态 + 建议 chips -->
     <div v-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4">
       <p class="text-sm text-[var(--c-text-dim)]">
-        {{ ws.path ? '发一条消息开始，或试试：' : '未选择工作区 · 纯对话模式（文件与命令工具不可用）' }}
+        {{
+          ws.path
+            ? `当前模型 ${channels.activeModel || '未配置'} · 发一条消息开始，或试试：`
+            : `未选择工作区 · 纯对话（文件与命令不可用）· 当前模型 ${channels.activeModel || '未配置'}`
+        }}
       </p>
       <div class="flex flex-wrap justify-center gap-2">
         <button v-for="s in suggestions" :key="s" class="chip" @click="emit('suggest', s)">
@@ -98,9 +105,10 @@ const items = computed(() => groupMessages(store.messages))
   <!-- 锚定丢失时的"回到底部"：位置在消息区内、不压输入框 -->
   <button
     v-if="!anchored && store.messages.length"
-    class="chip fixed bottom-28 right-8 z-10 shadow-[var(--shadow-float)]"
+    class="chip absolute bottom-3 right-5 z-10 shadow-[var(--shadow-float)]"
     @click="toBottom(true)"
   >
     回到底部
   </button>
+  </div>
 </template>

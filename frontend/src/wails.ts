@@ -204,15 +204,39 @@ function resolveApp(go: unknown): WailsApp | null {
   return null
 }
 
+export interface McpServerDTO {
+  id: string
+  name: string
+  transport: 'stdio' | 'http'
+  command: string
+  args: string
+  env: string
+  url: string
+  headers: string
+  enabled: boolean
+}
+
+export interface SkillItemDTO {
+  id: string
+  name: string
+  description: string
+  body: string
+  enabled: boolean
+}
+
 interface WailsApp {
   ListSessions(): Promise<string[] | null>
   ListSessionSummaries(): Promise<SessionSummaryDTO[] | null>
   RenameSession(sessionID: string, title: string): Promise<void>
   ExportSessionMarkdown(sessionID: string): Promise<string | null>
   GetWorkspace(): Promise<string | null>
+  GetExtensions(): Promise<{ mcp: McpServerDTO[]; skills: SkillItemDTO[] } | null>
+  SaveExtensions(file: { mcp: McpServerDTO[]; skills: SkillItemDTO[] }): Promise<void>
   SetWorkspace(dir: string): Promise<void>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
+  // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
+  PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
   Send(sessionID: string, text: string): Promise<void>
@@ -335,8 +359,11 @@ export function bridge(): WailsBridge {
         ResolveAsk: offlineWrite,
         ExportSessionMarkdown: async () => '',
         GetWorkspace: async () => '',
+        GetExtensions: async () => ({ mcp: [], skills: [] }),
+        SaveExtensions: offlineWrite,
         SetWorkspace: offlineWrite,
         PickWorkspace: offlineWrite,
+        PickImport: offlineWrite,
         PinSession: offlineWrite,
         Replay: async () => [],
         Send: async () => {},

@@ -12,7 +12,6 @@ import SessionRow from './SessionRow.vue'
 // 双动作入口：新建对话（当前工作区）+ 打开工作区（切换后新对话归属该空间）。
 // 每个列表默认显示 5 条，超出折叠为"查看更多 (N)"。
 // 底部导航：渠道管理常驻入口（0.2.21）——入口从"顶栏 chip 专属"提升为导航级可见。
-const props = defineProps<{ open?: boolean }>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'open-channels'): void
@@ -24,9 +23,7 @@ const ws = useWorkspaceStore()
 const dialogs = useDialogs()
 
 // 侧栏底部渠道摘要：当前激活渠道名（未配置时给出警示色引导）
-const activeChannelName = computed(
-  () => channels.list.find((c) => c.active)?.name ?? '',
-)
+const channelSide = computed(() => channels.activeModel || channels.activeChannel?.name || '')
 
 const VIEW_LIMIT = 5
 
@@ -55,6 +52,7 @@ function toggleMore(key: string) {
 // 打开工作区：系统目录选择框 → 切换 → 回到草稿态（等于在该空间开新对话）。
 // 归属由首条消息落账本时的快照决定，天然记到新空间名下；草稿不进侧栏，反复切换不堆积空会话
 async function openWorkspace() {
+  if (store.running) return
   const ok = await ws.pickAndSet()
   if (ok) {
     await store.newSession()
@@ -105,8 +103,7 @@ function select(id: string) {
 <template>
   <aside
     aria-label="会话列表"
-    class="card flex w-60 shrink-0 flex-col p-3 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-[var(--z-overlay)] max-md:w-72 max-md:rounded-l-none max-md:rounded-r-2xl max-md:shadow-2xl max-md:transition-transform max-md:duration-200"
-    :class="open ? 'max-md:translate-x-0' : 'max-md:-translate-x-full max-md:invisible'"
+    class="card flex w-60 shrink-0 flex-col p-3"
   >
     <!-- 双动作入口：新建对话（当前工作区）+ 打开工作区（切换归属） -->
     <div class="mb-3 flex gap-1.5">
@@ -246,9 +243,10 @@ function select(id: string) {
         <span class="shrink-0 text-[var(--c-text-dim)]">渠道管理</span>
         <span
           class="min-w-0 flex-1 truncate text-right"
-          :class="activeChannelName ? 'text-[var(--c-text-faint)]' : 'text-[var(--c-warn-text)]'"
+          :class="channelSide ? 'text-[var(--c-text-faint)]' : 'text-[var(--c-warn-text)]'"
+          :title="channels.activeChannel ? `${channels.activeChannel.name} · ${channels.activeModel || '未填模型'}` : '未配置渠道'"
         >
-          {{ activeChannelName || '未配置' }}
+          {{ channelSide || '未配置' }}
         </span>
       </button>
     </div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useChannelStore } from '../stores/channels'
 import { useChatStore } from '../stores/chat'
 import AppIcon from './AppIcon.vue'
 
@@ -7,6 +8,7 @@ import AppIcon from './AppIcon.vue'
 const MAX_INPUT_HEIGHT_PX = 128
 
 const store = useChatStore()
+const channels = useChannelStore()
 const draft = defineModel<string>({ required: true })
 const box = ref<HTMLTextAreaElement | null>(null)
 
@@ -57,6 +59,10 @@ function editQueued(id: number) {
 
 <template>
   <div class="border-t border-[var(--c-border)] p-4">
+    <p class="mb-2 px-1 text-[11px] text-[var(--c-text-faint)]">
+      {{ channels.activeModel ? `模型 ${channels.activeModel}` : '未配置模型' }}
+      <template v-if="channels.activeChannel"> · {{ channels.activeChannel.name }}</template>
+    </p>
     <!-- 输入队列：进行中提交的待发消息；立即发送 = 置顶，本轮结束最先发出 -->
     <div v-if="store.queue.length" class="mb-2 space-y-1" aria-label="输入队列">
       <div class="flex items-center gap-1.5 px-1 text-[11px] text-[var(--c-text-faint)]">
@@ -106,8 +112,14 @@ function editQueued(id: number) {
         @keydown="onComposerKeydown"
         @input="autoGrow"
       ></textarea>
-      <button v-if="store.running" class="btn-primary h-10 shrink-0 gap-2 px-4 text-sm" @click="store.stop()">
-        <AppIcon name="stop" :size="14" /> 中断
+      <button
+        v-if="store.running"
+        type="button"
+        class="btn-primary h-10 shrink-0 gap-2 px-4 text-sm"
+        :disabled="store.stopping"
+        @click="store.stop()"
+      >
+        <AppIcon name="stop" :size="14" /> {{ store.stopping ? '正在中断' : '中断' }}
       </button>
       <button
         v-else

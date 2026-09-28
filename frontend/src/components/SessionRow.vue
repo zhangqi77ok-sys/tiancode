@@ -43,7 +43,6 @@ const store = useChatStore()
         {{ relativeTime(props.lastActiveMs) }}
       </span>
     </button>
-    <!-- 每行右侧：该会话的运行状态（运行中 = 脉冲点 + 文案；空闲 = 静默点） -->
     <span
       v-if="props.running"
       class="flex shrink-0 items-center gap-1 pl-1 text-[10px] font-medium text-[var(--c-primary)]"
@@ -52,40 +51,46 @@ const store = useChatStore()
       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--c-primary)]"></span>
       运行中
     </span>
-    <span
-      v-else
-      class="shrink-0 pl-1 text-[10px] text-[var(--c-text-faint)]"
-      title="该会话空闲"
-    >
-      <span class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--c-border)]"></span>
-    </span>
     <button
-      class="btn-ghost shrink-0"
-      :class="props.pinned ? 'text-[var(--c-primary)] opacity-100' : ''"
+      v-if="props.pinned"
+      class="btn-ghost shrink-0 text-[var(--c-primary)] opacity-100"
       :disabled="store.running"
-      :title="props.pinned ? '取消置顶' : '置顶'"
-      :aria-label="props.pinned ? '取消置顶' : '置顶'"
-      @click="emit('pin', !props.pinned)"
+      title="取消置顶"
+      aria-label="取消置顶"
+      @click="emit('pin', false)"
     >
       <AppIcon name="star" :size="13" />
     </button>
-    <button
-      class="btn-ghost shrink-0"
-      :disabled="store.running"
-      title="重命名会话"
-      aria-label="重命名会话"
-      @click="emit('rename')"
-    >
-      <AppIcon name="pencil" :size="14" />
-    </button>
-    <button
-      class="btn-ghost shrink-0 hover:text-[var(--c-err-text)]"
-      :disabled="store.running"
-      title="删除会话"
-      aria-label="删除会话"
-      @click="emit('remove')"
-    >
-      <AppIcon name="trash" :size="14" />
-    </button>
+    <!-- 操作默认让出标题宽度；悬停或键盘焦点进入该行时再出现 -->
+    <div class="flex shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+      <button
+        v-if="!props.pinned"
+        class="btn-ghost shrink-0"
+        :disabled="store.running"
+        title="置顶"
+        aria-label="置顶"
+        @click="emit('pin', true)"
+      >
+        <AppIcon name="star" :size="13" />
+      </button>
+      <button
+        class="btn-ghost shrink-0"
+        :disabled="store.running"
+        title="重命名会话"
+        aria-label="重命名会话"
+        @click="emit('rename')"
+      >
+        <AppIcon name="pencil" :size="14" />
+      </button>
+      <button
+        class="btn-ghost shrink-0 hover:text-[var(--c-err-text)]"
+        :disabled="store.running"
+        title="删除会话"
+        aria-label="删除会话"
+        @click="emit('remove')"
+      >
+        <AppIcon name="trash" :size="14" />
+      </button>
+    </div>
   </div>
 </template>

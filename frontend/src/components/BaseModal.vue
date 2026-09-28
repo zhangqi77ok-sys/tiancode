@@ -70,8 +70,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
         role="dialog"
         aria-modal="true"
         :aria-label="title"
-        class="card flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden outline-none"
-        :class="panelClass"
+        class="card flex max-h-[85vh] flex-col overflow-hidden outline-none"
+        :class="panelClass || 'w-full max-w-md'"
       >
         <header
           v-if="title"

@@ -107,6 +107,11 @@ export const useChatStore = defineStore('chat', () => {
 
   async function selectSession(id: string) {
     if (running.value) return // 进行中禁止切换，避免流式块串会话
+    // 工具根跟这场对话走。否则点开 A 空间的会话，读写仍打在当前工作区 B 上。
+    const sm = summaries.value.find((s) => s.id === id)
+    const ws = useWorkspaceStore()
+    if (sm?.workspace && sm.workspace !== ws.path) await ws.setPath(sm.workspace)
+    else if (sm && !sm.workspace && ws.path) await ws.clear()
     sessionId.value = id
     const history = (await bridge().app.Replay(id)) ?? []
     messages.value = history.map((m) => {
@@ -177,6 +182,7 @@ export const useChatStore = defineStore('chat', () => {
     // 不预建助手占位：助手消息按 ReAct 轮次由 onChunk 按需分段创建（0.2.14），
     // 每轮的思考/文本归属各自轮次，不再全部堆进同一个气泡
     running.value = true
+    stopping.value = false
     turnStartedAt = Date.now()
     try {
       // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
@@ -194,6 +200,7 @@ export const useChatStore = defineStore('chat', () => {
         )
       }
       running.value = false
+      stopping.value = false
     }
   }
 
@@ -350,6 +357,7 @@ export const useChatStore = defineStore('chat', () => {
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     if (p.sessionID !== sessionId.value) return
     running.value = false
+    stopping.value = false
     const ast = inFlightAssistant()
     if (ast) {
       ast.streaming = false
@@ -389,8 +397,11 @@ export const useChatStore = defineStore('chat', () => {
       void loadSessions() // 新会话首聊后进入列表
     }
     // 队列：本轮结束自动发出下一条
-    const next = queue.value.shift()
-    if (next) void send(next.text)
+    // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去
+    if (p.endReason !== END_REASON.CANCELLED && !stopping.value) {
+      const next = queue.value.shift()
+      if (next) void send(next.text)
+    }
   }
 
   // 删除会话：删除后若删的是当前会话，则新建空会话
@@ -419,8 +430,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  const stopping = ref(false)
+
   function stop() {
-    if (sessionId.value && running.value) bridge().app.Stop(sessionId.value)
+    if (!sessionId.value || !running.value || stopping.value) return
+    stopping.value = true
+    queue.value = [] // 中断是停掉这一轮，不能在终态后把排队消息接着发出去
+    void bridge().app.Stop(sessionId.value)
   }
 
   // 输入队列（0.2.14）：回合进行中的提交依次排队，终态后自动逐条发出（绝不与进行中轮次并发）
@@ -455,6 +471,7 @@ export const useChatStore = defineStore('chat', () => {
     sessions,
     messages,
     running,
+    stopping,
     error,
     summaries,
     titleOf,

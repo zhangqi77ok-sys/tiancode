@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   bridge,
   type ChannelDTO,
@@ -159,9 +159,20 @@ export const useChannelStore = defineStore('channels', () => {
     error.value = ''
   }
 
+  // 主界面要显示的是模型，不是渠道后台字段。缺省取声明列表的第一项（与运行时 DefaultModel 一致）。
+  const activeChannel = computed(() => list.value.find((c) => c.active) ?? null)
+  const activeModel = computed(() => {
+    const ch = activeChannel.value
+    if (!ch) return ''
+    const listed = (ch.models ?? []).map((m) => m.trim()).filter(Boolean)
+    return listed[0] || ch.model || ''
+  })
+
   return {
     list,
     activeId,
+    activeChannel,
+    activeModel,
     presets,
     models,
     loading,

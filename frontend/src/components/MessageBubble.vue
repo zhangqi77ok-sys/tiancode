@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
+import { useChatStore } from '../stores/chat'
 import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
@@ -18,6 +19,20 @@ const segments = computed<ChatMsg[]>(() => props.run ?? [props.m])
 const isUser = computed(() => props.m.role === 'user')
 
 const { push: toast } = useToast()
+const store = useChatStore()
+
+const showRetry = computed(() => {
+  if (isUser.value || store.running) return false
+  const last = store.messages.at(-1)
+  if (!last || !segments.value.includes(last)) return false
+  return segments.value.some((s) => s.error)
+})
+
+async function retry() {
+  const lastUser = [...store.messages].reverse().find((m) => m.role === 'user' && m.content.trim())
+  if (!lastUser || store.running) return
+  await store.send(lastUser.content)
+}
 
 // 思考折叠：按段独立记忆；流式段默认展开，终态后回到折叠（用户手动开合后以手动为准）
 const thinkingOpen = ref<Record<string, boolean>>({})
@@ -59,7 +74,7 @@ function fmtTime(at?: number): string {
   <!-- 用户消息：主色实心气泡，右对齐 -->
   <div v-if="isUser" class="flex flex-col items-end gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
-      <span>YOU</span><span>{{ fmtTime(m.at) }}</span>
+      <span>你</span><span>{{ fmtTime(m.at) }}</span>
     </div>
     <div
       class="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
@@ -71,7 +86,7 @@ function fmtTime(at?: number): string {
   <!-- agent 回合：单一消息头 + 段落流，整体是一个输出 -->
   <div v-else class="flex flex-col items-start gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
-      <span class="font-medium">tiantian</span><span>{{ fmtTime(startedAt) }}</span>
+      <span class="font-medium">tiancode</span><span>{{ fmtTime(startedAt) }}</span>
       <span v-if="durationMs" class="text-[var(--c-text-faint)]">· {{ (durationMs / 1000).toFixed(1) }}s</span>
       <button
         class="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-[var(--c-text-faint)] opacity-60 transition-opacity hover:text-[var(--c-primary)] hover:opacity-100"
@@ -138,5 +153,6 @@ function fmtTime(at?: number): string {
       <AskCard v-else-if="seg.role === 'ask'" :m="seg" />
       <ApprovalCard v-else-if="seg.role === 'approval'" :m="seg" />
     </template>
+    <button v-if="showRetry" class="chip mt-1 text-xs" @click="retry">重试上一问</button>
   </div>
 </template>

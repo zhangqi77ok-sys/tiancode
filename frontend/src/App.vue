@@ -1,27 +1,61 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type TodoItem } from './stores/chat'
+import { useCatalogStore } from './stores/catalog'
+import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
+import AppNav from './components/AppNav.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
 import FloatingTodo from './components/FloatingTodo.vue'
+import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
 import SessionList from './components/SessionList.vue'
+import SkillSettings from './components/SkillSettings.vue'
 import ToastHost from './components/ToastHost.vue'
 
 // 根组件退化为布局壳：顶栏/侧栏/对话/输入各自自治，事件桥在此统一接线。
 const store = useChatStore()
+const { push: toast } = useToast()
 
-const drawerOpen = ref(false) // 窄屏会话抽屉
-const channelsOpen = ref(false) // 渠道管理面板（顶栏 chip 与侧栏底部入口共用同一面板）
+// 会话操作的失败原来只写在侧栏最底部，容易被挡住。通知先冒出来，侧栏那一行仍留着。
+watch(
+  () => store.error,
+  (msg) => {
+    if (msg) toast('error', msg)
+  },
+)
+
+const navOpen = ref(false) // logo 左侧唯一按钮拉出的导航栏
+const channelsOpen = ref(false)
+const mcpOpen = ref(false)
+const skillsOpen = ref(false)
 const draft = ref('') // 输入草稿：建议 chips 回填、Composer 双向绑定
 
 // Esc 中断生成（Claude/ChatGPT 惯例）。模态（渠道设置/对话框）打开时，
 // BaseModal 在捕获层拦截 Esc 并停止传播，这里的冒泡监听不会误触发。
+function openChannels() {
+  channelsOpen.value = true
+  navOpen.value = false
+}
+function openMcp() {
+  mcpOpen.value = true
+  navOpen.value = false
+}
+function openSkills() {
+  skillsOpen.value = true
+  navOpen.value = false
+}
+
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && store.running) {
+  if (e.key !== 'Escape' || channelsOpen.value || mcpOpen.value || skillsOpen.value) return
+  if (navOpen.value && !store.running) {
+    navOpen.value = false
+    return
+  }
+  if (store.running) {
     e.preventDefault()
     store.stop()
   }
@@ -62,6 +96,7 @@ onMounted(() => {
     store.onAsk(p)
   })
   void store.init()
+  void useCatalogStore().load()
 })
 
 onBeforeUnmount(() => {
@@ -72,22 +107,25 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex h-screen flex-col gap-4 p-4 md:p-5">
     <AppHeader
-      @toggle-drawer="drawerOpen = !drawerOpen"
-      @open-channels="channelsOpen = true"
+      :nav-open="navOpen"
+      @toggle-nav="navOpen = !navOpen"
+      @open-channels="openChannels"
     />
 
     <div class="flex min-h-0 flex-1 gap-4">
-      <!-- 窄屏抽屉遮罩：点击关闭（层级低于抽屉） -->
       <div
-        v-if="drawerOpen"
-        class="fixed inset-0 z-30 bg-black/25 md:hidden"
-        @click="drawerOpen = false"
+        v-if="navOpen"
+        class="fixed inset-0 z-30 bg-black/25"
+        @click="navOpen = false"
       ></div>
 
-      <SessionList
-        :open="drawerOpen"
-        @close="drawerOpen = false"
-        @open-channels="channelsOpen = true"
+      <SessionList @open-channels="openChannels" />
+      <AppNav
+        :open="navOpen"
+        @close="navOpen = false"
+        @open-channels="openChannels"
+        @open-mcp="openMcp"
+        @open-skills="openSkills"
       />
 
       <main class="card relative flex min-w-0 flex-1 flex-col">
@@ -100,6 +138,8 @@ onBeforeUnmount(() => {
 
     <!-- 全局宿主：渠道管理 + 对话框 + 通知（各挂一个） -->
     <ChannelSettings v-if="channelsOpen" @close="channelsOpen = false" />
+    <McpSettings v-if="mcpOpen" @close="mcpOpen = false" />
+    <SkillSettings v-if="skillsOpen" @close="skillsOpen = false" />
     <DialogHost />
     <ToastHost />
   </div>

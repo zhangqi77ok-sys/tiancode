@@ -25,6 +25,8 @@ type IconName =
   | 'search'
   | 'wrench'
   | 'minus'
+  | 'plug'
+  | 'book'
 
 withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 16 })
 
@@ -66,6 +68,8 @@ const PATHS: Record<IconName, string[]> = {
     'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
   ],
   minus: ['M5 12h14'],
+  plug: ['M9 7v4', 'M15 7v4', 'M12 17v4', 'M8 11h8a3 3 0 0 1 3 3v3H5v-3a3 3 0 0 1 3-3Z'],
+  book: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z'],
 }
 </script>
 

@@ -74,6 +74,9 @@ func (s *ChatService) SetWorkspace(dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.attachExtensions(registry); err != nil {
+		return err
+	}
 	s.registry = registry
 	s.cfg.WorkDir = dir
 	if s.defaultModel == "" {

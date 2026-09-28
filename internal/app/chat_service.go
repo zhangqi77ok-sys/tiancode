@@ -27,9 +27,11 @@ import (
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/adaptors"
+	"tiancode/internal/platform/catalog"
 	"tiancode/internal/platform/channels"
 	"tiancode/internal/platform/codexauth"
 	"tiancode/internal/platform/configfile"
+	"tiancode/internal/platform/exttools"
 	"tiancode/internal/platform/gateway"
 )
 
@@ -46,6 +48,8 @@ type Config struct {
 	// ChannelsPath 是渠道配置文件路径；缺省 %APPDATA%\tiancode\channels.json。
 	// 可注入是为测试隔离（同进程多实例不互相污染）。
 	ChannelsPath string
+	// ExtensionsPath 是 MCP/Skill 清单；缺省 %APPDATA%\tiancode\extensions.json。
+	ExtensionsPath string
 }
 
 // ChatService 编排对话用例。
@@ -75,6 +79,10 @@ type ChatService struct {
 	// codexAuth 管理 ChatGPT 订阅账号的 OAuth 授权会话与 1455 回环监听（0.2.21）
 	codexAuth   *codexauth.Manager
 	codexClient *codexauth.Client
+
+	extensions *catalog.Store
+	skillTool  *exttools.SkillTool
+	mcpTool    *exttools.MCPTool
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -125,8 +133,20 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	}
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
+	s.extensions = catalog.New(cfg.ExtensionsPath)
+	s.skillTool = exttools.NewSkill(func() catalog.File {
+		f, err := s.extensions.Load()
+		if err != nil {
+			return catalog.File{}
+		}
+		return f
+	})
+	s.mcpTool = exttools.NewMCP(s.skillTool.Load)
 	registry, err := newRegistry(cfg.WorkDir)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.attachExtensions(registry); err != nil {
 		return nil, err
 	}
 	s.registry = registry
@@ -178,6 +198,51 @@ func (s *ChatService) RevivedChannels() []string {
 	return out
 }
 
+func (s *ChatService) attachExtensions(reg *tools.Registry) error {
+	if s.skillTool == nil || s.mcpTool == nil {
+		return nil
+	}
+	if err := reg.Register(s.skillTool); err != nil {
+		return err
+	}
+	return reg.Register(s.mcpTool)
+}
+
+func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.extensions == nil || ag == nil {
+		return nil
+	}
+	file, err := s.extensions.Load()
+	if err != nil {
+		return err
+	}
+	// 只告诉模型有什么、怎么调用。不在发消息时启动 MCP：用不用由模型决定。
+	ag.SetPreface(exttools.Preface(file))
+	return nil
+}
+
+// Extensions 返回 MCP 与 Skill 清单。
+func (s *ChatService) Extensions() (catalog.File, error) {
+	if s.extensions == nil {
+		return catalog.File{}, nil
+	}
+	return s.extensions.Load()
+}
+
+// SaveExtensions 保存清单。下一轮对话会把启用项告诉模型。
+func (s *ChatService) SaveExtensions(f catalog.File) error {
+	if s.extensions == nil {
+		return errors.New("扩展存储未初始化")
+	}
+	if s.mcpTool != nil {
+		s.mcpTool.Close()
+	}
+	return s.extensions.Save(f)
+}
+
 // activate 由当前默认模型构建运行时与 agent；这是唯一与"具体渠道"耦合的装配点。
 // 多协议网关承担选路/重试/协议分派：这里只需要知道用哪个模型名发问。
 func (s *ChatService) activate(model string) error {
@@ -216,6 +281,9 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	s.mu.Unlock()
 	if ag == nil {
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
+	}
+	if err := s.applyExtensionPreface(ctx, ag); err != nil {
+		return nil, err
 	}
 	// ChatGPT 订阅凭证临期先自动续期（失败明确阻断：过期凭证发出去只会得到难解读的 401）
 	if err := s.ensureCodexFresh(ctx); err != nil {
@@ -412,6 +480,13 @@ func (s *ChatService) ledgerFor(sessionID string) (*session.Ledger, error) {
 // Close 关闭全部缓存的账本句柄（应用退出时调用；Windows 下不关闭会导致数据文件无法删除）。
 func (s *ChatService) Close() error {
 	var firstErr error
+	// MCP 子进程必须随应用一起收掉：它们是 npx/node 链（cmd.exe → node.exe → server），
+	// 留着就是任务管理器里一串无主的 node.exe（每个服务器 2~4 个进程，Playwright 更重）。
+	// 此前只关了账本与 codex 监听，实测应用退出后 node/cmd 仍在跑——用户看到的是
+	// "关掉应用还有一堆 node 进程"，且下次启动会再拉一份，越积越多。
+	if s.mcpTool != nil {
+		s.mcpTool.Close()
+	}
 	if s.codexAuth != nil {
 		firstErr = s.codexAuth.Close() // 释放 1455 回环监听（失败向上传播）
 	}

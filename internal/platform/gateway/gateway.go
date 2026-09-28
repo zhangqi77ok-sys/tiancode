@@ -62,6 +62,10 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 	var lastErr error
 
 	for attempt := 0; attempt <= g.MaxRetries; attempt++ {
+		if ctx.Err() != nil {
+			g.finishStopped(out, ctx.Err(), &forwarded)
+			return
+		}
 		sel, err := g.Pool.Select(channels.Selection{
 			Group: channels.DefaultGroup, Model: req.Model, Retry: tier, Exclude: exclude,
 			// 激活渠道是软偏好：首选走它，故障后降档自动落到池内其他渠道
@@ -120,6 +124,11 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 
 		resp, err := adv.DoRequest(ctx, rc, hdr, body)
 		if err != nil {
+			// 用户中断不是渠道故障：不禁用、不换渠道重试，否则点了中断请求还会再发出去。
+			if ctx.Err() != nil {
+				g.finishStopped(out, ctx.Err(), &forwarded)
+				return
+			}
 			lastErr = mergeBanErr(err, g.onChannelFault(sel)) // 网络失败 = 渠道级故障
 			exclude = append(exclude, sel.ChannelID)
 			tier++
@@ -166,6 +175,7 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			case out <- c:
 				forwarded = true
 			case <-ctx.Done():
+				g.finishStopped(out, ctx.Err(), &forwarded)
 				return
 			}
 		}
@@ -269,6 +279,20 @@ func hasModel(c channels.Channel, model string) bool {
 		}
 	}
 	return false
+}
+
+// finishStopped 在调用方已取消时收束。不走 emit：emit 同时监听 ctx.Done，
+// ctx 已经结束时终态块会被丢掉，前端就收不到“已取消”。
+func (g *Gateway) finishStopped(out chan llm.StreamChunk, err error, forwarded *bool) {
+	reason := llm.EndError
+	if errors.Is(err, context.Canceled) {
+		reason = llm.EndCancelled
+	}
+	select {
+	case out <- llm.StreamChunk{EndReason: reason, Err: err}:
+		*forwarded = true
+	case <-time.After(500 * time.Millisecond):
+	}
 }
 
 // terminal 投递恰好一个 EndError 终态块并收束（转发开始后不会走到这里）。

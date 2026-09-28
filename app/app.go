@@ -149,11 +149,6 @@ func (b *Bind) Send(sessionID, text string) error {
 		b.mu.Unlock()
 	}()
 
-	ch, err := b.chat.Send(runCtx, sessionID, text)
-	if err != nil {
-		return err
-	}
-
 	// 为什么兜底合成终态：极端时序下（取消恰逢发送受阻）上游通道可能无终态关闭，
 	// 前端必须始终收到 chat:terminal 才能解锁输入框（C-APP-2 的 UI 侧保证）。
 	terminalSeen := false
@@ -164,6 +159,17 @@ func (b *Bind) Send(sessionID, text string) error {
 			"endReason": int(reason),
 			"error":     errText,
 		})
+	}
+
+	ch, err := b.chat.Send(runCtx, sessionID, text)
+	if err != nil {
+		// 中断发生在流建立之前（例如还在连 MCP）：必须发终态，不能只返回错误。
+		// 只返回错误时前端会当成失败，输入框要等异常路径才解锁，观感是按钮没反应。
+		if runCtx.Err() != nil {
+			emitTerminal(llm.EndCancelled, "cancelled")
+			return nil
+		}
+		return err
 	}
 
 	for c := range ch {

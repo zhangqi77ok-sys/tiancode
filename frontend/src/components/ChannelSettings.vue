@@ -538,7 +538,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <BaseModal open title="模型渠道" panel-class="w-[820px] max-md:w-full" @close="emit('close')">
+  <BaseModal open title="模型渠道" panel-class="w-full max-w-[820px]" @close="emit('close')">
     <!-- 错误条：单条即可，不堆叠 -->
     <div
       v-if="store.error"
@@ -630,9 +630,8 @@ onMounted(async () => {
                 >
               </div>
               <div class="mt-1 truncate text-xs text-[var(--c-text-faint)]">
-                {{ ch.baseUrl || '默认地址' }} · {{ (ch.models?.length ? ch.models : [ch.model]).join(' / ') }} ·
-                优先级 {{ ch.priority ?? 100 }} · 权重 {{ ch.weight || '默认' }}
-                <template v-if="ch.autoBan"> · 故障自动禁用</template>
+                {{ (ch.models?.length ? ch.models : [ch.model]).filter(Boolean).join(' / ') || '未填模型' }}
+                · {{ ch.baseUrl || '默认地址' }}
               </div>
               <!-- 测试结果：✓ 延迟+回显 / ✗ 失败原因（就地显示，不必翻日志） -->
               <div
@@ -672,6 +671,7 @@ onMounted(async () => {
             <button
               class="chip shrink-0 text-[var(--c-err-text)]"
               :disabled="store.busy || ch.active"
+              :title="ch.active ? '正在使用的渠道不能删除，请先把别的渠道设为默认' : '删除渠道'"
               @click="remove(ch)"
             >
               删除

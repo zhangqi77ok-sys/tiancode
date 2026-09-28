@@ -429,6 +429,18 @@ describe('chat store', () => {
     expect(store.messages.at(-1)?.content).toBe('排队的第二条')
   })
 
+  it('取消终态不自动发出队列', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('第一条')
+    store.enqueue('排队的第二条')
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.CANCELLED, error: 'cancelled' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sends).toEqual(['第一条'])
+    expect(store.queue.map((q) => q.text)).toEqual(['排队的第二条'])
+    expect(store.running).toBe(false)
+  })
+
   it('队列置顶/取回编辑/删除', async () => {
     const store = useChatStore()
     store.enqueue('一')
