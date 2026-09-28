@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
+import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
 import { buildSidebar } from '../composables/sessionGrouping'
 import { useDialogs } from '../composables/useDialogs'
@@ -10,12 +11,21 @@ import SessionRow from './SessionRow.vue'
 // 会话侧栏（三段式，对齐商用 AI 工具）：置顶 / 会话（未归属空间）/ 空间（按工作区分组）。
 // 双动作入口：新建对话（当前工作区）+ 打开工作区（切换后新对话归属该空间）。
 // 每个列表默认显示 5 条，超出折叠为"查看更多 (N)"。
-const props = defineProps<{ open?: boolean }>()
-const emit = defineEmits<{ (e: 'close'): void }>()
+// 底部导航：渠道管理常驻入口（0.2.21）——入口从"顶栏 chip 专属"提升为导航级可见。
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'open-channels'): void
+}>()
 
 const store = useChatStore()
+const channels = useChannelStore()
 const ws = useWorkspaceStore()
 const dialogs = useDialogs()
+
+// 侧栏底部渠道摘要：当前激活渠道名（未配置时给出警示色引导）
+const activeChannelName = computed(
+  () => channels.list.find((c) => c.active)?.name ?? '',
+)
 
 const VIEW_LIMIT = 5
 
@@ -222,6 +232,24 @@ function select(id: string) {
     </div>
 
     <div v-if="store.error" class="mt-2 px-1 text-xs text-[var(--c-err-text)]">{{ store.error }}</div>
-    <div v-else class="mt-2 px-1 text-xs text-[var(--c-text-faint)]">历史由事件账本恢复</div>
+
+    <!-- 底部导航：渠道管理常驻入口（当前渠道名一眼可见；未配置给警示色） -->
+    <div class="mt-2 border-t border-[var(--c-border)] px-1 pt-2">
+      <button
+        class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-[var(--c-surface-soft)]"
+        aria-haspopup="dialog"
+        title="模型渠道管理"
+        @click="emit('open-channels')"
+      >
+        <AppIcon name="sliders" :size="13" class="shrink-0 text-[var(--c-text-dim)]" />
+        <span class="shrink-0 text-[var(--c-text-dim)]">渠道管理</span>
+        <span
+          class="min-w-0 flex-1 truncate text-right"
+          :class="activeChannelName ? 'text-[var(--c-text-faint)]' : 'text-[var(--c-warn-text)]'"
+        >
+          {{ activeChannelName || '未配置' }}
+        </span>
+      </button>
+    </div>
   </aside>
 </template>

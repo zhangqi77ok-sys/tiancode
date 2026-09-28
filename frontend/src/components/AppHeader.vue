@@ -6,18 +6,19 @@ import { useWorkspaceStore } from '../stores/workspace'
 import { useToast } from '../composables/useToast'
 import { winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
-import ChannelSettings from './ChannelSettings.vue'
 
 // 顶栏：品牌 + 运行状态 + 导出/工作区/命令确认/渠道设置。
 // 纯状态展示用 .stat（无 hover 态），可点操作用 .chip——不制造假可点。
-const emit = defineEmits<{ (e: 'toggle-drawer'): void }>()
+const emit = defineEmits<{
+  (e: 'toggle-drawer'): void
+  (e: 'open-channels'): void
+}>()
 
 const store = useChatStore()
 const channels = useChannelStore()
 const ws = useWorkspaceStore()
 const { push: toast } = useToast()
 
-const settingsOpen = ref(false)
 const approvalOn = ref(false)
 
 // 顶栏只显示末级目录名（完整路径太长会挤掉状态区）；状态在 workspace store（侧栏分组同源）
@@ -199,8 +200,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
         class="chip"
         :class="hasChannel ? '' : 'border-[var(--c-warn)] text-[var(--c-warn-text)]'"
         aria-haspopup="dialog"
-        title="模型渠道设置"
-        @click="settingsOpen = true"
+        title="模型渠道管理"
+        @click="emit('open-channels')"
       >
         <AppIcon name="sliders" :size="13" /> {{ hasChannel ? activeChannelName : '未配置渠道 · 点击设置' }}
       </button>
@@ -219,6 +220,5 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
       </div>
     </div>
 
-    <ChannelSettings v-if="settingsOpen" @close="settingsOpen = false" />
   </header>
 </template>

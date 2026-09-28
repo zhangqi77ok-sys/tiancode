@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore, type TodoItem } from './stores/chat'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
+import ChannelSettings from './components/ChannelSettings.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
 import MessageList from './components/MessageList.vue'
@@ -13,6 +14,7 @@ import ToastHost from './components/ToastHost.vue'
 const store = useChatStore()
 
 const drawerOpen = ref(false) // 窄屏会话抽屉
+const channelsOpen = ref(false) // 渠道管理面板（顶栏 chip 与侧栏底部入口共用同一面板）
 const draft = ref('') // 输入草稿：建议 chips 回填、Composer 双向绑定
 
 // Esc 中断生成（Claude/ChatGPT 惯例）。模态（渠道设置/对话框）打开时，
@@ -68,7 +70,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen flex-col gap-4 p-4 md:p-5">
-    <AppHeader @toggle-drawer="drawerOpen = !drawerOpen" />
+    <AppHeader
+      @toggle-drawer="drawerOpen = !drawerOpen"
+      @open-channels="channelsOpen = true"
+    />
 
     <div class="flex min-h-0 flex-1 gap-4">
       <!-- 窄屏抽屉遮罩：点击关闭（层级低于抽屉） -->
@@ -78,7 +83,11 @@ onBeforeUnmount(() => {
         @click="drawerOpen = false"
       ></div>
 
-      <SessionList :open="drawerOpen" @close="drawerOpen = false" />
+      <SessionList
+        :open="drawerOpen"
+        @close="drawerOpen = false"
+        @open-channels="channelsOpen = true"
+      />
 
       <main class="card flex min-w-0 flex-1 flex-col">
         <MessageList @suggest="draft = $event" />
@@ -86,7 +95,8 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <!-- 全局宿主：对话框 + 通知（各挂一个） -->
+    <!-- 全局宿主：渠道管理 + 对话框 + 通知（各挂一个） -->
+    <ChannelSettings v-if="channelsOpen" @close="channelsOpen = false" />
     <DialogHost />
     <ToastHost />
   </div>
