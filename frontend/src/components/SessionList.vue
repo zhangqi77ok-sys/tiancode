@@ -12,6 +12,7 @@ import SessionRow from './SessionRow.vue'
 // 双动作入口：新建对话（当前工作区）+ 打开工作区（切换后新对话归属该空间）。
 // 每个列表默认显示 5 条，超出折叠为"查看更多 (N)"。
 // 底部导航：渠道管理常驻入口（0.2.21）——入口从"顶栏 chip 专属"提升为导航级可见。
+const props = defineProps<{ open?: boolean }>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'open-channels'): void
