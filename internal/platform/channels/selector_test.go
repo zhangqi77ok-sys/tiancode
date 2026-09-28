@@ -79,6 +79,23 @@ func TestSelect_PinnedChannel(t *testing.T) {
 	}
 }
 
+// 软偏好（激活渠道）：retry=0 时优先；被排除（故障降档）后回落到其他渠道。
+func TestSelect_PreferredChannel(t *testing.T) {
+	p := newTestPool(t, testCh("a", "m", 100, 1), testCh("b", "m", 100, 1))
+	p.rand = func(int) int { return 0 } // 无偏好时固定选第一个候选
+	if got, _ := p.Select(Selection{Model: "m", Preferred: "b"}); got.ChannelID != "b" {
+		t.Fatalf("retry=0 且 preferred 可用时必须选它，got %q", got.ChannelID)
+	}
+	// 首选失败 → preferred 进 exclude → retry=1 回落到 a（软偏好不阻塞降档）
+	if got, _ := p.Select(Selection{Model: "m", Retry: 1, Exclude: []string{"b"}, Preferred: "b"}); got.ChannelID != "a" {
+		t.Fatalf("preferred 被排除后应回落，got %q", got.ChannelID)
+	}
+	// preferred 不属于该模型 → 正常分档，不报错
+	if got, err := p.Select(Selection{Model: "m", Preferred: "other"}); err != nil || got.ChannelID != "a" {
+		t.Fatalf("无关 preferred 应正常分档，got %q err=%v", got.ChannelID, err)
+	}
+}
+
 // 规则 5 + 多凭证：单凭证原样（下标 -1）；多凭证轮询；全禁后渠道不可用并转 auto_disabled。
 func TestSelect_MultiCredentialRoundRobin(t *testing.T) {
 	p := NewPool(t.TempDir() + "/channels.json")

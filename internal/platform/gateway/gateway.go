@@ -62,6 +62,8 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 	for attempt := 0; attempt <= g.MaxRetries; attempt++ {
 		sel, err := g.Pool.Select(channels.Selection{
 			Group: channels.DefaultGroup, Model: req.Model, Retry: tier, Exclude: exclude,
+			// 激活渠道是软偏好：首选走它，故障后降档自动落到池内其他渠道
+			Preferred: g.Pool.ActiveID(),
 		})
 		if err != nil {
 			g.terminal(ctx, out, fmt.Errorf("%v（last: %v）", err, lastErr), &forwarded)

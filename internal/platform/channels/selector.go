@@ -14,6 +14,10 @@ type Selection struct {
 	// ChannelID 指定渠道（如异步任务必须回到原渠道）：优先于随机选择，
 	// 但仍须属于该 group+model、status=enabled 且未在 exclude 里。
 	ChannelID string
+	// Preferred 是软偏好（桌面应用的"激活渠道"）：仅在 retry=0 且该渠道属于当前
+	// group+model 且可用时优先选它；失败降档后自然落到池内其他渠道。
+	// 与 ChannelID 的区别：ChannelID 是硬指定（不可用即报错），Preferred 不可用就正常分档。
+	Preferred string
 }
 
 // Selected 是选中结果（写入请求上下文，之后任何层从上下文读取，不再查库）。
@@ -67,9 +71,11 @@ func (p *Pool) Select(sel Selection) (Selected, error) {
 		return Selected{}, fmt.Errorf("%w：%s / %s（retry=%d）", ErrNoChannel, sel.Group, sel.Model, sel.Retry)
 	}
 
-	// 规则 4：指定渠道优先于随机，但仍须属于该 group+model 且 enabled 且未排除
+	// 规则 4：指定渠道优先于随机（硬指定）；软偏好只在 retry=0 生效，
+	// 失败降档（retry>0 或 preferred 已在 exclude）后自然回落到正常分档。
 	var chosen *Channel
-	if sel.ChannelID != "" {
+	switch {
+	case sel.ChannelID != "":
 		for _, ch := range cands {
 			if ch.ID == sel.ChannelID {
 				chosen = ch
@@ -79,7 +85,15 @@ func (p *Pool) Select(sel Selection) (Selected, error) {
 		if chosen == nil {
 			return Selected{}, fmt.Errorf("%w：指定渠道 %s 不可用于 %s / %s（或已禁用/失败）", ErrNoChannel, sel.ChannelID, sel.Group, sel.Model)
 		}
-	} else {
+	case sel.Preferred != "" && sel.Retry == 0:
+		for _, ch := range cands {
+			if ch.ID == sel.Preferred {
+				chosen = ch
+				break
+			}
+		}
+	}
+	if chosen == nil {
 		chosen = p.pickByTier(cands, sel.Retry)
 		if chosen == nil {
 			return Selected{}, fmt.Errorf("%w：%s / %s（retry=%d）", ErrNoChannel, sel.Group, sel.Model, sel.Retry)
