@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useChatStore } from '../stores/chat'
+import { useChatStore, type ChatMsg } from '../stores/chat'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import ApprovalCard from './ApprovalCard.vue'
 import MessageBubble from './MessageBubble.vue'
-import ToolCard from './ToolCard.vue'
 
 // 建议提示：点击回填输入框（由 App 把草稿传给 Composer）
 const emit = defineEmits<{ (e: 'suggest', text: string): void }>()
@@ -47,6 +46,34 @@ watch(
 function keyOf(i: number, id?: string): string {
   return id ?? `i-${i}`
 }
+
+// 渲染分组：把紧邻助手消息之前的连续工具卡并入该助手消息的视觉块——
+// 视觉时序与真实执行顺序一致：思考 → 工具执行 → 回复正文。
+// 实时流式（onTool 插在流式助手之前）与 Replay（tool 在 assistant 之前）顺序同构，共用此分组。
+type RenderItem =
+  | { kind: 'turn'; m: ChatMsg; tools: ChatMsg[]; key: string }
+  | { kind: 'single'; m: ChatMsg; key: string }
+
+const items = computed<RenderItem[]>(() => {
+  const msgs = store.messages
+  const out: RenderItem[] = []
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]
+    const key = keyOf(i, m.id)
+    if (m.role === 'assistant') {
+      // 向前收集连续工具卡（遇到 user/approval/assistant 即停）
+      const tools: ChatMsg[] = []
+      for (let j = i - 1; j >= 0 && msgs[j].role === 'tool'; j--) tools.unshift(msgs[j])
+      out.push({ kind: 'turn', m, tools, key })
+    } else if (m.role === 'tool') {
+      // 紧跟助手消息的工具卡已并入助手块；孤立工具卡（轮次被截断的账本）仍必须可见
+      if (msgs[i + 1]?.role !== 'assistant') out.push({ kind: 'single', m, key })
+    } else {
+      out.push({ kind: 'single', m, key })
+    }
+  }
+  return out
+})
 </script>
 
 <template>
@@ -67,10 +94,9 @@ function keyOf(i: number, id?: string): string {
       </div>
     </div>
 
-    <template v-for="(m, i) in store.messages" :key="keyOf(i, m.id)">
-      <ToolCard v-if="m.role === 'tool'" :m="m" />
-      <ApprovalCard v-else-if="m.role === 'approval'" :m="m" />
-      <MessageBubble v-else :m="m" />
+    <template v-for="item in items" :key="item.key">
+      <MessageBubble v-if="item.kind === 'single'" :m="item.m" />
+      <MessageBubble v-else :m="item.m" :tools="item.tools" />
     </template>
   </div>
 

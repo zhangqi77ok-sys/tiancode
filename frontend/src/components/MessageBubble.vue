@@ -3,8 +3,9 @@ import { ref, watch } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import AppIcon from './AppIcon.vue'
 import MarkdownBody from './MarkdownBody.vue'
+import ToolCard from './ToolCard.vue'
 
-const props = defineProps<{ m: ChatMsg }>()
+const props = defineProps<{ m: ChatMsg; tools?: ChatMsg[] }>()
 
 // 用户/助手消息二选一渲染（role 在入库后不再变化）
 const isUser = props.m.role === 'user'
@@ -58,6 +59,9 @@ function fmtTime(at?: number): string {
       思考过程
     </button>
     <pre v-if="m.thinking && thinkingOpen" class="tool-full max-w-[85%] text-[var(--c-text-dim)]">{{ m.thinking }}</pre>
+
+    <!-- 工具执行卡：时序位于思考之后、回复正文之前（思考 → 执行 → 回复） -->
+    <ToolCard v-for="(t, ti) in tools" :key="t.id ?? 'ti-' + ti" :m="t" />
 
     <div
       class="max-w-[85%] rounded-2xl border px-4 py-3 text-sm leading-6"
