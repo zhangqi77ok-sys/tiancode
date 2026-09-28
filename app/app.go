@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -66,6 +67,18 @@ func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
 
 // SetWorkspace 切换工作区；非法路径（不存在/非目录/空白）返回错误供 UI 展示。
 func (b *Bind) SetWorkspace(dir string) error { return b.chat.SetWorkspace(dir) }
+
+// PickWorkspace 弹出系统目录选择框，返回选中的目录；用户取消返回空串。
+// 为什么放后端：原生目录选择依赖 Wails 应用上下文（窗口句柄），前端无法自行唤起。
+func (b *Bind) PickWorkspace() (string, error) {
+	if b.AppCtx == nil {
+		return "", errors.New("应用尚未就绪（缺少窗口上下文），无法打开目录选择框")
+	}
+	return wruntime.OpenDirectoryDialog(b.AppCtx, wruntime.OpenDialogOptions{
+		Title:                "选择工作区目录（工具只能读写此目录内）",
+		CanCreateDirectories: true,
+	})
+}
 
 // ApprovalPolicy 返回当前需要执行前审批的工具清单（空 = 审批关闭，默认）。
 func (b *Bind) ApprovalPolicy() []string { return b.chat.ApprovalPolicy() }

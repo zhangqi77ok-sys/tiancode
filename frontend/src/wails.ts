@@ -108,6 +108,8 @@ interface WailsApp {
   ExportSessionMarkdown(sessionID: string): Promise<string | null>
   GetWorkspace(): Promise<string | null>
   SetWorkspace(dir: string): Promise<void>
+  // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
+  PickWorkspace(): Promise<string>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
   Send(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
@@ -162,6 +164,7 @@ export function bridge(): WailsBridge {
         ExportSessionMarkdown: async () => '',
         GetWorkspace: async () => '',
         SetWorkspace: offlineWrite,
+        PickWorkspace: offlineWrite,
         Replay: async () => [],
         Send: async () => {},
         Stop: async () => {},

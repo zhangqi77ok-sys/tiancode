@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
-import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -14,7 +13,6 @@ const emit = defineEmits<{ (e: 'toggle-drawer'): void }>()
 
 const store = useChatStore()
 const channels = useChannelStore()
-const dialogs = useDialogs()
 const { push: toast } = useToast()
 
 const settingsOpen = ref(false)
@@ -32,17 +30,13 @@ const activeChannelName = computed(
 )
 const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeId)
 
-// 切换工作区：工具受控根随即重建（后端契约：非法路径返回错误，不静默保留旧值）
+// 切换工作区：弹系统目录选择框（用户自己选，不再手敲路径）；
+// 工具受控根随即重建（后端契约：非法路径返回错误，不静默保留旧值）
 async function switchWorkspace() {
-  const next = await dialogs.prompt({
-    title: '切换工作区',
-    message: '工具只能读写此目录内（非法路径会被后端拒绝）',
-    value: workspace.value,
-    placeholder: '如 D:\\projects\\demo',
-  })
-  if (next === null || next === workspace.value) return
   try {
-    await bridge().app.SetWorkspace(next)
+    const dir = await bridge().app.PickWorkspace()
+    if (!dir || dir === workspace.value) return // 用户取消或未变化
+    await bridge().app.SetWorkspace(dir)
     workspace.value = (await bridge().app.GetWorkspace()) ?? ''
   } catch (e) {
     toast('error', String(e instanceof Error ? e.message : e))

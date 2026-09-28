@@ -70,7 +70,7 @@ func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
 		"AddChannel", "ApprovalPolicy", "ChannelPresets", "DeleteChannel", "DeleteSession", "DiscoverModels",
 		"ExportSessionMarkdown", "GetWorkspace", "ListChannels", "ListSessionSummaries",
-		"ListSessions", "RenameSession", "Replay", "ResolveApproval", "Send", "SetActiveChannel",
+		"ListSessions", "PickWorkspace", "RenameSession", "Replay", "ResolveApproval", "Send", "SetActiveChannel",
 		"SetApprovalPolicy", "SetWorkspace", "Stop", "UpdateChannel",
 	}
 	bindType := reflect.TypeOf(&Bind{})
