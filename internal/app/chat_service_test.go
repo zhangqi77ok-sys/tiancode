@@ -1,7 +1,6 @@
 package app
 
 import (
-	"sync"
 	"context"
 	"fmt"
 	"net/http"
@@ -9,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
