@@ -208,6 +208,39 @@ describe('chat store', () => {
     expect(store.messages[0].content).toContain('上游 500')
   })
 
+  // 零块终态：整回合一条增量都没到达就失败（如无可用渠道 / 流未建立）。
+  // 此前该路径的错误被静默丢弃——用户看到的是"消息发出去了，什么都没发生"（实机反馈）
+  it('零块错误终态必须新建可见错误气泡', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('介绍这个项目')
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.ERROR, error: '无可用模型渠道' })
+    expect(store.running).toBe(false)
+    const last = store.messages.at(-1)
+    expect(last?.role).toBe('assistant')
+    expect(last?.error).toBe(true)
+    expect(last?.content).toContain('无可用模型渠道')
+    expect(store.messages).toHaveLength(2) // user + 错误气泡
+  })
+
+  // 零块空闲超时同理：上游挂起、一条增量都没来，也必须看得见
+  it('零块空闲超时也可见', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.IDLE_TIMEOUT, error: '' })
+    expect(store.messages.at(-1)?.content).toContain('响应超时')
+  })
+
+  // 反向契约：正常结束且无增量（例如模型只调用了工具）不得补空气泡
+  it('零块正常终态不补空气泡', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    expect(store.messages.filter((m) => m.role === 'assistant')).toHaveLength(0)
+  })
+
   it('onChunk 累加 thinking 与 delta', async () => {
     const store = useChatStore()
     await store.newSession()

@@ -75,6 +75,7 @@
 | C-APP-1 | 持久化/流式任何错误必须上抛到 UI 层（守卫 R2 静态强制 + 用例测试） | `TestChatService_PersistErrorPropagates` |
 | C-APP-2 | 用户中断 → `EndCancelled` 终态 + 账本保留已产生事件，UI 显示"已取消" | `TestChatService_CancelKeepsEvents` |
 | C-APP-3 | `Replay` 投影含 tool 卡（name/status/content）与 assistant thinking | `TestChatService_ReplayIncludesTools` |
+| C-APP-4 | **零块终态必须可见**：整回合没有任何增量到达就失败时（无可用渠道 / 流未建立即失败），错误必须新建一条错误气泡呈现，禁止因"没有进行中的助手气泡"而静默丢弃——否则界面表现为"消息发出去了、什么都没发生" | `chat.test.ts: 零块错误终态必须新建可见错误气泡` / `chat.test.ts: 零块空闲超时也可见` / `chat.test.ts: 零块正常终态不补空气泡` |
 
 ## C-AGT：模型上下文回放（M6）
 
@@ -95,6 +96,8 @@
 | C-CH-4 | 模型发现失败报错且**不改动已保存配置**；UI 不清空已选模型 | `TestChatService_DiscoverModels` / `channels.test.ts: 模型发现失败不清空已有模型` |
 | C-CH-5 | 渠道配置原子写（无临时文件残留） | `TestStore_SaveLoadRoundtripAtomic` |
 | C-CH-6 | 密钥绝不出编排层：列表仅返回脱敏视图 + `hasKey` | `TestChannel_SanitizedHidesKey` / `TestChatService_ChannelCRUDValidation` |
+| C-CH-7 | **自动禁用是运行期标记**：应用启动时把 `auto_disabled` 渠道恢复为 `enabled`（单次网络抖动 / 上游 5xx 不得让应用永久无渠道可用）；`manually_disabled`（用户显式意图）与凭证级禁用标记**一概不动**；恢复动作留痕（启动日志） | `TestPool_ReviveAutoDisabled` / `TestPool_ReviveKeepsManualDisabled` / `TestPool_ReviveKeepsCredentialBan` / `TestChatService_StartupRevivesAutoDisabledChannel` |
+| C-CH-8 | 无可用渠道的错误**必须可执行**：点名渠道与其状态（自动禁用/手动停用）、缺失的模型名与渠道现有模型，并给出恢复动作；禁止只回"无可用渠道：default / m（retry=0）"这类零信息量文本（该错误直接渲染在对话气泡里） | `TestGateway_NoChannelErrorIsActionable` / `TestGateway_NoChannelErrorNamesMissingModel` |
 
 ## C-SES 扩展：会话删除 / 重命名 / 导出
 
@@ -153,3 +156,4 @@
 | 2026-09-23 | C-APP-2 | 锁定测试落地于 `internal/app/chat_service_test.go::TestChatService_CancelKeepsEvents`，走 `httptest` 上游 + 真实 `chatRuntime` 的端到端路径。此前只有 `TestAgent_CancelKeepsEvents`，而它用 `fakeRuntime` **直接把 `EndCancelled` 喂进内核**，恰好绕过了真正会出错的那一环（runtime 中继把 ctx 取消误判为 `EndError`）——这个盲区正是"用户点中断却被上报成错误"长期未被发现的根因。补测同时修复了 `core/llm/runtime.go` 中继层的终态判定 | 本文件"ID 与测试名一一对应"的要求 + ADR-0003（流式三终态） |
 | 2026-09-23 | **新增 C-INS-1 ~ C-INS-7** | 补齐安装/卸载契约（此前完全缺失）。同时修正实现两处：① 卸载按名字无条件删除共享注册项 → 改为校验 `InstallLocation` 归属（实测踩过：用隔离目录做卸载验证，连带删掉了用户正式安装的注册项）；② 非致命警告只写 stderr，而安装器是 `-H windowsgui` 构建、没有控制台 → 警告用户永远看不到，改为同时落盘 `setup.log` | 用户实测反馈"安装后桌面没有快捷方式" + legacy 对照（legacy 同时创建桌面与开始菜单） |
 | 2026-09-27 | **新增 C-AGT-1~4 / C-FS-5~7 / C-SEARCH-1~6 / C-APP-3** | M6 编程智能体可用性：跨轮工具历史回放（含模型侧 4096 字节截断、旧账本合成 ID）、`fs.list`、工作区 `search`、Replay 投影工具卡与 thinking。截断只发生在 derive 视图，账本保留全文（ADR-0008；编号避让远端已发布的 ADR-0007 审批闸门） | `docs/superpowers/specs/2026-09-27-coding-agent-usability-design.md` + ADR-0008 |
+| 2026-09-28 | **新增 C-CH-7 / C-CH-8 / C-APP-4** | 实机故障：唯一渠道被 `auto_ban` 置为 `auto_disabled` 后，应用表现为"发消息毫无反应、没法对话"。三处根因分别固化为契约：① 选路失败的错误文本零信息量（用户不知道是没配、被禁用还是模型名错）→ C-CH-8 要求可执行；② `auto_disabled` 被持久化却无任何自动恢复途径 → C-CH-7 定为运行期标记、启动重新评估；③ 零块终态时前端 `onTerminal` 找不到"进行中的助手气泡"，错误被静默丢弃 → C-APP-4 要求新建错误气泡。同时修复：`gateway.noChannelError` 翻译错误、`channels.ReviveAutoDisabled` 新增、`chat.ts onTerminal` 补零块分支 | 用户实测反馈"不对哇，没法进行对话，这块做的有问题" + 复现证据（`TERMINAL endReason=2 err=无可用渠道：default / grok-4.7（retry=0）`，账本仅 `user_message` 无任何助手事件） |

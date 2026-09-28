@@ -59,6 +59,9 @@ type ChatService struct {
 	agent        *agent.Loop // 随激活模型重建；无激活渠道时为 nil（Send 给出可读错误）
 	defaultModel string      // 当前轮次使用的模型名（激活渠道的首个模型）
 	ledgers      map[string]*session.Ledger
+	// revived 是本次启动从"自动禁用"恢复的渠道展示名（壳层写日志；空 = 无）。
+	// 为什么留痕：恢复动作改变了用户上次看到的渠道状态，静默改变用户配置观感不可接受。
+	revived []string
 
 	// 审批闸门状态（ADR-0007，默认关闭）
 	approvalTools    []string                       // 需要审批的工具名（空 = 关闭）
@@ -140,6 +143,13 @@ func (s *ChatService) bootstrapChannels() error {
 	// 审批策略（用户设置）与渠道无关，必须**在任一提前返回之前**恢复：
 	// 曾放在 active 检查之后，导致"没有渠道时策略丢失"（测试当场抓到）。
 	s.approvalTools = s.pool.ApprovalTools()
+	// 自动禁用是运行期健康标记（网络抖动/上游 5xx 都会置位）：进程重启即重新给一次机会，
+	// 否则单次瞬时故障会让应用永久无渠道可用——用户只看到"发消息没反应"（实机事故）。
+	revived, err := s.pool.ReviveAutoDisabled()
+	if err != nil {
+		return fmt.Errorf("恢复自动禁用渠道失败：%w", err)
+	}
+	s.revived = revived
 	model, ok := s.pool.DefaultModel()
 	if !ok {
 		migrated, ok2 := channels.MigrateFromConfig(configfile.File{
@@ -157,6 +167,15 @@ func (s *ChatService) bootstrapChannels() error {
 		model = migrated.Models[0]
 	}
 	return s.activate(model)
+}
+
+// RevivedChannels 返回本次启动从"自动禁用"恢复的渠道展示名（供壳层写启动日志；空 = 无）。
+func (s *ChatService) RevivedChannels() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.revived))
+	copy(out, s.revived)
+	return out
 }
 
 // activate 由当前默认模型构建运行时与 agent；这是唯一与"具体渠道"耦合的装配点。

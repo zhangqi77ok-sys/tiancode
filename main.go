@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -61,6 +62,11 @@ func main() {
 			bind.AppCtx = ctx
 			// 窗口就绪的可断言证据（排障与验收都依赖这行）
 			shell.LogLifecycle(fmt.Sprintf("started v%s model=%s workspace=%s", version, cfg.Model, cfg.WorkDir))
+			// 自动禁用渠道的重启恢复会改变用户上次看到的渠道状态，必须留痕（否则用户
+			// 无法解释"为什么这次又能用了"）
+			if revived := chat.RevivedChannels(); len(revived) > 0 {
+				shell.LogLifecycle("渠道从自动禁用恢复（重启重新评估）：" + strings.Join(revived, "、"))
+			}
 		},
 		OnShutdown: func(ctx context.Context) {
 			shell.LogLifecycle("shutdown")

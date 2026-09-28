@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tiancode/internal/core/llm"
+	"tiancode/internal/platform/channels"
 )
 
 // newChannelService 构造带独立渠道文件的用例服务（测试隔离）。
@@ -219,5 +220,40 @@ func TestChatService_NoChannelSendFails(t *testing.T) {
 	s := newChannelService(t, Config{}) // 无 config 迁移来源
 	if _, err := s.Send(context.Background(), "s1", "hi"); err == nil {
 		t.Fatal("Send without channel must fail explicitly")
+	}
+}
+
+// 自动禁用渠道必须在应用启动时恢复：否则单次网络抖动 / 上游 5xx 就会让应用
+// 永久没有可用渠道，用户表现为"发消息毫无反应"（实机事故：唯一渠道 auto_disabled）。
+func TestChatService_StartupRevivesAutoDisabledChannel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "channels.json")
+	seed := channels.NewPool(path)
+	if err := seed.Save(channels.Channel{
+		ID: "ch-1", Type: "openai", Name: "ss2a", BaseURL: "https://gw/v1",
+		Credential: "sk-x", Models: []string{"m1"}, Groups: []string{channels.DefaultGroup},
+		Status: channels.StatusAutoDisabled, Priority: 100, AutoBan: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.SetActive("ch-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewChatService(Config{DataDir: t.TempDir(), WorkDir: t.TempDir(), ChannelsPath: path})
+	if err != nil {
+		t.Fatalf("NewChatService: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// 恢复改变了用户上次看到的渠道状态，必须留痕（启动日志）
+	if got := s.RevivedChannels(); len(got) != 1 || got[0] != "ss2a" {
+		t.Fatalf("RevivedChannels = %v, want [ss2a]", got)
+	}
+	views, _, err := s.Channels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Status != channels.StatusEnabled {
+		t.Fatalf("启动后渠道应恢复为 enabled：%+v", views)
 	}
 }

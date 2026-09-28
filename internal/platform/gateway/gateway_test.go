@@ -184,6 +184,49 @@ func TestGateway_AutoBanSingleKey(t *testing.T) {
 	}
 }
 
+// 无可用渠道的错误必须可读可执行：用户要能知道该做什么。
+// 原始错误 "无可用渠道：default / m（retry=0）" 让应用表现为"发消息毫无反应"（实机反馈）。
+func TestGateway_NoChannelErrorIsActionable(t *testing.T) {
+	// 1) 未配置任何渠道 → 引导新增
+	g := newGateway(t)
+	_, terminal := collect(t, mustStream(t, g, "m"))
+	if terminal.EndReason != llm.EndError {
+		t.Fatalf("terminal = %+v, want EndError", terminal)
+	}
+	if !strings.Contains(terminal.Err.Error(), "新增渠道") {
+		t.Fatalf("未配置渠道应引导新增，got %v", terminal.Err)
+	}
+
+	// 2) 渠道被 auto_ban 自动禁用 → 点名渠道 + 给出恢复动作
+	srv, _, _, _ := newUpstream(t, http.StatusServiceUnavailable)
+	g2 := newGateway(t, chanOf("ss2a", "m", 100, func(c *channels.Channel) {
+		c.BaseURL = srv.URL
+		c.AutoBan = true
+	}))
+	collect(t, mustStream(t, g2, "m")) // 第一次：上游故障 → auto_ban
+	_, terminal2 := collect(t, mustStream(t, g2, "m"))
+	msg := terminal2.Err.Error()
+	if !strings.Contains(msg, "ss2a") || !strings.Contains(msg, "自动禁用") {
+		t.Fatalf("错误应点名渠道与自动禁用状态，got %v", terminal2.Err)
+	}
+	if !strings.Contains(msg, "启用") {
+		t.Fatalf("错误应给出恢复动作，got %v", terminal2.Err)
+	}
+}
+
+// 渠道不含所请求模型时必须点名两边的模型名（用户改模型名时唯一的线索）。
+func TestGateway_NoChannelErrorNamesMissingModel(t *testing.T) {
+	g := newGateway(t, chanOf("a", "old-model", 100))
+	_, terminal := collect(t, mustStream(t, g, "new-model"))
+	if terminal.EndReason != llm.EndError {
+		t.Fatalf("terminal = %+v, want EndError", terminal)
+	}
+	msg := terminal.Err.Error()
+	if !strings.Contains(msg, "new-model") || !strings.Contains(msg, "old-model") {
+		t.Fatalf("应点名缺失模型与渠道现有模型，got %v", msg)
+	}
+}
+
 func mustStream(t *testing.T, g *Gateway, model string) <-chan llm.StreamChunk {
 	t.Helper()
 	ch, err := g.StreamChat(context.Background(), llm.ChatRequest{

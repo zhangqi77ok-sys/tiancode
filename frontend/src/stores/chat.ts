@@ -363,6 +363,20 @@ export const useChatStore = defineStore('chat', () => {
         ast.durationMs = Date.now() - turnStartedAt
         turnStartedAt = 0
       }
+    } else if (p.endReason !== END_REASON.DONE) {
+      // 零块终态：整个回合没有任何增量到达就结束了（无可用渠道 / 流未建立即失败）。
+      // 此时没有气泡可挂错误——必须补一条，否则界面表现为"消息发出去了，什么都没发生"，
+      // 用户完全不知道出了什么事（实机反馈："没法进行对话"）。
+      messages.value.push(
+        withId({
+          role: 'assistant',
+          content: terminalLabel(p.endReason, p.error),
+          error: true,
+          term: p.endReason,
+          at: Date.now(),
+        }),
+      )
+      turnStartedAt = 0
     }
     // 首轮结束自动命名会话（开源惯例：open-webui/lobe-chat 以首条消息截断作标题，
     // 侧栏不再裸奔会话 ID）；用户重命名过的不覆盖——titleOf 回退会话 ID 即"未命名"判据。

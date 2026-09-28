@@ -16,8 +16,10 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"tiancode/internal/core/llm"
@@ -66,7 +68,13 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			Preferred: g.Pool.ActiveID(),
 		})
 		if err != nil {
-			g.terminal(ctx, out, fmt.Errorf("%v（last: %v）", err, lastErr), &forwarded)
+			if lastErr != nil {
+				// 已试过的渠道都失败了：真实原因在上游错误里，选路错误只作补充
+				g.terminal(ctx, out, fmt.Errorf("%v（last: %v）", err, lastErr), &forwarded)
+				return
+			}
+			// 一轮都没打出去：原因只能由池的状态解释（未配置/被禁用/不含该模型）
+			g.terminal(ctx, out, g.noChannelError(req.Model, err), &forwarded)
 			return
 		}
 		adv, err := g.Reg.Get(sel.Type)
@@ -210,6 +218,57 @@ func isChannelFaultStatus(code int) bool {
 // isCredentialFaultStatus 报告状态码是否属于凭证级故障（401 / 403）。
 func isCredentialFaultStatus(code int) bool {
 	return code == http.StatusUnauthorized || code == http.StatusForbidden
+}
+
+// noChannelError 把"无可用渠道"翻译成用户能照着做的说明。
+//
+// 为什么必须翻译：这条错误会直接渲染在对话气泡里。原始文本
+// "无可用渠道：default / grok-4.7（retry=0）" 对用户零信息量——他既不知道是自己没配、
+// 渠道被系统禁用了，还是模型名填错了，于是整个应用表现为"发消息没反应"（实机反馈）。
+// 选路失败的原因只有池知道，所以翻译放在这里（协议无关，不涉及任何适配器细节）。
+func (g *Gateway) noChannelError(model string, err error) error {
+	if !errors.Is(err, channels.ErrNoChannel) {
+		return err
+	}
+	all := g.Pool.List()
+	if len(all) == 0 {
+		return fmt.Errorf("尚未配置任何模型渠道：请在「渠道管理」中新增渠道并设为激活，再发送消息")
+	}
+	reasons := make([]string, 0, len(all))
+	for _, c := range all {
+		switch {
+		case c.Status == channels.StatusAutoDisabled:
+			reasons = append(reasons, fmt.Sprintf(
+				"渠道「%s」已被自动禁用（上游故障或网络失败触发）；在「渠道管理」点「编辑」把状态改回「启用」，或用「测试」先确认上游是否恢复",
+				c.DisplayName()))
+		case c.Status == channels.StatusManuallyDisabled:
+			reasons = append(reasons, fmt.Sprintf(
+				"渠道「%s」处于手动停用状态；在「渠道管理」里改为「启用」",
+				c.DisplayName()))
+		case !hasModel(c, model):
+			reasons = append(reasons, fmt.Sprintf(
+				"渠道「%s」不包含模型「%s」（该渠道现有模型：%s）",
+				c.DisplayName(), model, strings.Join(c.Models, "、")))
+		default:
+			reasons = append(reasons, fmt.Sprintf(
+				"渠道「%s」当前不可用（状态 %s；若为多凭证渠道，请检查凭证是否全部被禁用）",
+				c.DisplayName(), channels.StatusLabel(c.Status)))
+		}
+	}
+	return fmt.Errorf("没有可用于模型「%s」的渠道：%s", model, strings.Join(reasons, "；"))
+}
+
+// hasModel 报告渠道是否声明了该模型（空模型名视为"任意"，避免误报不含）。
+func hasModel(c channels.Channel, model string) bool {
+	if model == "" {
+		return true
+	}
+	for _, m := range c.Models {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
 // terminal 投递恰好一个 EndError 终态块并收束（转发开始后不会走到这里）。

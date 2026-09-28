@@ -57,3 +57,26 @@ func (c *Channel) CredentialEnabled(i int) bool {
 	}
 	return !c.CredentialState.Disabled[i]
 }
+
+// DisplayName 返回渠道展示名（无名回退 ID）：面向用户的错误文本与启动日志共用一处，
+// 避免"UI 叫名字、错误里叫 ID"两套称呼（用户对不上号就没法排查）。
+func (c *Channel) DisplayName() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.ID
+}
+
+// StatusLabel 返回渠道状态的中文标签（面向用户的错误文本使用；未知状态原样返回）。
+func StatusLabel(status string) string {
+	switch status {
+	case StatusEnabled:
+		return "启用"
+	case StatusManuallyDisabled:
+		return "手动停用"
+	case StatusAutoDisabled:
+		return "自动禁用"
+	default:
+		return status
+	}
+}
