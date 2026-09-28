@@ -304,12 +304,24 @@ func (g *Gateway) terminal(ctx context.Context, out chan llm.StreamChunk, err er
 }
 
 // emit 转发一个块（带逃生）；终态后由调用方 return 触发 close(out)。
+//
+// 终态块绝不能走 ctx.Done 逃生：select 在多个就绪分支里随机挑一个，
+// ctx 已取消时终态会被随机丢弃——消费方只看到通道关闭、没有任何终态
+// （EndReason=0，违反"恰好一个终态"契约，CI 的取消测试当场抓到）。
+// 与 finishStopped 同一纪律：终态限时阻塞投递，宁可多等 500ms；
+// 消费方真的离开了，上层的 synthetic 终态兜底（C-APP-2）仍会收束 UI。
 func (g *Gateway) emit(ctx context.Context, out chan llm.StreamChunk, c llm.StreamChunk, forwarded *bool) {
+	if c.EndReason != llm.EndNone {
+		select {
+		case out <- c:
+			*forwarded = true
+		case <-time.After(500 * time.Millisecond):
+		}
+		return
+	}
 	select {
 	case out <- c:
-		if c.EndReason != llm.EndNone {
-			*forwarded = true
-		}
+		*forwarded = true
 	case <-time.After(500 * time.Millisecond):
 	case <-ctx.Done():
 	}
