@@ -161,6 +161,17 @@ export const useChatStore = defineStore('chat', () => {
     if (card) card.status = approved ? 'approved' : 'denied'
   }
 
+  // 置顶/取消置顶：失败可见（error 位），成功后刷新摘要（分区与排序随之变化）
+  async function pinSession(id: string, pinned: boolean) {
+    error.value = ''
+    try {
+      await bridge().app.PinSession(id, pinned)
+      await loadSessions()
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+    }
+  }
+
   async function setApprovalPolicy(tools: string[]) {
     error.value = ''
     try {
@@ -285,6 +296,7 @@ export const useChatStore = defineStore('chat', () => {
     summaries,
     titleOf,
     renameSession,
+    pinSession,
     loadSessions,
     selectSession,
     newSession,

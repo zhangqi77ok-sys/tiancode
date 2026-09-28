@@ -1,47 +1,68 @@
 import { describe, expect, it } from 'vitest'
-import { groupSessions } from './sessionGrouping'
+import { buildSidebar } from './sessionGrouping'
 import type { SessionSummaryDTO } from '../wails'
 
-function s(id: string, workspace?: string, title = ''): SessionSummaryDTO {
-  return { id, title, workspace }
+function s(id: string, opts: Partial<SessionSummaryDTO> = {}): SessionSummaryDTO {
+  return { id, title: '', ...opts }
 }
 
-describe('groupSessions', () => {
-  it('按空间分组：当前空间排最前', () => {
-    const groups = groupSessions(
-      [s('a', 'D:/work/alpha'), s('b', 'D:/work/beta')],
-      ['a', 'b'],
-      'D:/work/beta',
+describe('buildSidebar', () => {
+  it('三分区结构：置顶 / 会话（未归属）/ 空间', () => {
+    const sections = buildSidebar(
+      [
+        s('p', { workspace: 'D:/w/alpha', pinned: true, lastActiveMs: 100 }),
+        s('u', { lastActiveMs: 200 }),
+        s('a', { workspace: 'D:/w/beta', lastActiveMs: 300 }),
+      ],
+      ['p', 'u', 'a', 'new'],
+      'D:/w/beta',
     )
-    expect(groups).toHaveLength(2)
-    expect(groups[0]).toMatchObject({ label: 'beta', isCurrent: true })
-    expect(groups[0].items.map((i) => i.id)).toEqual(['b'])
-    expect(groups[1]).toMatchObject({ label: 'alpha', isCurrent: false })
+    expect(sections.map((x) => x.kind)).toEqual(['pinned', 'sessions', 'spaces'])
+    expect(sections[0]).toMatchObject({ label: '置顶', items: [expect.objectContaining({ id: 'p' })] })
+    expect(sections[1]).toMatchObject({ label: '会话', items: [expect.objectContaining({ id: 'u' })] })
+    // 置顶会话不为其空间创建空组：alpha 无未置顶成员 → 空间组只有 beta（含新建未发送会话）
+    expect(sections[2].groups).toHaveLength(1)
+    expect(sections[2].groups[0]).toMatchObject({ label: 'beta', isCurrent: true })
+    expect(sections[2].groups[0].items.map((i) => i.id)).toEqual(['new', 'a'])
   })
 
-  it('分组标签取路径末段', () => {
-    const groups = groupSessions([s('a', 'D:/work/alpha')], ['a'], 'D:/work/alpha')
-    expect(groups[0].label).toBe('alpha')
+  it('置顶会话不重复出现在其他分区', () => {
+    const sections = buildSidebar([s('p', { workspace: 'D:/w/alpha', pinned: true })], ['p'], 'D:/w/alpha')
+    const flat = sections.flatMap((x) => [...x.items, ...x.groups.flatMap((g) => g.items)])
+    expect(flat.filter((x) => x.id === 'p')).toHaveLength(1)
   })
 
-  it('旧会话无工作区归入"未分组"，不消失', () => {
-    const groups = groupSessions([s('old')], ['old'], 'D:/work/beta')
-    const unset = groups.find((g) => !g.isCurrent)
-    expect(unset?.label).toBe('未分组')
-    expect(unset?.items.map((i) => i.id)).toEqual(['old'])
+  it('空间分组：当前空间排最前；组内按最后活跃降序', () => {
+    const sections = buildSidebar(
+      [
+        s('old', { workspace: 'D:/w/beta', lastActiveMs: 100 }),
+        s('new', { workspace: 'D:/w/beta', lastActiveMs: 500 }),
+      ],
+      ['old', 'new'],
+      'D:/w/beta',
+    )
+    const spaces = sections.find((x) => x.kind === 'spaces')
+    expect(spaces?.groups[0]).toMatchObject({ label: 'beta', isCurrent: true })
+    expect(spaces?.groups[0].items.map((i) => i.id)).toEqual(['new', 'old'])
   })
 
-  it('新建未发送的会话（无摘要）归入当前空间最上方', () => {
-    const groups = groupSessions([s('a', 'D:/work/alpha')], ['new-1', 'a'], 'D:/work/alpha')
-    const cur = groups.find((g) => g.isCurrent)
-    expect(cur?.items[0]).toMatchObject({ id: 'new-1' })
-    expect(cur?.items[1]).toMatchObject({ id: 'a' })
+  it('新建未发送会话：有当前空间归其最上，未设置工作区归"会话"区', () => {
+    const withWs = buildSidebar([], ['fresh'], 'D:/w/beta')
+    expect(withWs[0].kind).toBe('spaces')
+    expect(withWs[0].groups[0].items[0]).toMatchObject({ id: 'fresh' })
+
+    const noWs = buildSidebar([], ['fresh'], '')
+    expect(noWs[0].kind).toBe('sessions')
+    expect(noWs[0].items[0]).toMatchObject({ id: 'fresh' })
   })
 
-  it('未设置工作区时"未分组"即当前空间（合并，不重复建组）', () => {
-    const groups = groupSessions([s('old')], ['old'], '')
-    expect(groups).toHaveLength(1)
-    expect(groups[0].label).toBe('未分组')
-    expect(groups[0].isCurrent).toBe(true)
+  it('旧会话（无 workspace）归"会话"区；有成员的空间才出现', () => {
+    const sections = buildSidebar([s('old'), s('b', { workspace: 'D:/w/beta' })], ['old', 'b'], 'D:/w/beta')
+    expect(sections.find((x) => x.kind === 'sessions')?.items.map((i) => i.id)).toEqual(['old'])
+    expect(sections.find((x) => x.kind === 'spaces')?.groups.map((g) => g.label)).toEqual(['beta'])
+  })
+
+  it('全空（无摘要无新建）：不输出分区', () => {
+    expect(buildSidebar([], [], 'D:/w/beta')).toEqual([])
   })
 })

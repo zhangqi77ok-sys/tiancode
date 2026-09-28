@@ -20,11 +20,14 @@ export interface ApprovalEventDTO {
 }
 
 // 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）；
-// workspace 为空表示 0.2.6 前的旧账本（前端归入"未分组"）
+// workspace 为空表示 0.2.6 前的旧账本（前端归入"未分组"）；
+// lastActiveMs 为 0 表示全新会话未发生轮次（前端不显示时间）
 export interface SessionSummaryDTO {
   id: string
   title: string
   workspace?: string
+  pinned?: boolean
+  lastActiveMs?: number
 }
 
 // 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）
@@ -112,6 +115,7 @@ interface WailsApp {
   SetWorkspace(dir: string): Promise<void>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
+  PinSession(sessionID: string, pinned: boolean): Promise<void>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
   Send(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
@@ -167,6 +171,7 @@ export function bridge(): WailsBridge {
         GetWorkspace: async () => '',
         SetWorkspace: offlineWrite,
         PickWorkspace: offlineWrite,
+        PinSession: offlineWrite,
         Replay: async () => [],
         Send: async () => {},
         Stop: async () => {},

@@ -300,6 +300,9 @@ func TestSessionSummaries_CarryWorkspace(t *testing.T) {
 	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": "D:/proj/b"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := l.Append(session.EventSessionPinned, map[string]bool{"pinned": true}); err != nil {
+		t.Fatal(err)
+	}
 	// 无快照的会话（旧账本形态）：Workspace 为空
 	l2, err := s.ledgerFor("s-20260928-130001")
 	if err != nil {
@@ -322,5 +325,15 @@ func TestSessionSummaries_CarryWorkspace(t *testing.T) {
 	}
 	if got := byID["s-20260928-130001"].Workspace; got != "" {
 		t.Fatalf("workspace = %q, want empty（旧账本兼容）", got)
+	}
+	// 置顶与最后活跃时间：侧栏分区与相对时间的数据源
+	if !byID["s-20260928-130000"].Pinned {
+		t.Fatal("pinned = false, want true（按账本置顶事件）")
+	}
+	if byID["s-20260928-130000"].LastActiveMs <= 0 {
+		t.Fatalf("lastActiveMs = %d, want >0（账本已写入）", byID["s-20260928-130000"].LastActiveMs)
+	}
+	if byID["s-20260928-130001"].LastActiveMs <= 0 {
+		t.Fatalf("lastActiveMs = %d, want >0（user_message 已写入）", byID["s-20260928-130001"].LastActiveMs)
 	}
 }

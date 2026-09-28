@@ -68,6 +68,11 @@ func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
 // SetWorkspace 切换工作区；非法路径（不存在/非目录/空白）返回错误供 UI 展示。
 func (b *Bind) SetWorkspace(dir string) error { return b.chat.SetWorkspace(dir) }
 
+// PinSession 置顶/取消置顶会话（侧栏置顶分区）。
+func (b *Bind) PinSession(sessionID string, pinned bool) error {
+	return b.chat.PinSession(sessionID, pinned)
+}
+
 // PickWorkspace 弹出系统目录选择框，返回选中的目录；用户取消返回空串。
 // 为什么放后端：原生目录选择依赖 Wails 应用上下文（窗口句柄），前端无法自行唤起。
 func (b *Bind) PickWorkspace() (string, error) {

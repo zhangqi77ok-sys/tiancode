@@ -18,6 +18,8 @@ type IconName =
   | 'refresh'
   | 'menu'
   | 'copy'
+  | 'star'
+  | 'message'
 
 withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 16 })
 
@@ -50,6 +52,8 @@ const PATHS: Record<IconName, string[]> = {
     'M10 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z',
     'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2',
   ],
+  star: ['M12 3l2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9-5.5 2.9 1-6.1L3 9.5l6.3-.9z'],
+  message: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
 }
 </script>
 

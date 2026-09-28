@@ -2,13 +2,14 @@
 import { computed, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
-import { groupSessions } from '../composables/sessionGrouping'
+import { buildSidebar } from '../composables/sessionGrouping'
 import { useDialogs } from '../composables/useDialogs'
 import AppIcon from './AppIcon.vue'
+import SessionRow from './SessionRow.vue'
 
-// 会话侧栏：双动作入口（新建对话 / 打开工作区）+ 按空间分组
-// （参考商用 AI 工具的"空间"侧栏：当前空间排最前且默认展开，其余折叠）。
-// 行内操作常驻可见（55% 透明度）——键盘/触屏用户也必须够得着。
+// 会话侧栏（三段式，对齐商用 AI 工具）：置顶 / 会话（未归属空间）/ 空间（按工作区分组）。
+// 双动作入口：新建对话（当前工作区）+ 打开工作区（切换后新对话归属该空间）。
+// 每个列表默认显示 5 条，超出折叠为"查看更多 (N)"。
 const props = defineProps<{ open?: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
@@ -16,16 +17,24 @@ const store = useChatStore()
 const ws = useWorkspaceStore()
 const dialogs = useDialogs()
 
-// 分组（纯函数 + 单测）：当前空间排最前；新建未发送的会话归当前空间最上方
-const groups = computed(() => groupSessions(store.summaries, store.sessions, ws.path))
+const VIEW_LIMIT = 5
 
-// 折叠态：当前空间默认展开，其余默认收起；用户点击后以手动为准
+// 分区模型（纯函数 + 单测）：sections = 置顶 / 会话 / 空间
+const sections = computed(() => buildSidebar(store.summaries, store.sessions, ws.path))
+
+// 折叠状态：分区头与空间分组头共用（当前空间默认展开，其余默认收起；点击后以手动为准）
 const collapsed = ref<Record<string, boolean>>({})
-function toggle(label: string) {
-  collapsed.value[label] = !collapsed.value[label]
+function toggle(key: string) {
+  collapsed.value[key] = !collapsed.value[key]
 }
-function isOpen(label: string, isCurrent: boolean): boolean {
-  return collapsed.value[label] ?? isCurrent
+function isOpen(key: string, defaultOpen: boolean): boolean {
+  return collapsed.value[key] ?? defaultOpen
+}
+
+// 查看更多：每个列表独立展开态
+const expanded = ref<Record<string, boolean>>({})
+function visible<T extends { id: string }>(items: T[], key: string): T[] {
+  return expanded.value[key] ? items : items.slice(0, VIEW_LIMIT)
 }
 
 // 打开工作区：系统目录选择框 → 切换（新对话将归属该空间）
@@ -71,7 +80,7 @@ function select(id: string) {
     class="card flex w-60 shrink-0 flex-col p-3 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-[var(--z-overlay)] max-md:w-72 max-md:rounded-l-none max-md:rounded-r-2xl max-md:shadow-2xl max-md:transition-transform max-md:duration-200"
     :class="open ? 'max-md:translate-x-0' : 'max-md:-translate-x-full max-md:invisible'"
   >
-    <!-- 双动作入口：新建对话 + 打开工作区（新对话将归属该空间） -->
+    <!-- 双动作入口：新建对话（当前工作区）+ 打开工作区（切换归属） -->
     <div class="mb-3 flex gap-1.5">
       <button
         class="btn-primary min-w-0 flex-1 gap-1.5 py-2 text-sm"
@@ -89,64 +98,89 @@ function select(id: string) {
       </button>
     </div>
 
-    <div class="min-h-0 flex-1 space-y-1 overflow-y-auto">
-      <div v-for="g in groups" :key="g.label" class="mb-1">
-        <!-- 分组头：空间名 + 数量；当前空间高亮 -->
-        <button
-          class="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)]"
-          :aria-expanded="isOpen(g.label, g.isCurrent)"
-          @click="toggle(g.label)"
-        >
-          <AppIcon
-            name="chevron-down"
-            :size="10"
-            class="shrink-0 transition-transform"
-            :class="isOpen(g.label, g.isCurrent) ? '' : '-rotate-90'"
-          />
-          <AppIcon name="folder" :size="11" class="shrink-0" :class="g.isCurrent ? 'text-[var(--c-primary)]' : ''" />
-          <span
-            class="min-w-0 flex-1 truncate"
-            :class="g.isCurrent ? 'font-medium text-[var(--c-primary)]' : ''"
+    <div class="min-h-0 flex-1 space-y-2 overflow-y-auto">
+      <template v-for="sec in sections" :key="sec.kind + sec.label">
+        <!-- 置顶 / 会话：单列表 -->
+        <div v-if="sec.kind !== 'spaces'" class="mb-1">
+          <div class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[var(--c-text-faint)]">
+            <AppIcon :name="sec.kind === 'pinned' ? 'star' : 'message'" :size="11" />
+            {{ sec.label }} ({{ sec.items.length }})
+          </div>
+          <div class="space-y-0.5">
+            <SessionRow
+              v-for="sm in visible(sec.items, sec.kind)"
+              :key="sm.id"
+              :id="sm.id"
+              :title="sm.title || sm.id"
+              :last-active-ms="sm.lastActiveMs"
+              :pinned="sm.pinned"
+              @select="select(sm.id)"
+              @pin="(p) => store.pinSession(sm.id, p)"
+              @rename="rename(sm.id)"
+              @remove="remove(sm.id)"
+            />
+          </div>
+          <button
+            v-if="sec.items.length > VIEW_LIMIT"
+            class="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-primary)] transition-colors hover:bg-[var(--c-primary-soft)]"
+            @click="toggle(sec.kind)"
           >
-            {{ g.label }}
-          </span>
-          <span class="shrink-0 text-[10px] text-[var(--c-text-faint)]">{{ g.items.length }}</span>
-        </button>
+            {{ expanded[sec.kind] ? '收起' : `查看更多 (${sec.items.length - VIEW_LIMIT})` }}
+          </button>
+        </div>
 
-        <div v-if="isOpen(g.label, g.isCurrent)" class="mt-0.5 space-y-0.5">
-          <div v-for="sItem in g.items" :key="sItem.id" class="group flex items-center gap-1">
+        <!-- 空间：按工作区的嵌套分组 -->
+        <div v-else class="mb-1">
+          <div class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[var(--c-text-faint)]">
+            <AppIcon name="folder" :size="11" /> {{ sec.label }} ({{ sec.groups.length }})
+          </div>
+          <div v-for="g in sec.groups" :key="g.label" class="mb-1">
             <button
-              class="min-w-0 flex-1 truncate rounded-xl px-3 py-2 text-left text-sm transition-colors"
-              :class="
-                sItem.id === store.sessionId
-                  ? 'bg-[var(--c-primary-soft)] font-medium text-[var(--c-primary)]'
-                  : 'text-[var(--c-text-dim)] hover:bg-[var(--c-surface-soft)]'
-              "
-              @click="select(sItem.id)"
+              class="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)]"
+              :aria-expanded="isOpen('fold:' + g.label, g.isCurrent)"
+              @click="toggle('fold:' + g.label)"
             >
-              {{ sItem.title || sItem.id }}
+              <AppIcon
+                name="chevron-down"
+                :size="10"
+                class="shrink-0 transition-transform"
+                :class="isOpen('fold:' + g.label, g.isCurrent) ? '' : '-rotate-90'"
+              />
+              <AppIcon name="folder" :size="11" class="shrink-0" :class="g.isCurrent ? 'text-[var(--c-primary)]' : ''" />
+              <span
+                class="min-w-0 flex-1 truncate"
+                :class="g.isCurrent ? 'font-medium text-[var(--c-primary)]' : ''"
+              >
+                {{ g.label }}
+              </span>
+              <span class="shrink-0 text-[10px] text-[var(--c-text-faint)]">{{ g.items.length }}</span>
             </button>
+
+            <div v-if="isOpen('fold:' + g.label, g.isCurrent)" class="mt-0.5 space-y-0.5">
+              <SessionRow
+                v-for="sm in visible(g.items, 'more:' + g.label)"
+                :key="sm.id"
+                :id="sm.id"
+                :title="sm.title || sm.id"
+                :last-active-ms="sm.lastActiveMs"
+                :pinned="sm.pinned"
+                @select="select(sm.id)"
+                @pin="(p) => store.pinSession(sm.id, p)"
+                @rename="rename(sm.id)"
+                @remove="remove(sm.id)"
+              />
+            </div>
+            <!-- 查看更多与文件夹折叠用不同 key，互不打架 -->
             <button
-              class="btn-ghost shrink-0"
-              :disabled="store.running"
-              title="重命名会话"
-              aria-label="重命名会话"
-              @click="rename(sItem.id)"
+              v-if="g.items.length > VIEW_LIMIT && isOpen('fold:' + g.label, g.isCurrent)"
+              class="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-primary)] transition-colors hover:bg-[var(--c-primary-soft)]"
+              @click="toggle('more:' + g.label)"
             >
-              <AppIcon name="pencil" :size="14" />
-            </button>
-            <button
-              class="btn-ghost shrink-0 hover:text-[var(--c-err-text)]"
-              :disabled="store.running"
-              title="删除会话"
-              aria-label="删除会话"
-              @click="remove(sItem.id)"
-            >
-              <AppIcon name="trash" :size="14" />
+              {{ expanded['more:' + g.label] ? '收起' : `查看更多 (${g.items.length - VIEW_LIMIT})` }}
             </button>
           </div>
         </div>
-      </div>
+      </template>
     </div>
 
     <div v-if="store.error" class="mt-2 px-1 text-xs text-[var(--c-err-text)]">{{ store.error }}</div>

@@ -12,15 +12,30 @@ import (
 )
 
 // SessionSummary 是会话列表项：ID + 用户标题（未重命名时 Title 为空）+ 归属工作区
-// （账本首个 workspace 事件；旧会话为空，前端归入"未分组"）。
+// （账本首个 workspace 事件；旧会话为空，前端归入"未分组"）+ 置顶与最后活跃时间
+// （侧栏分区与相对时间的数据源；LastActiveMs 为 0 表示全新会话未发生轮次）。
 type SessionSummary struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Workspace string `json:"workspace,omitempty"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Workspace    string `json:"workspace,omitempty"`
+	Pinned       bool   `json:"pinned"`
+	LastActiveMs int64  `json:"lastActiveMs"`
 }
 
 // maxTitleRunes 是标题长度上限：侧栏单行展示，过长既撑破布局也无法辨认。
 const maxTitleRunes = 60
+
+// PinSession 置顶/取消置顶会话（追加事件；重启/换机后仍生效）。
+func (s *ChatService) PinSession(sessionID string, pinned bool) error {
+	l, err := s.ledgerFor(sessionID)
+	if err != nil {
+		return err
+	}
+	if _, err := l.Append(session.EventSessionPinned, map[string]bool{"pinned": pinned}); err != nil {
+		return fmt.Errorf("保存置顶状态失败：%w", err)
+	}
+	return nil
+}
 
 // RenameSession 追加重命名事件。
 func (s *ChatService) RenameSession(sessionID, title string) error {
@@ -95,7 +110,15 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取会话 %s 工作区失败：%w", id, err)
 		}
-		out = append(out, SessionSummary{ID: id, Title: title, Workspace: ws})
+		pinned, err := session.Pinned(s.cfg.DataDir, id)
+		if err != nil {
+			return nil, fmt.Errorf("读取会话 %s 置顶状态失败：%w", id, err)
+		}
+		lastActive, err := session.LastActive(s.cfg.DataDir, id)
+		if err != nil {
+			return nil, fmt.Errorf("读取会话 %s 活跃时间失败：%w", id, err)
+		}
+		out = append(out, SessionSummary{ID: id, Title: title, Workspace: ws, Pinned: pinned, LastActiveMs: lastActive})
 	}
 	return out, nil
 }
