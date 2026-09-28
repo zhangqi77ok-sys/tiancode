@@ -10,7 +10,7 @@
 
 ## 快速开始（新环境 5 分钟）
 
-前置：Go 1.22+、Node 18+。
+前置：Go 1.22+、Node 20.19+（推荐 22；vite 6 / vitest 5 的引擎要求，18 装依赖会刷 EBADENGINE）。
 
 ```bash
 # 1) 前端 —— 必须排在 Go 编译之前。
@@ -75,8 +75,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
 
 | 产物（`dist/`） | 说明 |
 | --- | --- |
-| `tiancode-setup-v0.2.24.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建**桌面与开始菜单**快捷方式与卸载项；升级/卸载前自动关闭运行中的应用；支持 ChatGPT 订阅账号 OAuth 授权绑定与全局上游代理 |
-| `tiancode-v0.2.24-portable.zip` | 便携包（exe + README） |
+| `tiancode-setup-v0.2.25.exe` | 原生安装器（无需 NSIS）：安装到 `%LOCALAPPDATA%\Programs\tiancode`，创建**桌面与开始菜单**快捷方式与卸载项；升级/卸载前自动关闭运行中的应用；支持 ChatGPT 订阅账号 OAuth 授权绑定与全局上游代理 |
+| `tiancode-v0.2.25-portable.zip` | 便携包（exe + README） |
 
 安装器支持 `-quiet`（静默，供脚本部署）、`-dir <目录>`（自定义安装位置）与
 `-no-desktop-shortcut`（只建开始菜单入口，供桌面受限或企业托管环境）；
