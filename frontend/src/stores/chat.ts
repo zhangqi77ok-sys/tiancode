@@ -262,6 +262,27 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  // overlapCount 返回 hist 尾部与 live 前缀的最大逐条重叠数（role+content 比对）。
+  // 用于 Replay 与本地消息的合并去重：同一份后端账本投影与本地 push 的同一条
+  // 消息（role+content 相同）只保留一份。空 content 的"思考占位"不会与历史里的
+  // 富内容误判相同——最多匹配到 user 消息那一条（正确：它已在历史里）。
+  function overlapCount(hist: ChatMsg[], live: ChatMsg[]): number {
+    const max = Math.min(hist.length, live.length)
+    for (let k = max; k > 0; k--) {
+      let same = true
+      for (let i = 0; i < k; i++) {
+        const h = hist[hist.length - k + i]
+        const l = live[i]
+        if (h.role !== l.role || h.content !== l.content) {
+          same = false
+          break
+        }
+      }
+      if (same) return k
+    }
+    return 0
+  }
+
   async function selectSession(id: string) {
     // 工具根跟这场对话走。否则点开 A 空间的会话，读写仍打在当前工作区 B 上。
     // （ws.setPath/clear 内部自带可见报错，失败不阻断切换）
@@ -272,9 +293,18 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = id
     if (!convos.has(id)) {
       loadingSession.value = true
+      const c = ensureConvo(id)
       try {
-        const c = ensureConvo(id)
-        c.messages = await replayOf(id)
+        const hist = await replayOf(id)
+        // Replay 窗口（IPC 往返）内用户可能已经发了消息（冷启动直接对话，0.2.30
+        // 实机：打开软件就发，随后"什么都没显示"）。此前整体覆盖 `c.messages = hist`
+        // 会把窗口内刚 push 的消息丢掉——改为历史前置、本地保留，重叠前缀去重。
+        if (c.messages.length === 0) {
+          c.messages = hist
+        } else {
+          const skip = overlapCount(hist, c.messages)
+          c.messages = [...hist, ...c.messages.slice(skip)]
+        }
       } catch (e) {
         // 历史载入失败必须可见（此前是静默空白：用户以为会话内容丢了）
         error.value = `载入会话历史失败：${String(e instanceof Error ? e.message : e)}`

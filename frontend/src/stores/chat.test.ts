@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   }[],
   // 多会话：按会话 ID 定制重放（缺省回落 h.replay）
   replayById: {} as Record<string, { role: string; content: string }[]>,
+  // 可控延迟：模拟 Replay 的 IPC 往返窗口（窗口内发送的合并测试用）
+  replayGate: null as Promise<void> | null,
   resolved: [] as string[],
   sends: [] as string[],
   // 多会话：记录每次 Send 的目标会话（断言后台会话的队列续发归属）
@@ -31,7 +33,10 @@ vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
       ListSessionSummaries: async () => h.summaries,
-      Replay: async (id: string) => h.replayById[id] ?? h.replay,
+      Replay: async (id: string) => {
+        if (h.replayGate) await h.replayGate
+        return h.replayById[id] ?? h.replay
+      },
       Send: async (sessionID: string, text: string) => {
         h.sendCalls.push({ sessionID, text })
         h.sends.push(text)
@@ -69,6 +74,7 @@ describe('chat store', () => {
     h.renamed = []
     h.replay = []
     h.replayById = {}
+    h.replayGate = null
     h.resolved = []
     h.sends = []
     h.sendCalls = []
@@ -591,6 +597,48 @@ describe('chat store', () => {
     await store.removeSession(id)
     expect(store.error).toContain('正在运行')
     expect(h.deleted).toEqual([])
+  })
+
+  // 0.2.30：Replay 窗口（IPC 往返）内用户已发出的消息不能被历史整体覆盖丢掉
+  //（实机：冷启动直接对话，"发送后什么都没显示"，切换会话才恢复）。
+  it('Replay 窗口内的发送不丢：历史前置合并', async () => {
+    h.summaries = [{ id: 's-1', title: '旧会话' }]
+    h.replayById['s-1'] = [{ role: 'user', content: '旧问题' }]
+    let release: () => void = () => {}
+    h.replayGate = new Promise<void>((r) => {
+      release = r
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    const sel = store.selectSession('s-1') // 挂起在 Replay（模拟 IPC 窗口）
+    await store.send('窗口里发的新消息')
+    release()
+    await sel
+    // 历史在前；窗口内发送的 user 与其思考占位都在，且不叠重复
+    expect(store.messages.map((m) => m.content)).toEqual(['旧问题', '窗口里发的新消息', ''])
+    expect(store.messages.filter((m) => m.content === '窗口里发的新消息')).toHaveLength(1)
+  })
+
+  it('Replay 晚于落账（历史已含该消息）时不叠重复', async () => {
+    h.summaries = [{ id: 's-1', title: '旧会话' }]
+    let release: () => void = () => {}
+    h.replayGate = new Promise<void>((r) => {
+      release = r
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    const sel = store.selectSession('s-1')
+    await store.send('窗口里发的新消息')
+    // 后端已落账：Replay 投影里已含这条 user（历史尾部与本地前缀重叠）
+    h.replayById['s-1'] = [
+      { role: 'user', content: '旧问题' },
+      { role: 'user', content: '窗口里发的新消息' },
+    ]
+    release()
+    await sel
+    expect(store.messages.map((m) => m.content)).toEqual(['旧问题', '窗口里发的新消息', ''])
   })
 
   it('切换回已有缓冲的会话不重放覆盖（后台跑过的现场保留）', async () => {

@@ -45,6 +45,32 @@ watch(
     void toBottom()
   },
 )
+
+// 打开/切换会话与历史载入完成：**强制**落到最新（force 无视锚定）。
+// 为什么必须：冷启动 init 选中历史会话时，Replay 赋值触发的 toBottom 打在
+// "正在载入历史…"的矮容器上（无效），历史渲染完成后容器变长会把锚定态冲掉，
+// 视图停在顶部——用户在长历史底部发送的消息看不到，以为"没显示"（0.2.30 实机：
+// "打开软件就直接对话没显示，切换会话才正常"）。打开会话落在最新处是通用惯例。
+watch(
+  () => [store.sessionId, store.loadingSession] as const,
+  async ([, loading]) => {
+    if (loading) return
+    await toBottom(true)
+  },
+)
+
+// 用户主动发送（缓冲尾部出现新的 user 消息）：强制落到底——发送是主动动作，
+// 用户期望立刻看到自己的消息（与"流式期间保持锚定"纪律不冲突：force 仅此一处）。
+const lastUserId = computed(() => {
+  for (let i = store.messages.length - 1; i >= 0; i--) {
+    const m = store.messages[i]
+    if (m.role === 'user') return m.id ?? ''
+  }
+  return ''
+})
+watch(lastUserId, (id) => {
+  if (id) void toBottom(true)
+})
 watch(
   () => lastMsg.value?.content.length ?? 0,
   () => {
