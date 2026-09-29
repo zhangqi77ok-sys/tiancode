@@ -12,7 +12,7 @@ import (
 // 行为守则，三行讲完。随会话根变化（prefaceFn 每步实时取），不写入账本，
 // 绝不包含任何密钥（渠道凭证从不进入这里）。
 func sessionFacts(root string) string {
-	osName := runtime.GOOS
+	var osName string // switch 全分支覆盖，初值给 "" 即可（golangci-lint ineffassign）
 	switch runtime.GOOS {
 	case "windows":
 		osName = "Windows"
