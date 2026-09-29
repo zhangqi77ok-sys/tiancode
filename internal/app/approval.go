@@ -63,11 +63,16 @@ func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 // approverFor 返回当前策略对应的审批器（调用方持锁；nil = 审批关闭，行为回到"零干扰"）。
 // 为什么不再是"装到 agent 上"：agent 每轮独立构建（多会话并行），审批器随轮注入；
 // sessionID 让审批事件能归属到发起它的会话。
+// 审批工具清单**拷贝快照**（0.2.35 审计#7）：此前 Review 每次读活列表，回合中途
+// 把某工具移出清单会让同回合的下一次调用直接放行——"进行中的轮次维持开跑时的
+// 策略"的注释从未成立。快照后新策略仍从下一轮开始生效（与注释一致）。
 func (s *ChatService) approverFor(sessionID string) agent.Approver {
 	if len(s.approvalTools) == 0 {
 		return nil
 	}
-	return &uiApprover{svc: s, sessionID: sessionID}
+	snapshot := make([]string, len(s.approvalTools))
+	copy(snapshot, s.approvalTools)
+	return &uiApprover{svc: s, sessionID: sessionID, allowed: snapshot}
 }
 
 // ResolveApproval 提交用户对某次审批请求的答复。
@@ -94,17 +99,27 @@ func (s *ChatService) ResolveApproval(id string, approved bool, reason string) e
 
 // uiApprover 是 agent.Approver 的编排层实现：发事件 → 等答复 → 返回决策。
 // sessionID 是发起这轮对话的会话（随轮注入，见 ChatService.newAgentWith）。
+// allowed 是本回合的审批清单快照（approverFor 拷贝）：策略变更只影响下一轮。
 type uiApprover struct {
 	svc       *ChatService
 	sessionID string
+	allowed   []string
 }
 
 // approvalSeq 生成请求 ID（进程内唯一即可，仅用于 UI 与答复配对）。
 var approvalSeq atomic.Int64
 
 func (a *uiApprover) Review(ctx context.Context, req agent.ApprovalRequest) (agent.Decision, error) {
-	// 不在清单内的工具直接放行：审批只针对用户指定的工具，绝不做泛化拦截
-	if !a.svc.toolNeedsApproval(req.ToolName) {
+	// 不在本回合快照内的工具直接放行：审批只针对用户指定的工具，绝不做泛化拦截。
+	// 用快照而非活列表（0.2.35 审计#7）：回合中途改策略不改变本回合行为。
+	found := false
+	for _, n := range a.allowed {
+		if n == req.ToolName {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return agent.Decision{Approved: true}, nil
 	}
 

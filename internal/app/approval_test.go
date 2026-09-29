@@ -34,7 +34,7 @@ func TestChatService_ApprovalBridge(t *testing.T) {
 
 	events := make(chan ApprovalEvent, 1)
 	s.SetApprovalHandler(func(e ApprovalEvent) { events <- e })
-	ap := &uiApprover{svc: s}
+	ap := &uiApprover{svc: s, allowed: []string{"shell"}}
 
 	// 不在清单内的工具：直接放行且不发事件（绝不做泛化拦截）
 	d, err := ap.Review(context.Background(), agent.ApprovalRequest{ToolName: "fs", Arguments: "{}"})
@@ -140,7 +140,7 @@ func TestChatService_ApprovalCancelWhileWaiting(t *testing.T) {
 	if err := s.SetApprovalPolicy([]string{"shell"}); err != nil {
 		t.Fatal(err)
 	}
-	ap := &uiApprover{svc: s}
+	ap := &uiApprover{svc: s, allowed: []string{"shell"}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {

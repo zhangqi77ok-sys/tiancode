@@ -63,6 +63,13 @@ func New(opts Options) *Tool {
 	}
 }
 
+// Close 终止全部后台任务并释放资源（0.2.35 审计#2）。工作区切换会整体替换
+// shell 工具实例，应用退出也要收——孤儿后台进程与"退出后残留 node.exe"同源。
+func (t *Tool) Close() error {
+	t.bg.Close()
+	return nil
+}
+
 // Name 实现工具端口。
 func (t *Tool) Name() string { return "shell" }
 
@@ -99,6 +106,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return businessErrf("invalid arguments: %v", err), nil
+	}
+	// 超时硬顶（0.2.35 审计#6）：timeout_seconds 无上限会让一条命令挂死整个
+	// 回合；600s 覆盖 npm install 等重任务，更长的让模型分步处理。
+	if a.TimeoutSeconds > 600 {
+		a.TimeoutSeconds = 600
 	}
 	// 卡片语义标签：run/bg_start 显示命令首段（参考稿的"⌨ 命令"形态），bg_* 显示任务号
 	defer func() {

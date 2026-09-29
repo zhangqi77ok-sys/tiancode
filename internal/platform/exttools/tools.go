@@ -112,8 +112,9 @@ func (t *SkillTool) Execute(_ context.Context, args json.RawMessage) (tools.Tool
 
 // MCPTool 把调用转到已启用的 MCP 服务器。
 type MCPTool struct {
-	Load func() catalog.File
-	hub  sync.Map // name -> *mcpclient.Client
+	Load  func() catalog.File
+	hub   sync.Map   // name -> *mcpclient.Client
+	hubMu sync.Mutex // 保护 hub 的读-改-删序列（0.2.35 审计#9：LoadAndDelete+Store 有盖掉新实例的窗口）
 }
 
 // NewMCP 构造 MCP 工具。
@@ -224,6 +225,10 @@ func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpcli
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// 拉起与登记整体在 hubMu 内：与 dropClient 的读-比-删互斥（0.2.35 审计#9）。
+	// 拉起（npx 首次下载）可能耗时数秒——并发调用同一 server 会排队，可接受。
+	t.hubMu.Lock()
+	defer t.hubMu.Unlock()
 	if v, ok := t.hub.Load(spec.Name); ok {
 		if c, ok := v.(*mcpclient.Client); ok {
 			return c, nil
@@ -255,17 +260,20 @@ func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpcli
 
 // dropClient 摘除并关闭指定客户端（仅当 hub 中的当前实例就是它）。
 // 返回 true 表示已摘除（下次调用会重新拉起）。
+// 读-比-删整体在 hubMu 内（0.2.35 审计#9）：此前 LoadAndDelete + Store 的窗口里，
+// 并发拉起的新实例会被旧值盖掉，留下无主进程。
 func (t *MCPTool) dropClient(name string, c *mcpclient.Client) bool {
-	v, ok := t.hub.LoadAndDelete(name)
+	t.hubMu.Lock()
+	defer t.hubMu.Unlock()
+	v, ok := t.hub.Load(name)
 	if !ok {
 		return false
 	}
 	cur, ok := v.(*mcpclient.Client)
 	if !ok || cur != c {
-		// 不是同一个实例（已被替换）：放回，不误伤新实例
-		t.hub.Store(name, v)
-		return false
+		return false // 已被替换：不误伤新实例
 	}
+	t.hub.Delete(name)
 	if err := c.Close(); err != nil {
 		// 已从 hub 摘除；关闭失败无处上报（调用方的错误消息链已表明连接失效）
 		return true
@@ -285,10 +293,9 @@ func (t *MCPTool) ProbeServer(ctx context.Context, spec catalog.Server) ([]strin
 	}
 	list, err := c.ListTools(ctx)
 	if err != nil {
-		if closeErr := c.Close(); closeErr != nil {
-			return nil, fmt.Errorf("%v（关闭：%v）", err, closeErr)
-		}
-		t.hub.Delete(spec.Name)
+		// 连接失败：从 hub 摘掉刚拉起的实例（读-比-删在 hubMu 内，0.2.35 审计#9——
+		// 此前的无条件 Delete 可能删掉并发换上的新实例）
+		_ = t.dropClient(spec.Name, c)
 		return nil, err
 	}
 	names := make([]string, 0, len(list))
@@ -361,6 +368,8 @@ func (t *MCPTool) Probe(ctx context.Context) (map[string][]string, map[string]st
 // 客户端只会让后续调用持续报错（坏连接必须能被替换，0.2.26 实机）。
 // 返回首个关闭错误（由调用方决定可见方式，不静默）。
 func (t *MCPTool) Close() error {
+	t.hubMu.Lock()
+	defer t.hubMu.Unlock()
 	var firstErr error
 	t.hub.Range(func(k, v any) bool {
 		if c, ok := v.(*mcpclient.Client); ok {

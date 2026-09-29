@@ -88,6 +88,13 @@ func (t *Tool) resolve(path string) (string, error) {
 		return "", fmt.Errorf("absolute path not allowed: %s", path)
 	}
 	clean := filepath.Clean(filepath.Join(t.root, path))
+	// 符号链接/junction 解析（0.2.35 审计#4，与 fstool.resolve 同款）：
+	// 工作区内的链接可以指到区外，词法前缀检查拦不住。
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = real
+	} else if real, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
+		clean = filepath.Join(real, filepath.Base(clean))
+	}
 	if clean != t.root && !strings.HasPrefix(clean, t.root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes workspace: %s", path)
 	}

@@ -2,17 +2,39 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"tiancode/internal/core/agent"
+	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/fstool"
 	"tiancode/internal/platform/gittool"
 	"tiancode/internal/platform/searchtool"
 	"tiancode/internal/platform/shelltool"
 )
+
+// workspaceOfLedger 返回账本里最后一次记录的工作区（0.2.35 审计#1 的读侧）。
+// 尽力而为语义：无记录或解析失败都返回空，保持现状——归属缺失不阻断发送。
+func workspaceOfLedger(l *session.Ledger) string {
+	out := ""
+	_ = l.Replay(func(ev session.Event) error {
+		if ev.Kind() != session.EventWorkspace {
+			return nil
+		}
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(ev.Data(), &p); err == nil {
+			out = p.Path
+		}
+		return nil
+	})
+	return out
+}
 
 // newRegistry 按工作区构造工具集（fs/shell/git/search 的受控根）。
 // 抽成函数是为了让"启动装配"与"运行期切换工作区"共用同一段装配逻辑，
@@ -59,6 +81,20 @@ func (s *ChatService) Workspace() string {
 func (s *ChatService) SetWorkspace(dir string) error {
 	dir = strings.TrimSpace(dir)
 	if dir != "" {
+		// 规范化（0.2.35 审计#5）：尾部反斜杠会让 fs/search 的前缀比较全部
+		// 误判越界（root "D:\proj\" vs Join 结果 "D:\proj\a.go"）；`..` 与符号
+		// 链接一并解析成真实路径。盘符根（D:\）的尾分隔符合法，保留。
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = filepath.Clean(abs)
+		} else {
+			dir = filepath.Clean(dir)
+		}
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = filepath.Clean(real)
+		}
+		if len(dir) > 3 && (strings.HasSuffix(dir, `\`) || strings.HasSuffix(dir, `/`)) {
+			dir = strings.TrimRight(dir, `\/`)
+		}
 		info, err := os.Stat(dir)
 		if err != nil {
 			return fmt.Errorf("工作区不可用：%w", err)
@@ -76,6 +112,15 @@ func (s *ChatService) SetWorkspace(dir string) error {
 	}
 	if err := s.attachExtensions(registry); err != nil {
 		return err
+	}
+	// 旧 shell 工具的后台任务随实例一起丢弃（0.2.35 审计#2）：显式收掉进程树，
+	// 否则任务表丢失，bg_status/bg_kill 再也够不着，进程成为孤儿。
+	if s.registry != nil {
+		if sh, ok := s.registry.Get("shell"); ok {
+			if closer, ok := sh.(interface{ Close() error }); ok {
+				_ = closer.Close() // 终止失败无从上报（多半已退出）；cancel 幂等
+			}
+		}
 	}
 	s.registry = registry
 	s.cfg.WorkDir = dir

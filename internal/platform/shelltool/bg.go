@@ -156,6 +156,17 @@ func (m *bgManager) status(id string) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: string(content)}, nil
 }
 
+// Close 终止全部后台任务（进程树）（0.2.35 审计#2）：管理器随 shell 工具实例
+// 一起丢弃，应用退出或工作区切换时调用——否则任务表丢失，bg_status/bg_kill
+// 再也够不着，进程成为孤儿。
+func (m *bgManager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.tasks {
+		t.cancel() // 触发 exec.Cmd.Cancel → 终止进程树
+	}
+}
+
 // kill 终止任务（进程树）。
 func (m *bgManager) kill(id string) (tools.ToolResult, error) {
 	task, ok := m.get(id)

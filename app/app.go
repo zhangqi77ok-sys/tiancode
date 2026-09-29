@@ -91,7 +91,9 @@ func (b *Bind) PickWorkspace() (string, error) {
 		return "", errors.New("应用尚未就绪（缺少窗口上下文），无法打开目录选择框")
 	}
 	return wruntime.OpenDirectoryDialog(b.AppCtx, wruntime.OpenDialogOptions{
-		Title:                "选择工作区目录（工具只能读写此目录内）",
+		// 文案与真实能力一致（0.2.35 审计#4）：文件/搜索工具受工作区约束，
+		// 命令执行只是把工作目录设在此处，cmd 本身可访问整机（审批策略可加约束）。
+		Title:                "选择工作区目录（文件与搜索工具限定在此目录内；命令执行默认可访问本机）",
 		CanCreateDirectories: true,
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"tiancode/internal/core/tools"
 )
@@ -124,12 +125,25 @@ func buildArgs(action, path string, limit int) ([]string, error) {
 	}
 }
 
+// truncateToBytes 截断到 n 字节并回退到 UTF-8 边界（0.2.35 审计#8）：
+// 按字节直接切会把中文切成非法 UTF-8，卡片与 diff 出现乱码。
+func truncateToBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
 // truncate 截断超长输出并标注。
 func truncate(s string) string {
 	if len(s) <= outputLimit {
 		return s
 	}
-	return s[:outputLimit] + "\n... [truncated]"
+	return truncateToBytes(s, outputLimit) + "\n... [truncated]"
 }
 
 func businessErrf(format string, a ...any) tools.ToolResult {

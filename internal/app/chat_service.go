@@ -339,6 +339,15 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
 	}
+	// 工具根跟会话走（0.2.35 审计#1）：该会话账本记录过归属工作区时，发送前
+	// 切回它——后台会话的排队续发此前用的是"当前全局工作区"：A 在项目 1 排队、
+	// 用户点开项目 2 的会话，A 的下一条会去改项目 2。失败显式报错：归属目录
+	// 不可用时静默用别的根等于写错项目。
+	if root := workspaceOfLedger(ledger); root != "" && root != s.Workspace() {
+		if err := s.SetWorkspace(root); err != nil {
+			return nil, fmt.Errorf("切回会话工作区（%s）失败：%w", root, err)
+		}
+	}
 	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
 	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()
@@ -648,7 +657,20 @@ func (s *ChatService) Close() error {
 		}
 	}
 	if s.codexAuth != nil {
-		firstErr = s.codexAuth.Close() // 释放 1455 回环监听（失败向上传播）
+		if err := s.codexAuth.Close(); err != nil && firstErr == nil {
+			firstErr = err // 释放 1455 回环监听；不盖掉前面的 MCP 关闭错误（0.2.35 审计#3）
+		}
+	}
+	// shell 后台任务（dev server 等）随应用一起收（0.2.35 审计#2）：此前只关
+	// MCP/Codex/账本，后台命令成为孤儿进程——与"退出后残留 node.exe"同类。
+	if s.registry != nil {
+		if sh, ok := s.registry.Get("shell"); ok {
+			if closer, ok := sh.(interface{ Close() error }); ok {
+				if err := closer.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

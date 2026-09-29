@@ -113,16 +113,31 @@ func (t *Tool) resolve(path string) (string, error) {
 		return "", fmt.Errorf("absolute path not allowed: %s", path)
 	}
 	clean := filepath.Clean(filepath.Join(t.root, path))
+	// 符号链接/junction 解析（0.2.35 审计#4）：工作区内的链接可以指到区外，
+	// 词法前缀检查拦不住——对已存在的最深前缀解析真实路径后再比对。
+	// 目标不存在（写场景）时对父目录解析（父目录在区内，链接才能落到区外）。
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = real
+	} else if real, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
+		clean = filepath.Join(real, filepath.Base(clean))
+	}
 	if clean != t.root && !strings.HasPrefix(clean, t.root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes workspace: %s", path)
 	}
 	return clean, nil
 }
 
+// maxReadBytes 是单次读取的硬顶（0.2.35 审计#6）：整个文件进内存并交给模型
+// 与界面，无上限的大文件能把桌面进程打满。10MB 覆盖绝大多数源码文件。
+const maxReadBytes = 10 << 20
+
 func (t *Tool) read(path string) (tools.ToolResult, error) {
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
+	}
+	if info, err := os.Stat(full); err == nil && info.Size() > maxReadBytes {
+		return bizErrf("file too large (%d bytes > %d)：请让模型改用 shell 分段查看（type/findstr）", info.Size(), maxReadBytes), nil
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
