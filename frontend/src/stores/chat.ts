@@ -53,6 +53,23 @@ function withId<T extends Omit<ChatMsg, 'id'>>(m: T): ChatMsg {
 // EndReason 与 core/llm 的枚举一一对应（经事件桥以 int 传输）。
 export const END_REASON = { DONE: 1, ERROR: 2, CANCELLED: 3, IDLE_TIMEOUT: 4 } as const
 
+// 常见网络错误的中文翻译：Windows 的 wsarecv/连接类错误原文对用户不友好
+//（实机：直连海外中转被墙时用户看到一屏英文不知所措）。保留原始错误供诊断。
+function humanizeNetError(raw: string): string {
+  const rules: [RegExp, string][] = [
+    [/wsarecv|wsasend|connection attempt failed|did not properly respond/i, '网络连接失败：上游服务器无响应或连接被阻断（若上游在海外，请确认已配置全局代理）'],
+    [/connection refused/i, '连接被拒绝：上游服务未开放该端口'],
+    [/no such host|lookup/i, '域名解析失败：请检查网络或渠道地址'],
+    [/i\/o timeout|context deadline|timeout/i, '连接超时'],
+    [/proxyconnect|proxy error|proxy handshake/i, '代理连接失败：请检查全局代理设置与代理软件'],
+    [/certificate|tls:|x509/i, 'TLS/证书异常：上游或代理的证书有问题'],
+  ]
+  for (const [re, msg] of rules) {
+    if (re.test(raw)) return `${msg}｜原始错误：${raw}`
+  }
+  return raw
+}
+
 // 终态的人类可读标签：UI 围绕"可区分的三终态"设计（docs/CONTRACTS.md）。
 function terminalLabel(reason: number, errText: string): string {
   switch (reason) {
@@ -61,7 +78,7 @@ function terminalLabel(reason: number, errText: string): string {
     case END_REASON.IDLE_TIMEOUT:
       return '⚠ 响应超时：上游长时间无响应，可重试'
     default:
-      return `⚠ 出错了：${errText || '未知错误'}`
+      return `⚠ 出错了：${errText ? humanizeNetError(errText) : '未知错误'}`
   }
 }
 
