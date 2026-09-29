@@ -7,18 +7,39 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"tiancode/internal/core/agent"
+	"tiancode/internal/core/session"
 )
 
 // ApprovalEvent 是发给 UI 的审批请求（UI 渲染确认卡片）。
 // SessionID 标明请求来自哪个会话：多会话并行（0.2.25）后，后台会话的审批卡
 // 必须能归位到它自己的会话，而不是插进当前正在看的会话。
+// SessionTitle（0.2.36 审计 R3）是确认卡上必须显示的会话名——用户在多会话
+// 环境下要一眼知道"这条命令是哪个对话要跑的"。
 type ApprovalEvent struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionID"`
-	ToolName  string `json:"toolName"`
-	Arguments string `json:"arguments"` // 原始 JSON，原样展示，不解析（ADR-0007 第 2 条）
+	ID           string `json:"id"`
+	SessionID    string `json:"sessionID"`
+	SessionTitle string `json:"sessionTitle,omitempty"`
+	ToolName     string `json:"toolName"`
+	Arguments    string `json:"arguments"` // 原始 JSON，原样展示，不解析（ADR-0007 第 2 条）
+}
+
+// approvalReplyTimeout 是审批等待的独立上限（0.2.36 审计 R3）：审批只跟随
+// 本轮 ctx 会让"后台会话的确认卡"无限挂住整轮（用户没在看那个会话，队列也
+// 不会动）。超时按**拒绝**处理——保护默认在，用户没确认就不执行（绝不放行）。
+// 包级变量：测试注入短值验证超时路径。
+var approvalReplyTimeout = 5 * time.Minute
+
+// sessionTitleOf 取会话标题（审批卡展示用）；读不到回退会话 ID。
+// 低频调用（每次审批一次只读扫描），不为它引入缓存（失效语义复杂）。
+func (s *ChatService) sessionTitleOf(sessionID string) string {
+	meta, err := session.ReadMeta(s.cfg.DataDir, sessionID)
+	if err != nil || meta.Title == "" {
+		return sessionID
+	}
+	return meta.Title
 }
 
 // SetApprovalHandler 注入审批事件回调（壳层负责推送到前端）；nil 表示只等不通知（测试用）。
@@ -135,15 +156,27 @@ func (a *uiApprover) Review(ctx context.Context, req agent.ApprovalRequest) (age
 	a.svc.mu.Unlock()
 
 	if emit != nil {
-		emit(ApprovalEvent{ID: id, SessionID: a.sessionID, ToolName: req.ToolName, Arguments: req.Arguments})
+		emit(ApprovalEvent{
+			ID: id, SessionID: a.sessionID, SessionTitle: a.svc.sessionTitleOf(a.sessionID),
+			ToolName: req.ToolName, Arguments: req.Arguments,
+		})
 	}
 
+	// 独立超时（0.2.36 审计 R3）：到点按拒绝处理（理由回传给模型），绝不放行
+	timer := time.NewTimer(approvalReplyTimeout)
+	defer timer.Stop()
 	select {
 	case d := <-ch:
 		return d, nil
+	case <-timer.C:
+		a.forget(id)
+		return agent.Decision{
+			Approved: false,
+			Reason:   "审批超时（5 分钟内未收到答复），已按拒绝处理",
+		}, nil
 	case <-ctx.Done():
 		a.forget(id)
-		// 取消/超时 → 由 agent 视为拒绝并说明原因（ADR-0007 第 4 条）
+		// 取消 → 由 agent 视为拒绝并说明原因（ADR-0007 第 4 条）
 		return agent.Decision{}, ctx.Err()
 	}
 }

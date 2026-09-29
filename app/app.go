@@ -36,10 +36,11 @@ func New(chat *app.ChatService) *Bind {
 	// sessionID 随载荷下发（0.2.25 多会话）：后台会话的审批卡要归位到它自己的会话。
 	chat.SetApprovalHandler(func(e app.ApprovalEvent) {
 		wruntime.EventsEmit(b.appCtx(), "chat:approval", map[string]string{
-			"id":        e.ID,
-			"sessionID": e.SessionID,
-			"toolName":  e.ToolName,
-			"arguments": e.Arguments,
+			"id":           e.ID,
+			"sessionID":    e.SessionID,
+			"sessionTitle": e.SessionTitle, // 确认卡显示会话名（0.2.36 审计 R3）
+			"toolName":     e.ToolName,
+			"arguments":    e.Arguments,
 		})
 	})
 	// 问答事件桥（0.2.15）：ask_user 的选项卡推给前端，答复经 ResolveAsk 回流

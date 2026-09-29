@@ -215,20 +215,21 @@ func (t *MCPTool) callStdio(ctx context.Context, spec catalog.Server, tool strin
 	if tail := c.StderrTail(); tail != "" {
 		detail += "（服务器 stderr：" + tail + "）"
 	}
-	if t.dropClient(spec.Name, c) {
-		return "", fmt.Errorf("%s（连接已失效，已重置：下次调用将重新拉起）", detail)
+	// 摘除 + 关掉失效实例（关闭失败并入错误消息，0.2.36 审计 R7）
+	if closeErr := t.dropClient(spec.Name, c); closeErr != nil {
+		return "", fmt.Errorf("%s（连接已失效，已重置：下次调用将重新拉起；%v）", detail, closeErr)
 	}
-	return "", errors.New(detail)
+	return "", fmt.Errorf("%s（连接已失效，已重置：下次调用将重新拉起）", detail)
 }
 
 func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpclient.Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// 拉起与登记整体在 hubMu 内：与 dropClient 的读-比-删互斥（0.2.35 审计#9）。
-	// 拉起（npx 首次下载）可能耗时数秒——并发调用同一 server 会排队，可接受。
-	t.hubMu.Lock()
-	defer t.hubMu.Unlock()
+	// 读取复用走原子 Load（快路径）；拨号在锁外（0.2.36 审计 R7）：卡住的服务器
+	// 只拖住本次调用，不堵全进程的 MCP 调用。并发重复拉起由 LoadOrStore 裁决
+	// （抢占失败者立刻关闭，见下）——不能把锁一路持到 ListTools 返回，
+	// 否则设置页的一次探测会卡住所有会话。
 	if v, ok := t.hub.Load(spec.Name); ok {
 		if c, ok := v.(*mcpclient.Client); ok {
 			return c, nil
@@ -258,27 +259,21 @@ func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpcli
 	return c, nil
 }
 
-// dropClient 摘除并关闭指定客户端（仅当 hub 中的当前实例就是它）。
-// 返回 true 表示已摘除（下次调用会重新拉起）。
-// 读-比-删整体在 hubMu 内（0.2.35 审计#9）：此前 LoadAndDelete + Store 的窗口里，
-// 并发拉起的新实例会被旧值盖掉，留下无主进程。
-func (t *MCPTool) dropClient(name string, c *mcpclient.Client) bool {
+// dropClient 摘除并关闭指定客户端（0.2.36 审计 R7 语义）。
+// hub 中若仍是这个实例才删除（只持锁一瞬间，绝不包住连接过程）；
+// **无论是否在 hub 都要关掉自己**——被替换的实例不在 hub 里，不关就是
+// 无主进程。关闭失败必须返回（设置页/mcp_add 结果要能看到）。
+func (t *MCPTool) dropClient(name string, c *mcpclient.Client) error {
 	t.hubMu.Lock()
-	defer t.hubMu.Unlock()
 	v, ok := t.hub.Load(name)
-	if !ok {
-		return false
+	if cur, isClient := v.(*mcpclient.Client); ok && isClient && cur == c {
+		t.hub.Delete(name)
 	}
-	cur, ok := v.(*mcpclient.Client)
-	if !ok || cur != c {
-		return false // 已被替换：不误伤新实例
-	}
-	t.hub.Delete(name)
+	t.hubMu.Unlock()
 	if err := c.Close(); err != nil {
-		// 已从 hub 摘除；关闭失败无处上报（调用方的错误消息链已表明连接失效）
-		return true
+		return fmt.Errorf("关闭 MCP 客户端失败：%w", err)
 	}
-	return true
+	return nil
 }
 
 // ProbeServer 连接单台 stdio 服务器并返回其公布的工具名（ext_manage 添加后的验证用）。
@@ -293,10 +288,11 @@ func (t *MCPTool) ProbeServer(ctx context.Context, spec catalog.Server) ([]strin
 	}
 	list, err := c.ListTools(ctx)
 	if err != nil {
-		// 连接失败：从 hub 摘掉刚拉起的实例（读-比-删在 hubMu 内，0.2.35 审计#9——
-		// 此前的无条件 Delete 可能删掉并发换上的新实例）。
-		// 返回 false 表示实例已被并发替换：新实例归新的调用管，无需清理。
-		t.dropClient(spec.Name, c)
+		// 连接失败：摘掉刚拉起的实例并关掉它（hub 里若已被并发替换则只关自己，
+		// 不误伤新实例）；关闭失败要返回给设置页 / mcp_add 的结果（0.2.36 审计 R7）
+		if closeErr := t.dropClient(spec.Name, c); closeErr != nil {
+			return nil, fmt.Errorf("%v（%v）", err, closeErr)
+		}
 		return nil, err
 	}
 	names := make([]string, 0, len(list))
@@ -369,17 +365,30 @@ func (t *MCPTool) Probe(ctx context.Context) (map[string][]string, map[string]st
 // 客户端只会让后续调用持续报错（坏连接必须能被替换，0.2.26 实机）。
 // 返回首个关闭错误（由调用方决定可见方式，不静默）。
 func (t *MCPTool) Close() error {
+	// 锁内只做 map 操作（收集 + 摘除）；关闭在锁外执行（0.2.36 审计 R7：
+	// 单个服务器慢关不该堵住其他清理路径）
+	type entry struct {
+		name string
+		c    *mcpclient.Client
+	}
+	var clients []entry
 	t.hubMu.Lock()
-	defer t.hubMu.Unlock()
-	var firstErr error
 	t.hub.Range(func(k, v any) bool {
 		if c, ok := v.(*mcpclient.Client); ok {
-			if err := c.Close(); err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("关闭 MCP %v 失败：%w", k, err)
+			if name, ok := k.(string); ok {
+				clients = append(clients, entry{name: name, c: c})
 			}
 		}
 		t.hub.Delete(k)
 		return true
 	})
+	t.hubMu.Unlock()
+
+	var firstErr error
+	for _, e := range clients {
+		if err := e.c.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("关闭 MCP %v 失败：%w", e.name, err)
+		}
+	}
 	return firstErr
 }

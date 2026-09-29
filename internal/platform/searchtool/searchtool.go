@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -89,16 +90,46 @@ func (t *Tool) resolve(path string) (string, error) {
 	}
 	clean := filepath.Clean(filepath.Join(t.root, path))
 	// 符号链接/junction 解析（0.2.35 审计#4，与 fstool.resolve 同款）：
-	// 工作区内的链接可以指到区外，词法前缀检查拦不住。
+	// 工作区的链接可以指到区外，词法前缀检查拦不住。
 	if real, err := filepath.EvalSymlinks(clean); err == nil {
 		clean = real
 	} else if real, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
 		clean = filepath.Join(real, filepath.Base(clean))
 	}
-	if clean != t.root && !strings.HasPrefix(clean, t.root+string(filepath.Separator)) {
+	if !t.hasRootPrefix(clean) {
 		return "", fmt.Errorf("path escapes workspace: %s", path)
 	}
 	return clean, nil
+}
+
+// hasRootPrefix 判断路径是否在工作区内（0.2.36 审计 R4）：
+// 两侧用同一套规范化（调用方保证），Windows 文件系统大小写不敏感——
+// 前缀比较必须忽略大小写，否则 C:\Proj 与 c:\proj 会把整个工作区判成越界。
+func (t *Tool) hasRootPrefix(p string) bool {
+	if p == t.root {
+		return true
+	}
+	root := t.root
+	if runtime.GOOS == "windows" {
+		p, root = strings.ToLower(p), strings.ToLower(root)
+	}
+	return strings.HasPrefix(p, root+string(filepath.Separator))
+}
+
+// insideRealRoot 判定文件路径的真实位置是否在工作区内（0.2.36 审计 R4）。
+// resolved=false 表示符号链接解析失败（网络盘/暂锁文件）：调用方按词法路径
+// 保留结果并在输出里标注——解析失败不能让正常文件从结果里消失。
+func (t *Tool) insideRealRoot(p string) (inside bool, resolved bool) {
+	real := p
+	resolved = true
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		real = r
+	} else if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		real = filepath.Join(r, filepath.Base(p))
+	} else {
+		resolved = false
+	}
+	return t.hasRootPrefix(real), resolved
 }
 
 // Execute 实现工具端口。
@@ -153,6 +184,15 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	matches := 0
 	hitMax := false
 	truncatedMatches := false
+	// R4 汇总：确认落在区外的路径（跳过）与解析失败按词法保留的路径（标注）
+	var skippedOutside, unresolvedLinks []string
+	relSlash := func(p string) string {
+		rel, err := filepath.Rel(t.root, p)
+		if err != nil {
+			return p
+		}
+		return filepath.ToSlash(rel)
+	}
 	walkErr := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -164,6 +204,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 			if p != start && skipDirName(d.Name()) {
 				return filepath.SkipDir
 			}
+			// junction 目录：WalkDir 会走进去，但真实位置在区外时整棵跳过
+			//（0.2.36 审计 R4；解析失败时保守继续——逐文件校验仍会兜底）
+			if p != start {
+				if inside, resolved := t.insideRealRoot(p); resolved && !inside {
+					skippedOutside = append(skippedOutside, relSlash(p)+"/")
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		if a.Glob != "" {
@@ -174,6 +222,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		}
 		info, err := d.Info()
 		if err != nil || info.Size() > maxFileBytes {
+			return nil
+		}
+		// 逐文件真实路径校验（0.2.36 审计 R4）：起点检查挡不住文件级符号链接；
+		// 区外跳过并记入汇总；解析失败按词法保留但标注（不因一个链接整次失败）。
+		if inside, resolved := t.insideRealRoot(p); !resolved {
+			unresolvedLinks = append(unresolvedLinks, relSlash(p))
+		} else if !inside {
+			skippedOutside = append(skippedOutside, relSlash(p))
 			return nil
 		}
 		if hitMax {
@@ -229,10 +285,28 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		}
 		content += fmt.Sprintf("(truncated, max_matches %d)", max)
 	}
-	if matches == 0 && content == "" {
+	// R4 汇总（可观测性）：跳过与未解析都要写明，用户才能区分"没有匹配"
+	// 与"有内容但被安全策略跳过"
+	if len(skippedOutside) > 0 {
+		content += fmt.Sprintf("\n(skipped %d path(s) resolving outside workspace: %s)",
+			len(skippedOutside), strings.Join(headOf(skippedOutside, 5), ", "))
+	}
+	if len(unresolvedLinks) > 0 {
+		content += fmt.Sprintf("\n(%d path(s) with unresolved symlinks, kept by lexical path: %s)",
+			len(unresolvedLinks), strings.Join(headOf(unresolvedLinks, 5), ", "))
+	}
+	if matches == 0 && b.Len() == 0 {
 		return tools.ToolResult{Content: "no matches"}, nil
 	}
 	return tools.ToolResult{Content: content}, nil
+}
+
+// headOf 取前 n 项（汇总行展示用，避免输出被路径列表撑爆）。
+func headOf(items []string, n int) []string {
+	if len(items) <= n {
+		return items
+	}
+	return items[:n]
 }
 
 var errStop = fmt.Errorf("search stop")

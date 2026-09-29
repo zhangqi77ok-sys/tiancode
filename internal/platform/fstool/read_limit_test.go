@@ -43,6 +43,39 @@ func TestFSTool_ReadSizeHardLimit(t *testing.T) {
 	}
 }
 
+// R3：超大文件提供 offset/length 分段读取作为合法出路——整读被拒但不是死路
+// （不把模型指去 shell 绕开上限）。
+func TestFSTool_ReadOffsetLength(t *testing.T) {
+	root := t.TempDir()
+	f := New(root)
+	big := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(big, []byte(strings.Repeat("abcdefghij", 2<<20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 整读拒绝，且指引分段读取（不是 shell）
+	res, err := f.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"big.txt"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Content, "offset/length") {
+		t.Fatalf("整读应拒绝并指引分段：%+v", res)
+	}
+	if strings.Contains(res.Content, "shell") {
+		t.Fatal("不得把模型指去 shell 绕开读取上限")
+	}
+	// 分段读取可用
+	res, err = f.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"big.txt","offset":10,"length":100}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("分段读取应可用：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "[offset=10 读取 100 字节 / 共 20971520 字节]") {
+		t.Fatalf("分段头不符：%.120s", res.Content)
+	}
+}
+
 // 审计#4：工作区内的符号链接指向区外时，读取必须拒绝（词法前缀检查拦不住）。
 // Windows 创建符号链接需要特权：失败时跳过（非 Windows/有特权环境仍覆盖）。
 func TestFSTool_SymlinkEscapeRejected(t *testing.T) {

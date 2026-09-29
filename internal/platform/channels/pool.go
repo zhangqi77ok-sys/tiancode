@@ -37,6 +37,10 @@ type fileFormat struct {
 // DefaultPath 返回渠道配置路径（沿用旧路径，升级即原地迁移）。
 func DefaultPath() string { return filepath.Join(configfile.Dir(), "channels.json") }
 
+// defaultApprovalTools 是新装默认的审批清单（0.2.36 审计 R3）：
+// shell（命令执行）与 ext_manage（扩展增删）——两个"不确认就执行即危险"的口子。
+var defaultApprovalTools = func() []string { return []string{"shell", "ext_manage"} }
+
 // NewID 生成渠道标识（时间戳前缀，便于排障时判断创建顺序）。
 func NewID() string { return fmt.Sprintf("ch-%d", time.Now().UnixNano()) }
 
@@ -70,8 +74,15 @@ func (p *Pool) Load() error {
 	data, err := os.ReadFile(p.path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// 新装（文件尚不存在）：注入默认审批清单并落盘（0.2.36 审计 R3）。
+			// shell 与 ext_manage 是"默认无人确认即执行"的两个危险口子：前者等于
+			// 任意命令，后者能把持久化提示写进后续每轮的系统说明。默认零干扰
+			// 只应是"用户显式关掉"的选择，不是出厂状态。
+			// 只对新装生效——已有文件（含用户显式保存过空清单）一律不动，
+			// 升级不偷偷改用户的配置。
+			p.approvalTools = defaultApprovalTools()
 			p.rebuildAbilityLocked()
-			return nil
+			return p.persistLocked()
 		}
 		return fmt.Errorf("渠道配置读取失败 %s：%w", p.path, err)
 	}

@@ -9,13 +9,15 @@ import (
 	"tiancode/internal/core/agent"
 )
 
-// 审批桥接：默认关 → 清单匹配 → 发事件挂起 → 答复解除 → 重复/未知 ID 拒绝。
+// 审批桥接：新装默认清单 → 清单匹配 → 发事件挂起 → 答复解除 → 重复/未知 ID 拒绝。
 func TestChatService_ApprovalBridge(t *testing.T) {
 	s := newChannelService(t, Config{})
 
-	// 默认关（ADR-0007 第 1 条：不配置就不干预）
-	if got := s.ApprovalPolicy(); len(got) != 0 {
-		t.Fatalf("默认策略应为空，实际 %v", got)
+	// 新装默认清单（0.2.36 审计 R3）：shell 与 ext_manage 是"不确认就执行即危险"
+	// 的两个口子——默认零干扰只应是用户显式关掉的选择，不是出厂状态。
+	// （升级用户与显式保存过空的用户不受影响，见 channels 包的新装路径。）
+	if got := s.ApprovalPolicy(); len(got) != 2 || got[0] != "shell" || got[1] != "ext_manage" {
+		t.Fatalf("新装默认策略 = %v, want [shell ext_manage]", got)
 	}
 
 	// 开启并清洗输入（空白项丢弃）

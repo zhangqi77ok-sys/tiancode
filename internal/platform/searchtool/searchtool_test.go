@@ -120,6 +120,35 @@ func TestSearch_MaxMatchesExactNoTruncate(t *testing.T) {
 	}
 }
 
+// R4：区外符号链接被跳过并在结果里汇总（不因一个链接让整次搜索失败）。
+// Windows 创建文件符号链接需要特权：失败时跳过。
+func TestSearch_SymlinkOutsideSkipped(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "leak.txt")
+	if err := os.WriteFile(secret, []byte("HIT-OUTSIDE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "leak.txt")); err != nil {
+		t.Skip("无法创建符号链接（需要特权）：", err)
+	}
+	write(t, root, "inside.txt", "HIT-INSIDE")
+	tool := New(root)
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "HIT-"}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	if strings.Contains(res.Content, "HIT-OUTSIDE") {
+		t.Fatalf("区外链接内容泄漏进结果：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "HIT-INSIDE") {
+		t.Fatalf("区内内容应正常搜到：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "outside workspace") {
+		t.Fatalf("应汇总被跳过的区外路径（可观测）：%s", res.Content)
+	}
+}
+
 func TestSearch_InvalidPattern(t *testing.T) {
 	tool := newWS(t)
 	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "["}))

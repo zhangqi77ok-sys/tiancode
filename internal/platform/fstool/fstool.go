@@ -12,11 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/atomicfile"
@@ -55,7 +58,9 @@ func (t *Tool) Schema() json.RawMessage {
     "content": {"type": "string", "description": "write 时的完整文件内容"},
     "target": {"type": "string", "description": "replace 时的精确目标文本"},
     "replacement": {"type": "string", "description": "replace 时的替换文本"},
-    "allow_multiple": {"type": "boolean", "description": "replace 多处匹配时是否全部替换（默认 false）"}
+    "allow_multiple": {"type": "boolean", "description": "replace 多处匹配时是否全部替换（默认 false）"},
+    "offset": {"type": "integer", "description": "read 时的起始字节偏移（大文件分段读取）"},
+    "length": {"type": "integer", "description": "read 时的读取字节数（默认到文件尾，单次上限 10MB）"}
   },
   "required": ["action", "path"]
 }`)
@@ -73,6 +78,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		Target        string `json:"target"`
 		Replacement   string `json:"replacement"`
 		AllowMultiple bool   `json:"allow_multiple"`
+		Offset        int64  `json:"offset"`
+		Length        int64  `json:"length"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return bizErrf("invalid arguments: %v", err), nil
@@ -90,9 +97,20 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		return tools.ToolResult{Content: "cancelled", IsError: true, TimedOut: true}, nil
 	}
 
+	// 写侧参数上限（0.2.36 审计 R6）：上限高于读取（可编辑锁文件/生成产物），
+	// 超限**整次失败**——不截断、不落盘（原子写保证失败不留下半个文件）。
+	// 已知局限：这是文件工具层的第一道闸（JSON 反序列化前内存已分配）；
+	// 真正挡住超大工具参数还需要 agent 参数层的长度限制（另一层，另行处理）。
+	if len(args.Content) > maxWriteBytes {
+		return bizErrf("content too large (%d bytes > %d)：请拆分为多次写入", len(args.Content), maxWriteBytes), nil
+	}
+	if len(args.Replacement) > maxWriteBytes || len(args.Target) > maxWriteBytes {
+		return bizErrf("target/replacement too large (> %d)：请拆分替换", maxWriteBytes), nil
+	}
+
 	switch args.Action {
 	case "read":
-		return t.read(args.Path)
+		return t.read(args.Path, args.Offset, args.Length)
 	case "write":
 		return t.write(ctx, args.Path, args.Content)
 	case "replace":
@@ -121,29 +139,87 @@ func (t *Tool) resolve(path string) (string, error) {
 	} else if real, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
 		clean = filepath.Join(real, filepath.Base(clean))
 	}
-	if clean != t.root && !strings.HasPrefix(clean, t.root+string(filepath.Separator)) {
+	if !hasRootPrefix(t.root, clean) {
 		return "", fmt.Errorf("path escapes workspace: %s", path)
 	}
 	return clean, nil
 }
 
-// maxReadBytes 是单次读取的硬顶（0.2.35 审计#6）：整个文件进内存并交给模型
-// 与界面，无上限的大文件能把桌面进程打满。10MB 覆盖绝大多数源码文件。
-const maxReadBytes = 10 << 20
+// hasRootPrefix 判断 p 是否在 root 内（0.2.36 审计 R4/R5：两侧同一套规范化；
+// Windows 文件系统大小写不敏感——前缀比较必须忽略大小写，否则 C:\Proj 与
+// c:\proj 会把整个工作区判成越界）。
+func hasRootPrefix(root, p string) bool {
+	if p == root {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		p, root = strings.ToLower(p), strings.ToLower(root)
+	}
+	return strings.HasPrefix(p, root+string(filepath.Separator))
+}
 
-func (t *Tool) read(path string) (tools.ToolResult, error) {
+// 读取与写入的硬顶（0.2.36 审计 R3/R6）：
+//   - maxReadBytes：单次 read（整读或单个分片）上限；
+//   - maxWriteBytes：write/replace 的 content/target/replacement 上限——**高于读取**
+//     （锁文件/打包产物等大文本仍可编辑）；超限整次失败、不截断、原文件不动。
+const (
+	maxReadBytes  = 10 << 20
+	maxWriteBytes = 32 << 20
+)
+
+// read 读取文件（支持 offset/length 分段）。超限语义（0.2.36 审计 R3）：
+// 整读超过硬顶时**拒绝**并给出分段读取的合法出路——不把模型指去 shell
+// 绕开上限（读取上限必须对模型是可满足的约束，而不是可规避的建议）。
+// 分片按 UTF-8 边界回退（与摘要/日志截断同一纪律，绝不切出非法 UTF-8）。
+func (t *Tool) read(path string, offset, length int64) (tools.ToolResult, error) {
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
 	}
-	if info, err := os.Stat(full); err == nil && info.Size() > maxReadBytes {
-		return bizErrf("file too large (%d bytes > %d)：请让模型改用 shell 分段查看（type/findstr）", info.Size(), maxReadBytes), nil
-	}
-	data, err := os.ReadFile(full)
+	info, err := os.Stat(full)
 	if err != nil {
 		return bizErrf("read failed: %v", err), nil
 	}
-	return tools.ToolResult{Content: string(data)}, nil
+	size := info.Size()
+
+	if offset == 0 && length == 0 {
+		// 整读路径
+		if size > maxReadBytes {
+			return bizErrf("file too large (%d bytes > %d)：请用 offset/length 分段读取（如 {\"action\":\"read\",\"path\":%q,\"offset\":0,\"length\":%d}）",
+				size, maxReadBytes, path, maxReadBytes), nil
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return bizErrf("read failed: %v", err), nil
+		}
+		return tools.ToolResult{Content: string(data)}, nil
+	}
+
+	// 分段读取路径
+	if offset < 0 || length < 0 {
+		return bizErrf("offset/length 必须非负"), nil
+	}
+	if length == 0 || length > maxReadBytes {
+		length = maxReadBytes
+	}
+	if offset >= size {
+		return bizErrf("offset %d 超出文件大小 %d", offset, size), nil
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return bizErrf("read failed: %v", err), nil
+	}
+	defer f.Close()
+	buf := make([]byte, length)
+	n, readErr := f.ReadAt(buf, offset)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return bizErrf("read failed: %v", readErr), nil
+	}
+	chunk := buf[:n]
+	for len(chunk) > 0 && !utf8.Valid(chunk) {
+		chunk = chunk[:len(chunk)-1]
+	}
+	return tools.ToolResult{Content: fmt.Sprintf("[offset=%d 读取 %d 字节 / 共 %d 字节]\n%s", offset, len(chunk), size, string(chunk))}, nil
 }
 
 func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResult, error) {

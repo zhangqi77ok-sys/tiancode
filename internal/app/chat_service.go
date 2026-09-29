@@ -54,14 +54,17 @@ type Config struct {
 
 // ChatService 编排对话用例。
 type ChatService struct {
-	cfg      Config
-	pool     *channels.Pool   // 渠道池（多协议，含 Ability 索引）
-	gw       *gateway.Gateway // 转发网关（选路/重试/协议分派），实现 llm.ProviderPort
-	registry *tools.Registry
+	cfg  Config
+	pool *channels.Pool   // 渠道池（多协议，含 Ability 索引）
+	gw   *gateway.Gateway // 转发网关（选路/重试/协议分派），实现 llm.ProviderPort
 
 	mu           sync.Mutex
 	defaultModel string // 当前轮次使用的模型名（激活渠道的首个模型）
 	ledgers      map[string]*session.Ledger
+	// sessTools 是会话级受控工具集（0.2.36 审计 R1）：fs/shell/git/search 按
+	// 会话持有、根由账本归属固定——不再用"全局单例 + 发送前切根"（并行竞态
+	// 与误杀另一路 shell）。MCP/技能/扩展是共享单例，不随会话克隆。
+	sessTools map[string]*sessionTools
 	// revived 是本次启动从"自动禁用"恢复的渠道展示名（壳层写日志；空 = 无）。
 	// 为什么留痕：恢复动作改变了用户上次看到的渠道状态，静默改变用户配置观感不可接受。
 	revived []string
@@ -154,14 +157,9 @@ func NewChatService(cfg Config) (*ChatService, error) {
 			s.mcpTool.Close()
 		}
 	})
-	registry, err := newRegistry(cfg.WorkDir)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.attachExtensions(registry); err != nil {
-		return nil, err
-	}
-	s.registry = registry
+	// 不再在启动时构建全局工具集（0.2.36 审计 R1）：受控工具按会话在首轮
+	// 组装（根取账本归属 / 新会话取用户当前选择），启动只需要校验渠道池。
+	s.sessTools = make(map[string]*sessionTools)
 
 	if err := s.bootstrapChannels(); err != nil {
 		return nil, err
@@ -326,6 +324,14 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 		}
 		delete(s.ledgers, sessionID)
 	}
+	// 会话级工具集一并清掉（0.2.36 审计 R1）：后台任务表随会话消失后
+	// bg_status/bg_kill 已不可达，进程必须在这里收干净。
+	if st, ok := s.sessTools[sessionID]; ok {
+		if err := closeToolIfCloser(st.shell); err != nil {
+			return fmt.Errorf("终止会话后台任务失败：%w", err)
+		}
+		delete(s.sessTools, sessionID)
+	}
 	return session.DeleteSession(s.cfg.DataDir, sessionID)
 }
 
@@ -339,15 +345,16 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
 	}
-	// 工具根跟会话走（0.2.35 审计#1）：该会话账本记录过归属工作区时，发送前
-	// 切回它——后台会话的排队续发此前用的是"当前全局工作区"：A 在项目 1 排队、
-	// 用户点开项目 2 的会话，A 的下一条会去改项目 2。失败显式报错：归属目录
-	// 不可用时静默用别的根等于写错项目。
-	if root := workspaceOfLedger(ledger); root != "" && root != s.Workspace() {
-		if err := s.SetWorkspace(root); err != nil {
-			return nil, fmt.Errorf("切回会话工作区（%s）失败：%w", root, err)
-		}
+	// 会话归属根（0.2.36 审计 R1）：账本里记过（首个 workspace 事件）就用它，
+	// 没记过（新会话）取用户当前顶栏选择的路径（可为空 = 纯对话，不套默认目录）。
+	// 根随会话固定——不切全局、不动别的会话的工具集。
+	root, owned := firstWorkspaceOfLedger(ledger)
+	if !owned {
+		root = s.Workspace()
 	}
+	// 幂等规范化：旧账本可能存过带尾斜杠/未解析的形式（0.2.36 审计 R5——
+	// 同一目录的两种写法不能当成两个项目）
+	root = normalizeWorkspace(root)
 	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
 	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()
@@ -357,14 +364,25 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	}
 	s.running[sessionID] = struct{}{}
 	model := s.defaultModel
-	registry := s.registry
 	approver := s.approverFor(sessionID)
+	// 会话级工具集：同会话复用（shell 任务表跨轮存活）；组装一轮的注册表
+	st, err := s.ensureSessionTools(sessionID, root)
+	if err != nil {
+		delete(s.running, sessionID)
+		s.mu.Unlock()
+		return nil, err
+	}
 	s.mu.Unlock()
 	// 占位释放：之后每个提前返回都必须调用（漏一个会让该会话永久"忙"）
 	release := func() {
 		s.mu.Lock()
 		delete(s.running, sessionID)
 		s.mu.Unlock()
+	}
+	registry, err := s.assembleRegistry(st)
+	if err != nil {
+		release()
+		return nil, err
 	}
 	if model == "" {
 		release()
@@ -397,9 +415,10 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 		cancelRun()
 		return nil, err
 	}
-	// 记录本轮工作区快照：侧栏按空间分组取账本首个 workspace 事件，
-	// 会话归属 = 首次发送时的工作区（每轮都记，归属语义不受中途切换影响）。
-	if _, err := ledger.Append(session.EventWorkspace, map[string]string{"path": s.Workspace()}); err != nil {
+	// 记录本轮工作区快照：侧栏按空间分组与发送归属都取账本**首个** workspace
+	// 事件（0.2.36 审计 R1）——新会话在这里落下它的归属（= 用户当时顶栏路径），
+	// 之后每轮记的是同一个 root，归属语义不受中途切换影响。
+	if _, err := ledger.Append(session.EventWorkspace, map[string]string{"path": root}); err != nil {
 		release()
 		cancelRun()
 		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
@@ -661,17 +680,15 @@ func (s *ChatService) Close() error {
 			firstErr = err // 释放 1455 回环监听；不盖掉前面的 MCP 关闭错误（0.2.35 审计#3）
 		}
 	}
-	// shell 后台任务（dev server 等）随应用一起收（0.2.35 审计#2）：此前只关
-	// MCP/Codex/账本，后台命令成为孤儿进程——与"退出后残留 node.exe"同类。
-	if s.registry != nil {
-		if sh, ok := s.registry.Get("shell"); ok {
-			if closer, ok := sh.(interface{ Close() error }); ok {
-				if err := closer.Close(); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
+	// 各会话的 shell 后台任务随应用一起收（0.2.36 审计 R1：按会话持有后逐个收）：
+	// 此前只关 MCP/Codex/账本，后台命令成为孤儿进程——与"退出后残留 node.exe"同类。
+	s.mu.Lock()
+	for _, st := range s.sessTools {
+		if err := closeToolIfCloser(st.shell); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
+	s.mu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, l := range s.ledgers {

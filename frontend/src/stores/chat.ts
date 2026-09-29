@@ -31,9 +31,11 @@ export interface ChatMsg {
   options?: string[]
   askId?: string
   answered?: boolean
-  // 审批卡片数据（role='approval'）：id 用于回传答复；args 为原始 JSON 原样展示
+  // 审批卡片数据（role='approval'）：id 用于回传答复；args 为原始 JSON 原样展示；
+  // sessionTitle 是发起该审批的会话名（0.2.36 审计 R3：确认卡必须标明是哪个对话）
   approvalId?: string
   args?: string
+  sessionTitle?: string
   at?: number
   term?: number
   streaming?: boolean
@@ -411,7 +413,13 @@ export const useChatStore = defineStore('chat', () => {
 
   // 审批卡片：内核要"问"时插入一张带允许/拒绝按钮的卡片（ADR-0007）。
   // sessionID 必填：缺标识的卡片宁可丢弃并报错，也绝不插进当前视图（串会话）。
-  function onApproval(p: { id: string; sessionID: string; toolName: string; arguments: string }) {
+  function onApproval(p: {
+    id: string
+    sessionID: string
+    sessionTitle?: string
+    toolName: string
+    arguments: string
+  }) {
     if (!p.sessionID) {
       error.value = '收到缺少会话标识的审批事件（已丢弃，避免串会话）'
       return
@@ -423,6 +431,7 @@ export const useChatStore = defineStore('chat', () => {
         toolName: p.toolName,
         approvalId: p.id,
         args: p.arguments,
+        sessionTitle: p.sessionTitle,
         at: Date.now(),
       }),
     )

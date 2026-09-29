@@ -1,4 +1,4 @@
-// 工作区用例：切换工具受控根。
+// 工作区用例：会话级受控工具集（fs/shell/git/search 各持一份，根固定）。
 package app
 
 import (
@@ -17,87 +17,145 @@ import (
 	"tiancode/internal/platform/shelltool"
 )
 
-// workspaceOfLedger 返回账本里最后一次记录的工作区（0.2.35 审计#1 的读侧）。
-// 尽力而为语义：无记录或解析失败都返回空，保持现状——归属缺失不阻断发送。
-func workspaceOfLedger(l *session.Ledger) string {
-	out := ""
-	// Replay 失败按"无归属"处理：归属缺失不阻断发送（尽力而为语义，见函数注释）
+// normalizeWorkspace 规范化工作区路径（0.2.36 审计 R5：启动与切换共用一套）：
+// Abs + Clean + 符号链接解析（能解析就用真实路径，失败就用 Clean 后原路径——
+// 网络盘/未挂载盘不让调用方拒绝启动）；盘符根与 UNC 不做额外去斜杠
+// （filepath.Clean 已正确处理尾部分隔符，手工 TrimRight 会裁坏 \\server\share\）。
+func normalizeWorkspace(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = filepath.Clean(abs)
+	} else {
+		dir = filepath.Clean(dir)
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = filepath.Clean(real)
+	}
+	return dir
+}
+
+// firstWorkspaceOfLedger 返回账本里**第一个** workspace 事件记录的路径
+// （0.2.36 审计 R1）。归属以首个为准（与侧栏分组、TestSessionSummaries_CarryWorkspace
+// 一致）：旧账本里后来若又写了别的路径也不改归属——否则侧栏分组与真实
+// 写入目录会再次分叉。own=true 表示该会话已有归属（含显式空串 = 纯对话）。
+// 尽力而为语义：读取失败按"无归属"处理（不阻断发送）。
+func firstWorkspaceOfLedger(l *session.Ledger) (string, bool) {
+	root := ""
+	own := false
 	if err := l.Replay(func(ev session.Event) error {
-		if ev.Kind() != session.EventWorkspace {
+		if own || ev.Kind() != session.EventWorkspace {
 			return nil
 		}
 		var p struct {
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(ev.Data(), &p); err == nil {
-			out = p.Path
+			root = p.Path
+			own = true
 		}
 		return nil
 	}); err != nil {
-		return ""
+		return "", false
 	}
-	return out
+	return root, own
 }
 
-// newRegistry 按工作区构造工具集（fs/shell/git/search 的受控根）。
-// 抽成函数是为了让"启动装配"与"运行期切换工作区"共用同一段装配逻辑，
-// 避免两处漂移（切换后工具集与启动时不一致是隐蔽 bug）。
-//
-// workDir 为空 = 纯对话模式：只注册交互类工具，本地文件工具全部下线——
-// 空根会退化成进程 cwd（等于把安装目录暴露给模型），这是安全红线，
-// 宁可不给工具也不越界。
-func newRegistry(workDir string) (*tools.Registry, error) {
-	registry := tools.NewRegistry()
-	regs := []func() error{
-		// todo / ask_user：交互类工具。定义进模型工具集，执行由 Loop 按名拦截
-		//（todo → agent.runTodo；ask_user → Loop.runAsk 阻塞等 UI 答复）
-		func() error { return registry.Register(agent.NewTodoTool()) },
-		func() error { return registry.Register(agent.NewAskUserTool()) },
+// sessionTools 是**会话级**受控工具集（0.2.36 审计 R1）：fs/shell/git/search
+// 各持一份，根固定在会话的归属工作区。为什么不再用全局单例 + 发送前切根：
+// 并行发送时后完成的切换会换掉先发那路已准备使用的工具集（文件写到另一个
+// 项目），切会话还会 Close 掉另一路正在跑的 shell（dev server 被误杀）。
+// MCP/技能/扩展管理是进程共享的清单与连接，不随会话克隆（否则两套 MCP
+// 进程抢端口、一个会话添加的技能另一个会话看不到）。
+type sessionTools struct {
+	root   string         // 归属根（空 = 纯对话：只保留共享工具）
+	fs     tools.ToolPort // 以下四个仅在 root 非空时构造
+	shell  tools.ToolPort
+	git    tools.ToolPort
+	search tools.ToolPort
+}
+
+// closeToolIfCloser 收掉工具实例的可关闭资源（shell 的后台任务表）。
+// 非可关闭工具是 no-op。
+func closeToolIfCloser(t tools.ToolPort) error {
+	if t == nil {
+		return nil
 	}
-	if strings.TrimSpace(workDir) != "" {
-		regs = append(regs,
-			func() error { return registry.Register(fstool.New(workDir)) },
-			func() error { return registry.Register(shelltool.New(shelltool.Options{Root: workDir})) },
-			func() error { return registry.Register(gittool.New(workDir)) },
-			func() error { return registry.Register(searchtool.New(workDir)) },
-		)
+	if closer, ok := t.(interface{ Close() error }); ok {
+		return closer.Close()
 	}
-	for _, reg := range regs {
-		if err := reg(); err != nil {
-			return nil, fmt.Errorf("register tool: %w", err)
+	return nil
+}
+
+// ensureSessionTools 取/建会话级工具集。根一旦确定不再变化（归属由账本首个
+// workspace 事件固定）；同会话复用同一份 shell 实例（后台任务表跨轮存活，
+// bg_status/bg_kill 始终可达）。root 变化只可能来自防御路径（会话删除后再建），
+// 此时收掉旧实例避免孤儿进程；收旧失败显式返回（不静默丢进程）。
+func (s *ChatService) ensureSessionTools(sessionID, root string) (*sessionTools, error) {
+	if st, ok := s.sessTools[sessionID]; ok && st.root == root {
+		return st, nil
+	}
+	if old, ok := s.sessTools[sessionID]; ok {
+		if err := closeToolIfCloser(old.shell); err != nil {
+			return nil, fmt.Errorf("终止该会话旧后台任务失败：%w", err)
 		}
+	}
+	st := &sessionTools{root: root}
+	if root != "" {
+		st.fs = fstool.New(root)
+		st.shell = shelltool.New(shelltool.Options{Root: root})
+		st.git = gittool.New(root)
+		st.search = searchtool.New(root)
+	}
+	s.sessTools[sessionID] = st
+	return st, nil
+}
+
+// assembleRegistry 组装一轮用的工具注册表：共享交互/扩展工具 + 该会话的
+// 受控工具。每轮组装只是把已缓存的工具实例注册一遍（结构很轻）。
+func (s *ChatService) assembleRegistry(st *sessionTools) (*tools.Registry, error) {
+	registry := tools.NewRegistry()
+	// todo / ask_user：交互类工具。定义进模型工具集，执行由 Loop 按名拦截
+	//（todo → agent.runTodo；ask_user → Loop.runAsk 阻塞等 UI 答复）
+	if err := registry.Register(agent.NewTodoTool()); err != nil {
+		return nil, fmt.Errorf("register tool: %w", err)
+	}
+	if err := registry.Register(agent.NewAskUserTool()); err != nil {
+		return nil, fmt.Errorf("register tool: %w", err)
+	}
+	if st != nil {
+		for _, t := range []tools.ToolPort{st.fs, st.shell, st.git, st.search} {
+			if t == nil {
+				continue
+			}
+			if err := registry.Register(t); err != nil {
+				return nil, fmt.Errorf("register tool: %w", err)
+			}
+		}
+	}
+	if err := s.attachExtensions(registry); err != nil {
+		return nil, err
 	}
 	return registry, nil
 }
 
-// Workspace 返回当前工作区。
+// Workspace 返回"新会话的默认工作区"（顶栏当前显示值）。
 func (s *ChatService) Workspace() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cfg.WorkDir
 }
 
-// SetWorkspace 切换工作区：校验目录 → 重建工具集 → 按当前激活渠道重建 agent。
-// dir 为空串 = 退出工作区（纯对话模式）：本地文件工具下线，用于"不选择工作区新建会话"。
-// 为什么必须重建 agent：工具持有工作区根（受控范围），只改 cfg 不改工具集，
-// 会出现"界面显示新目录、读写仍打到旧目录"的最坏情况。
+// SetWorkspace 设置"新会话的默认工作区"（0.2.36 审计 R1 语义变更）。
+// dir 为空串 = 纯对话（本地文件工具下线）。
+// 为什么不再替换全局工具集：那会在并行发送时把先发那路已准备使用的工具集
+// 换掉（写错项目），并关闭另一路正在跑的 shell（dev server 被误杀）。
+// 已有会话的根由账本归属固定，不受这里影响。
 func (s *ChatService) SetWorkspace(dir string) error {
-	dir = strings.TrimSpace(dir)
+	dir = normalizeWorkspace(dir)
 	if dir != "" {
-		// 规范化（0.2.35 审计#5）：尾部反斜杠会让 fs/search 的前缀比较全部
-		// 误判越界（root "D:\proj\" vs Join 结果 "D:\proj\a.go"）；`..` 与符号
-		// 链接一并解析成真实路径。盘符根（D:\）的尾分隔符合法，保留。
-		if abs, err := filepath.Abs(dir); err == nil {
-			dir = filepath.Clean(abs)
-		} else {
-			dir = filepath.Clean(dir)
-		}
-		if real, err := filepath.EvalSymlinks(dir); err == nil {
-			dir = filepath.Clean(real)
-		}
-		if len(dir) > 3 && (strings.HasSuffix(dir, `\`) || strings.HasSuffix(dir, `/`)) {
-			dir = strings.TrimRight(dir, `\/`)
-		}
 		info, err := os.Stat(dir)
 		if err != nil {
 			return fmt.Errorf("工作区不可用：%w", err)
@@ -106,32 +164,11 @@ func (s *ChatService) SetWorkspace(dir string) error {
 			return fmt.Errorf("工作区不是目录：%s", dir)
 		}
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	registry, err := newRegistry(dir)
-	if err != nil {
-		return err
-	}
-	if err := s.attachExtensions(registry); err != nil {
-		return err
-	}
-	// 旧 shell 工具的后台任务随实例一起丢弃（0.2.35 审计#2）：显式收掉进程树，
-	// 否则任务表丢失，bg_status/bg_kill 再也够不着，进程成为孤儿。
-	// 终止失败时显式失败（不静默切换）：用户知道有进程没被收掉。
-	if s.registry != nil {
-		if sh, ok := s.registry.Get("shell"); ok {
-			if closer, ok := sh.(interface{ Close() error }); ok {
-				if err := closer.Close(); err != nil {
-					return fmt.Errorf("切换工作区时终止旧后台任务失败：%w", err)
-				}
-			}
-		}
-	}
-	s.registry = registry
 	s.cfg.WorkDir = dir
 	if s.defaultModel == "" {
-		return nil // 尚无激活渠道：配置好渠道后自然使用新工作区
+		return nil // 尚无激活渠道：配置好渠道后自然生效
 	}
 	return s.activate(s.defaultModel)
 }

@@ -1,7 +1,6 @@
 package session
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,35 +10,15 @@ import (
 // 为什么用事件：置顶与标题同源（账本），重启/换机后仍生效，不引入第二事实源。
 const EventSessionPinned EventKind = "session_pinned"
 
-// Pinned 重放账本取最后一次置顶事件；从未置顶返回 false。
-// 命名遵循 Title/Workspace 的先例（stutter 规则）。
+// Pinned 取最后一次置顶事件的状态；从未置顶返回 false。
+// 走只读元数据扫描（0.2.36 审计 R2，绝不截断）。命名遵循 Title/Workspace
+// 的先例（stutter 规则）。
 func Pinned(dir, sessionID string) (bool, error) {
-	l, err := OpenLedger(dir, sessionID)
+	m, err := ReadMeta(dir, sessionID)
 	if err != nil {
 		return false, err
 	}
-	pinned := false
-	replayErr := l.Replay(func(e Event) error {
-		if e.Kind() != EventSessionPinned {
-			return nil
-		}
-		var payload struct {
-			Pinned bool `json:"pinned"`
-		}
-		// 坏事件必须上抛（R2）：静默跳过会表现为"置顶莫名丢失"
-		if err := json.Unmarshal(e.Data(), &payload); err != nil {
-			return fmt.Errorf("置顶事件解析失败（会话 %s）：%w", sessionID, err)
-		}
-		pinned = payload.Pinned
-		return nil
-	})
-	if err := l.Close(); err != nil {
-		return false, err
-	}
-	if replayErr != nil {
-		return false, replayErr
-	}
-	return pinned, nil
+	return m.Pinned, nil
 }
 
 // LastActive 返回账本文件的最后修改时间（UnixMilli）：任何追加（消息/工具/终态）

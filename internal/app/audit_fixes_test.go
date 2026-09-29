@@ -5,16 +5,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"tiancode/internal/core/agent"
 	"tiancode/internal/core/llm"
 )
 
 // 0.2.35 审计修复的回归测试。逐项对应审计编号。
 
-// 审计#1：工具根跟会话走——A 会话在 dirA 发过消息（账本记录归属）后，
-// 即使全局工作区切到 dirB，再向 A 发送也必须切回 dirA（后台会话的排队
-// 续发不能改到别的项目）。
-func TestChatService_SendSwitchesBackToSessionWorkspace(t *testing.T) {
+// 0.2.36 审计 R1：工具根按会话持有——A（dirA）与 B（dirB）各写各的项目，
+// 互不串根；全局 Workspace（顶栏"新会话默认"值）不因发送被改写。
+// 这替换了 0.2.35 的"发送前切全局根"方案（并行竞态 + 误杀另一路 shell）。
+func TestChatService_SessionToolsArePerSession(t *testing.T) {
 	newTestUpstream(t, 0)
 	dirA := t.TempDir()
 	dirB := t.TempDir()
@@ -25,30 +27,108 @@ func TestChatService_SendSwitchesBackToSessionWorkspace(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drain := func(id string) {
+		t.Helper()
+		ch, err := s.Send(context.Background(), id, "hi")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range ch {
+		}
+	}
+	rootOf := func(id string) string {
+		t.Helper()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		st, ok := s.sessTools[id]
+		if !ok {
+			t.Fatalf("会话 %s 无工具集", id)
+		}
+		return st.root
+	}
 
-	ctx := context.Background()
-	// 会话 s1 首聊：落账本归属 dirA
-	ch, err := s.Send(ctx, "s-ws", "hi")
+	// 会话 A 首聊：归属 dirA（= 当时顶栏值）
+	drain("s-A")
+	if got := rootOf("s-A"); got != filepath.Clean(dirA) {
+		t.Fatalf("A 根 = %q, want %q", got, filepath.Clean(dirA))
+	}
+
+	// 用户在顶栏切到 dirB（只影响"新会话默认"，不碰 A）
+	if err := s.SetWorkspace(dirB); err != nil {
+		t.Fatal(err)
+	}
+
+	// 会话 B 首聊：归属 dirB
+	drain("s-B")
+	if got := rootOf("s-B"); got != filepath.Clean(dirB) {
+		t.Fatalf("B 根 = %q, want %q", got, filepath.Clean(dirB))
+	}
+
+	// 关键断言：再向 A 发送（此时顶栏是 dirB）——A 的根仍是 dirA（不串根）
+	drain("s-A")
+	if got := rootOf("s-A"); got != filepath.Clean(dirA) {
+		t.Fatalf("再次发送后 A 根 = %q, want %q（不得串根）", got, filepath.Clean(dirA))
+	}
+	// 顶栏值保持用户选择（不被发送改写）
+	if got := s.Workspace(); got != filepath.Clean(dirB) {
+		t.Fatalf("顶栏工作区 = %q, want %q（发送不应改写全局）", got, filepath.Clean(dirB))
+	}
+}
+
+// 纯对话会话的空工作区必须保留：不因"没有记录"套上一个默认目录。
+func TestChatService_EmptyWorkspaceSessionStaysEmpty(t *testing.T) {
+	newTestUpstream(t, 0)
+	s := newChannelService(t, Config{})
+	defer s.Close()
+	// 显式回到纯对话（测试助手默认会给一个临时工作区）
+	if err := s.SetWorkspace(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddChannel(llm.Channel{
+		Name: "up", Protocol: llm.ProtocolOpenAI, BaseURL: "http://127.0.0.1:1", Model: "m1", APIKey: "k",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := s.Send(context.Background(), "s-empty", "hi")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range ch {
 	}
+	s.mu.Lock()
+	st := s.sessTools["s-empty"]
+	s.mu.Unlock()
+	if st == nil || st.root != "" {
+		t.Fatalf("纯对话会话根应为空（本地工具下线）：%+v", st)
+	}
+	if st.fs != nil || st.shell != nil {
+		t.Fatal("空根不得构造本地工具（安全红线）")
+	}
+}
 
-	// 全局切到 dirB（用户点开了别的项目的会话）
-	if err := s.SetWorkspace(dirB); err != nil {
+// R3：审批独立超时按**拒绝**处理（绝不放行）——后台会话的确认卡不会无限
+// 挂住整轮，且"没确认就不执行"的保护默认在。
+func TestChatService_ApprovalTimeoutDenies(t *testing.T) {
+	old := approvalReplyTimeout
+	approvalReplyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { approvalReplyTimeout = old })
+
+	s := newChannelService(t, Config{})
+	defer s.Close()
+	ap := &uiApprover{svc: s, allowed: []string{"shell"}}
+	start := time.Now()
+	d, err := ap.Review(context.Background(), agent.ApprovalRequest{ToolName: "shell", Arguments: `{"command":"echo hi"}`})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Workspace() != filepath.Clean(dirB) {
-		t.Fatalf("前置：工作区应已切到 dirB，got %q", s.Workspace())
+	if d.Approved {
+		t.Fatal("超时必须按拒绝处理（绝不放行）")
 	}
-
-	// 再向 s1 发送：必须切回 dirA（后台会话的排队续发不能改到别的项目）
-	if _, err := s.Send(ctx, "s-ws", "hi again"); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(d.Reason, "超时") {
+		t.Fatalf("拒绝原因应说明超时：%q", d.Reason)
 	}
-	if got := s.Workspace(); got != filepath.Clean(dirA) {
-		t.Fatalf("发送后工作区 = %q, want 会话归属 %q（审计#1）", got, filepath.Clean(dirA))
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("应约 300ms 返回，实际 %v", time.Since(start))
 	}
 }
 

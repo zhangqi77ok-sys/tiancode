@@ -20,6 +20,9 @@ type SessionSummary struct {
 	Workspace    string `json:"workspace,omitempty"`
 	Pinned       bool   `json:"pinned"`
 	LastActiveMs int64  `json:"lastActiveMs"`
+	// SkippedLines > 0 表示账本有未完成写入（回合进行中的常态）或坏行被跳过
+	// （0.2.36 审计 R2：元数据只读、不截断、单条坏不联坐）。
+	SkippedLines int `json:"skippedLines,omitempty"`
 }
 
 // maxTitleRunes 是标题长度上限：侧栏单行展示，过长既撑破布局也无法辨认。
@@ -94,7 +97,11 @@ func (s *ChatService) ExportSessionMarkdown(sessionID string) (string, error) {
 }
 
 // SessionSummaries 返回全部会话摘要（按 ID 排序，与 ListSessions 一致）。
-// 单个账本损坏时上抛错误：静默跳过会让用户以为"会话凭空消失"（R2 禁吞错）。
+// 元数据走只读扫描（0.2.36 审计 R2）：此前每个会话 4 次 OpenLedger（写模式 +
+// repair 截断）——回合进行中刷新列表会把正在追加的半行截掉（数据损坏）。
+// 现在每会话一次 ReadMeta（不截断、坏行跳过计数）。
+// 单条失败不联坐：某个账本不可读时该条降级为最小摘要（SkippedLines 标记），
+// 其余会话照常返回——一个坏账本不能让整个侧栏消失。
 func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 	ids, err := session.ListSessions(s.cfg.DataDir)
 	if err != nil {
@@ -102,23 +109,19 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 	}
 	out := make([]SessionSummary, 0, len(ids))
 	for _, id := range ids {
-		title, err := session.Title(s.cfg.DataDir, id)
-		if err != nil {
-			return nil, fmt.Errorf("读取会话 %s 标题失败：%w", id, err)
-		}
-		ws, err := session.Workspace(s.cfg.DataDir, id)
-		if err != nil {
-			return nil, fmt.Errorf("读取会话 %s 工作区失败：%w", id, err)
-		}
-		pinned, err := session.Pinned(s.cfg.DataDir, id)
-		if err != nil {
-			return nil, fmt.Errorf("读取会话 %s 置顶状态失败：%w", id, err)
+		meta, metaErr := session.ReadMeta(s.cfg.DataDir, id)
+		if metaErr != nil {
+			// 该条不可读：以最小摘要呈现（时间仍可取），不牵连全体
+			meta = session.Meta{Skipped: 1}
 		}
 		lastActive, err := session.LastActive(s.cfg.DataDir, id)
 		if err != nil {
-			return nil, fmt.Errorf("读取会话 %s 活跃时间失败：%w", id, err)
+			lastActive = 0
 		}
-		out = append(out, SessionSummary{ID: id, Title: title, Workspace: ws, Pinned: pinned, LastActiveMs: lastActive})
+		out = append(out, SessionSummary{
+			ID: id, Title: meta.Title, Workspace: meta.Workspace,
+			Pinned: meta.Pinned, LastActiveMs: lastActive, SkippedLines: meta.Skipped,
+		})
 	}
 	return out, nil
 }

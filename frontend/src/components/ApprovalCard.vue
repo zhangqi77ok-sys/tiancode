@@ -17,6 +17,10 @@ const store = useChatStore()
         <AppIcon name="shield" :size="14" class="text-[var(--c-warn-text)]" />
         <span class="font-medium">即将执行工具</span>
         <span class="stat px-2 py-0.5 text-xs">{{ m.toolName }}</span>
+        <!-- 会话名（0.2.36 审计 R3）：多会话下用户必须一眼知道这条命令是哪个对话要跑的 -->
+        <span v-if="m.sessionTitle" class="stat px-2 py-0.5 text-xs text-[var(--c-text-dim)]" title="发起该请求的会话">
+          会话：{{ m.sessionTitle }}
+        </span>
         <!-- 已决状态用 -text 色（AA 达标），不再是旧版的浅色字 -->
         <span v-if="m.status === 'approved'" class="stat px-2 py-0.5 text-xs text-[var(--c-ok-text)]">已允许</span>
         <span v-else-if="m.status === 'denied'" class="stat px-2 py-0.5 text-xs text-[var(--c-err-text)]">已拒绝</span>

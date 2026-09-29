@@ -104,7 +104,7 @@ onMounted(() => {
   // 也绝不插进当前视图（那正是"数据串会话"）
   bridge().runtime.EventsOn(
     'chat:approval',
-    (p: { id: string; sessionID: string; toolName: string; arguments: string }) => {
+    (p: { id: string; sessionID: string; sessionTitle?: string; toolName: string; arguments: string }) => {
       store.onApproval(p)
     },
   )
