@@ -284,13 +284,21 @@ func (s *ChatService) activate(model string) error {
 // newAgentWith 用锁内取好的快照构建这一轮独立的 ReAct 循环（多会话并行的前提，
 // 见 activate 注释）。sessionID 随轮注入审批器/问答器：后台会话的"要审批/在提问"
 // 事件必须能归属到它自己的会话，否则会错插进当前正在看的会话里。
-func (s *ChatService) newAgentWith(model string, registry *tools.Registry, approver agent.Approver, sessionID string) *agent.Loop {
+// watch 非空时把"等待审批/等待答复"计入零事件看门狗的活跃（防误杀，见 zeroEventWatch）。
+func (s *ChatService) newAgentWith(model string, registry *tools.Registry, approver agent.Approver, sessionID string, watch *zeroEventWatch) *agent.Loop {
 	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（适配器内 60s）
 	// 已覆盖挂起场景，总预算只防极端失控。
 	rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{Total: 10 * time.Minute})
 	ag := agent.NewLoop(rt, model, registry)
-	ag.SetAsker(&uiAsker{svc: s, sessionID: sessionID}) // 问答通道常开（无 UI 时模型收到引导性结果）
-	ag.SetApprover(approver)                            // 审批器随轮注入，策略变更对下一轮生效
+	var asker agent.Asker = &uiAsker{svc: s, sessionID: sessionID}
+	if watch != nil {
+		asker = &watchAsker{inner: asker, watch: watch}
+	}
+	ag.SetAsker(asker) // 问答通道常开（无 UI 时模型收到引导性结果）
+	if watch != nil && approver != nil {
+		approver = &watchApprover{inner: approver, watch: watch}
+	}
+	ag.SetApprover(approver) // 审批器随轮注入，策略变更对下一轮生效
 	return ag
 }
 
@@ -344,7 +352,20 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 		release()
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
 	}
-	ag := s.newAgentWith(model, registry, approver, sessionID)
+	// 零事件看门狗（0.2.29）：Send 后 firstEventTimeout 内**没有任何可见活动**
+	// （流式增量/工具卡/任务清单/等待审批/等待答复）就取消本轮——上游黑洞、
+	// 代理 CONNECT 挂死这类零输出场景，流层空闲看门狗与响应头超时都管不到
+	// （CONNECT 阶段不受 ResponseHeaderTimeout 约束是 Go Transport 的已知行为），
+	// 实机表现是"发送后永久运行中，无任何反馈"。只对零事件生效：模型已在输出、
+	// 工具已在执行、正在等用户答复的轮次都算活动，绝不误杀长任务。
+	watch := &zeroEventWatch{start: time.Now()}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	// 纪律（0.2.29 两次实测教训）：Send 是"返回通道即返回"的长调用——defer 在这里
+	// 一律等于"立刻执行"：cancelRun 不能 defer（会当场取消整轮），watchStopped
+	// 也不能 defer close（看门狗会在 Send 返回后立刻失去值守）。两者的生命周期
+	// 都到"流收尾"为止：由转发 goroutine（或流未建立的错误路径）显式收尾。
+	watchStopped := make(chan struct{})
+	ag := s.newAgentWith(model, registry, approver, sessionID, watch)
 	if err := s.applyExtensionPreface(ctx, ag); err != nil {
 		release()
 		return nil, err
@@ -360,19 +381,61 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 		release()
 		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
 	}
-	stream, err := ag.Run(ctx, ledger, text)
+	stream, err := ag.Run(runCtx, ledger, text)
 	if err != nil {
 		release()
+		cancelRun()         // 流未建立：本轮 ctx 资源就地释放
+		close(watchStopped) // 看门狗退场（与转发 goroutine 的收尾互斥：此路径不启动转发）
+		if watch.timedOut.Load() {
+			// 看门狗触发的取消：流还没建立就断了——返回明确超时错误而不是裸的 context canceled
+			return nil, errors.New(watch.timeoutMessage())
+		}
 		return nil, err
 	}
-	// 转发一层：流关闭（终态已发）时释放占位。Send 的"长调用"语义不变，
-	// 背压仍由下游消费速度决定（这里只是多一次通道搬运）。
+	// 分发层：stream（上游流）与 inject（看门狗注入）双源，先到先得。
+	// 为什么不直接转发 stream 再做终态映射：上游黑洞/代理挂死下，gateway 建流
+	// 失败路径对取消的响应不可假设（实测可无限期不发终态）——看门狗触发后
+	// **直接注入终态**，对上游任何行为零依赖。被打断的上游由 cancelRun 收尾
+	//（turn 的 forward/emitTerminal 都有 ctx.Done 逃生，不会泄漏 goroutine）。
 	out := make(chan llm.StreamChunk)
+	inject := make(chan llm.StreamChunk, 1)
+	go func() { // 看门狗：零事件超时 → 注入明确终态（用户没点中断，"已中断"文案会让人困惑）
+		t := time.NewTicker(firstEventTimeout / 4)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchStopped:
+				return
+			case <-t.C:
+				if !watch.sawEvent.Load() && time.Since(watch.start) > firstEventTimeout {
+					watch.timedOut.Store(true)
+					cancelRun() // 尽力打断上游（HTTP/工具读全部响应 ctx）
+					inject <- llm.StreamChunk{EndReason: llm.EndError, Err: errors.New(watch.timeoutMessage())}
+					return
+				}
+			}
+		}
+	}()
 	go func() {
 		defer close(out)
 		defer release()
-		for c := range stream {
-			out <- c
+		defer cancelRun()         // 流收尾后释放本轮 ctx 资源（防泄漏；绝不提前取消）
+		defer close(watchStopped) // 流收尾：看门狗退场
+		for {
+			select {
+			case c, ok := <-stream:
+				if !ok {
+					return // 上游流关闭（契约保证终态已发）
+				}
+				watch.mark() // 任何块（增量/工具/清单）都算活动
+				out <- c
+				if c.EndReason != llm.EndNone {
+					return
+				}
+			case c := <-inject:
+				out <- c
+				return
+			}
 		}
 	}()
 	return out, nil
