@@ -292,3 +292,54 @@ func TestFSOversized_ReplaceRejectsWriteSkipsDiff(t *testing.T) {
 		t.Fatal("small file write must keep diff")
 	}
 }
+
+// 0.0.06：write/replace 给模型的 Content 必须带短 diff（不能再只看到
+// "written N bytes"——模型需要确认自己改了什么）；超长截断并注明完整预览
+// 在工具卡；Diff 字段始终给界面完整版。
+func TestFSWrite_ContentCarriesShortDiff(t *testing.T) {
+	tool := newTool(t)
+	mustWrite(t, tool, "code.txt", "alpha\nbeta\ngamma\n")
+
+	res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{
+		"action": "replace", "path": "code.txt", "target": "beta", "replacement": "BETA",
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("replace: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "-beta") || !strings.Contains(res.Content, "+BETA") {
+		t.Fatalf("Content 缺短 diff：%q", res.Content)
+	}
+	if !strings.Contains(res.Content, "replaced 1 occurrence") {
+		t.Fatalf("Content 缺摘要行：%q", res.Content)
+	}
+	if !strings.Contains(res.Diff, "-beta") {
+		t.Fatal("Diff 字段必须仍是完整 diff")
+	}
+
+	// 超长 diff：Content 截断并注明省略；Diff 字段完整
+	//（diffText 只含变更块——制造超长 diff 需要 400 行全部变更）
+	var old strings.Builder
+	old.WriteString("head\n")
+	for i := 0; i < 400; i++ {
+		old.WriteString("padding-line-to-be-changed\n")
+	}
+	mustWrite(t, tool, "big.txt", old.String())
+	res, err = tool.Execute(context.Background(), mustArgs(t, map[string]any{
+		"action": "replace", "path": "big.txt", "target": "padding-line-to-be-changed",
+		"replacement": "CHANGED-padding-line", "allow_multiple": true,
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("big replace: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "full diff for big.txt omitted") {
+		t.Fatalf("超长 diff 必须注明省略：%q", res.Content[len(res.Content)-160:])
+	}
+	// diffText 自身 200 行上限内可见删除形态（"+" 段在 200 行之外属于
+	// diffText 既有行为，这里锁住 Content 头部可见性即可）
+	if !strings.Contains(res.Content, "-padding-line-to-be-changed") {
+		t.Fatal("截断后的短 diff 头部必须可见变更形态")
+	}
+	if len(res.Diff) <= diffContentLimit {
+		t.Fatalf("Diff 字段应保留完整预览：%d", len(res.Diff))
+	}
+}

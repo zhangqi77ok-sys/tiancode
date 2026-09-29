@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
+import { useCatalogStore } from '../stores/catalog'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
 import { buildSidebar } from '../composables/sessionGrouping'
@@ -11,10 +12,13 @@ import SessionRow from './SessionRow.vue'
 // 会话侧栏（三段式，对齐商用 AI 工具）：置顶 / 会话（未归属空间）/ 空间（按工作区分组）。
 // 双动作入口：新建对话（当前工作区）+ 打开工作区（切换后新对话归属该空间）。
 // 每个列表默认显示 5 条，超出折叠为"查看更多 (N)"。
-// 底部导航：渠道管理常驻入口（0.2.21）——入口从"顶栏 chip 专属"提升为导航级可见。
+// 底部导航：模型/渠道/技能/MCP 的**统一**设置入口（0.0.06——此前拆在汉堡导航与
+// 侧栏底部两处，现已收敛到这一处；汉堡导航整体下线）。
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'open-channels'): void
+  (e: 'open-mcp'): void
+  (e: 'open-skills'): void
 }>()
 
 const store = useChatStore()
@@ -22,8 +26,29 @@ const channels = useChannelStore()
 const ws = useWorkspaceStore()
 const dialogs = useDialogs()
 
-// 侧栏底部渠道摘要：当前激活渠道名（未配置时给出警示色引导）
-const channelSide = computed(() => channels.activeModel || channels.activeChannel?.name || '')
+// ---- 统一设置入口（0.0.06）：模型 / 渠道 / 技能 / MCP 收成侧栏底部一处——
+// 此前入口拆在汉堡导航与侧栏底部两处，用户不知道去哪找。模型名在这里是
+// 主信息（正文字号、正常色），不再是 11px 浅色次要字。
+const catalog = useCatalogStore()
+const settingsMenuOpen = ref(false)
+const settingsMenuRef = ref<HTMLElement | null>(null)
+const mcpOn = computed(() => catalog.mcp.filter((s) => s.enabled).length)
+const skillOn = computed(() => catalog.skills.filter((s) => s.enabled).length)
+
+function onSettingsMousedown(e: MouseEvent) {
+  if (!settingsMenuOpen.value) return
+  const el = settingsMenuRef.value
+  if (el && !el.contains(e.target as Node)) settingsMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', onSettingsMousedown))
+onBeforeUnmount(() => document.removeEventListener('mousedown', onSettingsMousedown))
+
+function openSettings(kind: 'channels' | 'mcp' | 'skills') {
+  settingsMenuOpen.value = false
+  if (kind === 'channels') emit('open-channels')
+  else if (kind === 'mcp') emit('open-mcp')
+  else emit('open-skills')
+}
 
 const VIEW_LIMIT = 5
 
@@ -230,24 +255,59 @@ function select(id: string) {
 
     <div v-if="store.error" class="mt-2 px-1 text-xs text-[var(--c-err-text)]">{{ store.error }}</div>
 
-    <!-- 底部导航：渠道管理常驻入口（当前渠道名一眼可见；未配置给警示色） -->
-    <div class="mt-2 border-t border-[var(--c-border)] px-1 pt-2">
+    <!-- 底部导航：模型/渠道/技能/MCP 统一入口（0.0.06）。模型名是主信息：
+         正文字号、正常文字色；未配置才给警示色引导 -->
+    <div ref="settingsMenuRef" class="relative mt-2 border-t border-[var(--c-border)] px-1 pt-2">
       <button
-        class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-[var(--c-surface-soft)]"
-        aria-haspopup="dialog"
-        title="模型渠道管理"
-        @click="emit('open-channels')"
+        class="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--c-surface-soft)]"
+        aria-haspopup="menu"
+        :aria-expanded="settingsMenuOpen"
+        title="模型、渠道、技能与 MCP 设置"
+        @click="settingsMenuOpen = !settingsMenuOpen"
       >
-        <AppIcon name="sliders" :size="13" class="shrink-0 text-[var(--c-text-dim)]" />
-        <span class="shrink-0 text-[var(--c-text-dim)]">渠道管理</span>
-        <span
-          class="min-w-0 flex-1 truncate text-right"
-          :class="channelSide ? 'text-[var(--c-text-faint)]' : 'text-[var(--c-warn-text)]'"
-          :title="channels.activeChannel ? `${channels.activeChannel.name} · ${channels.activeModel || '未填模型'}` : '未配置渠道'"
-        >
-          {{ channelSide || '未配置' }}
+        <AppIcon name="sliders" :size="14" class="mt-0.5 shrink-0 text-[var(--c-text-dim)]" />
+        <span class="min-w-0 flex-1">
+          <span class="block truncate text-sm text-[var(--c-text)]">
+            {{ channels.activeModel || '未选择模型' }}
+          </span>
+          <span
+            class="block truncate text-xs"
+            :class="channels.activeChannel ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
+          >
+            {{ channels.activeChannel ? channels.activeChannel.name : '未配置渠道 · 点击设置' }}
+          </span>
         </span>
+        <AppIcon
+          name="chevron-down"
+          :size="12"
+          class="mt-1 shrink-0 text-[var(--c-text-faint)] transition-transform"
+          :class="settingsMenuOpen ? '' : '-rotate-90'"
+        />
       </button>
+      <div
+        v-if="settingsMenuOpen"
+        role="menu"
+        class="absolute bottom-full left-0 z-40 mb-1 w-full rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+      >
+        <button role="menuitem" class="menu-item" @click="openSettings('channels')">
+          <AppIcon name="sliders" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">模型与渠道管理</span>
+        </button>
+        <button role="menuitem" class="menu-item" @click="openSettings('mcp')">
+          <AppIcon name="plug" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">MCP 管理</span>
+          <span class="text-[11px] text-[var(--c-text-faint)]">
+            {{ catalog.mcp.length ? `已启用 ${mcpOn}/${catalog.mcp.length}` : '未添加' }}
+          </span>
+        </button>
+        <button role="menuitem" class="menu-item" @click="openSettings('skills')">
+          <AppIcon name="book" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">Skill 管理</span>
+          <span class="text-[11px] text-[var(--c-text-faint)]">
+            {{ catalog.skills.length ? `已启用 ${skillOn}/${catalog.skills.length}` : '未添加' }}
+          </span>
+        </button>
+      </div>
     </div>
   </aside>
 </template>

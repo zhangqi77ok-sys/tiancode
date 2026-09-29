@@ -36,6 +36,8 @@ export interface ChatMsg {
   approvalId?: string
   args?: string
   sessionTitle?: string
+  // 工具调用配对 ID（0.0.06）：running 与终态事件同 ID——终态原地更新"执行中"卡
+  callId?: string
   at?: number
   term?: number
   streaming?: boolean
@@ -510,10 +512,48 @@ export const useChatStore = defineStore('chat', () => {
     diff?: string
     title?: string
     op?: string
+    callID?: string
   }) {
     const c = ensureConvo(p.sessionID)
     if (p.name === 'todo') return // 任务清单由 onTodo/FloatingTodo 承载，不重复出工具卡
     if (p.name === 'ask_user') return // 问答卡由 onAsk/AskCard 承载，答案已在卡上
+    // running 事件（0.0.06）：先出"执行中"卡（默认展开），终态事件按 callId
+    // 原地更新同一张卡——卡随事件增长，而不是插两张卡。
+    if (p.status === 'running' && p.callID) {
+      const existing = c.messages.find((m) => m.role === 'tool' && m.callId === p.callID)
+      if (existing) return // 已有同 ID 的卡（重复事件），不叠加
+      const ast = inFlightAssistant(c)
+      if (ast) ast.streaming = false
+      const card = withId({
+        role: 'tool' as const,
+        content: p.content || p.summary || '执行中…',
+        toolName: p.name,
+        status: 'running',
+        title: p.title,
+        op: p.op,
+        callId: p.callID,
+        streaming: true,
+        at: Date.now(),
+      })
+      const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
+      c.messages.splice(i, 0, card)
+      return
+    }
+    // 终态事件：优先更新同 callId 的"执行中"卡（原地生长），没有则新建
+    //（兼容旧后端/重放：终态事件总是独立成卡）
+    let target: ChatMsg | undefined
+    if (p.callID) {
+      target = c.messages.find((m) => m.role === 'tool' && m.callId === p.callID && m.status === 'running')
+    }
+    if (target) {
+      target.status = p.status
+      target.content = p.content || p.summary || target.content
+      if (p.diff !== undefined) target.diff = p.diff
+      if (p.title) target.title = p.title
+      if (p.op) target.op = p.op
+      target.streaming = false
+      return
+    }
     // 封存当前段：ReAct 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（onChunk 再开新段）
     const ast = inFlightAssistant(c)
     if (ast) ast.streaming = false
@@ -525,6 +565,7 @@ export const useChatStore = defineStore('chat', () => {
       diff: p.diff,
       title: p.title,
       op: p.op,
+      callId: p.callID,
       at: Date.now(),
     })
     const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length

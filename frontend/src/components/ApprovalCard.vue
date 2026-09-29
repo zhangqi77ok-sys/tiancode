@@ -1,12 +1,69 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
+import { useWorkspaceStore } from '../stores/workspace'
 import AppIcon from './AppIcon.vue'
 
-defineProps<{ m: ChatMsg }>()
+// 审批卡（0.0.06 改版）：主内容是人能读的句子——工具名、工作目录、命令或文件路径、
+// 是否像删除/覆盖；原始 JSON 折进「详情」。用户批准前要的是"要干什么"，不是读 JSON。
+const props = defineProps<{ m: ChatMsg }>()
 
 // 答复走 store：失败必须可见（error 位），成功后卡片转为已决态防重复点击
 const store = useChatStore()
+const ws = useWorkspaceStore()
+
+// 解析原始参数（解析失败静默——详情里仍有原文可看）
+const parsed = computed<Record<string, unknown>>(() => {
+  try {
+    return JSON.parse(props.m.args || '{}') as Record<string, unknown>
+  } catch {
+    return {}
+  }
+})
+
+// 一句话摘要：按工具选主参数（shell=命令，fs=read/write/replace/list/tree=path，
+// git=action+path，search=pattern，ext_manage=action+name）
+const summaryText = computed(() => {
+  const a = parsed.value
+  const s = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+  switch (props.m.toolName) {
+    case 'shell': {
+      const cmd = s(a.command)
+      return cmd ? `执行命令：${cmd}` : '执行命令'
+    }
+    case 'fs': {
+      const path = s(a.path) || '(未指定)'
+      const act = s(a.action)
+      if (act === 'write') return `写入文件：${path}`
+      if (act === 'replace') return `修改文件：${path}`
+      return `访问文件：${path}`
+    }
+    case 'git':
+      return `git ${s(a.action) || 'status'}${s(a.path) ? `（${s(a.path)}）` : ''}`
+    case 'search':
+      return `搜索：${s((a as { pattern?: unknown }).pattern) || '(未指定)'}`
+    case 'ext_manage':
+      return `扩展管理：${s(a.action) || ''} ${s(a.name) || ''}`.trim()
+    default:
+      return `调用工具 ${props.m.toolName}`
+  }
+})
+
+// 危险信号（0.0.06）：命令或路径像"删除/覆盖"时必须显式说——不是猜意图，是关键词事实
+const dangerNote = computed(() => {
+  const a = parsed.value
+  const cmd = typeof a.command === 'string' ? a.command : ''
+  const act = typeof a.action === 'string' ? a.action : ''
+  const deleteish = /\b(rm|rmdir|del|rd|erase|format|Remove-Item|Clear-Content|truncate)\b|\/s\b|\/f\b|-rf\b/i.test(cmd)
+  const overwriteish = (props.m.toolName === 'fs' && (act === 'write' || act === 'replace'))
+  if (deleteish) return '这条命令可能删除或覆盖文件'
+  if (overwriteish) return '这将修改磁盘上的文件（不可自动撤销）'
+  return ''
+})
+
+// ext_manage 也算"执行面"（0.2.27）：写明它会改本机扩展配置
+const extNote = computed(() => (props.m.toolName === 'ext_manage' ? '该操作会添加或移除本机的 MCP/Skill 扩展' : ''))
 </script>
 
 <template>
@@ -25,8 +82,27 @@ const store = useChatStore()
         <span v-if="m.status === 'approved'" class="stat px-2 py-0.5 text-xs text-[var(--c-ok-text)]">已允许</span>
         <span v-else-if="m.status === 'denied'" class="stat px-2 py-0.5 text-xs text-[var(--c-err-text)]">已拒绝</span>
       </div>
-      <!-- 原始参数原样展示：用户必须看到确切要执行什么（ADR-0007） -->
-      <pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--c-surface)] px-2 py-1.5 font-mono text-xs leading-5">{{ m.args }}</pre>
+
+      <!-- 人话主内容：要干什么 + 在哪个目录 + 危险信号 -->
+      <p class="mt-2 break-all text-sm leading-6 text-[var(--c-text)]">
+        {{ summaryText }}
+      </p>
+      <p class="mt-1 text-xs text-[var(--c-text-dim)]">
+        工作目录：{{ ws.path || '（纯对话，无工作区）' }}
+      </p>
+      <p v-if="dangerNote" class="mt-1 flex items-center gap-1 text-xs font-medium text-[var(--c-warn-text)]">
+        <AppIcon name="alert" :size="12" /> {{ dangerNote }}
+      </p>
+      <p v-if="extNote" class="mt-1 text-xs text-[var(--c-warn-text)]">{{ extNote }}</p>
+
+      <!-- 原始参数折进详情：确切内容仍可查（ADR-0007 不变），但不再是主内容 -->
+      <details class="mt-2">
+        <summary class="cursor-pointer select-none text-xs text-[var(--c-text-dim)] hover:text-[var(--c-text)]">
+          详情（原始参数）
+        </summary>
+        <pre class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--c-surface)] px-2 py-1.5 font-mono text-xs leading-5">{{ m.args }}</pre>
+      </details>
+
       <div v-if="!m.status" class="mt-2 flex gap-2">
         <button class="btn-primary px-4 py-1.5 text-xs" @click="store.resolveApproval(m.approvalId!, true)">
           允许执行

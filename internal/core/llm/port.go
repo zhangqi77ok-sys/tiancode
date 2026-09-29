@@ -38,7 +38,7 @@ const (
 // ToolEvent 是工具执行动态（UI 工具卡片的数据源；同时落账本供审计）。
 type ToolEvent struct {
 	Name    string // 工具名
-	Status  string // "success" | "error"
+	Status  string // "running" | "success" | "error"（running 仅实时流，不落账本）
 	Summary string // 结果摘要（可截断）
 	Content string // 全文；壳层 IPC 上限 64KiB，由 agent 截断
 	// Diff 是编辑类工具的结构化 diff（无变更时为空）。
@@ -49,6 +49,9 @@ type ToolEvent struct {
 	// 旧事件缺省为空，UI 回退工具名渲染。
 	Title string
 	Op    string
+	// CallID 标识一次工具调用（0.0.06）：running 与终态事件同 ID——前端把
+	// 终态更新到同一张卡上（卡随事件增长），而不是插一张新卡。
+	CallID string
 }
 
 // TodoItem 是任务清单的单项。

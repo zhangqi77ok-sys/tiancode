@@ -4,16 +4,14 @@ import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useToast } from '../composables/useToast'
-import { winClose, winMinimize, winToggleMaximize } from '../wails'
+import { THEME_LABEL, currentTheme, cycleTheme, type ThemeMode } from '../composables/useTheme'
+import { bridge, winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
 
 // 顶栏：品牌 + 运行状态 + 导出/工作区/命令确认。
-// 渠道/模型管理入口收敛到侧栏底部（0.2.28 用户反馈：顶栏不再放模型管理）。
+// 渠道/模型/技能/MCP 入口统一在侧栏底部（0.0.06）；汉堡导航已下线。
 // 纯状态展示用 .stat（无 hover 态），可点操作用 .chip——不制造假可点。
-const props = defineProps<{ navOpen?: boolean }>()
-const emit = defineEmits<{
-  (e: 'toggle-nav'): void
-}>()
+defineProps<{ navOpen?: boolean }>()
 
 const store = useChatStore()
 const channels = useChannelStore()
@@ -22,16 +20,22 @@ const { push: toast } = useToast()
 
 const approvalOn = ref(false)
 
-// 顶栏只显示末级目录名（完整路径太挤掉状态区）；状态在 workspace store（侧栏分组同源）
-const workspaceName = computed(
-  () => ws.path.split(/[\\/]/).filter(Boolean).pop() ?? '选择工作区',
-)
+// 顶栏工作区按钮（0.0.06）：显示"上一级 + 当前名"——只给最后一级时，
+// 两个不同项目的同名子目录（frontend/dist）无法区分；悬停仍是完整路径。
+const workspaceName = computed(() => {
+  if (!ws.path) return '选择工作区'
+  const segs = ws.path.split(/[\\/]/).filter(Boolean)
+  if (segs.length <= 1) return segs[0] ?? '选择工作区'
+  return `${segs[segs.length - 2]}/${segs[segs.length - 1]}`
+})
 
-// 状态灯文案：后台运行 / 待答复都要与"空闲"区分（切走后顶栏不能装作没事）
+// 状态灯文案：后台运行 / 待答复都要与"空闲"区分（切走后顶栏不能装作没事）。
+// 0.0.06：带上会话标题——多个会话并行时"后台运行中"说不清是谁在跑。
+const busyTitle = computed(() => (store.busyTarget ? store.titleOf(store.busyTarget) || '未命名会话' : ''))
 const statusText = computed(() => {
-  if (store.anyPending) return `${store.anyPending} 项待确认`
+  if (store.anyPending) return `${store.anyPending} 项待确认 · ${busyTitle.value}`
   if (!store.anyRunning) return '空闲'
-  return store.running ? '运行中' : '后台运行中'
+  return store.running ? '运行中' : `后台运行中 · ${busyTitle.value}`
 })
 
 // 状态灯点击：跳到等待处理的会话（优先"待确认"，其次其他运行中会话）
@@ -58,16 +62,12 @@ function onDocMousedown(e: MouseEvent) {
   if (el && !el.contains(e.target as Node)) wsMenuOpen.value = false
 }
 
-function workspaceBusy(): boolean {
-  if (!store.running) return false
-  toast('error', '正在生成，暂不能切换工作区')
-  return true
-}
-
 // 进入已有工作区：切换工具根并回到草稿。不改当前这场对话的工具——否则侧栏仍挂在旧空间，读写已经打到新目录。
+// 0.0.06：生成中不再禁止切换——进行中的会话用自己的工具集（后端按会话持有根），
+// 切换只影响"还没落账的新对话"。
 async function enterWorkspace(dir: string) {
   wsMenuOpen.value = false
-  if (workspaceBusy() || dir === ws.path) return
+  if (dir === ws.path) return
   const ok = await ws.setPath(dir)
   if (ok) await store.newSession()
 }
@@ -75,7 +75,6 @@ async function enterWorkspace(dir: string) {
 // 切换工作区：弹系统目录选择框；状态收敛在 workspace store（侧栏"按空间分组"同源）。
 // 与侧栏"打开"同语义：切换空间即回到草稿开新对话（归属由首条消息落账本时决定）
 async function switchWorkspace() {
-  if (workspaceBusy()) return
   const ok = await ws.pickAndSet()
   if (ok) await store.newSession()
 }
@@ -89,22 +88,51 @@ async function pickWorkspace() {
 // 退出工作区：纯对话模式（本地文件工具下线），之后的会话无归属落"会话"区
 async function exitWorkspace() {
   wsMenuOpen.value = false
-  if (workspaceBusy()) return
   await ws.clear()
   await store.newSession()
 }
 
-// 导出当前会话为 Markdown 并复制到剪贴板；剪贴板不可用时明确报错，不假装成功
-async function exportSession() {
-  if (!store.sessionId || store.running) return
+// ---- 导出（0.0.06 改版）----
+// 生成中同样可用：导出走账本投影，已落账的部分不丢；运行中只导出"到目前为止"。
+const exportMenuOpen = ref(false)
+const exportMenuRef = ref<HTMLElement | null>(null)
+
+async function currentMarkdown(): Promise<string | null> {
+  if (!store.sessionId) return null
   const md = await store.exportMarkdown(store.sessionId)
+  return md || null
+}
+
+// 复制 Markdown 到剪贴板；剪贴板失败时提示改用"另存为文件"（不假装成功）
+async function exportCopy() {
+  exportMenuOpen.value = false
+  const md = await currentMarkdown()
   if (!md) return
   try {
     await navigator.clipboard.writeText(md)
-    toast('info', '已导出并复制到剪贴板（Markdown）')
+    toast('info', '已复制为 Markdown')
   } catch {
-    toast('error', '导出失败：当前环境剪贴板不可用')
+    toast('error', '剪贴板不可用——可改用「另存为文件」')
   }
+}
+
+// 另存为文件：系统保存对话框走后端（WebView 内下载行为不可控）；剪贴板失败也有出路
+async function exportSave() {
+  exportMenuOpen.value = false
+  const md = await currentMarkdown()
+  if (!md) return
+  try {
+    await bridge().app.SaveTextFile('会话导出.md', md)
+    toast('info', '已保存为 Markdown 文件')
+  } catch (e) {
+    toast('error', String(e instanceof Error ? e.message : e))
+  }
+}
+
+function onExportMousedown(e: MouseEvent) {
+  if (!exportMenuOpen.value) return
+  const el = exportMenuRef.value
+  if (el && !el.contains(e.target as Node)) exportMenuOpen.value = false
 }
 
 // 审批闸门开关（ADR-0007 默认关）：开启后 shell 命令执行前需你确认。
@@ -115,30 +143,30 @@ async function toggleApproval() {
   await store.setApprovalPolicy(approvalOn.value ? ['shell', 'ext_manage'] : [])
 }
 
+// ---- 主题切换（0.0.06）：跟随系统 → 浅色 → 深色 循环；偏好持久化 ----
+const themeMode = ref<ThemeMode>(currentTheme())
+function toggleTheme() {
+  themeMode.value = cycleTheme()
+}
+
 onMounted(async () => {
   await channels.load()
   await ws.refresh()
   approvalOn.value = (await store.loadApprovalPolicy()).length > 0
   document.addEventListener('mousedown', onDocMousedown)
+  document.addEventListener('mousedown', onExportMousedown)
 })
 
-onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocMousedown)
+  document.removeEventListener('mousedown', onExportMousedown)
+})
 </script>
 
 <template>
   <!-- 无边框窗口的标题栏：整条可拖拽（交互元素在 CSS 里统一 no-drag） -->
   <header class="flex flex-wrap items-center justify-between gap-2" style="--wails-draggable: drag">
     <div class="flex min-w-0 items-center gap-2">
-      <!-- 只保留这一个：logo 左侧拉开导航。会话栏始终在左侧，不再另放一颗同样的按钮 -->
-      <button
-        class="btn-ghost"
-        :aria-expanded="!!props.navOpen"
-        aria-controls="app-nav"
-        :aria-label="props.navOpen ? '关闭导航' : '打开导航'"
-        @click="emit('toggle-nav')"
-      >
-        <AppIcon name="menu" :size="18" />
-      </button>
       <!-- 品牌 Logo：T 字标（内联，无外部资源） -->
       <span
         class="grid h-7 w-7 shrink-0 select-none place-items-center rounded-[10px] bg-[var(--c-primary)] text-[15px] font-bold text-white shadow-sm"
@@ -172,14 +200,33 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
         ></span>
         {{ statusText }}
       </button>
-      <button
-        class="chip"
-        :disabled="!store.sessionId || store.running"
-        title="导出当前会话为 Markdown"
-        @click="exportSession"
-      >
-        <AppIcon name="download" :size="13" /> 导出
-      </button>
+      <!-- 导出（0.0.06）：复制 / 另存文件二选一；生成中也可用（导出已落账部分） -->
+      <div ref="exportMenuRef" class="relative">
+        <button
+          class="chip"
+          :disabled="!store.sessionId"
+          aria-haspopup="menu"
+          :aria-expanded="exportMenuOpen"
+          title="导出当前会话为 Markdown（生成中可导出已落账部分）"
+          @click="exportMenuOpen = !exportMenuOpen"
+        >
+          <AppIcon name="download" :size="13" /> 导出
+        </button>
+        <div
+          v-if="exportMenuOpen"
+          role="menu"
+          class="absolute right-0 top-full z-40 mt-1 w-56 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        >
+          <button role="menuitem" class="menu-item" @click="exportCopy">
+            <AppIcon name="copy" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="flex-1 text-left">复制 Markdown</span>
+          </button>
+          <button role="menuitem" class="menu-item" @click="exportSave">
+            <AppIcon name="download" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="flex-1 text-left">另存为文件…</span>
+          </button>
+        </div>
+      </div>
       <!-- 工作区：默认未选择；菜单内进入已有工作区 / 选新目录 / 退出纯对话 -->
       <div ref="wsMenuRef" class="relative">
         <button
@@ -236,6 +283,16 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
         @click="toggleApproval"
       >
         <AppIcon name="shield" :size="13" /> 命令确认 {{ approvalOn ? '开' : '关' }}
+      </button>
+
+      <!-- 主题三态（0.0.06）：跟随系统 / 浅色 / 深色；颜色全走令牌重定义 -->
+      <button
+        class="chip"
+        :title="`当前：${THEME_LABEL[themeMode]} · 点击切换`"
+        aria-label="切换主题"
+        @click="toggleTheme"
+      >
+        <AppIcon name="refresh" :size="13" /> 主题 {{ THEME_LABEL[themeMode] }}
       </button>
 
       <!-- 窗口控制（无边框自绘）：最小化 / 最大化还原 / 关闭 -->

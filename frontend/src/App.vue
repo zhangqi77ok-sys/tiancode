@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, provide, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type TodoItem } from './stores/chat'
 import { useCatalogStore } from './stores/catalog'
 import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
-import AppNav from './components/AppNav.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
@@ -31,7 +30,6 @@ watch(
   },
 )
 
-const navOpen = ref(false) // logo 左侧唯一按钮拉出的导航栏
 const channelsOpen = ref(false)
 const mcpOpen = ref(false)
 const skillsOpen = ref(false)
@@ -48,31 +46,67 @@ const draft = computed({
   },
 })
 
-// Esc 中断生成（Claude/ChatGPT 惯例）。模态（渠道设置/对话框）打开时，
-// BaseModal 在捕获层拦截 Esc 并停止传播，这里的冒泡监听不会误触发。
+// 模态打开函数（0.0.06：入口统一在侧栏底部，汉堡导航已下线）
 function openChannels() {
   channelsOpen.value = true
-  navOpen.value = false
 }
 function openMcp() {
   mcpOpen.value = true
-  navOpen.value = false
 }
 function openSkills() {
   skillsOpen.value = true
-  navOpen.value = false
+}
+
+// ---- 快捷键（0.0.06）----
+//   Ctrl/Cmd+N 新建对话；Ctrl/Cmd+I 或 Ctrl/Cmd+/ 聚焦输入框；
+//   Ctrl/Cmd+↑/↓ 上一条/下一条会话；Esc：模态打开时不抢（BaseModal 捕获层处理），
+//   否则中断生成。全部在模态打开时停用（不与模态内输入抢键）。
+const composerInput = ref<HTMLTextAreaElement | null>(null)
+// Composer 注册它的 textarea（快捷键聚焦用）：函数注入，避免类型耦合
+provide('registerComposerInput', (el: HTMLTextAreaElement | null) => {
+  composerInput.value = el
+})
+
+function sessionSiblings(): string[] {
+  // 侧栏顺序即会话顺序：按空间分组后的扁平 id 列表（含当前会话）
+  const ids = store.summaries.map((s) => s.id)
+  const inList = store.sessionId && ids.includes(store.sessionId)
+  if (!inList && store.sessionId) return [store.sessionId, ...ids]
+  return ids
+}
+
+function cycleSession(delta: number) {
+  const ids = sessionSiblings()
+  if (ids.length === 0) return
+  const cur = ids.indexOf(store.sessionId)
+  const next = cur < 0 ? (delta > 0 ? 0 : ids.length - 1) : (cur + delta + ids.length) % ids.length
+  void store.selectSession(ids[next])
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape' || anyModalOpen.value) return
-  // Esc 优先关导航（此前运行中会先去中断生成，导航反而关不掉）
-  if (navOpen.value) {
-    navOpen.value = false
+  if (anyModalOpen.value) return // 模态打开：不抢任何全局键（Esc 归模态）
+  const mod = e.ctrlKey || e.metaKey
+  if (e.key === 'Escape') {
+    if (store.running) {
+      e.preventDefault()
+      store.stop()
+    }
     return
   }
-  if (store.running) {
+  if (!mod) return
+  const k = e.key.toLowerCase()
+  if (k === 'n') {
     e.preventDefault()
-    store.stop()
+    void store.newSession()
+  } else if (k === 'i' || k === '/') {
+    e.preventDefault()
+    composerInput.value?.focus()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    cycleSession(-1)
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    cycleSession(1)
   }
 }
 
@@ -96,6 +130,7 @@ onMounted(() => {
       diff?: string
       title?: string
       op?: string
+      callID?: string
     }) => {
       store.onTool(p)
     },
@@ -129,19 +164,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen flex-col gap-4 p-4 md:p-5">
-    <AppHeader :nav-open="navOpen" @toggle-nav="navOpen = !navOpen" />
+    <AppHeader />
 
     <div class="flex min-h-0 flex-1 gap-4">
-      <div
-        v-if="navOpen"
-        class="fixed inset-0 z-30 bg-black/25"
-        @click="navOpen = false"
-      ></div>
-
-      <SessionList @open-channels="openChannels" />
-      <AppNav
-        :open="navOpen"
-        @close="navOpen = false"
+      <SessionList
         @open-channels="openChannels"
         @open-mcp="openMcp"
         @open-skills="openSkills"

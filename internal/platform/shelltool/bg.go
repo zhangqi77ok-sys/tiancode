@@ -1,7 +1,6 @@
 package shelltool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,45 +13,41 @@ import (
 	"tiancode/internal/core/tools"
 )
 
-// boundedBuffer 是有界输出缓冲：超过 limit 后丢弃新增内容并标注截断（C-TOOL-4）。
+// boundedBuffer 是有界输出缓冲（0.0.06 改造）：头尾保留式——头部与尾部都在预算内，
+// 超出部分丢弃并计数，String() 产出"头 + 中间丢失标注 + 尾"。
 // 为什么必须有界：后台任务可长时间运行（dev server），无界缓冲会吃光内存
 // （legacy terminal_tool.go:230 用裸 bytes.Buffer 的教训）。
+// 为什么保尾：测试失败的 FAIL 汇总、命令的最终错误都在输出末尾——只留头部
+// 会让模型对着开头的填充内容猜结局（0.0.06 用户要求）。
 type boundedBuffer struct {
-	mu        sync.Mutex
-	buf       bytes.Buffer
-	limit     int
-	truncated bool
+	mu sync.Mutex
+	w  *tools.HeadTailWriter
 }
 
 func newBoundedBuffer(limit int) *boundedBuffer {
-	return &boundedBuffer{limit: limit}
+	return &boundedBuffer{w: tools.NewHeadTailWriter(limit)}
 }
 
-// Write 实现 io.Writer；超限后静默丢弃但标记截断（绝不因日志过多阻塞进程）。
+// Write 实现 io.Writer；永不阻塞、永不报错（绝不因日志过多卡住子进程）。
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	room := b.limit - b.buf.Len()
-	if room <= 0 {
-		b.truncated = true
-		return len(p), nil
-	}
-	if len(p) > room {
-		b.buf.Write(p[:room])
-		b.truncated = true
-		return len(p), nil
-	}
-	return b.buf.Write(p)
+	b.w.Write(p)
+	return len(p), nil
 }
 
 func (b *boundedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// 控制台输出按系统代码页解码（中文 Windows 为 GBK），前台 run 与后台日志同修
-	s := decodeConsoleOutput(b.buf.Bytes())
-	if b.truncated {
-		s += "\n... [truncated]"
+	// 控制台输出按系统代码页解码（中文 Windows 为 GBK）：先取原始字节段，
+	// 逐段解码再拼接（截断点最多损失一个双字节字符，等同旧实现的解码时机）。
+	head, tail, dropped := b.w.Parts()
+	if dropped == 0 && len(tail) == 0 {
+		return decodeConsoleOutput(head)
 	}
+	s := decodeConsoleOutput(head) +
+		fmt.Sprintf("\n...[truncated: %d middle bytes omitted]...\n", dropped) +
+		decodeConsoleOutput(tail)
 	return s
 }
 

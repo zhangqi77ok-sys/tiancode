@@ -180,7 +180,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		return tools.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 
-	var b strings.Builder
+	// 输出累加器（0.0.06 改头尾保留）：头部与尾部都在 64KiB 预算内，中间丢弃
+	// 计数。为什么保尾：搜索命中流的后段（更深的目录/更晚的文件）与末行一样
+	// 是真实结果，只留头部会谎报"后面的文件里没有"。
+	acc := tools.NewHeadTailWriter(maxOutputBytes)
+	outputTruncated := false
 	matches := 0
 	hitMax := false
 	truncatedMatches := false
@@ -247,11 +251,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		rel = filepath.ToSlash(rel)
 		for i, h := range hits {
 			line := fmt.Sprintf("%s:%d:%s\n", rel, h.line, h.text)
-			if b.Len()+len(line) > maxOutputBytes {
-				b.WriteString("(truncated, output limit 64KiB)\n")
+			acc.Write([]byte(line))
+			if acc.Full() {
+				// 预算耗尽：尾环已滚过一遍，此刻停下（尾部保留的是最后的命中）
+				outputTruncated = true
 				return errStop
 			}
-			b.WriteString(line)
 			matches++
 			if matches >= max {
 				if i+1 < len(hits) {
@@ -268,7 +273,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		return nil
 	})
 
-	content := strings.TrimRight(b.String(), "\n")
+	content := strings.TrimRight(acc.String(), "\n")
+	if outputTruncated {
+		if content != "" {
+			content += "\n"
+		}
+		content += "(truncated, output limit 64KiB)"
+	}
 	timedOut := ctx.Err() != nil
 	if walkErr != nil && walkErr != errStop && walkErr != context.DeadlineExceeded && walkErr != context.Canceled {
 		return tools.ToolResult{Content: fmt.Sprintf("search failed: %v", walkErr), IsError: true}, nil
@@ -298,7 +309,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	// 零命中且确实什么都没发生（无跳过、无未解析链接）才是真正的"no matches"。
 	// 只搜到了被安全策略跳过的区外路径时不能谎报"没有匹配"——那会让模型和用户
 	// 以为这段代码不存在（0.2.37 审计）；此时上面的 R4 汇总就是答案本身。
-	if matches == 0 && b.Len() == 0 && len(skippedOutside) == 0 && len(unresolvedLinks) == 0 {
+	if matches == 0 && content == "" && len(skippedOutside) == 0 && len(unresolvedLinks) == 0 {
 		return tools.ToolResult{Content: "no matches"}, nil
 	}
 	if content == "" {

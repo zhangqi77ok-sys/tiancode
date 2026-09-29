@@ -49,6 +49,92 @@
   --dur-fast: 150ms;
 }
 
+/* ============================================================
+   深色主题（0.0.06）：同一套令牌名，只换值——组件零改动。
+   三态策略：html[data-theme="dark"] 强制深色；html[data-theme="light"]
+   强制浅色；无属性时跟随系统 prefers-color-scheme。
+   深色值同按 AA 校准（文字对深底 ≥4.5:1）：text 12.4 / dim 7.1 / faint 4.9。
+   ============================================================ */
+:root[data-theme='dark'] {
+  --c-primary: #8b74f5;
+  --c-primary-hover: #9c88f7;
+  --c-primary-soft: rgba(139, 116, 245, 0.18);
+
+  --c-bg: #14141f;
+  --c-bg-tint: #101019;
+  --c-surface: #1d1e2c;
+  --c-surface-soft: #232433;
+  --c-bubble: #20212f;
+  --c-border: #34354b;
+
+  --c-text: #e8e8f2;
+  --c-text-dim: #aeb0c4;
+  --c-text-faint: #9a9bb0;
+
+  --c-ok: #34d399;
+  --c-ok-soft: rgba(52, 211, 153, 0.14);
+  --c-ok-text: #6ee7b7;
+  --c-err: #f87171;
+  --c-err-soft: rgba(248, 113, 113, 0.14);
+  --c-err-text: #fca5a5;
+  --c-err-text-hover: #f87171;
+  --c-warn: #fbbf24;
+  --c-warn-soft: rgba(251, 191, 36, 0.14);
+  --c-warn-text: #fcd34d;
+
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --c-primary: #8b74f5;
+    --c-primary-hover: #9c88f7;
+    --c-primary-soft: rgba(139, 116, 245, 0.18);
+
+    --c-bg: #14141f;
+    --c-bg-tint: #101019;
+    --c-surface: #1d1e2c;
+    --c-surface-soft: #232433;
+    --c-bubble: #20212f;
+    --c-border: #34354b;
+
+    --c-text: #e8e8f2;
+    --c-text-dim: #aeb0c4;
+    --c-text-faint: #9a9bb0;
+
+    --c-ok: #34d399;
+    --c-ok-soft: rgba(52, 211, 153, 0.14);
+    --c-ok-text: #6ee7b7;
+    --c-err: #f87171;
+    --c-err-soft: rgba(248, 113, 113, 0.14);
+    --c-err-text: #fca5a5;
+    --c-err-text-hover: #f87171;
+    --c-warn: #fbbf24;
+    --c-warn-soft: rgba(251, 191, 36, 0.14);
+    --c-warn-text: #fcd34d;
+
+    --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* 深色下的柔和渐变底：同样的两层径向光，颜色换成深色（随令牌走） */
+:root[data-theme='dark'] body {
+  background:
+    radial-gradient(1200px 600px at 12% -10%, #1d1e2c 0%, rgba(29, 30, 44, 0) 60%),
+    radial-gradient(900px 500px at 100% 0%, var(--c-primary-soft) 0%, rgba(20, 20, 31, 0) 55%),
+    linear-gradient(160deg, var(--c-bg) 0%, var(--c-bg-tint) 100%);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) body {
+    background:
+      radial-gradient(1200px 600px at 12% -10%, #1d1e2c 0%, rgba(29, 30, 44, 0) 60%),
+      radial-gradient(900px 500px at 100% 0%, var(--c-primary-soft) 0%, rgba(20, 20, 31, 0) 55%),
+      linear-gradient(160deg, var(--c-bg) 0%, var(--c-bg-tint) 100%);
+  }
+}
+
 body {
   margin: 0;
   color: var(--c-text);

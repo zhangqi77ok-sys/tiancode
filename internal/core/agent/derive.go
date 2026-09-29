@@ -7,6 +7,7 @@ import (
 
 	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
+	"tiancode/internal/core/tools"
 )
 
 const toolResultModelLimit = 4096
@@ -16,6 +17,12 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 	var msgs []llm.Message
 	var calls []llm.ToolCall
 	results := []*llm.Message{}
+	// lastAssistant 指向最近一条纯文本 assistant 锚点（0.0.06）：工具调用前的
+	// 助手正文必须随 tool_calls 一起回传给模型——丢掉它，下一轮模型就看不到
+	// 自己"为什么"调了工具。锚点只来自 EventAssistantMsg（回合内已确认落盘
+	// 的文本）；EventAssistantDelta 的半截内容绝不投影（不把未完成的回复
+	// 当成完成回复，thinking 也不进模型上下文）。
+	lastAssistant := -1
 
 	complete := func() bool {
 		if len(calls) == 0 {
@@ -33,17 +40,26 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 			calls, results = nil, nil
 			return
 		}
-		msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: append([]llm.ToolCall(nil), calls...)})
+		if lastAssistant >= 0 && lastAssistant < len(msgs) &&
+			msgs[lastAssistant].Role == "assistant" &&
+			len(msgs[lastAssistant].ToolCalls) == 0 {
+			// 工具调用前的助手正文：并入同一条 assistant(text, tool_calls)
+			msgs[lastAssistant].ToolCalls = append([]llm.ToolCall(nil), calls...)
+		} else {
+			msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: append([]llm.ToolCall(nil), calls...)})
+		}
 		for _, r := range results {
 			msgs = append(msgs, *r)
 		}
 		calls, results = nil, nil
+		lastAssistant = -1
 	}
 
 	err := ledger.Replay(func(ev session.Event) error {
 		switch ev.Kind() {
 		case session.EventUserMessage:
 			flush()
+			lastAssistant = -1
 			var p struct {
 				Text string `json:"text"`
 			}
@@ -97,6 +113,7 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 				return err
 			}
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: p.Text})
+			lastAssistant = len(msgs) - 1
 		}
 		return nil
 	})
@@ -134,7 +151,9 @@ func truncateToolResult(content string) string {
 	if len(content) <= toolResultModelLimit {
 		return content
 	}
-	return truncateToBytes(content, toolResultModelLimit) + fmt.Sprintf("\n\n[truncated, original %d bytes]", len(content))
+	// 0.0.06 头尾保留：工具结果里模型最需要的信息常在尾部（测试 FAIL 汇总、
+	// 命令最终错误、diff 末尾）。只留头部会让模型对着开头猜结局。
+	return tools.HeadTail(content, toolResultModelLimit)
 }
 
 func truncateToBytes(s string, n int) string {

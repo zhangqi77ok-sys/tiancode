@@ -231,6 +231,10 @@ interface WailsApp {
   SetWorkspace(dir: string): Promise<void>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
+  // 在资源管理器中显示（0.0.06）：工具卡"打开文件所在目录"。相对路径按当前工作区根解析。
+  RevealInExplorer(path: string): Promise<void>
+  // 系统保存对话框写文本文件（0.0.06：导出会话"另存为文件"）。取消返回空串。
+  SaveTextFile(defaultName: string, content: string): Promise<string>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
   PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
@@ -373,6 +377,8 @@ export function bridge(): WailsBridge {
         DeleteChannel: offlineWrite,
         SetActiveChannel: offlineWrite,
         SetActiveModel: offlineWrite,
+        RevealInExplorer: offlineWrite,
+        SaveTextFile: async () => '',
         DiscoverModels: offlineWrite,
         TestChannel: offlineWrite,
         ListCredentials: async () => [],

@@ -27,6 +27,32 @@ func args(t *testing.T, v any) json.RawMessage {
 	return b
 }
 
+// 0.0.06：前台输出超限时必须"头 + 尾"保留——测试失败的 FAIL 汇总在末尾，
+// 只留头部会让模型对着开头的填充行猜结局。缓冲预算用 BGLogLimit 注入
+// （前台 run 与后台日志共用同一个缓冲上限）。
+func TestShellRun_PreservesTailOnHugeOutput(t *testing.T) {
+	tool := newTool(t, Options{BGLogLimit: 1024})
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = "(for /l %i in (1,1,200) do @echo padding-line-%i) & echo FAIL: boom-at-the-end"
+	} else {
+		cmd = "for i in $(seq 1 200); do echo padding-line-$i; done; echo FAIL: boom-at-the-end"
+	}
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"action": "run", "command": cmd}))
+	if err != nil || res.IsError {
+		t.Fatalf("run failed: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "middle bytes omitted") {
+		t.Fatalf("输出应超限并标注：%d bytes", len(res.Content))
+	}
+	if !strings.Contains(res.Content, "FAIL: boom-at-the-end") {
+		t.Fatalf("尾部 FAIL 汇总被截没：%s", res.Content[len(res.Content)-160:])
+	}
+	if !strings.Contains(res.Content, "padding-line-1\r\n") && !strings.Contains(res.Content, "padding-line-1\n") {
+		t.Fatalf("头部丢失：%s", res.Content[:80])
+	}
+}
+
 func newTool(t *testing.T, opts Options) *Tool {
 	t.Helper()
 	opts.Root = t.TempDir()

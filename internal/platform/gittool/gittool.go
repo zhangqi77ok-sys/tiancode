@@ -26,6 +26,9 @@ const gitTimeout = 30 * time.Second
 // outputLimit 是输出上限（git diff 可能极大）。
 const outputLimit = 64 * 1024
 
+// maxLogLimit 是 log 返回条数的硬顶（0.0.06）。
+const maxLogLimit = 50
+
 // Tool 是只读 git 工具。
 type Tool struct {
 	root string
@@ -48,8 +51,8 @@ func (t *Tool) Schema() json.RawMessage {
   "type": "object",
   "properties": {
     "action": {"type": "string", "enum": ["status", "diff", "log"]},
-    "path": {"type": "string", "description": "可选：限定单个路径"},
-    "limit": {"type": "integer", "description": "log 时可选，返回条数上限（默认 10）"}
+    "path": {"type": "string", "description": "可选：限定单个路径（status/diff/log 都支持）"},
+    "limit": {"type": "integer", "description": "log 时可选，返回条数上限（默认 10，最大 50）"}
   },
   "required": ["action"]
 }`)
@@ -119,7 +122,18 @@ func buildArgs(action, path string, limit int) ([]string, error) {
 		if limit <= 0 {
 			limit = 10
 		}
-		return []string{"log", "--oneline", "-n", fmt.Sprint(limit)}, nil
+		if limit > maxLogLimit {
+			// 硬顶（0.0.06）：log --oneline 单行虽小，但上限封顶失控查询；
+			// 需要更多历史的场景应引导模型缩小 path 范围
+			limit = maxLogLimit
+		}
+		args := []string{"log", "--oneline", "-n", fmt.Sprint(limit)}
+		// path 限定（0.0.06）：与 status/diff 同语义——pathspec 必须跟在 "--"
+		// 之后，否则文件名恰与分支/选项同名时会被 git 误解
+		if path != "" {
+			args = append(args, "--", path)
+		}
+		return args, nil
 	default:
 		return nil, fmt.Errorf("unknown action %q (want status/diff/log)", action)
 	}
@@ -138,12 +152,14 @@ func truncateToBytes(s string, n int) string {
 	return cut
 }
 
-// truncate 截断超长输出并标注。
+// truncate 截断超长输出（0.0.06 改头尾保留）：git diff/status/log 的关键信息
+// 两头都有——diff 头部是文件清单、尾部是最新文件的变更块。只留头部会把
+// 后面的文件变更整段截没，模型以为改动不存在。标注中间丢失字节数。
 func truncate(s string) string {
 	if len(s) <= outputLimit {
 		return s
 	}
-	return truncateToBytes(s, outputLimit) + "\n... [truncated]"
+	return tools.HeadTail(s, outputLimit)
 }
 
 func businessErrf(format string, a ...any) tools.ToolResult {

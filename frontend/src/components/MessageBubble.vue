@@ -161,7 +161,9 @@ function fmtTime(at?: number): string {
         </div>
       </template>
 
-      <ToolCard v-else-if="seg.role === 'tool'" :m="seg" />
+      <!-- 空卡守卫（0.0.06）：没有标题/内容/diff 且非执行中的工具事件不出卡——
+           绝不让用户看到一张"什么都没有"的空卡 -->
+      <ToolCard v-else-if="seg.role === 'tool' && (seg.title || seg.content || seg.diff || seg.status === 'running')" :m="seg" />
       <!-- role === 'todo' 刻意不渲染：任务清单由悬浮件（FloatingTodo）承载，不随对话滚走 -->
       <AskCard v-else-if="seg.role === 'ask'" :m="seg" />
       <ApprovalCard v-else-if="seg.role === 'approval'" :m="seg" />

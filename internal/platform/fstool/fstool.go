@@ -45,7 +45,7 @@ func (t *Tool) Name() string { return "fs" }
 
 // Description 实现工具端口。
 func (t *Tool) Description() string {
-	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）与非递归目录列表（list，最多 500 条）"
+	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。
@@ -53,7 +53,7 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["read", "write", "replace", "list"]},
+    "action": {"type": "string", "enum": ["read", "write", "replace", "list", "tree"]},
     "path": {"type": "string", "description": "相对工作区的路径"},
     "content": {"type": "string", "description": "write 时的完整文件内容"},
     "target": {"type": "string", "description": "replace 时的精确目标文本"},
@@ -117,8 +117,10 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		return t.replace(ctx, args.Path, args.Target, args.Replacement, args.AllowMultiple)
 	case "list":
 		return t.list(args.Path)
+	case "tree":
+		return t.tree(args.Path)
 	default:
-		return bizErrf("unknown action %q (want read/write/replace/list)", args.Action), nil
+		return bizErrf("unknown action %q (want read/write/replace/list/tree)", args.Action), nil
 	}
 }
 
@@ -258,6 +260,7 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	}
 	if haveDiff {
 		res.Diff = diffText(path, old, content)
+		res.Content = withShortDiff(res.Content, path, res.Diff)
 	}
 	return res, nil
 }
@@ -297,13 +300,112 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	if err := atomicfile.WriteFileAtomic(full, []byte(updated), 0o600); err != nil {
 		return bizErrf("replace write failed: %v", err), nil
 	}
+	fullDiff := diffText(path, string(data), updated)
 	return tools.ToolResult{
-		Content: fmt.Sprintf("replaced %d occurrence(s) in %s", count, path),
-		Diff:    diffText(path, string(data), updated),
+		Content: withShortDiff(fmt.Sprintf("replaced %d occurrence(s) in %s", count, path), path, fullDiff),
+		Diff:    fullDiff,
 	}, nil
 }
 
+// diffContentLimit 是模型可见的短 diff 字节预算（模型侧已有 4096 的工具结果
+// 上限——diff 占小头，正文/错误信息才有空间）。
+const diffContentLimit = 1200
+
+// withShortDiff 把短 diff 拼进给模型的 Content（0.0.06：模型不能再只看到
+// "written N bytes"——它需要 diff 确认自己改了什么）。超长走头尾保留截断
+// （中间标注丢失字节数），并注明该文件的完整预览在界面工具卡里。
+func withShortDiff(content, path, diff string) string {
+	if diff == "" {
+		return content
+	}
+	short := tools.HeadTail(diff, diffContentLimit)
+	if len(diff) > diffContentLimit {
+		short += fmt.Sprintf("\n(full diff for %s omitted here; see the tool card preview)", path)
+	}
+	return content + "\n" + short
+}
+
 const listLimit = 500
+
+// treeDepth / treeLimit 是 tree 的边界（0.0.06）：深度最多 2 层、条目总数与
+// list 同量级（500）——树是有界的骨架，不是无限递归的目录 dump。
+const (
+	treeDepth = 2
+	treeLimit = listLimit
+)
+
+// tree 输出有界目录骨架：从 path（缺省根）向下最多 treeDepth 层，条目总数
+// treeLimit 封顶（超出标注 truncated）。越界路径走 resolve 拒绝（与 read/list
+// 同一守卫）。输出形态：目录带尾部 /、按"目录优先 + 字典序"排序、两空格缩进。
+func (t *Tool) tree(path string) (tools.ToolResult, error) {
+	if path == "" {
+		path = "."
+	}
+	full, err := t.resolve(path)
+	if err != nil {
+		return bizErr(err), nil
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return bizErrf("tree failed: %v", err), nil
+	}
+	if !info.IsDir() {
+		return bizErrf("not a directory: %s", path), nil
+	}
+	var b strings.Builder
+	count := 0
+	truncated := false
+	var walk func(dir string, rel string, depth int) error
+	walk = func(dir, rel string, depth int) error {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil // 单个目录读失败不整次失败（权限等），骨架继续
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].IsDir() != entries[j].IsDir() {
+				return entries[i].IsDir()
+			}
+			return entries[i].Name() < entries[j].Name()
+		})
+		for _, e := range entries {
+			if count >= treeLimit {
+				truncated = true
+				return errStopTree
+			}
+			indent := strings.Repeat("  ", depth)
+			name := e.Name()
+			if e.IsDir() {
+				fmt.Fprintf(&b, "%s%s/\n", indent, name)
+			} else {
+				fmt.Fprintf(&b, "%s%s\n", indent, name)
+			}
+			count++
+			if e.IsDir() && depth+1 < treeDepth {
+				childRel := name
+				if rel != "" && rel != "." {
+					childRel = rel + "/" + name
+				}
+				if err := walk(filepath.Join(dir, e.Name()), childRel, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(full, ".", 0); err != nil && err != errStopTree {
+		return bizErrf("tree failed: %v", err), nil
+	}
+	if count == 0 {
+		return tools.ToolResult{Content: "empty directory"}, nil
+	}
+	out := b.String()
+	if truncated {
+		out += fmt.Sprintf("…（truncated at %d entries; use list on a subdirectory for more）", treeLimit)
+	}
+	return tools.ToolResult{Content: out}, nil
+}
+
+var errStopTree = errors.New("tree stop")
 
 func (t *Tool) list(path string) (tools.ToolResult, error) {
 	if path == "" {

@@ -1,16 +1,25 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useChatStore } from '../stores/chat'
 import AppIcon from './AppIcon.vue'
 
-// 输入框自动增高上限（px）
-const MAX_INPUT_HEIGHT_PX = 128
+// 输入框高度（0.0.06）：默认约 3 行（72px）；可拖到大约半屏（50vh）。
+// 自动增高与手动拖拽并存：autoGrow 封顶 50vh，用户拖过之后以用户为准。
+const MIN_INPUT_HEIGHT_PX = 72
+const MAX_INPUT_HEIGHT = '50vh'
 
 const store = useChatStore()
 const channels = useChannelStore()
 const draft = defineModel<string>({ required: true })
 const box = ref<HTMLTextAreaElement | null>(null)
+
+// 注册到根组件：全局快捷键（Ctrl/Cmd+I）聚焦输入框用
+const registerInput = inject<(el: HTMLTextAreaElement | null) => void>('registerComposerInput', () => {})
+function setBoxRef(el: unknown) {
+  box.value = el as HTMLTextAreaElement | null
+  registerInput(box.value)
+}
 
 // ---- 模型选择器（0.2.28 用户反馈：这里的模型应该是已有的模型，可以支持选择）----
 // 数据源 = 全部可用渠道的模型列表；切换 = 激活对应渠道并指定模型（后端 SetActiveModel）。
@@ -38,11 +47,11 @@ function onDocMousedown(e: MouseEvent) {
 onMounted(() => document.addEventListener('mousedown', onDocMousedown))
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
 
-// 自动增高且不超过上限；发送后复位高度
+// 自动增高且不超过半屏；发送后复位到默认高度
 function autoGrow(e: Event) {
   const t = e.target as HTMLTextAreaElement
   t.style.height = 'auto'
-  t.style.height = Math.min(t.scrollHeight, MAX_INPUT_HEIGHT_PX) + 'px'
+  t.style.height = Math.min(t.scrollHeight, window.innerHeight / 2) + 'px'
 }
 
 // Enter 发送 / Shift+Enter 换行（ChatGPT/Cursor/Cline 通用惯例，替代旧版 Ctrl+Enter）。
@@ -55,7 +64,7 @@ function onComposerKeydown(e: KeyboardEvent) {
 }
 
 function resetBox() {
-  if (box.value) box.value.style.height = 'auto'
+  if (box.value) box.value.style.height = MIN_INPUT_HEIGHT_PX + 'px'
 }
 
 async function submit() {
@@ -87,8 +96,9 @@ function editQueued(id: number) {
   <div data-composer class="border-t border-[var(--c-border)] p-4">
     <!-- 模型选择器（0.2.28）：列出全部可用渠道的模型，点击切换；当前项标记"当前" -->
     <div ref="modelMenuRef" class="relative mb-2">
+      <!-- 模型选择器行（0.0.06）：模型名不再是 11px 浅色次要字——正文级可读 -->
       <button
-        class="flex items-center gap-1.5 px-1 text-[11px] text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-text-dim)]"
+        class="flex items-center gap-1.5 px-1 text-xs text-[var(--c-text-dim)] transition-colors hover:text-[var(--c-text)]"
         aria-haspopup="menu"
         :aria-expanded="modelMenuOpen"
         :title="modelOptions.length ? '点击切换模型（来自已配置的渠道）' : '尚未配置模型：请在侧栏底部打开「渠道管理」'"
@@ -96,7 +106,7 @@ function editQueued(id: number) {
       >
         {{ channels.activeModel ? `模型 ${channels.activeModel}` : '未选择模型' }}
         <template v-if="channels.activeChannel"> · {{ channels.activeChannel.name }}</template>
-        <AppIcon name="chevron-down" :size="10" />
+        <AppIcon name="chevron-down" :size="11" />
       </button>
       <div
         v-if="modelMenuOpen"
@@ -121,8 +131,13 @@ function editQueued(id: number) {
         </button>
       </div>
     </div>
-    <!-- 输入队列：进行中提交的待发消息；立即发送 = 置顶，本轮结束最先发出 -->
-    <div v-if="store.queue.length" class="mb-2 space-y-1" aria-label="输入队列">
+    <!-- 输入队列：进行中提交的待发消息；立即发送 = 置顶，本轮结束最先发出。
+         容器限高（4 行 + 滚动）：队列长了也不得把输入框顶出可视区域（0.0.06） -->
+    <div
+      v-if="store.queue.length"
+      class="mb-2 max-h-36 space-y-1 overflow-y-auto"
+      aria-label="输入队列"
+    >
       <div class="flex items-center gap-1.5 px-1 text-[11px] text-[var(--c-text-faint)]">
         <AppIcon name="message" :size="11" /> 队列 ({{ store.queue.length }})
       </div>
@@ -161,11 +176,12 @@ function editQueued(id: number) {
 
     <div class="flex items-end gap-3">
       <textarea
-        ref="box"
+        :ref="setBoxRef"
         v-model="draft"
-        rows="1"
+        rows="3"
         aria-label="消息输入框"
-        class="max-h-32 min-w-0 flex-1 resize-none rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 transition-colors focus:border-[var(--c-primary)]"
+        class="min-w-0 flex-1 resize-y rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 transition-colors focus:border-[var(--c-primary)]"
+        :style="{ minHeight: MIN_INPUT_HEIGHT_PX + 'px', maxHeight: MAX_INPUT_HEIGHT }"
         placeholder="输入消息…（Enter 发送，Shift+Enter 换行；回合进行中自动排队）"
         @keydown="onComposerKeydown"
         @input="autoGrow"

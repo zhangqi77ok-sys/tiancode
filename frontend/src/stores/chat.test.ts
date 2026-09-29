@@ -394,6 +394,31 @@ describe('chat store', () => {
     expect(new Set(ids).size).toBe(4)
   })
 
+  // 0.0.06：running 工具事件先出"执行中"卡，终态事件按 callID 原地更新同一张卡
+  //（卡随事件生长，不插两张卡）；无 callID 的终态事件（旧后端/重放）行为不变
+  it('running 卡随终态事件原地生长', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTool({ sessionID: store.sessionId, name: 'shell', status: 'running', summary: '执行中…', callID: 'call-1' })
+    let cards = store.messages.filter((m) => m.role === 'tool')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].status).toBe('running')
+    expect(cards[0].streaming).toBe(true)
+    // 终态：同 callID → 原地更新
+    store.onTool({ sessionID: store.sessionId, name: 'shell', status: 'success', summary: 'done', content: 'output text', callID: 'call-1' })
+    cards = store.messages.filter((m) => m.role === 'tool')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].status).toBe('success')
+    expect(cards[0].content).toBe('output text')
+    expect(cards[0].streaming).toBe(false)
+    // 重复 running 事件不叠加
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'running', summary: 'x', callID: 'call-2' })
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'running', summary: 'x', callID: 'call-2' })
+    cards = store.messages.filter((m) => m.role === 'tool')
+    expect(cards).toHaveLength(2)
+  })
+
   // ReAct 段落化：工具事件封存当前段并插卡其后，后续增量落新段——
   // 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（不再全部堆进一个气泡）
   it('工具事件封存当前段，后续增量开新段', async () => {

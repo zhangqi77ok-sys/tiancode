@@ -91,6 +91,17 @@ func (l *Loop) SetPrefaceFn(fn func() string) {
 	l.prefaceFn = fn
 }
 
+// Preface 返回当前生效的系统说明（动态优先；测试与诊断用）。
+func (l *Loop) Preface() string {
+	if l == nil {
+		return ""
+	}
+	if l.prefaceFn != nil {
+		return l.prefaceFn()
+	}
+	return l.preface
+}
+
 // applyDynamicPreface 在每个执行步骤前刷新系统说明（prefaceFn 优先于静态）。
 func (l *Loop) applyDynamicPreface(msgs []llm.Message) []llm.Message {
 	if l.prefaceFn == nil {
@@ -214,6 +225,16 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		}
 
 		// 工具调用轮：按索引补全空 ID（写入 calls 与 assistant.ToolCalls 共享底层），再落盘执行
+		// 0.0.06：本步若已有确认的助手正文（模型调用工具前说了话），先落
+		// EventAssistantMsg 锚点——下一轮 deriveMessages 把它并入
+		// assistant(text, tool_calls)，跨轮历史不再丢"为什么调工具"。
+		// EventAssistantDelta 半截内容仍然不投影（锚点 = 已确认完成的文本）。
+		if text != "" {
+			if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": text}); err != nil {
+				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
+				return
+			}
+		}
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ToolCalls: calls})
 		for i := range calls {
 			if calls[i].ID == "" {
@@ -226,6 +247,12 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
 				return
 			}
+			// running 事件（0.0.06）：执行前先上抛"进行中"动态（只进实时流，
+			// 不落账本——账本只有终态结果）。前端据此先出"执行中"卡并随
+			// 终态事件原地更新（CallID 配对），卡片输出随事件增长。
+			forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+				Name: call.Name, Status: "running", Summary: "执行中…", CallID: call.ID,
+			}})
 			result := l.dispatchTool(ctx, call, ledger, forward)
 			if _, err := ledger.Append(session.EventToolResult, map[string]any{
 				"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
@@ -245,7 +272,8 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			content := result.Content
 			if len(content) > toolEventIPCLimit {
-				content = truncateToBytes(content, toolEventIPCLimit) + fmt.Sprintf("\n\n[truncated, original %d bytes]", len(result.Content))
+				// 0.0.06 头尾保留：UI 完整视图同样需要尾部（失败汇总在末尾）
+				content = tools.HeadTail(content, toolEventIPCLimit)
 			}
 			summary := result.Content
 			if len(summary) > 200 {
@@ -255,15 +283,44 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
 				Name: call.Name, Status: status, Summary: summary, Content: content, Diff: result.Diff,
-				Title: result.Title, Op: result.Op,
+				Title: result.Title, Op: result.Op, CallID: call.ID,
 			}}) {
 				return
 			}
 		}
 		sb.Reset() // 新一步的文本从零累计；只有最终无工具调用步的文本进入锚点
 	}
-	// 步数耗尽：以 EndError 收束（不写锚点——轮次未完成，已有 delta 留在账本）
-	emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("step limit reached (%d steps)", MaxStepsPerTurn)})
+	// 步数耗尽（0.0.06 改造）：不再直接 EndError——强制一步"无工具总结"，
+	// 让模型把已完成/未完成讲清楚后正常收束（锚点照落、EndDone、UI 不报错）。
+	// 这一失败（模型调用失败）才走错误终态。上游取消仍由 ctx.Err 捕获。
+	msgs = append(msgs, llm.Message{Role: "user", Content: fmt.Sprintf(
+		"已达到单轮步数上限（%d 步）。本轮不再提供任何工具。请立即总结：1) 已完成什么；2) 未完成什么；3) 建议的下一步。不要再尝试调用工具。", MaxStepsPerTurn)})
+	msgs = l.applyDynamicPreface(msgs)
+	ch, err := l.runtime.Chat(ctx, llm.ChatRequest{
+		Model:    l.model,
+		Messages: msgs,
+		Tools:    nil, // 强制空工具集：总结步不可能再执行工具
+	}, llm.DefaultRuntimePolicy())
+	if err != nil {
+		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("step limit reached (%d steps), summary call failed: %w", MaxStepsPerTurn, err)})
+		return
+	}
+	text, calls, terminal, done := l.consumeStream(ctx, ledger, ch, out, &sb)
+	if done {
+		// 非 EndDone 终态（错误/取消）或端口契约破坏：透传
+		emitTerminal(terminal)
+		return
+	}
+	_ = calls // 无工具定义下协议上不应有 calls；即便出现也按纯文本收束（不执行）
+	if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": text}); err != nil {
+		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
+		return
+	}
+	if _, err := ledger.Append(session.EventTurnEnd, map[string]string{"reason": "done"}); err != nil {
+		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist turn end: %w", err)})
+		return
+	}
+	emitTerminal(terminal)
 }
 
 // dispatchTool 工具执行分派：ask_user/todo 由内核拦截（交互语义），其余走审批闸门（默认关，ADR-0007）。

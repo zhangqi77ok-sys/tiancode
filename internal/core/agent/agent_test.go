@@ -372,6 +372,13 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 	for _, c := range chunks {
 		if c.ToolEvent != nil {
 			toolEvents++
+			// 0.0.06：第一条是 running 事件（CallID 同 c1），第二条才是成功终态
+			if toolEvents == 1 {
+				if c.ToolEvent.Status != "running" || c.ToolEvent.CallID != "c1" {
+					t.Fatalf("first tool event = %+v, want running/c1", c.ToolEvent)
+				}
+				continue
+			}
 			if c.ToolEvent.Name != "fs" || c.ToolEvent.Status != "success" || c.ToolEvent.Summary != "file-x" || c.ToolEvent.Content != "file-x" {
 				t.Fatalf("tool event = %+v", c.ToolEvent)
 			}
@@ -384,8 +391,8 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 			terminal = c
 		}
 	}
-	if toolEvents != 1 {
-		t.Fatalf("tool events = %d, want 1", toolEvents)
+	if toolEvents != 2 {
+		t.Fatalf("tool events = %d, want 2（running + success）", toolEvents)
 	}
 	if terminal.EndReason != llm.EndDone {
 		t.Fatalf("terminal = %v, want EndDone", terminal.EndReason)
@@ -409,15 +416,15 @@ func TestAgent_ToolRoundtrip(t *testing.T) {
 		t.Fatalf("msgs[2] = %+v", msgs[2])
 	}
 
-	// 账本：tool_call / tool_result 各一条；锚点是最终回答
+	// 账本：tool_call / tool_result 各一条；锚点 = 工具前正文（0.0.06 新增）+ 最终回答
 	if n := countEvents(t, dir, session.EventToolCall); n != 1 {
 		t.Fatalf("tool_call events = %d, want 1", n)
 	}
 	if n := countEvents(t, dir, session.EventToolResult); n != 1 {
 		t.Fatalf("tool_result events = %d, want 1", n)
 	}
-	if n := countEvents(t, dir, session.EventAssistantMsg); n != 1 {
-		t.Fatalf("assistant anchors = %d, want 1", n)
+	if n := countEvents(t, dir, session.EventAssistantMsg); n != 2 {
+		t.Fatalf("assistant anchors = %d, want 2 (工具前正文 + 最终回答)", n)
 	}
 
 	// 账本 payload 必须携带 title/op/diff——Replay 恢复历史工具卡的数据源
@@ -491,11 +498,15 @@ func TestAgent_TruncatesToolEventForIPC(t *testing.T) {
 	if ev.Content == big {
 		t.Fatal("ToolEvent.Content must be truncated for IPC")
 	}
-	if !strings.Contains(ev.Content, "truncated") || !strings.Contains(ev.Content, fmt.Sprintf("%d", len(big))) {
-		t.Fatalf("content missing truncate marker: len=%d", len(ev.Content))
+	if !strings.Contains(ev.Content, "middle bytes omitted") {
+		t.Fatalf("content missing head/tail truncate marker: len=%d", len(ev.Content))
 	}
-	if !strings.HasPrefix(ev.Content, strings.Repeat("x", toolEventIPCLimit)) {
-		t.Fatal("truncated IPC content must keep the first 64KiB")
+	// 0.0.06 头尾保留：头部在（2/5 预算）且尾部也在
+	if !strings.HasPrefix(ev.Content, strings.Repeat("x", toolEventIPCLimit*2/5)) {
+		t.Fatal("truncated IPC content must keep the head")
+	}
+	if !strings.HasSuffix(ev.Content, strings.Repeat("x", 50)) {
+		t.Fatal("truncated IPC content must keep the tail")
 	}
 }
 
@@ -537,14 +548,16 @@ func TestAgent_UnknownToolContinues(t *testing.T) {
 	}
 }
 
-// 步数上限：模型持续调用工具，MaxStepsPerTurn 步后以 EndError 收束，不再调用。
-func TestAgent_StepLimit(t *testing.T) {
+// 步数上限（0.0.06 语义）：正常路径已由 TestAgent_StepLimitForcesSummaryInsteadOfError
+// 覆盖（强制总结步 → EndDone）。这里锁死唯一走 EndError 的路径：总结步的模型
+// 调用本身失败（脚本耗尽 = 模拟上游错误）。
+func TestAgent_StepLimit_SummaryCallFailureIsError(t *testing.T) {
 	ledger, dir := newTestLedger(t)
 	defer ledger.Close()
 
 	st := &scriptTool{name: "loop", result: tools.ToolResult{Content: "again"}}
 	var script [][]llm.StreamChunk
-	for i := 0; i < MaxStepsPerTurn+5; i++ {
+	for i := 0; i < MaxStepsPerTurn; i++ {
 		script = append(script, []llm.StreamChunk{
 			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: fmt.Sprintf("c%d", i), Name: "loop", ArgumentsDelta: "{}"}}},
 			{EndReason: llm.EndDone},
@@ -570,13 +583,13 @@ func TestAgent_StepLimit(t *testing.T) {
 		}
 	}
 	if terminal.EndReason != llm.EndError {
-		t.Fatalf("terminal = %v, want EndError", terminal.EndReason)
+		t.Fatalf("terminal = %v, want EndError (总结步失败)", terminal.EndReason)
 	}
 	if terminal.Err == nil || !strings.Contains(terminal.Err.Error(), "step limit") {
 		t.Fatalf("terminal err = %v, want step limit", terminal.Err)
 	}
-	if fr.requestCount() != MaxStepsPerTurn {
-		t.Fatalf("requests = %d, want %d", fr.requestCount(), MaxStepsPerTurn)
+	if fr.requestCount() != MaxStepsPerTurn+1 {
+		t.Fatalf("requests = %d, want %d（25 步工具 + 1 步总结）", fr.requestCount(), MaxStepsPerTurn+1)
 	}
 	if n := countEvents(t, dir, session.EventAssistantMsg); n != 0 {
 		t.Fatalf("assistant anchors = %d, want 0 (turn incomplete)", n)
@@ -682,12 +695,13 @@ func TestAgent_DerivesToolHistoryAcrossTurns(t *testing.T) {
 	}
 }
 
-// C-AGT-2：发给模型的单条 tool 结果超过 4096 字节必须截断；账本保留全文。
+// C-AGT-2：发给模型的单条 tool 结果超过 4096 字节必须截断（0.0.06 头尾保留）；
+// 账本保留全文。
 func TestAgent_TruncatesToolResultForModel(t *testing.T) {
 	ledger, dir := newTestLedger(t)
 	defer ledger.Close()
 
-	big := strings.Repeat("x", 5000)
+	big := strings.Repeat("x", 5000) + "\nFAIL: tail-must-survive"
 	st := &scriptTool{name: "fs", result: tools.ToolResult{Content: big}}
 	registry := tools.NewRegistry()
 	if err := registry.Register(st); err != nil {
@@ -714,11 +728,15 @@ func TestAgent_TruncatesToolResultForModel(t *testing.T) {
 	drain(t, ch, 3*time.Second)
 
 	got := fr.reqs[2].Messages[2].Content
-	if len(got) >= 5000 || !strings.Contains(got, "truncated") || !strings.Contains(got, "5000") {
+	if len(got) >= len(big) || !strings.Contains(got, "middle bytes omitted") {
 		t.Fatalf("model tool content = %d bytes, %q", len(got), got[:min(80, len(got))])
 	}
-	if !strings.HasPrefix(got, strings.Repeat("x", 4096)) {
-		t.Fatal("truncated view must keep the first 4096 bytes")
+	// 头部保留（约 2/5）且尾部 FAIL 汇总必须可见——只留头部会让模型猜结局
+	if !strings.HasPrefix(got, strings.Repeat("x", 1000)) {
+		t.Fatal("truncated view must keep the head")
+	}
+	if !strings.Contains(got, "FAIL: tail-must-survive") {
+		t.Fatalf("尾部 FAIL 汇总被截没：%s", got[len(got)-120:])
 	}
 
 	l2, err := session.OpenLedger(dir, "s1")
@@ -743,7 +761,7 @@ func TestAgent_TruncatesToolResultForModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if full != big {
-		t.Fatalf("ledger content len = %d, want 5000", len(full))
+		t.Fatalf("ledger content len = %d, want %d", len(full), len(big))
 	}
 }
 

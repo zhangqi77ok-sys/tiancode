@@ -5,6 +5,11 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -102,6 +107,33 @@ func (b *Bind) PickWorkspace() (string, error) {
 // ApprovalPolicy 返回当前需要执行前审批的工具清单（空 = 审批关闭，默认）。
 func (b *Bind) ApprovalPolicy() []string { return b.chat.ApprovalPolicy() }
 
+// RevealInExplorer 打开 path 所在目录的资源管理器并选中它（0.0.06：工具卡
+// "在资源管理器中显示"）。path 相对当前工作区根解析（工具卡 Title 即工作区
+// 相对路径）；绝对路径原样接受但必须存在。目录不存在/越界一律显式报错。
+func (b *Bind) RevealInExplorer(path string) error {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return errors.New("路径为空")
+	}
+	if !filepath.IsAbs(clean) {
+		root := b.chat.Workspace()
+		if root == "" {
+			return errors.New("当前没有工作区，无法定位文件位置")
+		}
+		clean = filepath.Join(root, clean)
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		return fmt.Errorf("文件不存在：%s", clean)
+	}
+	if info.IsDir() {
+		// 目录：直接打开目录本身
+		return exec.Command("explorer", clean).Start()
+	}
+	// 文件：/select 打开所在目录并选中（explorer /select 需反斜杠路径）
+	return exec.Command("explorer", "/select,", clean).Start()
+}
+
 // SetApprovalPolicy 设置需要审批的工具清单；传空数组即关闭审批（ADR-0007 默认关）。
 func (b *Bind) SetApprovalPolicy(tools []string) error { return b.chat.SetApprovalPolicy(tools) }
 
@@ -114,6 +146,29 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 // ResolveAsk 提交用户对某次问答的答复（答案原样回流给模型继续推理）。
 func (b *Bind) ResolveAsk(id string, answer string) error {
 	return b.chat.ResolveAsk(id, answer)
+}
+
+// SaveTextFile 弹系统保存对话框并写入文本（0.0.06：导出会话"另存为文件"）。
+// 为什么放后端：原生保存对话框依赖 Wails 应用上下文；WebView 内的下载行为不可控。
+// 用户取消返回空串（前端据此不提示成功）；写盘失败显式报错。
+func (b *Bind) SaveTextFile(defaultName, content string) (string, error) {
+	if b.AppCtx == nil {
+		return "", errors.New("应用尚未就绪（缺少窗口上下文），无法打开保存对话框")
+	}
+	target, err := wruntime.SaveFileDialog(b.AppCtx, wruntime.SaveDialogOptions{
+		DefaultFilename: defaultName,
+		Title:           "保存 Markdown 文件",
+	})
+	if err != nil {
+		return "", fmt.Errorf("保存对话框失败：%w", err)
+	}
+	if strings.TrimSpace(target) == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("写入文件失败：%w", err)
+	}
+	return target, nil
 }
 
 // ListSessionSummaries 返回会话摘要（ID + 用户标题；标题来自账本事件）。
@@ -198,6 +253,8 @@ func (b *Bind) Send(sessionID, text string) error {
 				// 语义标签（0.2.13 曾漏发，实时卡只能回退工具名；此处补齐与 Replay 对齐）
 				"title": c.ToolEvent.Title,
 				"op":    c.ToolEvent.Op,
+				// CallID（0.0.06）：running 与终态配对——前端更新同一张卡
+				"callID": c.ToolEvent.CallID,
 			})
 		}
 		if c.Todo != nil {

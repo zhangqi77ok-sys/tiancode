@@ -225,11 +225,20 @@ func (s *ChatService) attachExtensions(reg *tools.Registry) error {
 	return nil
 }
 
-func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop) error {
+// applyExtensionPreface 组装每步系统说明：技能/MCP 清单（exttools.Preface）+
+// 三行环境事实（sessionFacts，0.0.06）。环境事实随会话根固定——本轮 root 已
+// 定（账本归属或用户顶栏），每个执行步骤都带着走；绝不含任何密钥。
+func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop, root string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s.extensions == nil || ag == nil {
+	if ag == nil {
+		return nil
+	}
+	facts := sessionFacts(root)
+	if s.extensions == nil {
+		ag.SetPreface(facts)
+		ag.SetPrefaceFn(func() string { return facts }) // 每步刷新语义一致（值固定）
 		return nil
 	}
 	file, err := s.extensions.Load()
@@ -237,15 +246,15 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop)
 		return err
 	}
 	// 只告诉模型有什么、怎么调用。不在发消息时启动 MCP：用不用由模型决定。
-	ag.SetPreface(exttools.Preface(file))
+	ag.SetPreface(exttools.Preface(file) + "\n\n" + facts)
 	// 动态 preface（0.2.33）：每个执行步骤实时取——扩展在回合内被 ManageTool
 	// 增删后，模型在后续步骤立即看到最新清单（添加当回合即可用，不必等下一轮）。
 	ag.SetPrefaceFn(func() string {
 		f, err := s.extensions.Load()
 		if err != nil {
-			return "" // 读取失败：保持现有 system，不打断回合
+			return facts // 清单读取失败：至少保留环境事实，不打断回合
 		}
-		return exttools.Preface(f)
+		return exttools.Preface(f) + "\n\n" + facts
 	})
 	return nil
 }
@@ -404,7 +413,7 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	ag := s.newAgentWith(model, registry, approver, sessionID, watch)
 	// 以下三个前置失败路径都在看门狗/分发 goroutine 启动之前：就地释放 runCtx
 	//（看门狗未启动，无需 close(watchStopped)）
-	if err := s.applyExtensionPreface(ctx, ag); err != nil {
+	if err := s.applyExtensionPreface(ctx, ag, root); err != nil {
 		release()
 		cancelRun()
 		return nil, err

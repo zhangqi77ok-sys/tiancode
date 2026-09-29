@@ -123,7 +123,11 @@ const items = computed(() => groupMessages(store.messages))
     </div>
 
     <template v-for="item in items" :key="item.key">
-      <ToolCard v-if="item.kind === 'tool'" :m="item.m" />
+      <!-- 空卡守卫（0.0.06）：无标题/内容/diff 且非执行中的工具事件不出卡 -->
+      <ToolCard
+        v-if="item.kind === 'tool' && (item.m.title || item.m.content || item.m.diff || item.m.status === 'running')"
+        :m="item.m"
+      />
       <!-- kind === 'todo' 刻意不渲染：任务清单改由悬浮件（FloatingTodo 挂在对话面板上）
            呈现，不再随消息流滚走。数据仍在 store/账本里（重放与实时同源），只是换了载体 -->
       <ApprovalCard v-else-if="item.kind === 'approval'" :m="item.m" />
