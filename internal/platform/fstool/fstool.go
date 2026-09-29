@@ -58,7 +58,18 @@ func (t *Tool) SetEditGate(g EditGate) { t.gate = g }
 func (t *Tool) SetCallID(id string) { t.callID = id }
 
 // New 构造工具，root 为工作区绝对路径。
-func New(root string) *Tool { return &Tool{root: root, lastRead: map[string]bool{}} }
+//
+// root 与候选路径必须同一套真实路径解析：resolve 对候选做 EvalSymlinks
+// （符号链接审计的另一半），Windows 上这一步会把 8.3 短名（如 CI 的
+// RUNNER~1）解成长名——若 root 保持短名原样，前缀比对会把整个工作区
+// 误判成越界（CI 实测：全部 write 报 "path escapes workspace: a.txt"）。
+// 解析失败（root 尚不存在等）保持原值，行为与旧版一致。
+func New(root string) *Tool {
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		root = real
+	}
+	return &Tool{root: root, lastRead: map[string]bool{}}
+}
 
 // Root 返回工作区根路径（测试与审计用）。
 func (t *Tool) Root() string { return t.root }

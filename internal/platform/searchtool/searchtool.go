@@ -43,9 +43,16 @@ type Tool struct {
 func New(root string) *Tool { return NewWithTimeout(root, defaultTimeout) }
 
 // NewWithTimeout 供测试注入短超时。
+//
+// root 与候选路径必须同一套真实路径解析（同 fstool.New：Windows 上
+// EvalSymlinks 会把 8.3 短名解成长名，root 若保持短名，前缀比对会把
+// 整个工作区误判成越界）。解析失败保持原值，行为与旧版一致。
 func NewWithTimeout(root string, d time.Duration) *Tool {
 	if d <= 0 {
 		d = defaultTimeout
+	}
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		root = real
 	}
 	return &Tool{root: root, timeout: d}
 }
