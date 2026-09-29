@@ -129,11 +129,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen flex-col gap-4 p-4 md:p-5">
-    <AppHeader
-      :nav-open="navOpen"
-      @toggle-nav="navOpen = !navOpen"
-      @open-channels="openChannels"
-    />
+    <AppHeader :nav-open="navOpen" @toggle-nav="navOpen = !navOpen" />
 
     <div class="flex min-h-0 flex-1 gap-4">
       <div

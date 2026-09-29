@@ -345,3 +345,67 @@ func TestChatService_HeaderOverrideRendersAPIKey(t *testing.T) {
 		t.Fatalf("头覆写插值失败：%q / %q", got.Get("X-Auth"), got.Get("X-Static"))
 	}
 }
+
+// 模型选择器（0.2.28）：SetActiveModel 激活对应渠道并指定模型；
+// 视图回传实际激活的模型（此前前端永远显示 models[0]，切换后显示与运行不一致）；
+// 不在渠道模型列表里的模型显式拒绝。
+func TestChatService_SetActiveModel(t *testing.T) {
+	srv, _ := newTestUpstream(t, 0)
+	s := newChannelService(t, Config{})
+	a, err := s.AddChannel(llm.Channel{
+		Name: "a", Protocol: llm.ProtocolOpenAI, BaseURL: srv.URL,
+		Model: "m1", Models: []string{"m1", "m2"}, APIKey: "k",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.AddChannel(llm.Channel{
+		Name: "b", Protocol: llm.ProtocolOpenAI, BaseURL: srv.URL,
+		Model: "m9", Models: []string{"m9"}, APIKey: "k",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 首渠道自动激活 m1：视图的 Model = 实际激活模型
+	activeModelOf := func() (string, string) {
+		views, activeID, err := s.Channels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range views {
+			if v.ID == activeID {
+				return activeID, v.Model
+			}
+		}
+		t.Fatal("无激活渠道")
+		return "", ""
+	}
+	if id, m := activeModelOf(); id != a.ID || m != "m1" {
+		t.Fatalf("初始 = %s/%s, want a/m1", id, m)
+	}
+
+	// 同渠道换模型
+	if err := s.SetActiveModel(a.ID, "m2"); err != nil {
+		t.Fatal(err)
+	}
+	if id, m := activeModelOf(); id != a.ID || m != "m2" {
+		t.Fatalf("同渠道换模型 = %s/%s, want a/m2", id, m)
+	}
+
+	// 跨渠道换模型：激活渠道一并切换（网关按激活渠道选路）
+	if err := s.SetActiveModel(b.ID, "m9"); err != nil {
+		t.Fatal(err)
+	}
+	if id, m := activeModelOf(); id != b.ID || m != "m9" {
+		t.Fatalf("跨渠道换模型 = %s/%s, want b/m9", id, m)
+	}
+
+	// 非法：模型不在列表 / 渠道不存在
+	if err := s.SetActiveModel(a.ID, "nope"); err == nil {
+		t.Fatal("不在模型列表的模型必须拒绝")
+	}
+	if err := s.SetActiveModel("no-such", "m1"); err == nil {
+		t.Fatal("不存在的渠道必须拒绝")
+	}
+}

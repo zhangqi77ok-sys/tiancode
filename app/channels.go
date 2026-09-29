@@ -209,3 +209,8 @@ func (b *Bind) ListCredentials(id string) ([]CredentialDTO, error) {
 func (b *Bind) SetCredentialEnabled(id string, index int, enabled bool) error {
 	return b.chat.SetCredentialEnabled(id, index, enabled)
 }
+
+// SetActiveModel 激活指定渠道的指定模型（Composer 模型选择器，0.2.28）。
+func (b *Bind) SetActiveModel(id string, model string) error {
+	return b.chat.SetActiveModel(id, model)
+}

@@ -52,9 +52,15 @@ func Client(base *http.Client, proxy string) (*http.Client, error) {
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          32,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
+		MaxIdleConns:        32,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 15 * time.Second,
+		// ResponseHeaderTimeout：发出请求 → 收到响应头的上限。流式不能设
+		// Client.Timeout（会掐断长回复），但"等响应头"也不能无限等——慢中转/
+		// 代理黑洞下 client.Do 会永久挂起，而空闲看门狗要等流建立后才启动，
+		// 表现就是"发送后永久卡住且无任何错误"（0.2.27 实机反馈）。60s 与
+		// 流层空闲看门狗同量级：到期产生确定错误，用户可诊断可重试。
+		ResponseHeaderTimeout: 60 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	c := &http.Client{Transport: tr}

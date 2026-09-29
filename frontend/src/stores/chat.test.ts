@@ -254,6 +254,28 @@ describe('chat store', () => {
     expect(store.messages.filter((m) => m.role === 'assistant')).toHaveLength(0)
   })
 
+  // 0.2.28：发送即有"正在思考"占位——慢中转/上游挂起时用户立刻有反馈
+  //（实机：Send 在等响应头阶段永久挂起，界面毫无动静像死机）。占位由
+  // onChunk 复用；零块 DONE 后移除空占位（不留空气泡）。
+  it('发送即创建思考占位，首块复用，零块 DONE 后移除', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    expect(store.messages.map((m) => m.role)).toEqual(['user', 'assistant'])
+    expect(store.messages[1].streaming).toBe(true)
+    expect(store.messages[1].content).toBe('')
+    // 首个增量复用占位段（不另开新段）
+    store.onChunk({ sessionID: store.sessionId, delta: '你好', thinking: '' })
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[1].content).toBe('你好')
+    // 零块 DONE：空占位移除
+    const store2 = useChatStore()
+    await store2.newSession()
+    await store2.send('hi')
+    store2.onTerminal({ sessionID: store2.sessionId, endReason: END_REASON.DONE, error: '' })
+    expect(store2.messages.filter((m) => m.role === 'assistant')).toHaveLength(0)
+  })
+
   it('onChunk 累加 thinking 与 delta', async () => {
     const store = useChatStore()
     await store.newSession()
@@ -330,11 +352,11 @@ describe('chat store', () => {
     await store.send('hi')
     store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok' })
     store.onApproval({ id: 'ap-1', sessionID: store.sessionId, toolName: 'shell', arguments: '{}' })
-    // 0.2.14：助手消息按需分段，本流程无流式块 → user + tool + approval 三条
+    // 0.2.28：send 即建"正在思考"占位段（工具卡封存它并插其后）→ user + 占位 + tool + approval 四条
     const ids = store.messages.map((m) => m.id)
-    expect(ids).toHaveLength(3)
+    expect(ids).toHaveLength(4)
     expect(ids.every((x) => typeof x === 'string')).toBe(true)
-    expect(new Set(ids).size).toBe(3)
+    expect(new Set(ids).size).toBe(4)
   })
 
   // ReAct 段落化：工具事件封存当前段并插卡其后，后续增量落新段——
@@ -464,9 +486,10 @@ describe('chat store', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(h.sends).toEqual(['第一条', '排队的第二条']) // 首条 send 也经桥记录
     expect(store.queue.map((q) => q.text)).toEqual(['排队的第三条'])
-    // 发出后消息流以新用户消息开头进入下一轮
-    expect(store.messages.at(-1)?.role).toBe('user')
-    expect(store.messages.at(-1)?.content).toBe('排队的第二条')
+    // 发出后消息流进入下一轮：新用户消息 + 其"正在思考"占位（0.2.28）
+    expect(store.messages.at(-1)?.role).toBe('assistant')
+    expect(store.messages.at(-1)?.streaming).toBe(true)
+    expect(store.messages.at(-2)).toMatchObject({ role: 'user', content: '排队的第二条' })
   })
 
   it('取消终态不自动发出队列', async () => {
@@ -504,11 +527,12 @@ describe('chat store', () => {
     const a = store.sessionId
     await store.newSession() // A 还在跑也允许新建（多会话核心诉求）
     await store.send('B 的问题')
-    // A 的增量/工具事件到达时，正在看的是 B
+    // A 的增量/工具事件到达时，正在看的是 B（B 的缓冲 = user + 思考占位）
     store.onChunk({ sessionID: a, delta: 'A 回答', thinking: '' })
     store.onTool({ sessionID: a, name: 'fs', status: 'success', summary: 'ok' })
-    expect(store.messages.map((m) => m.content)).toEqual(['B 的问题']) // 当前视图不含 A 的内容
+    expect(store.messages.map((m) => m.content)).toEqual(['B 的问题', '']) // 当前视图不含 A 的内容
     await store.selectSession(a) // 切回 A：缓冲原样保留（不重放、不覆盖）
+    // A 的首个增量复用了"正在思考"占位段（0.2.28），叙事 = user → 回答 → 工具卡
     expect(store.messages.map((m) => m.content)).toEqual(['A 的第一问', 'A 回答', 'ok'])
     expect(store.messages.some((m) => m.role === 'tool')).toBe(true)
   })
@@ -524,7 +548,9 @@ describe('chat store', () => {
     store.onTerminal({ sessionID: a, endReason: END_REASON.ERROR, error: '渠道故障' })
     expect(store.isRunning(a)).toBe(false)
     expect(store.isRunning(store.sessionId)).toBe(true) // B 仍在后台跑
-    expect(store.messages.at(-1)?.content).toBe('B 问') // 当前视图不受 A 终态影响
+    // 当前视图不受 A 终态影响：B 的缓冲里没有任何 A 的内容
+    expect(store.messages.some((m) => m.content === 'B 问')).toBe(true)
+    expect(store.messages.some((m) => m.content.includes('渠道故障'))).toBe(false)
     await store.selectSession(a)
     const last = store.messages.at(-1)
     expect(last?.error).toBe(true)
@@ -574,7 +600,9 @@ describe('chat store', () => {
     const id = store.sessionId
     h.replayById[id] = [{ role: 'user', content: '账本里的旧消息' }] // 若误重放会被覆盖
     await store.selectSession(id)
-    expect(store.messages.map((m) => m.content)).toEqual(['现场消息'])
+    // 0.2.28：现场 = user + 思考占位（仍是流式空段）
+    expect(store.messages.map((m) => m.content)).toEqual(['现场消息', ''])
+    expect(store.messages[1].streaming).toBe(true)
   })
 })
 

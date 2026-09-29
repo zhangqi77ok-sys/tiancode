@@ -7,12 +7,12 @@ import { useToast } from '../composables/useToast'
 import { winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
 
-// 顶栏：品牌 + 运行状态 + 导出/工作区/命令确认/渠道设置。
+// 顶栏：品牌 + 运行状态 + 导出/工作区/命令确认。
+// 渠道/模型管理入口收敛到侧栏底部（0.2.28 用户反馈：顶栏不再放模型管理）。
 // 纯状态展示用 .stat（无 hover 态），可点操作用 .chip——不制造假可点。
 const props = defineProps<{ navOpen?: boolean }>()
 const emit = defineEmits<{
   (e: 'toggle-nav'): void
-  (e: 'open-channels'): void
 }>()
 
 const store = useChatStore()
@@ -71,15 +71,6 @@ async function enterWorkspace(dir: string) {
   const ok = await ws.setPath(dir)
   if (ok) await store.newSession()
 }
-
-// 顶栏展示当前默认渠道：没有渠道时给出明确引导（而不是让用户对着发送键发呆）
-const activeChannelName = computed(() => channels.activeChannel?.name ?? '')
-const hasChannel = computed(() => channels.list.length > 0 && !!channels.activeId)
-const channelChip = computed(() => {
-  if (!hasChannel.value) return '未配置渠道 · 点击设置'
-  const model = channels.activeModel
-  return model ? `${activeChannelName.value} · ${model}` : activeChannelName.value || '未命名渠道'
-})
 
 // 切换工作区：弹系统目录选择框；状态收敛在 workspace store（侧栏"按空间分组"同源）。
 // 与侧栏"打开"同语义：切换空间即回到草稿开新对话（归属由首条消息落账本时决定）
@@ -245,16 +236,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
         @click="toggleApproval"
       >
         <AppIcon name="shield" :size="13" /> 命令确认 {{ approvalOn ? '开' : '关' }}
-      </button>
-      <button
-        class="chip"
-        :class="hasChannel ? '' : 'border-[var(--c-warn)] text-[var(--c-warn-text)]'"
-        aria-haspopup="dialog"
-        :title="hasChannel ? `当前模型：${channels.activeModel || '未填'} · ${activeChannelName}` : '模型渠道管理'"
-        @click="emit('open-channels')"
-      >
-        <AppIcon name="sliders" :size="13" />
-        <span class="max-w-[16rem] truncate">{{ channelChip }}</span>
       </button>
 
       <!-- 窗口控制（无边框自绘）：最小化 / 最大化还原 / 关闭 -->

@@ -70,7 +70,7 @@ func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
 		"AddChannel", "ApprovalPolicy", "BindCodexOAuth", "ChannelPresets", "CheckProxy", "CodexCredentialOf", "DeleteChannel", "DeleteSession", "DiscoverModels",
 		"ExportSessionMarkdown", "GetExtensions", "GetProxy", "GetWorkspace", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
-		"ListSessions", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "RenameSession", "Replay", "ResolveApproval", "ResolveAsk", "SaveExtensions", "Send", "SetActiveChannel",
+		"ListSessions", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "RenameSession", "Replay", "ResolveApproval", "ResolveAsk", "SaveExtensions", "Send", "SetActiveChannel", "SetActiveModel",
 		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "TestChannel", "UpdateChannel",
 	}
 	bindType := reflect.TypeOf(&Bind{})

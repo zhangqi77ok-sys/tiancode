@@ -121,6 +121,19 @@ function fmtTime(at?: number): string {
           >{{ seg.thinking }}</pre
         >
 
+        <!-- "正在思考"占位（0.2.28）：首块到达前的可见反馈——慢上游/挂起时
+             用户看到的是"在等模型"，而不是"什么都没发生" -->
+        <div
+          v-if="seg.streaming && !seg.content && !seg.thinking"
+          class="flex max-w-[85%] items-center gap-1.5 rounded-2xl border border-[var(--c-border)] bg-[var(--c-bubble)] px-4 py-3"
+          aria-label="正在思考"
+        >
+          <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--c-text-faint)]"></span>
+          <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--c-text-faint)] [animation-delay:150ms]"></span>
+          <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--c-text-faint)] [animation-delay:300ms]"></span>
+          <span class="ml-1 text-xs text-[var(--c-text-faint)]">正在思考…</span>
+        </div>
+
         <!-- 纯思考段（无正文）不出空气泡 -->
         <div
           v-if="seg.content || seg.error || seg.term === 3 || seg.term === 4"

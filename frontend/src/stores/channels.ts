@@ -159,14 +159,32 @@ export const useChannelStore = defineStore('channels', () => {
     error.value = ''
   }
 
-  // 主界面要显示的是模型，不是渠道后台字段。缺省取声明列表的第一项（与运行时 DefaultModel 一致）。
+  // 主界面要显示的是模型，不是渠道后台字段。
+  // activeModel = **后端实际激活的模型**（激活渠道的视图 Model 字段由后端回传
+  // defaultModel）：此前前端永远显示 models[0]——切换过模型后显示与运行不一致。
   const activeChannel = computed(() => list.value.find((c) => c.active) ?? null)
-  const activeModel = computed(() => {
-    const ch = activeChannel.value
-    if (!ch) return ''
-    const listed = (ch.models ?? []).map((m) => m.trim()).filter(Boolean)
-    return listed[0] || ch.model || ''
-  })
+  const activeModel = computed(() => activeChannel.value?.model ?? '')
+
+  // 模型选项：所有可用渠道展开模型列表（Composer 模型选择器的数据源）
+  const modelOptions = computed(() =>
+    list.value
+      .filter((c) => c.status !== 'manually_disabled' && c.status !== 'auto_disabled' && (c.models?.length ?? 0) > 0)
+      .flatMap((c) => (c.models ?? []).map((m) => ({ channelId: c.id, channelName: c.name, model: m }))),
+  )
+
+  // 切换模型（选择器动作）：激活对应渠道并指定模型；后端落盘后刷新
+  async function setActiveModel(channelId: string, model: string) {
+    busy.value = true
+    error.value = ''
+    try {
+      await bridge().app.SetActiveModel(channelId, model)
+      await load()
+    } catch (e) {
+      fail(e)
+    } finally {
+      busy.value = false
+    }
+  }
 
   return {
     list,
@@ -175,6 +193,8 @@ export const useChannelStore = defineStore('channels', () => {
     activeModel,
     presets,
     models,
+    modelOptions,
+    setActiveModel,
     loading,
     busy,
     error,

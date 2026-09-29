@@ -321,8 +321,10 @@ export const useChatStore = defineStore('chat', () => {
   async function sendTo(id: string, text: string) {
     const c = ensureConvo(id)
     c.messages.push(withId({ role: 'user', content: text, at: Date.now() }))
-    // 不预建助手占位：助手消息按 ReAct 轮次由 onChunk 按需分段创建（0.2.14），
-    // 每轮的思考/文本归属各自轮次，不再全部堆进同一个气泡
+    // "正在思考"占位（0.2.28）：慢中转/上游挂起时用户立即看到反馈，而不是
+    // "消息发出去了，什么都没发生"。onChunk 复用这段（inFlightAssistant 按
+    // streaming 段查找）；零块 DONE 终态时移除空占位，不留空气泡。
+    c.messages.push(withId({ role: 'assistant', content: '', streaming: true, at: Date.now() }))
     c.running = true
     c.stopping = false
     c.turnStartedAt = Date.now()
@@ -529,6 +531,11 @@ export const useChatStore = defineStore('chat', () => {
       if (p.endReason !== END_REASON.DONE) {
         ast.error = true
         ast.content += (ast.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
+      } else if (!ast.content && !ast.thinking) {
+        // 正常结束但占位段仍是"正在思考"空壳（模型只调了工具等）：
+        // 移除空占位——零块 DONE 不补空气泡的既有契约（此处连占位也不留）
+        const i = c.messages.indexOf(ast)
+        if (i >= 0) c.messages.splice(i, 1)
       }
       // 本轮耗时（Cline 惯例）：send 置位、terminal 收算；无进行中轮次（测试直插）不计
       if (c.turnStartedAt > 0) {

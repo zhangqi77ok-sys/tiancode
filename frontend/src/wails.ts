@@ -250,6 +250,7 @@ interface WailsApp {
   UpdateChannel(input: ChannelInput): Promise<void>
   DeleteChannel(id: string): Promise<void>
   SetActiveChannel(id: string): Promise<void>
+  SetActiveModel(id: string, model: string): Promise<void>
   DiscoverModels(input: ChannelInput): Promise<string[] | null>
   // 渠道测试与凭证管理（0.2.19）
   TestChannel(id: string): Promise<TestResultDTO | null>
@@ -371,6 +372,7 @@ export function bridge(): WailsBridge {
         UpdateChannel: offlineWrite,
         DeleteChannel: offlineWrite,
         SetActiveChannel: offlineWrite,
+        SetActiveModel: offlineWrite,
         DiscoverModels: offlineWrite,
         TestChannel: offlineWrite,
         ListCredentials: async () => [],

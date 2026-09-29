@@ -47,11 +47,17 @@ func toView(c channels.Channel) llm.ChannelView {
 
 // Channels 返回渠道脱敏视图列表与激活渠道 ID（C-CH-6：密钥不出编排层）。
 // 附凭证摘要（总数/禁用数）：列表卡片直接显示"3 条 · 1 禁用"，无需逐渠道再查。
+// 激活渠道的 Model 字段回传**实际激活的模型**（s.defaultModel）：前端此前永远
+// 显示 models[0]，用户切换过模型后"显示的"与"实际跑的"不一致（0.2.28）。
 func (s *ChatService) Channels() ([]llm.ChannelView, string, error) {
 	list := s.pool.List()
+	activeID := s.pool.ActiveID()
 	views := make([]llm.ChannelView, 0, len(list))
 	for _, c := range list {
 		v := toView(c)
+		if c.ID == activeID && strings.TrimSpace(s.defaultModel) != "" {
+			v.Model = s.defaultModel
+		}
 		if creds, err := s.pool.Credentials(c.ID); err == nil {
 			v.CredentialCount = len(creds)
 			for _, cr := range creds {
@@ -62,7 +68,7 @@ func (s *ChatService) Channels() ([]llm.ChannelView, string, error) {
 		}
 		views = append(views, v)
 	}
-	return views, s.pool.ActiveID(), nil
+	return views, activeID, nil
 }
 
 // poolChannel 把 DTO 转成池渠道（新渠道默认：default 组、priority 100、enabled）。
@@ -355,6 +361,32 @@ func (s *ChatService) SetActiveChannel(id string) error {
 		return err
 	}
 	return s.pool.SetActive(id)
+}
+
+// SetActiveModel 激活指定渠道的指定模型（模型选择器，0.2.28）。
+// 为什么不能只记模型：网关按"激活渠道 + 默认模型"选路——换到别的渠道的模型，
+// 激活渠道必须一并切换，否则请求仍打到旧渠道。
+func (s *ChatService) SetActiveModel(id, model string) error {
+	ch, ok := s.pool.Get(id)
+	if !ok {
+		return fmt.Errorf("渠道不存在：%s", id)
+	}
+	known := false
+	for _, m := range ch.Models {
+		if m == model {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return fmt.Errorf("模型 %s 不在渠道「%s」的模型列表里（可在渠道管理里补充）", model, ch.Name)
+	}
+	if s.pool.ActiveID() != id {
+		if err := s.SetActiveChannel(id); err != nil {
+			return err
+		}
+	}
+	return s.activate(model)
 }
 
 // DiscoverModels 拉取指定渠道上游的模型列表（供 UI 的"同步模型"）。
