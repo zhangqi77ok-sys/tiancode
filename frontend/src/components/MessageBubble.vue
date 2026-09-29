@@ -17,6 +17,8 @@ const props = defineProps<{ m: ChatMsg; run?: ChatMsg[] }>()
 
 const segments = computed<ChatMsg[]>(() => props.run ?? [props.m])
 const isUser = computed(() => props.m.role === 'user')
+// 图片放大（0.0.10）：点缩略图全屏看原图
+const lightbox = ref<string | null>(null)
 
 const { push: toast } = useToast()
 const store = useChatStore()
@@ -71,12 +73,35 @@ function fmtTime(at?: number): string {
 </script>
 
 <template>
-  <!-- 用户消息：主色实心气泡，右对齐 -->
+  <!-- 用户消息：主色实心气泡，右对齐；附件（0.0.10）在气泡上方——图片可点击放大 -->
   <div v-if="isUser" class="flex flex-col items-end gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
       <span>你</span><span>{{ fmtTime(m.at) }}</span>
     </div>
+    <!-- 图片：缩略图行（dataUrl 来自发送时本地回显或重放时后端读取附件文件） -->
+    <div v-if="m.attachments?.some((a) => a.kind === 'image')" class="flex max-w-[75%] flex-wrap justify-end gap-1.5">
+      <img
+        v-for="(a, i) in m.attachments.filter((x) => x.kind === 'image' && x.dataUrl)"
+        :key="`img-${i}`"
+        :src="a.dataUrl"
+        class="h-24 cursor-zoom-in rounded-xl border border-[var(--c-border)] object-cover"
+        :alt="a.name"
+        :title="`${a.name} · 点击放大`"
+        @click="lightbox = a.dataUrl!"
+      />
+    </div>
+    <!-- 文件：名字 + 路径行 -->
     <div
+      v-for="(a, i) in m.attachments?.filter((x) => x.kind === 'file') ?? []"
+      :key="`file-${i}`"
+      class="flex max-w-[75%] items-center gap-1.5 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-2.5 py-1.5 text-xs"
+    >
+      <AppIcon name="file" :size="12" class="shrink-0 text-[var(--c-text-dim)]" />
+      <span class="max-w-[12rem] truncate" :title="a.path">{{ a.name }}</span>
+      <span class="shrink-0 text-[var(--c-text-faint)]">{{ a.inline === 'full' ? '已内联' : '只附路径' }}</span>
+    </div>
+    <div
+      v-if="m.content"
       class="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
     >
       {{ m.content }}
@@ -170,4 +195,15 @@ function fmtTime(at?: number): string {
     </template>
     <button v-if="showRetry" class="chip mt-1 text-xs" @click="retry">重试上一问</button>
   </div>
+
+  <!-- 图片放大遮罩（0.0.10）：点缩略图全屏看原图 -->
+  <Teleport to="body">
+    <div
+      v-if="lightbox"
+      class="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-black/80 p-8"
+      @click="lightbox = null"
+    >
+      <img :src="lightbox" class="max-h-full max-w-full rounded-lg" alt="放大图片" />
+    </div>
+  </Teleport>
 </template>

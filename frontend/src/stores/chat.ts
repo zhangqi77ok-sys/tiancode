@@ -417,20 +417,30 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // 发送到"当前正在看的会话"（用户动作入口）。
-  // 0.0.10：atts 非空时走带附件的 IPC；发送失败上抛（Composer 保留待发送区重试）。
-  function send(text: string, atts?: PendingAttachment[]) {
+  // 0.0.10：atts 非空时走带附件的 IPC；throwOnError 由 Composer 传入（失败保留待发送区）。
+  function send(text: string, atts?: PendingAttachment[], opts?: { throwOnError?: boolean }) {
     if (!sessionId.value) {
       sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
       announcePending()
     }
-    return sendTo(sessionId.value, text, atts)
+    return sendTo(sessionId.value, text, atts, opts)
   }
 
   // 发送到指定会话（多会话的核心：后台会话的排队续发也走这里，绝不发进当前视图）。
-  // 0.0.10：发送失败上抛——Composer 据此保留文字与附件允许重试。
-  async function sendTo(id: string, text: string, atts?: PendingAttachment[]) {
+  // 0.0.10：带附件且 opts.throwOnError 时发送失败上抛——Composer 据此保留
+  // 文字与附件允许重试；默认路径不抛（错误气泡已可见，调用方多为 fire-and-forget）。
+  // 本地回显：user 消息立刻带附件形态（图片直接用 base64 展示，无需等重放）。
+  async function sendTo(id: string, text: string, atts?: PendingAttachment[], opts?: { throwOnError?: boolean }) {
     const c = ensureConvo(id)
-    c.messages.push(withId({ role: 'user', content: text, at: Date.now() }))
+    const localAtts = atts?.map((a) => ({
+      kind: a.kind,
+      name: a.name,
+      mediaType: a.mediaType,
+      dataUrl: a.dataB64 ? `data:${a.mediaType};base64,${a.dataB64}` : undefined,
+      path: a.sourcePath,
+      inline: a.inline,
+    }))
+    c.messages.push(withId({ role: 'user', content: text, attachments: localAtts, at: Date.now() }))
     // "正在思考"占位（0.2.28）：慢中转/上游挂起时用户立即看到反馈，而不是
     // "消息发出去了，什么都没发生"。onChunk 复用这段（inFlightAssistant 按
     // streaming 段查找）；零块 DONE 终态时移除空占位，不留空气泡。
@@ -459,7 +469,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       c.running = false
       c.stopping = false
-      throw e // 上抛：Composer 保留文字与附件允许重试
+      if (opts?.throwOnError) throw e // Composer 附件路径：保留文字与附件允许重试
     }
   }
 

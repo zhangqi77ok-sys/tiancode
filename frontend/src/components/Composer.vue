@@ -266,7 +266,7 @@ async function submit() {
   atts.value = []
   resetBox()
   try {
-    await store.send(text, curAtts)
+    await store.send(text, curAtts, { throwOnError: true })
   } catch {
     // 发送失败：文字与附件全部保留在输入区，允许重试
     draft.value = text
