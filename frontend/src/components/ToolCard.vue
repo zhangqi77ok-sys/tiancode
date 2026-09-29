@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
+import { useChatStore } from '../stores/chat'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -69,6 +70,17 @@ async function reveal() {
   } catch (e) {
     toast('error', String(e instanceof Error ? e.message : e))
   }
+}
+
+// "恢复写入前"（0.0.07）：write/edit 成功且带撤销快照时出现。走后端恢复
+// （旧全文只在账本里，比对哈希防覆盖用户改动）；成功后 store 追加"已恢复"卡。
+const store = useChatStore()
+const restoring = ref(false)
+async function restore() {
+  if (!props.m.callId || restoring.value) return
+  restoring.value = true
+  await store.restoreWrite(props.m.callId, props.m.undoPath)
+  restoring.value = false
 }
 
 // diffstat：内核 diff 统计增删行（+++ / --- 文件头不计）
@@ -143,6 +155,19 @@ function diffLineClass(line: string): string {
       <div v-for="(l, li) in m.diff.split('\n')" :key="li" :class="diffLineClass(l)">{{ l }}</div>
     </div>
     <pre v-else-if="effectiveOpen" class="tool-full">{{ m.content }}</pre>
+
+    <!-- 撤销（0.0.07）：不可恢复说明优先显示（如超大文件未保存快照）；
+         有快照时提供"恢复写入前"——走后端比对，文件被改过会被拒绝并说明 -->
+    <p v-if="m.undoNote" class="self-start px-1 text-[11px] text-[var(--c-text-faint)]">{{ m.undoNote }}</p>
+    <button
+      v-if="m.hasUndo && m.callId && effectiveOpen"
+      class="chip self-start text-[11px]"
+      :disabled="restoring"
+      title="把文件写回这次修改之前的内容（文件后来被改过时会被拒绝）"
+      @click="restore"
+    >
+      <AppIcon name="refresh" :size="11" /> {{ restoring ? '正在恢复…' : '恢复写入前' }}
+    </button>
 
     <button
       v-if="revealable && effectiveOpen"

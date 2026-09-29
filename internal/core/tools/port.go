@@ -35,6 +35,33 @@ type ToolResult struct {
 	// UI 按空值回退工具名（可选字段，向后兼容）。
 	Title string
 	Op    string
+	// Undo 保存"恢复这一次写入前"的数据（仅供 UI/后端恢复用，**绝不进模型上下文**，
+	// 与 Diff 同纪律但更严格：不透传给模型消息，也不出现在 Content 里）。
+	// 写入成功时由 write/replace 填充；旧内容超过上限时为 nil，改由 UndoNote 说明。
+	Undo *UndoData
+	// UndoNote 撤销不可用时的卡片说明（如"旧内容超过上限，这次无法恢复"）。
+	// 仅 UI 可见；空串 = 无说明。
+	UndoNote string
+}
+
+// UndoData 是一次文件写入的撤销快照。
+// OldContent 是写入前的**全文**（新建文件为空且 OldExists=false，与"写入空内容"区分）；
+// NewSHA256 是写入后内容的哈希——恢复前用它检测"文件被人改过"（不一致即拒绝，
+// 宁可不恢复也不覆盖用户的改动）。Cap：旧内容超过写入上限时不生成（UndoNote 说明），
+// 绝不为恢复把超大文件再读进内存。
+type UndoData struct {
+	Path       string `json:"path"`       // 工作区相对路径（恢复时在后端会话根下重新解析）
+	OldExists  bool   `json:"old_exists"` // 写入前文件是否存在（false = 新建，恢复=删除）
+	OldContent string `json:"old_content"`
+	NewSHA256  string `json:"new_sha256"` // hex
+}
+
+// ProgressSink 是可选的执行进度端口：实现它的工具可在**执行中**把已捕获的
+// 部分输出推给界面（0.0.07：长命令几分钟黑盒 → 卡片随过程增长）。
+// 契约：cb 可能为 nil（清除）；实现方必须自行节流（如 500ms/次）且在执行结束
+// 后停止调用；partial 只是过程快照，模型上下文仍只收终态的完整结果。
+type ProgressSink interface {
+	SetProgress(cb func(partial string))
 }
 
 // ToolPort 是工具端口：适配器实现它，内核只依赖它。

@@ -509,6 +509,12 @@ type ChatMessage struct {
 	Title string `json:"title,omitempty"`
 	Op    string `json:"op,omitempty"`
 	Diff  string `json:"diff,omitempty"`
+	// 撤销元数据（0.0.07）：CallID 定位账本事件，HasUndo 决定是否显示"恢复写入前"。
+	// 旧全文不投影给前端——恢复走后端 RestoreToolWrite（防覆盖用户改动的比对在那边）。
+	CallID   string `json:"callId,omitempty"`
+	HasUndo  bool   `json:"hasUndo,omitempty"`
+	UndoPath string `json:"undoPath,omitempty"`
+	UndoNote string `json:"undoNote,omitempty"`
 	// 问答卡（role="ask"）：问题与选项来自 tool_call 参数，答案在 Content
 	Question string   `json:"question,omitempty"`
 	Options  []string `json:"options,omitempty"`
@@ -587,6 +593,12 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 				Title   string `json:"title"`
 				Op      string `json:"op"`
 				Diff    string `json:"diff"`
+				Undo    *struct {
+					Path      string `json:"path"`
+					OldExists bool   `json:"old_exists"`
+					NewSHA256 string `json:"new_sha256"`
+				} `json:"undo"`
+				UndoNote string `json:"undo_note"`
 			}
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
@@ -613,7 +625,12 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			out = append(out, ChatMessage{
 				Role: "tool", Content: p.Content, ToolName: p.Name, Status: st,
 				Title: p.Title, Op: p.Op, Diff: p.Diff,
+				CallID: p.ID, HasUndo: p.Undo != nil,
 			})
+			if p.Undo != nil {
+				out[len(out)-1].UndoPath = p.Undo.Path
+			}
+			out[len(out)-1].UndoNote = p.UndoNote
 		case session.EventTodo:
 			var p struct {
 				Items []struct {

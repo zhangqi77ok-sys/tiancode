@@ -38,41 +38,54 @@ func TestFSTool_ReadSizeHardLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.IsError || res.Content != "hello" {
-		t.Fatalf("小文件读取应正常：%+v", res)
+	if res.IsError || res.Content != "1|hello" {
+		t.Fatalf("小文件读取应正常（带行号）：%+v", res)
 	}
 }
 
-// R3：超大文件提供 offset/length 分段读取作为合法出路——整读被拒但不是死路
-// （不把模型指去 shell 绕开上限）。
-func TestFSTool_ReadOffsetLength(t *testing.T) {
+// R3（0.0.07 行号化）：超大文件提供 start_line/line_count 按行分段读取作为合法
+// 出路——整读被拒但不是死路（不把模型指去 shell 绕开上限）；多字节中文按整行
+// 返回，绝不被字节切段截成乱码。
+func TestFSTool_ReadLineSegments(t *testing.T) {
 	root := t.TempDir()
 	f := New(root)
+	// 造一个 >10MB 的多行文件（每行约 100 字节，其中一行含中文）
+	var b strings.Builder
+	for i := 0; i < 110*1024; i++ {
+		if i == 49999 {
+			b.WriteString("中文行：多字节字符必须整行返回不得截半\n")
+			continue
+		}
+		b.WriteString(strings.Repeat("abcdefghij", 10) + "\n")
+	}
 	big := filepath.Join(root, "big.txt")
-	if err := os.WriteFile(big, []byte(strings.Repeat("abcdefghij", 2<<20)), 0o644); err != nil {
+	if err := os.WriteFile(big, []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 整读拒绝，且指引分段读取（不是 shell）
+	// 整读拒绝，且指引按行分段（不是 shell）
 	res, err := f.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"big.txt"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(res.Content, "offset/length") {
-		t.Fatalf("整读应拒绝并指引分段：%+v", res)
+	if !res.IsError || !strings.Contains(res.Content, "start_line/line_count") {
+		t.Fatalf("整读应拒绝并指引按行分段：%+v", res)
 	}
 	if strings.Contains(res.Content, "shell") {
 		t.Fatal("不得把模型指去 shell 绕开读取上限")
 	}
-	// 分段读取可用
-	res, err = f.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"big.txt","offset":10,"length":100}`))
+	// 按行分段可用，中文行完整（无替换符、无半字）
+	res, err = f.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"big.txt","start_line":50000,"line_count":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.IsError {
-		t.Fatalf("分段读取应可用：%s", res.Content)
+		t.Fatalf("按行分段应可用：%s", res.Content)
 	}
-	if !strings.Contains(res.Content, "[offset=10 读取 100 字节 / 共 20971520 字节]") {
-		t.Fatalf("分段头不符：%.120s", res.Content)
+	if !strings.Contains(res.Content, "50000|中文行：多字节字符必须整行返回不得截半") {
+		t.Fatalf("中文行必须整行返回：%.200s", res.Content)
+	}
+	if strings.Contains(res.Content, "\ufffd") {
+		t.Fatal("出现替换符 = 多字节字符被字节切段截断")
 	}
 }
 

@@ -5,6 +5,7 @@ import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useToast } from '../composables/useToast'
 import { THEME_LABEL, currentTheme, cycleTheme, type ThemeMode } from '../composables/useTheme'
+import { workspaceLabel } from '../composables/workspaceLabel'
 import { bridge, winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
 
@@ -20,14 +21,15 @@ const { push: toast } = useToast()
 
 const approvalOn = ref(false)
 
-// 顶栏工作区按钮（0.0.06）：显示"上一级 + 当前名"——只给最后一级时，
-// 两个不同项目的同名子目录（frontend/dist）无法区分；悬停仍是完整路径。
-const workspaceName = computed(() => {
-  if (!ws.path) return '选择工作区'
-  const segs = ws.path.split(/[\\/]/).filter(Boolean)
-  if (segs.length <= 1) return segs[0] ?? '选择工作区'
-  return `${segs[segs.length - 2]}/${segs[segs.length - 1]}`
-})
+// 顶栏工作区（0.0.07）：主标签 = **这场对话正在用的路**（已落账会话取账本归属；
+// 草稿取下一场的根），不再是笼统的"当前工作区"——ws.path 只影响还没落账的新对话，
+// 把它当"当前"会误导用户以为正在看的对话会写进那个目录。
+// 归属与下一场根不同时，副标签用弱样式另标「新建对话将使用 …」（禁止都叫"当前"）。
+const isDraft = computed(() => !store.sessionId)
+const sessionWs = computed(() => store.summaries.find((s) => s.id === store.sessionId)?.workspace ?? '')
+const wsLabel = computed(() =>
+  workspaceLabel({ isDraft: isDraft.value, sessionWorkspace: sessionWs.value, draftWorkspace: ws.path }),
+)
 
 // 状态灯文案：后台运行 / 待答复都要与"空闲"区分（切走后顶栏不能装作没事）。
 // 0.0.06：带上会话标题——多个会话并行时"后台运行中"说不清是谁在跑。
@@ -227,18 +229,26 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-      <!-- 工作区：默认未选择；菜单内进入已有工作区 / 选新目录 / 退出纯对话 -->
-      <div ref="wsMenuRef" class="relative">
+      <!-- 工作区（0.0.07）：主标签 = 这场对话正在用的路；弱样式副标签 = 新建对话的根。
+           菜单内进入已有工作区 / 选新目录 / 退出纯对话 -->
+      <div ref="wsMenuRef" class="relative flex items-center gap-1.5">
         <button
           class="chip"
-          :class="ws.path ? '' : 'border-dashed text-[var(--c-text-dim)]'"
+          :class="wsLabel.main === '这场对话没有工作区' ? 'border-dashed text-[var(--c-text-dim)]' : ''"
           aria-haspopup="menu"
           :aria-expanded="wsMenuOpen"
-          :title="ws.path ? `当前工作区：${ws.path}` : '未选择工作区（纯对话）· 点击进入'"
+          :title="wsLabel.mainTitle || '选择工作区'"
           @click="wsMenuOpen = !wsMenuOpen"
         >
-          <AppIcon name="folder" :size="13" /> {{ workspaceName }}
+          <AppIcon name="folder" :size="13" /> {{ wsLabel.main }}
         </button>
+        <span
+          v-if="wsLabel.sub"
+          class="hidden text-[11px] text-[var(--c-text-faint)] lg:inline"
+          :title="wsLabel.subTitle"
+        >
+          {{ wsLabel.sub }}
+        </span>
         <div
           v-if="wsMenuOpen"
           role="menu"

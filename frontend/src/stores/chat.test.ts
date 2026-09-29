@@ -412,11 +412,30 @@ describe('chat store', () => {
     expect(cards[0].status).toBe('success')
     expect(cards[0].content).toBe('output text')
     expect(cards[0].streaming).toBe(false)
-    // 重复 running 事件不叠加
-    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'running', summary: 'x', callID: 'call-2' })
-    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'running', summary: 'x', callID: 'call-2' })
+    // 重复 running 事件不叠加；0.0.07：同 CallID 的过程推送**更新内容**（不吞掉）
+    store.onTool({ sessionID: store.sessionId, name: 'shell', status: 'running', summary: '执行中…', content: 'line1', callID: 'call-2' })
+    store.onTool({ sessionID: store.sessionId, name: 'shell', status: 'running', summary: '执行中…', content: 'line1\nline2', callID: 'call-2' })
     cards = store.messages.filter((m) => m.role === 'tool')
     expect(cards).toHaveLength(2)
+    const shellCard = cards.find((m) => m.callId === 'call-2')
+    expect(shellCard?.content).toBe('line1\nline2')
+    expect(shellCard?.status).toBe('running')
+  })
+
+  // 0.0.07：终态事件携带撤销元数据 → 卡片可显示"恢复写入前"；不可恢复说明透传
+  it('终态事件携带撤销元数据与不可恢复说明', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'written a.go', callID: 'call-u1', hasUndo: true, undoPath: 'a.go' })
+    const card = store.messages.find((m) => m.role === 'tool')
+    expect(card?.hasUndo).toBe(true)
+    expect(card?.undoPath).toBe('a.go')
+    // 不可恢复说明（超大文件未保存快照）
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'written big.bin', callID: 'call-u2', undoNote: '这次无法恢复：写入前的内容超过上限，未保存恢复数据' })
+    const noteCard = store.messages.filter((m) => m.role === 'tool').at(-1)
+    expect(noteCard?.hasUndo).toBeFalsy()
+    expect(noteCard?.undoNote).toContain('无法恢复')
   })
 
   // ReAct 段落化：工具事件封存当前段并插卡其后，后续增量落新段——

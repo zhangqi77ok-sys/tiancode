@@ -1,10 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, defineComponent, h } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 import ToolCard from './ToolCard.vue'
 import type { ChatMsg } from '../stores/chat'
 
 vi.mock('../wails', () => ({
-  bridge: () => ({ app: { RevealInExplorer: async () => {} } }),
+  bridge: () => ({
+    app: {
+      RevealInExplorer: async () => {},
+      RestoreToolWrite: async (_sid: string, callID: string) => `已恢复 ${callID}`,
+      GetWorkspace: async () => 'D:/w',
+      SetWorkspace: async () => {},
+      ApprovalPolicy: async () => [],
+      SetApprovalPolicy: async () => {},
+      ResolveApproval: async () => {},
+      ResolveAsk: async () => {},
+      ListSessionSummaries: async () => [],
+      Replay: async () => [],
+      Send: async () => {},
+      Stop: async () => {},
+      RenameSession: async () => {},
+      DeleteSession: async () => {},
+    },
+    runtime: { EventsOn: () => {} },
+  }),
   winClose: async () => {},
   winMinimize: async () => {},
   winToggleMaximize: async () => {},
@@ -16,7 +35,10 @@ let app: ReturnType<typeof createApp> | null = null
 function mountCard(m: ChatMsg): HTMLElement {
   host = document.createElement('div')
   document.body.appendChild(host)
+  const pinia = createPinia()
   app = createApp(defineComponent({ render: () => h(ToolCard, { m }) }))
+  app.use(pinia)
+  setActivePinia(pinia) // 组件与测试共用同一 pinia
   app.mount(host)
   return host
 }
@@ -89,5 +111,41 @@ describe('ToolCard（0.0.06 交互契约）', () => {
       diff: '+x\n',
     })
     expect(el.textContent).toContain('在资源管理器中显示')
+  })
+
+  // 0.0.07：带撤销快照的 write 卡提供"恢复写入前"；不可恢复说明可见
+  it('write 卡提供恢复写入前，undoNote 透出', async () => {
+    const el = mountCard({
+      role: 'tool',
+      content: 'written a.go',
+      toolName: 'fs',
+      status: 'success',
+      op: 'write',
+      title: 'a.go',
+      callId: 'call-9',
+      hasUndo: true,
+      undoPath: 'a.go',
+      diff: '+new\n',
+    })
+    const btn = el.querySelector<HTMLButtonElement>('button.chip')
+    expect(el.textContent).toContain('恢复写入前')
+    await btn?.click()
+    await nextTick()
+    // 点击后调用后端（mock 返回成功文案），卡片进入恢复中态
+    expect(el.textContent).toContain('正在恢复')
+  })
+
+  it('undoNote 优先可见（无法恢复的场景）', () => {
+    const el = mountCard({
+      role: 'tool',
+      content: 'written big.bin',
+      toolName: 'fs',
+      status: 'success',
+      op: 'write',
+      title: 'big.bin',
+      undoNote: '这次无法恢复：写入前的内容超过上限，未保存恢复数据',
+    })
+    expect(el.textContent).toContain('这次无法恢复')
+    expect(el.textContent).not.toContain('恢复写入前')
   })
 })

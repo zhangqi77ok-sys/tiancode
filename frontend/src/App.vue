@@ -131,6 +131,9 @@ onMounted(() => {
       title?: string
       op?: string
       callID?: string
+      hasUndo?: boolean
+      undoPath?: string
+      undoNote?: string
     }) => {
       store.onTool(p)
     },

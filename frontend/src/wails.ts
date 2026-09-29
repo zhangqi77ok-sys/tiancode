@@ -13,6 +13,11 @@ export interface ChatMessageDTO {
   title?: string
   op?: string
   diff?: string
+  // 撤销元数据（0.0.07）：hasUndo 决定是否显示"恢复写入前"；恢复走后端
+  callId?: string
+  hasUndo?: boolean
+  undoPath?: string
+  undoNote?: string
   // 问答卡（role='ask'）：问题与选项来自 tool_call 参数，Content 为用户答复
   question?: string
   options?: string[]
@@ -235,6 +240,8 @@ interface WailsApp {
   RevealInExplorer(path: string): Promise<void>
   // 系统保存对话框写文本文件（0.0.06：导出会话"另存为文件"）。取消返回空串。
   SaveTextFile(defaultName: string, content: string): Promise<string>
+  // 恢复一次 write/replace 写入前的内容（0.0.07）。失败（文件被改过等）显式报错。
+  RestoreToolWrite(sessionID: string, callID: string): Promise<string>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
   PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
@@ -379,6 +386,9 @@ export function bridge(): WailsBridge {
         SetActiveModel: offlineWrite,
         RevealInExplorer: offlineWrite,
         SaveTextFile: async () => '',
+        RestoreToolWrite: async () => {
+          throw new Error('离线模式：恢复不可用')
+        },
         DiscoverModels: offlineWrite,
         TestChannel: offlineWrite,
         ListCredentials: async () => [],

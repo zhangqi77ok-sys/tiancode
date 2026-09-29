@@ -38,6 +38,11 @@ export interface ChatMsg {
   sessionTitle?: string
   // 工具调用配对 ID（0.0.06）：running 与终态事件同 ID——终态原地更新"执行中"卡
   callId?: string
+  // 撤销元数据（0.0.07）：hasUndo 时卡片显示"恢复写入前"；旧全文不进前端，
+  // 恢复走后端 RestoreToolWrite（比对哈希防覆盖用户改动）
+  hasUndo?: boolean
+  undoPath?: string
+  undoNote?: string
   at?: number
   term?: number
   streaming?: boolean
@@ -288,8 +293,35 @@ export const useChatStore = defineStore('chat', () => {
         title: m.title,
         op: m.op,
         diff: m.diff,
+        callId: m.callId,
+        hasUndo: m.hasUndo,
+        undoPath: m.undoPath,
+        undoNote: m.undoNote,
       })
     })
+  }
+
+  // 恢复写入前（0.0.07）：走后端（比对哈希防覆盖用户改动）；成功后把"已恢复"
+  // 卡片追加到当前视图（后端同时落账本，重启后 Replay 仍显示）。
+  async function restoreWrite(callID: string, undoPath?: string) {
+    error.value = ''
+    try {
+      const note = await bridge().app.RestoreToolWrite(sessionId.value, callID)
+      const c = ensureConvo(sessionId.value)
+      c.messages.push(
+        withId({
+          role: 'tool',
+          content: note,
+          toolName: 'fs',
+          status: 'success',
+          op: 'edit',
+          title: undoPath,
+          at: Date.now(),
+        }),
+      )
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+    }
   }
 
   // overlapCount 返回 hist 尾部与 live 前缀的最大逐条重叠数（role+content 比对）。
@@ -513,15 +545,25 @@ export const useChatStore = defineStore('chat', () => {
     title?: string
     op?: string
     callID?: string
+    hasUndo?: boolean
+    undoPath?: string
+    undoNote?: string
   }) {
     const c = ensureConvo(p.sessionID)
     if (p.name === 'todo') return // 任务清单由 onTodo/FloatingTodo 承载，不重复出工具卡
     if (p.name === 'ask_user') return // 问答卡由 onAsk/AskCard 承载，答案已在卡上
     // running 事件（0.0.06）：先出"执行中"卡（默认展开），终态事件按 callId
     // 原地更新同一张卡——卡随事件增长，而不是插两张卡。
+    // 0.0.07：同一 CallID 的后续 running 事件（shell 过程推送）**更新已捕获
+    // 输出**，不再被"重复事件"守卫吞掉——卡片里看得见命令在吐什么。
     if (p.status === 'running' && p.callID) {
       const existing = c.messages.find((m) => m.role === 'tool' && m.callId === p.callID)
-      if (existing) return // 已有同 ID 的卡（重复事件），不叠加
+      if (existing) {
+        if (p.content || p.summary) existing.content = p.content || p.summary
+        if (p.title && !existing.title) existing.title = p.title
+        if (p.op && !existing.op) existing.op = p.op
+        return
+      }
       const ast = inFlightAssistant(c)
       if (ast) ast.streaming = false
       const card = withId({
@@ -551,6 +593,9 @@ export const useChatStore = defineStore('chat', () => {
       if (p.diff !== undefined) target.diff = p.diff
       if (p.title) target.title = p.title
       if (p.op) target.op = p.op
+      target.hasUndo = !!p.hasUndo
+      if (p.undoPath) target.undoPath = p.undoPath
+      if (p.undoNote) target.undoNote = p.undoNote
       target.streaming = false
       return
     }
@@ -566,6 +611,9 @@ export const useChatStore = defineStore('chat', () => {
       title: p.title,
       op: p.op,
       callId: p.callID,
+      hasUndo: !!p.hasUndo,
+      undoPath: p.undoPath,
+      undoNote: p.undoNote,
       at: Date.now(),
     })
     const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
@@ -811,6 +859,7 @@ export const useChatStore = defineStore('chat', () => {
     send,
     onChunk,
     onTool,
+    restoreWrite,
     onTodo,
     onAsk,
     resolveAsk,

@@ -264,25 +264,31 @@ func TestFSOversized_ReplaceRejectsWriteSkipsDiff(t *testing.T) {
 		t.Fatalf("rejected replace must not touch file: size=%v", info)
 	}
 
-	// --- write：同样超大旧文件，写入成功、diff 省略、内容正确 ---
-	res, err = tool.Execute(context.Background(), mustArgs(t, map[string]any{
+	// --- write：超大旧文件（>10MB，不可能整读）→ 0.0.07 整读门卫拒绝——
+	// 无法整读的文件不允许整体覆盖（宁可用 replace/分段，也不让模型蒙眼写）。
+	// 用新工具实例模拟"整读凭证不存在"（mustWrite 自己会留下凭证） ---
+	fresh := New(tool.Root())
+	res, err = fresh.Execute(context.Background(), mustArgs(t, map[string]any{
 		"action": "write", "path": "huge.txt", "content": "fresh small content",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.IsError {
-		t.Fatalf("write over oversized old file must succeed: %s", res.Content)
+	if !res.IsError || !strings.Contains(res.Content, "整读") {
+		t.Fatalf("超大未整读文件必须被 write 门卫拒绝：%s", res.Content)
 	}
-	if res.Diff != "" {
-		t.Fatalf("diff must be omitted for oversized old file, got %d bytes", len(res.Diff))
-	}
-	if got, _ := os.ReadFile(p); string(got) != "fresh small content" {
-		t.Fatalf("content = %q", got)
+	if info, _ := os.Stat(p); info == nil || info.Size() != maxWriteBytes+1 {
+		t.Fatalf("rejected write must not touch file: size=%v", info)
 	}
 
-	// --- 小文件回归：write 仍有 diff（省略只发生在超大场景） ---
-	res, err = tool.Execute(context.Background(), mustArgs(t, map[string]any{
+	// --- 小文件回归：整读后 write 仍有 diff（fresh 实例新建 small.txt 并整读） ---
+	if _, err := fresh.Execute(context.Background(), mustArgs(t, map[string]any{"action": "write", "path": "small.txt", "content": "v1"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Execute(context.Background(), mustArgs(t, map[string]any{"action": "read", "path": "small.txt"})); err != nil {
+		t.Fatal(err)
+	}
+	res, err = fresh.Execute(context.Background(), mustArgs(t, map[string]any{
 		"action": "write", "path": "small.txt", "content": "v2",
 	}))
 	if err != nil || res.IsError {

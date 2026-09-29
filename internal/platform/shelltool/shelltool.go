@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -46,6 +47,12 @@ type Tool struct {
 	root    string
 	timeout time.Duration
 	bg      *bgManager
+
+	// progress 是界面过程推送回调（tools.ProgressSink，0.0.07）：前台命令执行中
+	// 每 ≤500ms 把已捕获输出推一次（agent 层随事件带 CallID，前端更新同一张卡）。
+	// 单槽：同一会话的前台命令串行执行（agent 循环互斥），不需要多路复用。
+	pmu      sync.Mutex
+	progress func(string)
 }
 
 // New 构造工具并补齐默认值。
@@ -60,6 +67,23 @@ func New(opts Options) *Tool {
 		root:    opts.Root,
 		timeout: opts.Timeout,
 		bg:      newBGManager(opts.BGLogLimit),
+	}
+}
+
+// SetProgress 实现 tools.ProgressSink：cb 为 nil 表示清除（执行结束/换步时）。
+func (t *Tool) SetProgress(cb func(string)) {
+	t.pmu.Lock()
+	t.progress = cb
+	t.pmu.Unlock()
+}
+
+// pushProgress 把过程快照推给界面（无回调或空输出时静默）。
+func (t *Tool) pushProgress(partial string) {
+	t.pmu.Lock()
+	cb := t.progress
+	t.pmu.Unlock()
+	if cb != nil && strings.TrimSpace(partial) != "" {
+		cb(partial)
 	}
 }
 
@@ -163,7 +187,32 @@ func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int) (too
 	// 进程被杀后给 I/O 泵最多 3s 收尾，避免 Wait 永久挂起
 	cmd.WaitDelay = 3 * time.Second
 
+	// 过程推送（0.0.07）：每 500ms 把已捕获输出推给界面一次（变化才推）——
+	// 长命令几分钟黑盒 → 卡片随过程增长。模型上下文不受影响：只在命令结束时
+	// 收到一次最终结果（保持头加尾截断）。取消/超时后已推送的部分自然保留。
+	stop := make(chan struct{})
+	pumpDone := make(chan struct{})
+	go func() {
+		defer close(pumpDone)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		last := ""
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				s := strings.TrimRight(buf.String(), "\n")
+				if s != "" && s != last {
+					last = s
+					t.pushProgress(s)
+				}
+			}
+		}
+	}()
 	err := cmd.Run()
+	close(stop)
+	<-pumpDone
 
 	out := buf.String()
 	switch {

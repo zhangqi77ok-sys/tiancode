@@ -52,6 +52,13 @@ type ToolEvent struct {
 	// CallID 标识一次工具调用（0.0.06）：running 与终态事件同 ID——前端把
 	// 终态更新到同一张卡上（卡随事件增长），而不是插一张新卡。
 	CallID string
+	// 撤销快照（0.0.07，仅供界面与后端恢复用——**绝不进模型上下文**）：
+	// HasUndo 时前端可提供"恢复写入前"；UndoContent 故意不透传给前端——
+	// 旧全文只留在账本里，恢复走后端（比对哈希防覆盖用户改动）。
+	HasUndo    bool
+	UndoPath   string
+	UndoExists bool
+	UndoNote   string
 }
 
 // TodoItem 是任务清单的单项。

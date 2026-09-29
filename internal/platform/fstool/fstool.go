@@ -8,18 +8,20 @@
 package fstool
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
-	"unicode/utf8"
 
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/atomicfile"
@@ -32,10 +34,18 @@ const fsTimeout = 30 * time.Second
 // Tool 是工作区受控文件工具。
 type Tool struct {
 	root string // 工作区绝对路径，所有路径必须落在其内
+
+	// lastRead 记录每个路径**最近一次成功 read 是否覆盖全文**（0.0.07 write 门卫）：
+	// 已存在的文件只有整读过才允许 write 整体替换——模型只读片段再 write 会把
+	// 未读的后半段静默丢掉。记录只活在当前进程、当前会话的实例里（会话级 fs
+	// 工具各自一份，0.0.36 R1），重启即失效，失效就拒绝覆盖——宁可让模型多读一次。
+	// 绝不写进任何送给模型的文件。
+	mu       sync.Mutex
+	lastRead map[string]bool
 }
 
 // New 构造工具，root 为工作区绝对路径。
-func New(root string) *Tool { return &Tool{root: root} }
+func New(root string) *Tool { return &Tool{root: root, lastRead: map[string]bool{}} }
 
 // Root 返回工作区根路径（测试与审计用）。
 func (t *Tool) Root() string { return t.root }
@@ -44,8 +54,11 @@ func (t *Tool) Root() string { return t.root }
 func (t *Tool) Name() string { return "fs" }
 
 // Description 实现工具端口。
+// 行号纪律（0.0.07）：read 输出带 "行号|正文" 前缀——replace 的 target 必须是
+// 文件**原文**，绝不能把行号前缀复制进去（否则永远零匹配）。
 func (t *Tool) Description() string {
-	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）"
+	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
+		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。
@@ -56,11 +69,11 @@ func (t *Tool) Schema() json.RawMessage {
     "action": {"type": "string", "enum": ["read", "write", "replace", "list", "tree"]},
     "path": {"type": "string", "description": "相对工作区的路径"},
     "content": {"type": "string", "description": "write 时的完整文件内容"},
-    "target": {"type": "string", "description": "replace 时的精确目标文本"},
+    "target": {"type": "string", "description": "replace 时的精确目标文本（文件原文，不含 read 输出的行号前缀）"},
     "replacement": {"type": "string", "description": "replace 时的替换文本"},
     "allow_multiple": {"type": "boolean", "description": "replace 多处匹配时是否全部替换（默认 false）"},
-    "offset": {"type": "integer", "description": "read 时的起始字节偏移（大文件分段读取）"},
-    "length": {"type": "integer", "description": "read 时的读取字节数（默认到文件尾，单次上限 10MB）"}
+    "start_line": {"type": "integer", "description": "read 时的起始行（1 起；缺省 1）。大文件分段读取用行号，绝不按字节切（多字节字符安全）"},
+    "line_count": {"type": "integer", "description": "read 时的读取行数（缺省到文件尾）"}
   },
   "required": ["action", "path"]
 }`)
@@ -78,8 +91,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		Target        string `json:"target"`
 		Replacement   string `json:"replacement"`
 		AllowMultiple bool   `json:"allow_multiple"`
-		Offset        int64  `json:"offset"`
-		Length        int64  `json:"length"`
+		StartLine     int64  `json:"start_line"`
+		LineCount     int64  `json:"line_count"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return bizErrf("invalid arguments: %v", err), nil
@@ -110,7 +123,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 
 	switch args.Action {
 	case "read":
-		return t.read(args.Path, args.Offset, args.Length)
+		return t.read(args.Path, args.StartLine, args.LineCount)
 	case "write":
 		return t.write(ctx, args.Path, args.Content)
 	case "replace":
@@ -169,11 +182,13 @@ const (
 	maxWriteBytes = 32 << 20
 )
 
-// read 读取文件（支持 offset/length 分段）。超限语义（0.2.36 审计 R3）：
-// 整读超过硬顶时**拒绝**并给出分段读取的合法出路——不把模型指去 shell
-// 绕开上限（读取上限必须对模型是可满足的约束，而不是可规避的建议）。
-// 分片按 UTF-8 边界回退（与摘要/日志截断同一纪律，绝不切出非法 UTF-8）。
-func (t *Tool) read(path string, offset, length int64) (tools.ToolResult, error) {
+// read 读取文件（0.0.07 起按**行**分段，字节 offset 已废除——按字节切会截断
+// UTF-8 多字节字符，行边界天然安全）。正文带 "行号|正文" 前缀（行号 1 起）。
+// 超限语义（0.2.36 审计 R3）保持：整读（未给 start_line/line_count）超过硬顶时
+// **拒绝**并给出按行分段的合法出路；分段用流式扫描（大文件不整份进内存）。
+// 整读（start_line ≤ 1、未给 line_count、无预算截断、扫到文件尾）会把该路径
+// 标记为"本会话整读过"——write 覆盖已存在文件的唯一凭证；片段读置回 false。
+func (t *Tool) read(path string, startLine, lineCount int64) (tools.ToolResult, error) {
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
@@ -182,70 +197,121 @@ func (t *Tool) read(path string, offset, length int64) (tools.ToolResult, error)
 	if err != nil {
 		return bizErrf("read failed: %v", err), nil
 	}
-	size := info.Size()
-
-	if offset == 0 && length == 0 {
-		// 整读路径
-		if size > maxReadBytes {
-			return bizErrf("file too large (%d bytes > %d)：请用 offset/length 分段读取（如 {\"action\":\"read\",\"path\":%q,\"offset\":0,\"length\":%d}）",
-				size, maxReadBytes, path, maxReadBytes), nil
-		}
-		data, err := os.ReadFile(full)
-		if err != nil {
-			return bizErrf("read failed: %v", err), nil
-		}
-		return tools.ToolResult{Content: string(data)}, nil
+	// 归一化参数：缺省 = 整读；非法值显式拒绝
+	if startLine < 0 || lineCount < 0 {
+		return bizErrf("start_line/line_count 必须非负"), nil
+	}
+	if startLine == 0 {
+		startLine = 1
+	}
+	wholeFile := startLine == 1 && lineCount == 0
+	if wholeFile && info.Size() > maxReadBytes {
+		return bizErrf("file too large (%d bytes > %d)：请用 start_line/line_count 按行分段读取（如 {\"action\":\"read\",\"path\":%q,\"start_line\":1,\"line_count\":2000}）",
+			info.Size(), maxReadBytes, path), nil
 	}
 
-	// 分段读取路径
-	if offset < 0 || length < 0 {
-		return bizErrf("offset/length 必须非负"), nil
-	}
-	if length == 0 || length > maxReadBytes {
-		length = maxReadBytes
-	}
-	if offset >= size {
-		return bizErrf("offset %d 超出文件大小 %d", offset, size), nil
-	}
+	// 流式逐行扫描：collect 收集 [startLine, startLine+wanted) 内的行（字节预算
+	// 内），total 统计总行数——大文件也不整份进内存，多字节字符按整行返回。
 	f, err := os.Open(full)
 	if err != nil {
 		return bizErrf("read failed: %v", err), nil
 	}
 	defer f.Close()
-	buf := make([]byte, length)
-	n, readErr := f.ReadAt(buf, offset)
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return bizErrf("read failed: %v", readErr), nil
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), maxScanLineBytes)
+
+	wanted := int64(-1) // 无限
+	if lineCount > 0 {
+		wanted = lineCount
 	}
-	chunk := buf[:n]
-	for len(chunk) > 0 && !utf8.Valid(chunk) {
-		chunk = chunk[:len(chunk)-1]
+	var b strings.Builder
+	var collected, total, sum int64
+	truncatedByBudget := false
+	beyondEOF := true // startLine 落在文件行数之外时置位
+	for sc.Scan() {
+		total++
+		line := strings.TrimSuffix(sc.Text(), "\r")
+		switch {
+		case total < startLine:
+			// 未到起始行：仅计数
+		case wanted >= 0 && collected >= wanted:
+			// 已收满 lineCount：仅计数（用于"共 N 行"）
+		default:
+			if sum+int64(len(line))+1 > maxReadBytes {
+				truncatedByBudget = true // 整行收回：绝不切出半个字符
+				continue                 // 继续扫描只为统计总行数
+			}
+			beyondEOF = false
+			fmt.Fprintf(&b, "%d|%s\n", total, line)
+			collected++
+			sum += int64(len(line)) + 1
+		}
 	}
-	return tools.ToolResult{Content: fmt.Sprintf("[offset=%d 读取 %d 字节 / 共 %d 字节]\n%s", offset, len(chunk), size, string(chunk))}, nil
+	if err := sc.Err(); err != nil {
+		return bizErrf("read failed: %v", err), nil
+	}
+	if startLine > total && total > 0 {
+		return bizErrf("start_line %d 超出文件行数 %d", startLine, total), nil
+	}
+	if beyondEOF && collected == 0 && total > 0 {
+		return bizErrf("起始行内容超过读取上限（或单行缓冲 %d 字节）：无法按行读取", maxScanLineBytes), nil
+	}
+
+	// 整读判定与标记：从第 1 行、未给行数、无预算截断、扫到文件尾
+	fullRead := wholeFile && !truncatedByBudget
+	t.mu.Lock()
+	t.lastRead[full] = fullRead
+	t.mu.Unlock()
+
+	out := strings.TrimRight(b.String(), "\n")
+	if !fullRead {
+		note := ""
+		if truncatedByBudget {
+			note = "，按读取上限截断"
+		}
+		out = fmt.Sprintf("[start_line=%d 读取 %d 行 / 共 %d 行%s]\n", startLine, collected, total, note) + out
+	}
+	return tools.ToolResult{Content: out}, nil
 }
 
+// maxScanLineBytes 是按行读取的单行缓冲上限（超过 = 行太长无法按行处理，
+// 显式报错而不是悄悄截断）。1MB 覆盖一切正常源码/文本。
+const maxScanLineBytes = 1 << 20
+
+// write 整文件写入。0.0.07 两道新闸：
+//   - 整读门卫：目标**已存在**时，仅当本会话最近一次成功 read 覆盖全文才放行——
+//     模型只读片段（offset 时代）或分段读了前半就 write，后半段会被静默丢掉。
+//     拒绝时写明出路（replace / 先整读）。目标不存在 = 新建，不需要先读。
+//   - 撤销快照：写入成功后把旧全文放进 Undo（只给界面/后端恢复用，不进模型
+//     上下文）；旧内容超上限时放弃快照并注明"无法恢复"——绝不为恢复多读一份。
 func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResult, error) {
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
 	}
-	// 读旧内容只为生成 diff（0.2.37 审计）：先 Stat 看大小——旧文件超过写入硬顶
-	// 时**不打开全文**（参数很小、文件很大时整份读入会把桌面进程打满），跳过 diff
-	// 直接写。注意不能拿空 old 凑数：diffText 会把它当"新文件"生成误导性预览。
-	// 文件不存在＝新建（正常，old 为空是真实状态），其他 Stat 失败则显式报错不静默。
+	// 整读门卫（0.0.07）：已存在的文件必须本会话整读过
 	var old string
 	haveDiff := false
+	undoExists := false
 	info, statErr := os.Stat(full)
 	switch {
-	case statErr == nil && info.Size() > maxWriteBytes:
-		// 超限：跳过 diff，不做任何预读
 	case statErr == nil:
-		if data, readErr := os.ReadFile(full); readErr == nil {
-			old = string(data)
-			haveDiff = true
-		} else {
-			return bizErrf("read before write failed: %v", readErr), nil
+		t.mu.Lock()
+		fullRead := t.lastRead[full]
+		t.mu.Unlock()
+		if !fullRead {
+			return bizErrf("refusing to overwrite %s: 本会话没有整读过这个文件（只读片段就整体覆盖会丢掉未读内容）。已存在的文件请用 replace；若确要整文件重写，先不带 start_line/line_count 整读一遍再 write", path), nil
 		}
+		undoExists = true
+		if info.Size() <= maxWriteBytes {
+			if data, readErr := os.ReadFile(full); readErr == nil {
+				old = string(data)
+				haveDiff = true
+			} else {
+				return bizErrf("read before write failed: %v", readErr), nil
+			}
+		}
+		// 超限：跳过 diff 与撤销快照（不为恢复多读一份超大文件）
 	case os.IsNotExist(statErr):
 		// 新建：old 为空是真实状态，保留 "+全文" 新建 diff（既有行为）
 		haveDiff = true
@@ -255,6 +321,11 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
 		return bizErrf("write failed: %v", err), nil
 	}
+	// 写入成功：模型刚给全了内容，视为"已知全文"（后续 write 无需重读）
+	t.mu.Lock()
+	t.lastRead[full] = true
+	t.mu.Unlock()
+
 	res := tools.ToolResult{
 		Content: fmt.Sprintf("written %s (%d bytes)", path, len(content)),
 	}
@@ -262,7 +333,20 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 		res.Diff = diffText(path, old, content)
 		res.Content = withShortDiff(res.Content, path, res.Diff)
 	}
+	if !undoExists {
+		res.Undo = &tools.UndoData{Path: path, OldExists: false, OldContent: "", NewSHA256: sha256Hex([]byte(content))}
+	} else if haveDiff {
+		res.Undo = &tools.UndoData{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(content))}
+	} else {
+		res.UndoNote = "这次无法恢复：写入前的内容超过上限，未保存恢复数据"
+	}
 	return res, nil
+}
+
+// sha256Hex 计算内容哈希（恢复前的"被人改过"检测用）。
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
@@ -287,24 +371,121 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	if err != nil {
 		return bizErrf("read before replace failed: %v", err), nil
 	}
-	count := strings.Count(string(data), target)
+	old := string(data)
+	count := strings.Count(old, target)
 	if count == 0 {
-		// C-FS-3：零匹配报错，文件零修改
-		return bizErrf("target not found (0 matches): file unchanged"), nil
+		// C-FS-3：零匹配报错，文件零修改。0.0.07：不再只说 "not found"——
+		// 在文件里找与 target 首行最相近的行，返回该行前后各 2 行（带行号），
+		// 模型拿真实上下文修 target；确实没有相近行就明说。
+		msg := "target not found (0 matches): file unchanged"
+		if near := nearbyLines(old, target); near != "" {
+			msg += "\nnearest match context:\n" + near
+		} else {
+			msg += "\nno similar line found in file"
+		}
+		return bizErrf("%s", msg), nil
 	}
 	if count > 1 && !allowMultiple {
 		// C-FS-2：多处匹配默认拒绝，防误伤
 		return bizErrf("target matches %d locations; refusing ambiguous replace (set allow_multiple to replace all)", count), nil
 	}
-	updated := strings.ReplaceAll(string(data), target, replacement)
+	updated := strings.ReplaceAll(old, target, replacement)
 	if err := atomicfile.WriteFileAtomic(full, []byte(updated), 0o600); err != nil {
 		return bizErrf("replace write failed: %v", err), nil
 	}
-	fullDiff := diffText(path, string(data), updated)
+	// 文件已被 replace 改变：此前的"整读过"标记失效（后续 write 需重新整读）
+	t.mu.Lock()
+	t.lastRead[full] = false
+	t.mu.Unlock()
+	fullDiff := diffText(path, old, updated)
 	return tools.ToolResult{
 		Content: withShortDiff(fmt.Sprintf("replaced %d occurrence(s) in %s", count, path), path, fullDiff),
 		Diff:    fullDiff,
+		Undo:    &tools.UndoData{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(updated))},
 	}, nil
+}
+
+// splitLines 按行拆分并去掉行尾 \r（CRLF 文件的行处理保持干净）；
+// 尾部换行产生的空尾行不算一行（文件以 \n 结尾是常态，不是第 N+1 空行）。
+func splitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	raw := strings.Split(s, "\n")
+	out := make([]string, len(raw))
+	for i, ln := range raw {
+		out[i] = strings.TrimSuffix(ln, "\r")
+	}
+	if n := len(out); n > 0 && out[n-1] == "" {
+		out = out[:n-1]
+	}
+	return out
+}
+
+// nearbyLines 在文件内容里找与 target 首行最相近的行，返回该行前后各 2 行
+// （带 "行号|" 前缀）。相近判定：与 target 首行（截 64 字节探针）的最长公共
+// 子串 ≥ 探针长的 1/4 且 ≥4 字节——纯词法事实，不做任何语义猜测。
+// 找不到返回空串（调用方明说"没有相近行"）。只读，不改文件。
+func nearbyLines(fileContent, target string) string {
+	first := target
+	if i := strings.IndexByte(target, '\n'); i >= 0 {
+		first = target[:i]
+	}
+	first = strings.TrimRight(first, "\r")
+	const probeMax = 64
+	if len(first) > probeMax {
+		first = first[:probeMax]
+	}
+	if first == "" {
+		return ""
+	}
+	lines := splitLines(fileContent)
+	best, bestScore := -1, 0
+	for i, ln := range lines {
+		if s := commonRunLen(ln, first); s > bestScore {
+			bestScore, best = s, i
+		}
+	}
+	if best < 0 || bestScore < 4 || bestScore*4 < len(first) {
+		return ""
+	}
+	lo := best - 2
+	if lo < 0 {
+		lo = 0
+	}
+	hi := best + 3
+	if hi > len(lines) {
+		hi = len(lines)
+	}
+	var b strings.Builder
+	for i := lo; i < hi; i++ {
+		fmt.Fprintf(&b, "%d|%s\n", i+1, lines[i])
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// commonRunLen 返回 a 与 b 的最长公共子串长度（两串都截 256 字节，成本有界；
+// 只用于错误提示的邻近行判定，不需要精确算法）。
+func commonRunLen(a, b string) int {
+	if len(a) > 256 {
+		a = a[:256]
+	}
+	if len(b) > 256 {
+		b = b[:256]
+	}
+	best := 0
+	for i := 0; i < len(a); i++ {
+		for j := 0; j < len(b); j++ {
+			k := 0
+			for i+k < len(a) && j+k < len(b) && a[i+k] == b[j+k] {
+				k++
+			}
+			if k > best {
+				best = k
+			}
+		}
+	}
+	return best
 }
 
 // diffContentLimit 是模型可见的短 diff 字节预算（模型侧已有 4096 的工具结果

@@ -148,6 +148,12 @@ func (b *Bind) ResolveAsk(id string, answer string) error {
 	return b.chat.ResolveAsk(id, answer)
 }
 
+// RestoreToolWrite 恢复一次 write/replace 写入前的内容（0.0.07：工具卡"恢复写入前"）。
+// 恢复前比对写入后内容哈希——文件被人改过时拒绝并说明；成功返回可显示的说明文案。
+func (b *Bind) RestoreToolWrite(sessionID, callID string) (string, error) {
+	return b.chat.RestoreToolWrite(sessionID, callID)
+}
+
 // SaveTextFile 弹系统保存对话框并写入文本（0.0.06：导出会话"另存为文件"）。
 // 为什么放后端：原生保存对话框依赖 Wails 应用上下文；WebView 内的下载行为不可控。
 // 用户取消返回空串（前端据此不提示成功）；写盘失败显式报错。
@@ -243,7 +249,7 @@ func (b *Bind) Send(sessionID, text string) error {
 		}
 		if c.ToolEvent != nil {
 			// 工具卡片数据（M3）：执行动态实时推送，前端渲染独立卡片
-			wruntime.EventsEmit(ctx, "chat:tool", map[string]string{
+			wruntime.EventsEmit(ctx, "chat:tool", map[string]any{
 				"sessionID": sessionID,
 				"name":      c.ToolEvent.Name,
 				"status":    c.ToolEvent.Status,
@@ -255,6 +261,10 @@ func (b *Bind) Send(sessionID, text string) error {
 				"op":    c.ToolEvent.Op,
 				// CallID（0.0.06）：running 与终态配对——前端更新同一张卡
 				"callID": c.ToolEvent.CallID,
+				// 撤销元数据（0.0.07）：旧全文不进前端——恢复走 RestoreToolWrite
+				"hasUndo":  c.ToolEvent.HasUndo,
+				"undoPath": c.ToolEvent.UndoPath,
+				"undoNote": c.ToolEvent.UndoNote,
 			})
 		}
 		if c.Todo != nil {

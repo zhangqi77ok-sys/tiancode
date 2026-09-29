@@ -254,12 +254,23 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				Name: call.Name, Status: "running", Summary: "执行中…", CallID: call.ID,
 			}})
 			result := l.dispatchTool(ctx, call, ledger, forward)
-			if _, err := ledger.Append(session.EventToolResult, map[string]any{
+			// 账本 payload：模型可见字段之外，一并落 UI 专用数据——语义标签/diff
+			// （0.0.06）与撤销快照（0.0.07）。undo 携带旧全文：重启后仍能"恢复
+			// 写入前"；它只被后端恢复接口读取，derive 投影不解析（不进模型上下文）。
+			payload := map[string]any{
 				"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
-				// UI 语义标签与结构化 diff 一并落账：Replay 恢复的历史工具卡才有
-				// "install.go（修改）+3 -1"与变更预览（此前 diff 只在实时事件里，重启即丢）
 				"title": result.Title, "op": result.Op, "diff": result.Diff,
-			}); err != nil {
+			}
+			if result.Undo != nil {
+				payload["undo"] = map[string]any{
+					"path": result.Undo.Path, "old_exists": result.Undo.OldExists,
+					"old_content": result.Undo.OldContent, "new_sha256": result.Undo.NewSHA256,
+				}
+			}
+			if result.UndoNote != "" {
+				payload["undo_note"] = result.UndoNote
+			}
+			if _, err := ledger.Append(session.EventToolResult, payload); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool result: %w", err)})
 				return
 			}
@@ -281,9 +292,16 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				// 走 truncateToBytes：按字节切会把中文切成非法 UTF-8（0.2.35 审计#8）
 				summary = truncateToBytes(summary, 200) + "…"
 			}
+			// 终态事件单帧携带全部 UI 数据：内容/摘要/diff/语义标签/撤销元数据
+			//（旧全文本身不进事件，只留在账本——恢复走后端接口）
+			undoPath, undoExists := "", false
+			if result.Undo != nil {
+				undoPath, undoExists = result.Undo.Path, result.Undo.OldExists
+			}
 			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
 				Name: call.Name, Status: status, Summary: summary, Content: content, Diff: result.Diff,
 				Title: result.Title, Op: result.Op, CallID: call.ID,
+				HasUndo: result.Undo != nil, UndoPath: undoPath, UndoExists: undoExists, UndoNote: result.UndoNote,
 			}}) {
 				return
 			}
@@ -324,12 +342,27 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 }
 
 // dispatchTool 工具执行分派：ask_user/todo 由内核拦截（交互语义），其余走审批闸门（默认关，ADR-0007）。
+// 0.0.07：实现 ProgressSink 的工具（shell）在执行中把已捕获输出推给界面——
+// forward 携带同一 CallID 的 running 事件，前端更新同一张卡（不新增）。
 func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *session.Ledger, forward func(llm.StreamChunk) bool) tools.ToolResult {
 	if call.Name == askToolName {
 		return l.runAsk(ctx, call)
 	}
 	if call.Name == todoToolName {
 		return runTodo(call, ledger, forward)
+	}
+	if l.registry != nil {
+		if t, ok := l.registry.Get(call.Name); ok {
+			if ps, isSink := t.(tools.ProgressSink); isSink {
+				ps.SetProgress(func(partial string) {
+					_ = forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+						Name: call.Name, Status: "running", Summary: "执行中…",
+						Content: partial, CallID: call.ID,
+					}})
+				})
+				defer ps.SetProgress(nil) // 换步/结束必须清除，绝不向下一张卡泄过程
+			}
+		}
 	}
 	return l.execToolWithApproval(ctx, call)
 }
