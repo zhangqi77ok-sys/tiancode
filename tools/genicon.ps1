@@ -1,23 +1,39 @@
 # 一次性工具：用 GDI+ 生成 tiancode 应用图标（标准 ICO 格式，BMP 帧）。
-# 设计与 UI 主色一致（紫罗兰渐变）+ 白色 T 字。
+# 样式：亮紫圆角方块（squircle 风格，四周透明）+ 白色粗 T，居中。
 Add-Type -AssemblyName System.Drawing
 
 $size = 256
 $bmp = New-Object System.Drawing.Bitmap($size, $size)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+$g.Clear([System.Drawing.Color]::Transparent)   # 形状之外透明
 
-# 背景：左上 #5f43e0 → 右下 #5138c6（UI 主色系）
-$rect = New-Object System.Drawing.Rectangle(0, 0, $size, $size)
-$c1 = [System.Drawing.Color]::FromArgb(255, 0x5f, 0x43, 0xe0)
-$c2 = [System.Drawing.Color]::FromArgb(255, 0x51, 0x38, 0xc6)
-$brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $c1, $c2, 45.0)
-$g.FillRectangle($brush, $rect)
+function RoundRect([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
+  $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $d = $r * 2
+  $path.AddArc($x, $y, $d, $d, 180, 90)
+  $path.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
+  $path.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90)
+  $path.AddArc($x, $y + $h - $d, $d, $d, 90, 90)
+  $path.CloseFigure()
+  return $path
+}
 
-# 白色 "T"：横杠 + 竖杠（居中）
+# 图标形状：圆角方块（inset 10，圆角 64——接近 iOS squircle 观感）
+$inset = 10
+$shape = RoundRect $inset $inset ($size - 2 * $inset) ($size - 2 * $inset) 64
+
+# 亮紫渐变（#6C4FF7 → #5B3FE8，轻微垂直渐变）
+$c1 = [System.Drawing.Color]::FromArgb(255, 0x6c, 0x4f, 0xf7)
+$c2 = [System.Drawing.Color]::FromArgb(255, 0x5b, 0x3f, 0xe8)
+$bounds = [System.Drawing.RectangleF]::FromLTRB($inset, $inset, $size - $inset, $size - $inset)
+$grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush($bounds, $c1, $c2, 90.0)
+$g.FillPath($grad, $shape)
+
+# 白色粗 "T"：横杠 + 竖杠，整体居中（形状中心 128）
 $white = [System.Drawing.Brushes]::White
-$g.FillRectangle($white, 48, 74, 160, 34)    # 横杠
-$g.FillRectangle($white, 111, 74, 34, 132)   # 竖杠
+$g.FillRectangle($white, 62, 72, 132, 40)    # 横杠
+$g.FillRectangle($white, 109, 72, 38, 124)   # 竖杠
 $g.Dispose()
 
 $hIcon = $bmp.GetHicon()
