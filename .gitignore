@@ -78,3 +78,8 @@ cmd/installer/payload/*
 
 # agent 本地工作状态（IDE 侧）
 .codebuddy/
+
+# 应用图标是**源资源**而非构建产物（0.2.34）：它是 rsrc_windows_amd64.syso 的
+# 生成输入（tools/genicon.ps1 的输出），随仓库入库保证新克隆可重建 exe 图标。
+# 父目录 /build/ 被锚定排除，取反规则必须在此（后匹配者优先）。
+!/build/windows/icon.ico
