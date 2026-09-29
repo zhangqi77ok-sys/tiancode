@@ -17,12 +17,14 @@ export function useAutoScroll(el: Ref<HTMLElement | null>) {
     anchored.value = node.scrollHeight - node.scrollTop - node.clientHeight < NEAR_BOTTOM_PX
   }
 
-  // force=true 供"回到底部"按钮使用：无视锚定直接滚
+  // force=true 供"回到底部"按钮使用：无视锚定直接滚。
+  // scrollTo 用可选调用：滚动是装饰性能力，宿主环境缺实现（DOM 仿真/嵌入式
+  // WebView 变体）时静默降级，绝不让异常打断消息渲染链路。
   async function toBottom(force = false) {
     if (!force && !anchored.value) return
     await nextTick()
     const node = el.value
-    node?.scrollTo({ top: node.scrollHeight })
+    node?.scrollTo?.({ top: node.scrollHeight })
   }
 
   return { anchored, onScroll, toBottom }

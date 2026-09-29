@@ -112,11 +112,20 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ensureConvo 是显式写路径（发送 / 事件回调 / 选中会话）：确保条目存在。
+  //
+  // 关键（0.2.31 实机根因）：首次创建时必须 set 之后**重新 get** 再返回——
+  // reactive(Map).get 返回的是 value 的响应式代理，而 set 进去的是原始对象；
+  // 直接返回原始对象会让"首次创建后立即写入"（冷启动 Replay 赋值历史）绕过
+  // 响应式系统：computed 不触发，视图停在空态——用户看到的就是"打开软件直接
+  // 对话没显示，切换一下会话（触发重算）才出来"。
   function ensureConvo(id: string): Conversation {
-    let c = convos.get(id)
+    const existing = convos.get(id)
+    if (existing) return existing
+    convos.set(id, newConversation())
+    const c = convos.get(id)
     if (!c) {
-      c = newConversation()
-      convos.set(id, c)
+      // 理论不可达（刚 set）；兜底成不崩溃的空对象，绝不返回 undefined
+      return newConversation()
     }
     return c
   }
@@ -703,6 +712,11 @@ export const useChatStore = defineStore('chat', () => {
 
   async function init() {
     await loadSessions()
+    // 抢跑保护（0.2.31 实机："打开软件就直接进行对话没显示"）：init 的 IPC 往返
+    // 期间用户可能已经在输入并发送（send 里已领会话 ID、建好视图）——此时
+    // 绝不把视图抢到默认会话：用户正在进行的对话必须留在眼前。
+    // 没有抢跑时行为不变（选中最近会话 / 无会话则草稿）。
+    if (sessionId.value) return
     if (sessions.value.length) await selectSession(sessions.value[0])
     else await newSession()
   }
