@@ -30,12 +30,91 @@ type Tool struct {
 	Description string `json:"description"`
 }
 
+// ToolError 是 MCP 工具自身的业务错误（服务器正常响应 isError=true）。
+// 与连接层错误区分：连接层失败要摘除会话重连（0.2.27：一次中断后坏连接
+// 永久 "closed pipe"），业务错误不需要。
+type ToolError struct{ Message string }
+
+func (e *ToolError) Error() string { return e.Message }
+
 // Client 在一条双向流上说 MCP。
 type Client struct {
 	rw  io.ReadWriteCloser
 	r   *bufio.Reader
 	mu  sync.Mutex
 	seq int
+
+	closeOnce sync.Once
+	closeErr  error
+	// stderr 是子进程 stderr 的有界尾部（诊断用：启动/握手失败时只看到 "EOF"
+	// 无从排查——0.2.26 实机反馈）
+	stderr *tailBuffer
+}
+
+// tailBuffer 保留最近 max 字节（并发安全）。
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.TrimSpace(string(t.buf))
+}
+
+// StderrTail 返回子进程 stderr 的最近输出（≤4KB）；无输出返回空串。
+func (c *Client) StderrTail() string {
+	if c.stderr == nil {
+		return ""
+	}
+	return c.stderr.String()
+}
+
+// splitArgs 切分命令行参数：支持引号包裹（`"C:\Program Files\x"` 不再被空白切碎）。
+// 不做反斜杠转义——Windows 路径里的 \ 必须原样保留。未闭合引号按"到结尾"处理
+// （宽松：配置总要能被尝试）。
+func splitArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\'':
+			if inQuote && r != quoteChar {
+				cur.WriteRune(r)
+				continue
+			}
+			inQuote = !inQuote
+			if inQuote {
+				quoteChar = r
+			}
+		case (r == ' ' || r == '\t' || r == '\n') && !inQuote:
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return out
 }
 
 // New 包装已有的双向连接（测试注入）。
@@ -56,7 +135,7 @@ func DialStdio(command, args, env string) (*Client, error) {
 			}
 		}
 	}
-	cmd := exec.Command(command, strings.Fields(args)...)
+	cmd := exec.Command(command, splitArgs(args)...)
 	hideConsole(cmd)
 	cmd.Env = os.Environ()
 	for _, line := range strings.Split(env, "\n") {
@@ -74,20 +153,36 @@ func DialStdio(command, args, env string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = io.Discard
+	// stderr 收进有界尾部：启动/握手失败时把子进程的真实报错带给用户
+	// （此前 io.Discard 全丢——用户只看到 "EOF"，无从排查）
+	tail := &tailBuffer{max: 4096}
+	cmd.Stderr = tail
 	if err := cmd.Start(); err != nil {
+		// 启动失败：显式关闭已创建的管道（否则泄漏句柄）
+		closeErrs := []error{}
+		if e := stdin.Close(); e != nil {
+			closeErrs = append(closeErrs, e)
+		}
+		if e := stdout.Close(); e != nil {
+			closeErrs = append(closeErrs, e)
+		}
+		if len(closeErrs) > 0 {
+			return nil, fmt.Errorf("mcp: 启动 %s 失败：%w（关闭管道：%v）", command, err, errors.Join(closeErrs...))
+		}
 		return nil, fmt.Errorf("mcp: 启动 %s 失败：%w", command, err)
 	}
 	pr, pw := io.Pipe()
 	go func() {
+		// stdout → pipe：结束语义由 CloseWithError 传递（nil 等价 Close），
+		// 读端据此感知输出结束；读端已关闭时的返回值无需检查
 		_, copyErr := io.Copy(pw, stdout)
-		closeErr := pw.Close()
-		if copyErr != nil || closeErr != nil {
-			return
-		}
+		pw.CloseWithError(copyErr)
 	}()
-	go func() { _ = cmd.Wait() }()
-	return New(stdioRW{Reader: pr, WriteCloser: stdin, cmd: cmd}), nil
+	// 回收进程资源（避免僵尸）；退出状态经 stdout EOF 传给读端，不参与控制流
+	go func() { cmd.Wait() }()
+	cl := New(stdioRW{Reader: pr, WriteCloser: stdin, cmd: cmd})
+	cl.stderr = tail
+	return cl, nil
 }
 
 type stdioRW struct {
@@ -178,16 +273,21 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (s
 		text = string(raw)
 	}
 	if payload.IsError {
-		return "", fmt.Errorf("%s", text)
+		return "", &ToolError{Message: text}
 	}
 	return text, nil
 }
 
+// Close 关闭连接（幂等）：取消路径与上层清理可能重复调用，
+// 重复 kill 的报错会被误判成"关闭失败"（0.2.27）。
 func (c *Client) Close() error {
-	if c.rw == nil {
-		return nil
-	}
-	return c.rw.Close()
+	c.closeOnce.Do(func() {
+		if c.rw == nil {
+			return
+		}
+		c.closeErr = c.rw.Close()
+	})
+	return c.closeErr
 }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -236,8 +336,23 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 	if err != nil {
 		return err
 	}
-	_ = ctx
-	return c.write(body)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// 写入可能因对端不消费 stdin 而阻塞（如 npx 首次下载中）——goroutine + ctx 逃生，
+	// 绝不无限挂住调用方（0.2.26：notify 整体忽略 ctx，一轮对话可被永久卡死）。
+	// ctx 到期后 Close 连接：阻塞中的写会立即失败返回，不会与后续帧交错。
+	done := make(chan error, 1)
+	go func() { done <- c.write(body) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		if closeErr := c.Close(); closeErr != nil {
+			return fmt.Errorf("%w（关闭：%v）", ctx.Err(), closeErr)
+		}
+		return ctx.Err()
+	}
 }
 
 func (c *Client) write(body []byte) error {

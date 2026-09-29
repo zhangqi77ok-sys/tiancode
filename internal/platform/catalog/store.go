@@ -61,6 +61,10 @@ func New(path string) *Store {
 func (s *Store) Load() (File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
+
+func (s *Store) loadLocked() (File, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -85,6 +89,10 @@ func (s *Store) Load() (File, error) {
 func (s *Store) Save(f File) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked(f)
+}
+
+func (s *Store) saveLocked(f File) error {
 	if f.MCP == nil {
 		f.MCP = []Server{}
 	}
@@ -96,4 +104,21 @@ func (s *Store) Save(f File) error {
 		return err
 	}
 	return atomicfile.WriteFileAtomic(s.path, append(data, '\n'), 0o600)
+}
+
+// Update 在一次持锁内完成 Load → 修改 → Save（0.2.27）。
+// 为什么必须原子：界面保存与 AI（ext_manage）两条写路径各自的
+// Load→改→Save 并发时会互相覆盖（后写者把先写者的新增整表抹掉）。
+// mutate 返回错误则中止且不写盘（校验失败用它短路）。
+func (s *Store) Update(mutate func(*File) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	if err := mutate(&f); err != nil {
+		return err
+	}
+	return s.saveLocked(f)
 }

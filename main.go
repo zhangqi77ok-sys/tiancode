@@ -69,11 +69,21 @@ func main() {
 			}
 		},
 		OnShutdown: func(ctx context.Context) {
+			// 显式回收（MCP 子进程 / 账本句柄 / codex 监听）：wails.Run 异常返回或
+			// 启动失败的 os.Exit 路径上 defer 不执行——只靠 defer 会留下孤儿
+			// node 进程（Close 幂等，重复调用安全）
+			if err := chat.Close(); err != nil {
+				shell.LogLifecycle("shutdown close error: " + err.Error())
+			}
 			shell.LogLifecycle("shutdown")
 		},
 		Bind: []interface{}{bind},
 	})
 	if err != nil {
+		// os.Exit 跳过 defer：手动回收，避免孤儿 MCP 进程
+		if cerr := chat.Close(); cerr != nil {
+			shell.LogLifecycle("close after run error: " + cerr.Error())
+		}
 		shell.NotifyError("tiancode 运行错误", err.Error())
 		os.Exit(1)
 	}

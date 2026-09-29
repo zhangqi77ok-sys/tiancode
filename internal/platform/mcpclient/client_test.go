@@ -5,10 +5,31 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+// 参数切分：引号包裹的路径不再被空白切碎（0.2.26 实机：带空格的
+// Windows 路径一定坏——server-filesystem "C:\Program Files\x"）。
+func TestSplitArgs(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{`-y server-filesystem "C:\Program Files\proj"`, []string{"-y", "server-filesystem", `C:\Program Files\proj`}},
+		{`--config 'C:\My Dir\x.json'`, []string{"--config", `C:\My Dir\x.json`}},
+		{`a  b	c`, []string{"a", "b", "c"}},
+		{``, nil},
+		{`mix "unclosed`, []string{"mix", "unclosed"}}, // 未闭合引号：宽松到结尾
+	}
+	for _, c := range cases {
+		if got := splitArgs(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Fatalf("splitArgs(%q) = %#v, want %#v", c.in, got, c.want)
+		}
+	}
+}
 
 func TestClient_ListAndCall(t *testing.T) {
 	left, right := net.Pipe()

@@ -310,6 +310,10 @@ func (g *Gateway) terminal(ctx context.Context, out chan llm.StreamChunk, err er
 // （EndReason=0，违反"恰好一个终态"契约，CI 的取消测试当场抓到）。
 // 与 finishStopped 同一纪律：终态限时阻塞投递，宁可多等 500ms；
 // 消费方真的离开了，上层的 synthetic 终态兜底（C-APP-2）仍会收束 UI。
+//
+// 非终态块（0.2.27 修复）：只保留"投递 / 取消"两条路径，绝不限时丢弃——
+// agent 逐块 write-ahead 落账，丢一块就是账本永久缺字且无任何提示。
+// 消费方慢（如落盘被 AV 扫描拖住）只应表现为反压，不应丢数据。
 func (g *Gateway) emit(ctx context.Context, out chan llm.StreamChunk, c llm.StreamChunk, forwarded *bool) {
 	if c.EndReason != llm.EndNone {
 		select {
@@ -322,7 +326,6 @@ func (g *Gateway) emit(ctx context.Context, out chan llm.StreamChunk, c llm.Stre
 	select {
 	case out <- c:
 		*forwarded = true
-	case <-time.After(500 * time.Millisecond):
 	case <-ctx.Done():
 	}
 }

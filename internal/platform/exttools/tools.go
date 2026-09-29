@@ -8,6 +8,7 @@ package exttools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -199,7 +200,24 @@ func (t *MCPTool) callStdio(ctx context.Context, spec catalog.Server, tool strin
 	if err != nil {
 		return "", err
 	}
-	return c.Call(ctx, tool, args)
+	out, err := c.Call(ctx, tool, args)
+	if err == nil {
+		return out, nil
+	}
+	var terr *mcpclient.ToolError
+	if errors.As(err, &terr) {
+		return "", err // 工具业务错误（isError）：连接仍健康，不摘除
+	}
+	// 连接层失败：摘除并关闭——一次用户中断会经 readCtx 关闭连接，此后该客户端
+	// 永久 "closed pipe"（0.2.26 实机：不摘除只能重启应用恢复）
+	detail := err.Error()
+	if tail := c.StderrTail(); tail != "" {
+		detail += "（服务器 stderr：" + tail + "）"
+	}
+	if t.dropClient(spec.Name, c) {
+		return "", fmt.Errorf("%s（连接已失效，已重置：下次调用将重新拉起）", detail)
+	}
+	return "", errors.New(detail)
 }
 
 func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpclient.Client, error) {
@@ -221,8 +239,38 @@ func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpcli
 		}
 		return nil, err
 	}
-	t.hub.Store(spec.Name, c)
+	// LoadOrStore：多会话并行下两个会话同时首次调用同一 server 时，只允许一份实例
+	// 进 hub——抢占失败的实例立刻关闭，否则留下无主进程树（0.2.26 实机：
+	// 任务管理器里一串无主 node.exe）
+	if actual, loaded := t.hub.LoadOrStore(spec.Name, c); loaded {
+		if winner, ok := actual.(*mcpclient.Client); ok {
+			if closeErr := c.Close(); closeErr != nil {
+				return nil, fmt.Errorf("并发连接已有实例，关闭重复实例失败：%w", closeErr)
+			}
+			return winner, nil
+		}
+	}
 	return c, nil
+}
+
+// dropClient 摘除并关闭指定客户端（仅当 hub 中的当前实例就是它）。
+// 返回 true 表示已摘除（下次调用会重新拉起）。
+func (t *MCPTool) dropClient(name string, c *mcpclient.Client) bool {
+	v, ok := t.hub.LoadAndDelete(name)
+	if !ok {
+		return false
+	}
+	cur, ok := v.(*mcpclient.Client)
+	if !ok || cur != c {
+		// 不是同一个实例（已被替换）：放回，不误伤新实例
+		t.hub.Store(name, v)
+		return false
+	}
+	if err := c.Close(); err != nil {
+		// 已从 hub 摘除；关闭失败无处上报（调用方的错误消息链已表明连接失效）
+		return true
+	}
+	return true
 }
 
 // ProbeServer 连接单台 stdio 服务器并返回其公布的工具名（ext_manage 添加后的验证用）。
@@ -309,15 +357,19 @@ func (t *MCPTool) Probe(ctx context.Context) (map[string][]string, map[string]st
 	return names, errs
 }
 
-// Close 关掉已拉起的 MCP 进程。
-func (t *MCPTool) Close() {
+// Close 关掉已拉起的 MCP 进程。无论关闭成败都从 hub 摘除——留着一个关闭失败的
+// 客户端只会让后续调用持续报错（坏连接必须能被替换，0.2.26 实机）。
+// 返回首个关闭错误（由调用方决定可见方式，不静默）。
+func (t *MCPTool) Close() error {
+	var firstErr error
 	t.hub.Range(func(k, v any) bool {
 		if c, ok := v.(*mcpclient.Client); ok {
-			if err := c.Close(); err != nil {
-				return true
+			if err := c.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("关闭 MCP %v 失败：%w", k, err)
 			}
 		}
 		t.hub.Delete(k)
 		return true
 	})
+	return firstErr
 }

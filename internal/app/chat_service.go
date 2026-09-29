@@ -83,6 +83,10 @@ type ChatService struct {
 	skillTool  *exttools.SkillTool
 	mcpTool    *exttools.MCPTool
 	extManage  *exttools.ManageTool
+
+	// running 标记正在跑轮次的会话（0.2.27）：同一会话的并发 Send 会在一份账本上
+	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
+	running map[string]struct{}
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -130,6 +134,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 		ledgers:          make(map[string]*session.Ledger),
 		pendingApprovals: make(map[string]chan agent.Decision),
 		pendingAsks:      make(map[string]chan string),
+		running:          make(map[string]struct{}),
 	}
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
@@ -247,14 +252,21 @@ func (s *ChatService) Extensions() (catalog.File, error) {
 }
 
 // SaveExtensions 保存清单。下一轮对话会把启用项告诉模型。
+// 顺序：先写盘成功、再关闭旧 MCP 会话——写失败时旧会话保持可用（不留半初始化观感），
+// 关闭失败并入返回错误（不静默）。
 func (s *ChatService) SaveExtensions(f catalog.File) error {
 	if s.extensions == nil {
 		return errors.New("扩展存储未初始化")
 	}
-	if s.mcpTool != nil {
-		s.mcpTool.Close()
+	if err := s.extensions.Save(f); err != nil {
+		return err
 	}
-	return s.extensions.Save(f)
+	if s.mcpTool != nil {
+		if err := s.mcpTool.Close(); err != nil {
+			return fmt.Errorf("扩展已保存，但关闭旧 MCP 会话失败：%w", err)
+		}
+	}
+	return nil
 }
 
 // activate 记录当前默认模型。这是唯一与"具体渠道"耦合的装配点：
@@ -287,6 +299,10 @@ func (s *ChatService) newAgentWith(model string, registry *tools.Registry, appro
 func (s *ChatService) DeleteSession(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, busy := s.running[sessionID]; busy {
+		// 运行中删除会让正在写账本的轮次踩空（句柄关闭/文件被删），显式拒绝
+		return errors.New("该会话正在运行：请先中断再删除")
+	}
 	if l, ok := s.ledgers[sessionID]; ok {
 		if err := l.Close(); err != nil {
 			return fmt.Errorf("关闭会话账本失败：%w", err)
@@ -298,7 +314,9 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 
 // Send 发送一条用户消息，返回流式块通道（恰好一个 EndReason 终态后关闭）。
 // 多会话并行（0.2.25）：不同会话可以同时各跑各的轮次——每轮独立 agent、独立账本句柄，
-// 互不串流；同一会话的并发发送仍由前端排队（同一 Loop 的 phase 互斥兜底）。
+// 互不串流。同一会话的并发发送由后端显式拒绝（0.2.27）：一份账本上交错写会让
+// Replay 顺序错乱——此前注释宣称"Loop 的 phase 互斥兜底"，但每轮新建 Loop，
+// 跨轮根本没有保护，只剩前端队列在兜。
 func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
@@ -307,27 +325,57 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
 	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()
+	if _, busy := s.running[sessionID]; busy {
+		s.mu.Unlock()
+		return nil, errors.New("该会话已有进行中的回合：请等待完成或点中断后再发送")
+	}
+	s.running[sessionID] = struct{}{}
 	model := s.defaultModel
 	registry := s.registry
 	approver := s.approverFor(sessionID)
 	s.mu.Unlock()
+	// 占位释放：之后每个提前返回都必须调用（漏一个会让该会话永久"忙"）
+	release := func() {
+		s.mu.Lock()
+		delete(s.running, sessionID)
+		s.mu.Unlock()
+	}
 	if model == "" {
+		release()
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
 	}
 	ag := s.newAgentWith(model, registry, approver, sessionID)
 	if err := s.applyExtensionPreface(ctx, ag); err != nil {
+		release()
 		return nil, err
 	}
 	// ChatGPT 订阅凭证临期先自动续期（失败明确阻断：过期凭证发出去只会得到难解读的 401）
 	if err := s.ensureCodexFresh(ctx); err != nil {
+		release()
 		return nil, err
 	}
 	// 记录本轮工作区快照：侧栏按空间分组取账本首个 workspace 事件，
 	// 会话归属 = 首次发送时的工作区（每轮都记，归属语义不受中途切换影响）。
 	if _, err := ledger.Append(session.EventWorkspace, map[string]string{"path": s.Workspace()}); err != nil {
+		release()
 		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
 	}
-	return ag.Run(ctx, ledger, text)
+	stream, err := ag.Run(ctx, ledger, text)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	// 转发一层：流关闭（终态已发）时释放占位。Send 的"长调用"语义不变，
+	// 背压仍由下游消费速度决定（这里只是多一次通道搬运）。
+	out := make(chan llm.StreamChunk)
+	go func() {
+		defer close(out)
+		defer release()
+		for c := range stream {
+			out <- c
+		}
+	}()
+	return out, nil
 }
 
 // ListSessions 返回全部会话 ID。
@@ -518,7 +566,9 @@ func (s *ChatService) Close() error {
 	// 此前只关了账本与 codex 监听，实测应用退出后 node/cmd 仍在跑——用户看到的是
 	// "关掉应用还有一堆 node 进程"，且下次启动会再拉一份，越积越多。
 	if s.mcpTool != nil {
-		s.mcpTool.Close()
+		if err := s.mcpTool.Close(); err != nil && firstErr == nil {
+			firstErr = err // 关闭失败可见（不再静默：坏连接必须能被替换）
+		}
 	}
 	if s.codexAuth != nil {
 		firstErr = s.codexAuth.Close() // 释放 1455 回环监听（失败向上传播）
