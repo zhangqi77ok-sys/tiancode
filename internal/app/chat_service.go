@@ -385,6 +385,14 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	// 幂等规范化：旧账本可能存过带尾斜杠/未解析的形式（0.2.36 审计 R5——
 	// 同一目录的两种写法不能当成两个项目）
 	root = normalizeWorkspace(root)
+	// @ 文件引用（0.0.11）：消息文本里的 @相对路径 真正读成附件交给模型——
+	// 此前 @ 只在输入框弹菜单、插入裸路径文本，模型不理会就是"没效果"。
+	// 引用不存在/越界时静默保留原文（用户可能就在谈论 @ 符号本身）。
+	atAtts, err := s.resolveAtReferences(sessionID, root, text)
+	if err != nil {
+		return nil, err // running 尚未注册，无需占位释放
+	}
+	atts = append(atts, atAtts...)
 	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
 	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()

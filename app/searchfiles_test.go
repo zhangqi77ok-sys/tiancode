@@ -86,9 +86,26 @@ func TestBind_SearchWorkspaceFiles(t *testing.T) {
 		t.Fatalf("过滤命中不符：%v", hits)
 	}
 
-	// 无工作区（纯对话）：显式报错
+	// 0.0.11 草稿态：账本无归属（s-nobody）→ 回退顶栏工作区（WorkDir）——
+	// 用户在草稿里 @ 的文件发送后即归属该根，搜索与发送同根。
+	// WorkDir 是空临时目录：不报错、返回空列表即为回退成功。
 	b2, _ := newBindForTest(t, "")
-	if _, err := b2.SearchWorkspaceFiles("s-nobody", ""); err == nil {
+	if _, err := b2.SearchWorkspaceFiles("s-nobody", ""); err != nil {
+		t.Fatalf("草稿态应回退顶栏工作区：%v", err)
+	}
+
+	// 纯对话（账本无归属且顶栏无工作区）：显式报错
+	s3, err := appcore.NewChatService(appcore.Config{
+		DataDir:      t.TempDir(),
+		WorkDir:      "", // 顶栏也没有工作区 = 纯对话
+		ChannelsPath: filepath.Join(t.TempDir(), "channels.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s3.Close() })
+	b3 := &Bind{chat: s3}
+	if _, err := b3.SearchWorkspaceFiles("s-nobody", ""); err == nil {
 		t.Fatal("无工作区必须报错")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -130,6 +131,73 @@ func (s *ChatService) materializeAttachments(sessionID string, raw []IncomingAtt
 		out = append(out, ua)
 	}
 	return out, nil
+}
+
+// atRefPattern 匹配消息文本里的 @路径 token（0.0.11）：行首或空白后的 @，
+// 到下一个空白为止。与前端输入框 parseAtToken 的触发规则一致。
+var atRefPattern = regexp.MustCompile(`(?:^|\s)@([^\s]+)`)
+
+// resolveAtReferences 把消息文本中的 @相对路径 引用解析成附件（0.0.11）。
+// 为什么在这里而不是前端展开：附件物化（大小上限/嗅探/落位/重放）只有后端有；
+// 前端只负责让用户选得省力（菜单），内容进不进上下文由发送链路统一决定。
+// 规则：
+//   - 只认相对路径，且解析后必须仍在本会话工作区内（.. 越界跳过）——@ 不成为
+//     绕过工具根边界的口子；
+//   - 文件必须存在（目录/不存在/坏链接一律跳过，原文保留——用户可能就在谈论
+//     "@ 路径怎么写"而不是引用文件）；
+//   - 每条引用复用 materializeAttachments 的磁盘文件路径：校验、嗅探、落位、
+//     重放全同附件链路（图片转 image 引用，文本 ≤256KB 内联）。
+func (s *ChatService) resolveAtReferences(sessionID, root, text string) ([]session.UserAttachment, error) {
+	root = strings.TrimSpace(root)
+	if root == "" || !strings.Contains(text, "@") {
+		return nil, nil
+	}
+	matches := atRefPattern.FindAllStringSubmatch(text, 8) // 上限 8 条：@ 是人手打的，防极端刷量
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	var raw []IncomingAttachment
+	for _, m := range matches {
+		tok := m[1]
+		tok = strings.Trim(tok, `"'(),.:;`) // 去掉贴着路径的中文/英文标点
+		if tok == "" {
+			continue
+		}
+		if filepath.IsAbs(tok) {
+			continue // 只认相对路径：绝对路径引用不走 @（边界一致）
+		}
+		abs := filepath.Join(root, filepath.FromSlash(tok))
+		// 越界守卫：解析结果必须仍在工作区内（filepath.Rel 回到 root 而非 ..）
+		rel, relErr := filepath.Rel(root, abs)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		info, statErr := os.Stat(abs)
+		if statErr != nil || info.IsDir() {
+			continue
+		}
+		kind := "file"
+		if isImageExt(tok) {
+			kind = "image"
+		}
+		// Name 落盘时会拼进附件文件名：子路径分隔符必须拍平（docs/note.md → docs_note.md）
+		safeName := strings.ReplaceAll(tok, "/", "_")
+		safeName = strings.ReplaceAll(safeName, "\\", "_")
+		raw = append(raw, IncomingAttachment{Kind: kind, Name: safeName, SourcePath: abs})
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	return s.materializeAttachments(sessionID, raw)
+}
+
+// isImageExt 按扩展名粗判图片（内容嗅探在 materializeAttachments 里做，这里只分流 kind）。
+func isImageExt(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	}
+	return false
 }
 
 // sniffImageType 按文件头嗅探图片类型（不只信扩展名）。

@@ -49,15 +49,27 @@ describe('floatingTodo', () => {
     expect(parsePos('{"x":null,"y":34}')).toBeNull()
   })
 
-  // 会话切换/重放后必须仍取到"当前会话最新的那份清单"（同卡原地更新）
-  it('任务快照取最后一条 todo 卡（原地更新的最新快照）', () => {
+  // 会话切换/重放后必须仍取到"当前会话最新的那份清单"（同卡原地更新）；
+  // 0.0.11：进行中的清单照常显示
+  it('任务快照取最后一条 todo 卡（进行中）', () => {
     const msgs = [
       msg({ role: 'user', content: 'u' }),
       msg({ role: 'todo', id: 'm-2', todos: [{ text: 'a', status: 'pending' }] }),
       msg({ role: 'assistant', content: '规划中' }),
-      msg({ role: 'todo', id: 'm-2', todos: [{ text: 'a', status: 'done' }] }),
+      msg({ role: 'todo', id: 'm-2', todos: [{ text: 'a', status: 'in_progress' }] }),
     ]
-    expect(latestTodos(msgs)).toEqual({ id: 'm-2', items: [{ text: 'a', status: 'done' }] })
+    expect(latestTodos(msgs)).toEqual({ id: 'm-2', items: [{ text: 'a', status: 'in_progress' }] })
+  })
+
+  // 0.0.11 生命周期：全部完成 = 任务收尾，悬浮件退场——修"清单一直显示旧的"
+  //（账本重放恢复的旧快照同样适用：任务早完了就不该再挂）
+  it('全部完成或空清单返回 null（悬浮件退场）', () => {
+    expect(
+      latestTodos([
+        msg({ role: 'todo', id: 't1', todos: [{ text: 'a', status: 'done' }, { text: 'b', status: 'done' }] }),
+      ]),
+    ).toBeNull()
+    expect(latestTodos([msg({ role: 'todo', id: 't2', todos: [] })])).toBeNull()
   })
 
   it('无任务卡时返回 null（悬浮件据此不渲染）', () => {

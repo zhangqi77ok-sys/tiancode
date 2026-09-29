@@ -206,12 +206,16 @@ func (b *Bind) RestoreToolWrite(sessionID, callID string) (string, error) {
 // SearchWorkspaceFiles 为输入框的 @ 引用列出工作区文件（0.0.09）：把路径直接
 // 递给模型，省掉"模型先花一步找文件"。只读遍历、有界（跳过依赖/构建目录、
 // 命中上限 20），query 为空返回常用文件前 20 个。
-// 0.0.10：根 = **这场对话自己的工作区**（账本归属），不是顶栏里下一场新对话的根；
-// 纯对话没有归属 → 报错文案交给前端提示（不报错弹窗）。
+// 0.0.10：根 = **这场对话自己的工作区**（账本归属）；
+// 0.0.11：草稿（还没发过消息的会话）用顶栏当前工作区——用户在草稿里 @ 的
+// 文件，发送后这场对话就归属该工作区，搜索与发送看到的是同一个根。
 func (b *Bind) SearchWorkspaceFiles(sessionID, query string) ([]string, error) {
 	root := b.chat.SessionWorkspace(sessionID)
 	if strings.TrimSpace(root) == "" {
-		return nil, errors.New("这场对话没有工作区")
+		root = b.chat.Workspace() // 草稿：顶栏根就是这场对话即将归属的根
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("当前没有工作区——先在顶栏选择工作区，或在设置里开启本地文件工具")
 	}
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {

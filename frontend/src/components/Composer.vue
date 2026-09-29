@@ -439,6 +439,14 @@ function editQueued(id: number) {
           <span class="min-w-0 flex-1 truncate text-left">{{ h }}</span>
         </button>
       </div>
+      <!-- @ 提示条（0.0.11）：无命中/无工作区时必须可见，不再静默失败 -->
+      <div
+        v-else-if="atFile && atNotice"
+        class="absolute bottom-full left-3 z-40 mb-1 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] px-3 py-2 text-xs text-[var(--c-text-dim)] shadow-lg"
+        role="status"
+      >
+        {{ atNotice }}
+      </div>
       <textarea
         :ref="setBoxRef"
         v-model="draft"

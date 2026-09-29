@@ -441,6 +441,14 @@ export const useChatStore = defineStore('chat', () => {
       inline: a.inline,
     }))
     c.messages.push(withId({ role: 'user', content: text, attachments: localAtts, at: Date.now() }))
+    // 任务清单生命周期（0.0.11）：新用户消息 = 新任务开始——上一份清单立即退场，
+    // 不再挂着旧的（模型这一轮不调 todo 工具时旧清单会永远残留）。新一轮的
+    // onTodo 会新建卡；账本里历史快照不受影响（重放由"全完成退场"规则兜住）。
+    for (let i = c.messages.length - 1; i >= 0; i--) {
+      if (c.messages[i].role === 'todo') {
+        c.messages.splice(i, 1)
+      }
+    }
     // "正在思考"占位（0.2.28）：慢中转/上游挂起时用户立即看到反馈，而不是
     // "消息发出去了，什么都没发生"。onChunk 复用这段（inFlightAssistant 按
     // streaming 段查找）；零块 DONE 终态时移除空占位，不留空气泡。

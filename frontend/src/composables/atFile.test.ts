@@ -21,10 +21,16 @@ describe('atFile', () => {
     expect(parseAtToken('@foo bar', 8)).toBeNull()
   })
 
-  it('applyPick 替换 "@query" 为 "<path> " 并返回新光标', () => {
+  it('applyPick 替换 "@query" 为 "@<path> " 并返回新光标（0.0.11：保留 @——后端发送时解析 @路径 为附件）', () => {
     const tok = parseAtToken('看 @com', 6)!
     const r = applyPick('看 @com', 6, tok, 'frontend/src/Composer.vue')
-    expect(r.text).toBe('看 frontend/src/Composer.vue ')
-    expect(r.caret).toBe('看 frontend/src/Composer.vue '.length)
+    expect(r.text).toBe('看 @frontend/src/Composer.vue ')
+    expect(r.caret).toBe('看 @frontend/src/Composer.vue '.length)
+  })
+
+  it('选中后光标继续输入：@path 后有空格不再触发新菜单', () => {
+    const tok = parseAtToken('看 @com', 6)!
+    const r = applyPick('看 @com', 6, tok, 'a.go')
+    expect(parseAtToken(r.text, r.caret)).toBeNull() // @ 后跟空白：非引用
   })
 })

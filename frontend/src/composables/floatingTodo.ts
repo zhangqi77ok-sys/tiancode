@@ -49,10 +49,16 @@ export function parsePos(raw: string | null | undefined): FloatPos | null {
   }
 }
 
-/** 当前会话的任务快照：取最后一条 todo 卡（实时事件与账本重放同源，同会话单卡原地更新）。 */
+/** 当前会话的任务快照：取最后一条 todo 卡（实时事件与账本重放同源，同会话单卡原地更新）。
+ * 0.0.11 生命周期：全部完成（或空清单）＝任务已收尾，悬浮件退场不再显示——
+ * 账本重放恢复的旧快照同样适用，修"任务早完了清单还一直挂着"（用户实测）。 */
 export function latestTodos(msgs: ChatMsg[]): { id: string; items: TodoItem[] } | null {
   for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'todo') return { id: msgs[i].id ?? 'todo', items: msgs[i].todos ?? [] }
+    if (msgs[i].role === 'todo') {
+      const items = msgs[i].todos ?? []
+      if (items.length === 0 || items.every((t) => t.status === 'done')) return null
+      return { id: msgs[i].id ?? 'todo', items }
+    }
   }
   return null
 }

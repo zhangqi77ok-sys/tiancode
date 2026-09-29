@@ -23,9 +23,11 @@ export function parseAtToken(draft: string, caret: number): AtToken | null {
   return { start: at, end: caret, query: seg.slice(1) }
 }
 
-// applyPick：把 [start, caret) 的 "@query" 替换为 "<path> "（尾随空格方便继续输入）。
+// applyPick：把 [start, caret) 的 "@query" 替换为 "@<path> "（尾随空格方便继续输入）。
+// 0.0.11：保留 @ 前缀——后端发送时把消息里的 @相对路径 解析成附件真正读给模型；
+// 剥掉 @ 只留裸路径的话，引用标记就丢了（用户实测"选了没效果"的一环）。
 export function applyPick(draft: string, caret: number, token: AtToken, path: string): { text: string; caret: number } {
-  const ins = `${path} `
+  const ins = `@${path} `
   const text = draft.slice(0, token.start) + ins + draft.slice(caret)
   return { text, caret: token.start + ins.length }
 }

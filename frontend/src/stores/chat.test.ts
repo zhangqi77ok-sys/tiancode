@@ -495,6 +495,24 @@ describe('chat store', () => {
     expect(todoCards[0].todos).toEqual([{ text: 'a', status: 'done' }])
   })
 
+  // 0.0.11 生命周期：新用户消息 = 新任务开始——旧清单立即退场，不再挂着旧的
+  //（修"任务清单一直显示旧的"：模型新一轮不调 todo 工具时旧清单会永远残留）
+  it('发送新消息作废旧任务卡，新一轮 onTodo 重新建卡', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('第一个任务')
+    store.onTodo({ sessionID: store.sessionId, items: [{ text: '旧步骤', status: 'pending' }] })
+    expect(store.messages.some((m) => m.role === 'todo')).toBe(true)
+
+    await store.send('第二个任务') // 旧清单应退场
+    expect(store.messages.some((m) => m.role === 'todo')).toBe(false)
+
+    store.onTodo({ sessionID: store.sessionId, items: [{ text: '新步骤', status: 'in_progress' }] })
+    const cards = store.messages.filter((m) => m.role === 'todo')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].todos).toEqual([{ text: '新步骤', status: 'in_progress' }])
+  })
+
   // todo 工具卡不再重复渲染（任务卡由悬浮件 FloatingTodo 承载）
   it('onTool 忽略 todo 工具', async () => {
     const store = useChatStore()
