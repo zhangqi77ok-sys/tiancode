@@ -16,7 +16,12 @@ frontend/dist/*
 # 最终让新克隆的 `go build ./...` 因 go:embed 找不到 frontend/dist 而失败。
 # 同理，release.ps1 的产物都在仓库根，锚定后语义完全等价。
 /bin/
-/build/
+# /build/ 锚定排除 + 逐级放行应用图标（0.2.34）：gitignore(5) 明文——父目录
+# 被排除时无法直接取反其中的文件，必须逐级放行目录本身（frontend/dist 同款教训）。
+/build/*
+!/build/windows
+/build/windows/*
+!/build/windows/icon.ico
 /dist/
 
 # --- 运行时数据（永不入库） ---
