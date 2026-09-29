@@ -18,13 +18,9 @@ export interface ChatMessageDTO {
   options?: string[]
 }
 
-// 审批请求载荷（内核要"问"时推送；UI 渲染确认卡片，答复经 ResolveApproval 回流）。
-// 载荷不带 sessionID：流式进行中 UI 禁止切换会话（store 保证），故卡片必然属于当前会话。
-export interface ApprovalEventDTO {
-  id: string
-  toolName: string
-  arguments: string
-}
+// 审批请求载荷：内核要"问"时推送（UI 渲染确认卡片，答复经 ResolveApproval 回流）。
+// sessionID 必填（0.2.25 多会话）：卡片按它归位到发起它的会话——缺标识的载荷被
+// store 丢弃并报错（宁可丢卡也不插进当前视图＝串会话）。
 
 // 会话摘要：title 为空表示用户从未重命名（UI 回退显示会话 ID）；
 // workspace 为空表示 0.2.6 前的旧账本（前端归入"未分组"）；

@@ -11,6 +11,8 @@ const props = defineProps<{
   lastActiveMs?: number
   pinned?: boolean
   running?: boolean
+  /** 等待用户答复的请求数（未决审批 + 未答问答）——后台会话挂起时的可见提示 */
+  pending?: number
 }>()
 const emit = defineEmits<{
   (e: 'select'): void
@@ -44,6 +46,13 @@ const store = useChatStore()
       </span>
     </button>
     <span
+      v-if="props.pending"
+      class="stat shrink-0 border-[var(--c-warn)] px-1.5 py-0.5 text-[10px] text-[var(--c-warn-text)]"
+      title="有等待你答复的请求（审批/问答）——点击该会话处理"
+    >
+      待确认
+    </span>
+    <span
       v-if="props.running"
       class="flex shrink-0 items-center gap-1 pl-1 text-[10px] font-medium text-[var(--c-primary)]"
       title="该会话正在运行"
@@ -53,7 +62,7 @@ const store = useChatStore()
     </span>
     <button
       v-if="props.pinned"
-      class="btn-ghost shrink-0 text-[var(--c-primary)] opacity-100"
+      class="btn-ghost shrink-0 text-[var(--c-primary)] opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
       :disabled="props.running"
       title="取消置顶"
       aria-label="取消置顶"
@@ -65,7 +74,7 @@ const store = useChatStore()
     <div class="flex shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
       <button
         v-if="!props.pinned"
-        class="btn-ghost shrink-0"
+        class="btn-ghost shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="props.running"
         title="置顶"
         aria-label="置顶"
@@ -74,7 +83,7 @@ const store = useChatStore()
         <AppIcon name="star" :size="13" />
       </button>
       <button
-        class="btn-ghost shrink-0"
+        class="btn-ghost shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="props.running"
         title="重命名会话"
         aria-label="重命名会话"
@@ -83,7 +92,7 @@ const store = useChatStore()
         <AppIcon name="pencil" :size="14" />
       </button>
       <button
-        class="btn-ghost shrink-0 hover:text-[var(--c-err-text)]"
+        class="btn-ghost shrink-0 hover:text-[var(--c-err-text)] disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="props.running"
         title="删除会话"
         aria-label="删除会话"

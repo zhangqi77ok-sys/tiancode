@@ -105,7 +105,13 @@ describe('chat store', () => {
   it('审批卡片插入与答复', async () => {
     const store = useChatStore()
     await store.newSession()
-    store.onApproval({ id: 'ap-1', toolName: 'shell', arguments: '{"command":"rm -rf /tmp/x"}' })
+    await store.send('hi') // 先领真实会话 ID（草稿态空 ID 的卡片会被契约丢弃）
+    store.onApproval({
+      id: 'ap-1',
+      sessionID: store.sessionId,
+      toolName: 'shell',
+      arguments: '{"command":"rm -rf /tmp/x"}',
+    })
 
     const card = store.messages[store.messages.length - 1]
     expect(card.role).toBe('approval')
@@ -323,7 +329,7 @@ describe('chat store', () => {
     await store.newSession()
     await store.send('hi')
     store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ok' })
-    store.onApproval({ id: 'ap-1', toolName: 'shell', arguments: '{}' })
+    store.onApproval({ id: 'ap-1', sessionID: store.sessionId, toolName: 'shell', arguments: '{}' })
     // 0.2.14：助手消息按需分段，本流程无流式块 → user + tool + approval 三条
     const ids = store.messages.map((m) => m.id)
     expect(ids).toHaveLength(3)
@@ -382,7 +388,7 @@ describe('chat store', () => {
     await store.newSession()
     await store.send('hi')
     store.onChunk({ sessionID: store.sessionId, delta: '需要确认', thinking: '' })
-    store.onAsk({ id: 'ask-1', question: '选哪个方案？', options: ['方案 A', '方案 B'] })
+    store.onAsk({ id: 'ask-1', sessionID: store.sessionId, question: '选哪个方案？', options: ['方案 A', '方案 B'] })
     const card = store.messages.at(-1)
     expect(card).toMatchObject({ role: 'ask', question: '选哪个方案？', askId: 'ask-1' })
     expect(card?.answered).toBeFalsy()
@@ -400,6 +406,33 @@ describe('chat store', () => {
     await store.send('hi')
     store.onTool({ sessionID: store.sessionId, name: 'ask_user', status: 'success', summary: 'answered' })
     expect(store.messages.filter((m) => m.role === 'tool')).toHaveLength(0)
+  })
+
+  // 0.2.26 回归：isRunning 是侧栏渲染期的高频调用，必须**只读**——
+  // 若顺手创建会话缓冲，selectSession 的"无缓冲才 Replay"判断被打假，
+  // 历史会话永远打不开（实机：点开任何旧会话都是空白）。
+  it('isRunning 只读不创建缓冲，历史会话可被 Replay', async () => {
+    h.summaries = [{ id: 's-1', title: '历史' }]
+    h.replay = [{ role: 'user', content: '旧消息' }]
+    const store = useChatStore()
+    await store.loadSessions()
+    // 侧栏渲染路径：对每条会话问"是否在跑"（不得产生缓冲）
+    expect(store.isRunning('s-1')).toBe(false)
+    await store.selectSession('s-1')
+    // Replay 必须真的执行（缓冲此前不存在）
+    expect(store.messages.map((m) => m.content)).toEqual(['旧消息'])
+  })
+
+  // 0.2.26 契约：审批/问答事件缺 sessionID 时必须丢弃并报错（绝不插进当前视图＝串会话）
+  it('缺 sessionID 的审批/问答事件被丢弃且可见', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.onApproval({ id: 'ap-x', sessionID: '', toolName: 'shell', arguments: '{}' })
+    expect(store.messages.filter((m) => m.role === 'approval')).toHaveLength(0)
+    expect(store.error).toContain('缺少会话标识')
+    store.onAsk({ id: 'ask-x', sessionID: '', question: '?' })
+    expect(store.messages.filter((m) => m.role === 'ask')).toHaveLength(0)
+    expect(store.error).toContain('缺少会话标识')
   })
 
   // Replay 恢复问答卡为已答态（问题/选项由账本 tool_call 配对投影）

@@ -35,14 +35,27 @@ function startManual(row?: McpServer) {
 }
 
 async function applyParsed(raw: string) {
+  error.value = ''
   const got = parseMcpConfig(raw)
   if (got.error) {
     error.value = got.error
     return
   }
-  const msg = await catalog.importMcp(got.servers)
-  if (msg) {
-    error.value = msg
+  // 同名即覆盖是既有语义，但静默覆盖是危险操作——先让用户确认（0.2.27）
+  const conflicts = catalog.mcpNameConflicts(got.servers.map((s) => s.name))
+  if (conflicts.length) {
+    const head = conflicts.slice(0, 3).join('、')
+    const ok = await dialogs.confirm({
+      title: '覆盖同名 MCP',
+      message: `有 ${conflicts.length} 个同名项将被覆盖（${head}${conflicts.length > 3 ? ' 等' : ''}），继续？`,
+      confirmText: '覆盖导入',
+      danger: true,
+    })
+    if (!ok) return
+  }
+  const res = await catalog.importMcp(got.servers)
+  if (res.error) {
+    error.value = res.imported ? `已导入 ${res.imported} 个后失败：${res.error}` : res.error
     return
   }
   paste.value = ''
@@ -54,10 +67,17 @@ async function pickFile() {
   try {
     const text = await bridge().app.PickImport('mcp')
     if (!text) return
-    applyParsed(text)
+    await applyParsed(text)
   } catch (e) {
     error.value = String(e instanceof Error ? e.message : e)
   }
+}
+
+// 启停：失败必须可见（store 失败已回滚乐观翻转，这里把原因显示出来）
+async function toggle(row: McpServer) {
+  error.value = ''
+  const msg = await catalog.toggleMcp(row.id)
+  if (msg) error.value = msg
 }
 
 async function save() {
@@ -80,7 +100,10 @@ async function removeRow(row: McpServer) {
     confirmText: '删除',
     danger: true,
   })
-  if (ok) await catalog.removeMcp(row.id)
+  if (!ok) return
+  error.value = ''
+  const msg = await catalog.removeMcp(row.id)
+  if (msg) error.value = msg
 }
 </script>
 
@@ -101,11 +124,12 @@ async function removeRow(row: McpServer) {
         class="flex items-center gap-2 rounded-xl border border-[var(--c-border)] px-3 py-2"
       >
         <button
-          class="chip shrink-0"
+          class="chip shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
           :class="row.enabled ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"
           :aria-pressed="row.enabled"
+          :disabled="catalog.busy"
           :title="row.enabled ? '点击停用' : '点击启用'"
-          @click="catalog.toggleMcp(row.id)"
+          @click="toggle(row)"
         >
           {{ row.enabled ? '已启用' : '已停用' }}
         </button>

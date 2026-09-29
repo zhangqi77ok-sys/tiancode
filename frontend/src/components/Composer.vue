@@ -58,7 +58,7 @@ function editQueued(id: number) {
 </script>
 
 <template>
-  <div class="border-t border-[var(--c-border)] p-4">
+  <div data-composer class="border-t border-[var(--c-border)] p-4">
     <p class="mb-2 px-1 text-[11px] text-[var(--c-text-faint)]">
       {{ channels.activeModel ? `模型 ${channels.activeModel}` : '未配置模型' }}
       <template v-if="channels.activeChannel"> · {{ channels.activeChannel.name }}</template>

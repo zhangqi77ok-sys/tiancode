@@ -118,7 +118,9 @@ function str(v: unknown): string {
 function kvLines(v: unknown): string {
   if (!isRecord(v)) return ''
   return Object.entries(v)
-    .filter(([, val]) => typeof val === 'string')
-    .map(([k, val]) => `${k}=${val as string}`)
+    // 非字符串值统一字符串化：mcp.json 里 "PORT": 3000 这类数字/布尔此前被
+    // 静默丢弃——导入后进程环境不完整（0.2.27 修复）。null/undefined 跳过。
+    .filter(([, val]) => val !== null && val !== undefined)
+    .map(([k, val]) => `${k}=${typeof val === 'string' ? val : String(val)}`)
     .join('\n')
 }

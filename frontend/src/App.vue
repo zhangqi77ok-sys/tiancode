@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type TodoItem } from './stores/chat'
 import { useCatalogStore } from './stores/catalog'
 import { useToast } from './composables/useToast'
@@ -20,11 +20,14 @@ import ToastHost from './components/ToastHost.vue'
 const store = useChatStore()
 const { push: toast } = useToast()
 
-// 会话操作的失败原来只写在侧栏最底部，容易被挡住。通知先冒出来，侧栏那一行仍留着。
+// 会话操作的失败原来只写在侧栏最底部，容易被挡住——通知先冒出来。
+// toast 后清空 error：否则同一文案连续出现时 watch 不再触发（第二次静默无声）。
 watch(
   () => store.error,
   (msg) => {
-    if (msg) toast('error', msg)
+    if (!msg) return
+    toast('error', msg)
+    store.error = ''
   },
 )
 
@@ -32,7 +35,18 @@ const navOpen = ref(false) // logo 左侧唯一按钮拉出的导航栏
 const channelsOpen = ref(false)
 const mcpOpen = ref(false)
 const skillsOpen = ref(false)
-const draft = ref('') // 输入草稿：建议 chips 回填、Composer 双向绑定
+// 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
+const anyModalOpen = computed(() => channelsOpen.value || mcpOpen.value || skillsOpen.value)
+
+// 输入草稿**按会话各存一份**：此前是全局单例——在 A 里敲的半句话切到 B
+// 回车就发进了 B（串会话），A 的草稿也随之丢失。切换/新建时草稿各归各位。
+const drafts = ref<Record<string, string>>({})
+const draft = computed({
+  get: () => drafts.value[store.sessionId] ?? '',
+  set: (v: string) => {
+    drafts.value[store.sessionId] = v
+  },
+})
 
 // Esc 中断生成（Claude/ChatGPT 惯例）。模态（渠道设置/对话框）打开时，
 // BaseModal 在捕获层拦截 Esc 并停止传播，这里的冒泡监听不会误触发。
@@ -50,8 +64,9 @@ function openSkills() {
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape' || channelsOpen.value || mcpOpen.value || skillsOpen.value) return
-  if (navOpen.value && !store.running) {
+  if (e.key !== 'Escape' || anyModalOpen.value) return
+  // Esc 优先关导航（此前运行中会先去中断生成，导航反而关不掉）
+  if (navOpen.value) {
     navOpen.value = false
     return
   }
@@ -85,20 +100,21 @@ onMounted(() => {
       store.onTool(p)
     },
   )
-  // 审批卡片：sessionID 把卡片归位到发起它的会话（后台会话要审批时不能插到当前视图）
+  // 审批卡片：sessionID 必填（后端必推）——缺标识的卡片宁可丢弃并报错，
+  // 也绝不插进当前视图（那正是"数据串会话"）
   bridge().runtime.EventsOn(
     'chat:approval',
-    (p: { id: string; sessionID?: string; toolName: string; arguments: string }) => {
+    (p: { id: string; sessionID: string; toolName: string; arguments: string }) => {
       store.onApproval(p)
     },
   )
   bridge().runtime.EventsOn('chat:todo', (p: { sessionID: string; items: { text: string; status: string }[] }) => {
     store.onTodo({ sessionID: p.sessionID, items: p.items as TodoItem[] })
   })
-  // 问答卡：sessionID 把卡片归位到发起它的会话（与审批同款，0.2.25 多会话）
+  // 问答卡：sessionID 必填（与审批同款，0.2.25 多会话）
   bridge().runtime.EventsOn(
     'chat:ask',
-    (p: { id: string; sessionID?: string; question: string; options?: string[] }) => {
+    (p: { id: string; sessionID: string; question: string; options?: string[] }) => {
       store.onAsk(p)
     },
   )

@@ -101,3 +101,8 @@ jobs:
 
       - name: 测试 · go test（-count=1 强制新鲜执行，不吃缓存）
         run: go test ./... -count=1
+
+      # 真并发已进主链路（多会话并行对话、MCP 会话 hub、事件回调并发调用）：
+      # 常规测试只能证明"两路都跑完"，证明不了 map/共享状态无竞争——关键包单独开 -race。
+      - name: 测试 · go test -race（并发关键包）
+        run: go test ./internal/app/... ./internal/platform/... ./internal/core/... -count=1 -race

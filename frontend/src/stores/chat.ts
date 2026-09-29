@@ -103,7 +103,16 @@ export const useChatStore = defineStore('chat', () => {
 
   // 按会话隔离的运行态。key = 会话 ID（'' = 草稿）。
   const convos = reactive(new Map<string, Conversation>())
-  function convoOf(id: string): Conversation {
+
+  // convoOf 是**只读**取用：渲染/求值期绝不创建条目——侧栏渲染会对每条会话调用
+  // isRunning，若在此建条目，所有会话都"看起来有缓冲"，selectSession 的
+  // Replay 条件被打假，历史会话永远打不开（0.2.26 实机回归）。写路径一律用 ensureConvo。
+  function convoOf(id: string): Conversation | undefined {
+    return convos.get(id)
+  }
+
+  // ensureConvo 是显式写路径（发送 / 事件回调 / 选中会话）：确保条目存在。
+  function ensureConvo(id: string): Conversation {
     let c = convos.get(id)
     if (!c) {
       c = newConversation()
@@ -112,30 +121,38 @@ export const useChatStore = defineStore('chat', () => {
     return c
   }
 
+  // 空缓冲占位：只读路径的返回值（模板读 messages.length 不能拿到 undefined；
+  // 常量共享且绝不被写入）
+  const EMPTY_MESSAGES: ChatMsg[] = []
+  const EMPTY_QUEUE: { id: number; text: string }[] = []
+
   // 当前视图 = 当前会话的运行态。读写都收敛到这里，组件无感（仍是 store.messages/running/queue）。
-  const messages = computed(() => convoOf(sessionId.value).messages)
+  const messages = computed(() => convoOf(sessionId.value)?.messages ?? EMPTY_MESSAGES)
   const running = computed({
-    get: () => convoOf(sessionId.value).running,
+    get: () => convoOf(sessionId.value)?.running ?? false,
     set: (v: boolean) => {
-      convoOf(sessionId.value).running = v
+      ensureConvo(sessionId.value).running = v
     },
   })
   const stopping = computed({
-    get: () => convoOf(sessionId.value).stopping,
+    get: () => convoOf(sessionId.value)?.stopping ?? false,
     set: (v: boolean) => {
-      convoOf(sessionId.value).stopping = v
+      ensureConvo(sessionId.value).stopping = v
     },
   })
   const queue = computed({
-    get: () => convoOf(sessionId.value).queue,
+    get: () => convoOf(sessionId.value)?.queue ?? EMPTY_QUEUE,
     set: (v: { id: number; text: string }[]) => {
-      convoOf(sessionId.value).queue = v
+      ensureConvo(sessionId.value).queue = v
     },
   })
 
+  // 切换会话的历史载入态（Replay 期间渲染"正在载入历史…"，避免闪一下空态）
+  const loadingSession = ref(false)
+
   // 某个会话是否正在跑（侧栏指示灯与"删除运行中会话"的判据；与当前视图无关）
   function isRunning(id: string): boolean {
-    return convoOf(id).running
+    return convoOf(id)?.running ?? false
   }
 
   // 是否有任意会话在跑（顶栏状态灯用）：后台会话也算运行中，
@@ -147,9 +164,50 @@ export const useChatStore = defineStore('chat', () => {
     return false
   })
 
+  // 某个会话有几项等待用户答复的请求（未决审批 + 未答问答）——后台会话卡在
+  // 等答复时用户必须能被提示到（否则整轮无声挂起，用户不知道要回去处理）
+  function pendingOf(id: string): number {
+    const c = convoOf(id)
+    if (!c) return 0
+    let n = 0
+    for (const m of c.messages) {
+      if (m.role === 'approval' && !m.status) n++
+      if (m.role === 'ask' && !m.answered) n++
+    }
+    return n
+  }
+
+  const anyPending = computed(() => {
+    let n = 0
+    for (const id of convos.keys()) n += pendingOf(id)
+    return n
+  })
+
+  // 正在运行的会话（含当前视图之外的后台轮次）——跳转目标的数据源
+  const runningSessions = computed(() => {
+    const out: string[] = []
+    for (const [id, c] of convos) {
+      if (c.running) out.push(id)
+    }
+    return out
+  })
+
+  // 状态灯/侧栏的跳转目标：优先"有等待答复请求"的会话，其次任意其他运行中会话。
+  // 空串 = 没有值得跳转的目标（当前视图就是唯一的忙碌会话）。
+  const busyTarget = computed(() => {
+    const pend = summaries.value.find((s) => s.id !== sessionId.value && pendingOf(s.id) > 0)
+    if (pend) return pend.id
+    return runningSessions.value.find((id) => id !== sessionId.value) ?? ''
+  })
+
   async function loadSessions() {
-    summaries.value = (await bridge().app.ListSessionSummaries()) ?? []
-    sessions.value = summaries.value.map((s) => s.id)
+    try {
+      summaries.value = (await bridge().app.ListSessionSummaries()) ?? []
+      sessions.value = summaries.value.map((s) => s.id)
+    } catch (e) {
+      // 列表读取失败必须可见（静默会让侧栏停在旧数据上，用户以为会话丢了）
+      error.value = `读取会话列表失败：${String(e instanceof Error ? e.message : e)}`
+    }
   }
 
   function titleOf(id: string): string {
@@ -206,14 +264,23 @@ export const useChatStore = defineStore('chat', () => {
 
   async function selectSession(id: string) {
     // 工具根跟这场对话走。否则点开 A 空间的会话，读写仍打在当前工作区 B 上。
+    // （ws.setPath/clear 内部自带可见报错，失败不阻断切换）
     const sm = summaries.value.find((s) => s.id === id)
     const ws = useWorkspaceStore()
     if (sm?.workspace && sm.workspace !== ws.path) await ws.setPath(sm.workspace)
     else if (sm && !sm.workspace && ws.path) await ws.clear()
     sessionId.value = id
     if (!convos.has(id)) {
-      const c = convoOf(id)
-      c.messages = await replayOf(id)
+      loadingSession.value = true
+      try {
+        const c = ensureConvo(id)
+        c.messages = await replayOf(id)
+      } catch (e) {
+        // 历史载入失败必须可见（此前是静默空白：用户以为会话内容丢了）
+        error.value = `载入会话历史失败：${String(e instanceof Error ? e.message : e)}`
+      } finally {
+        loadingSession.value = false
+      }
     }
   }
 
@@ -222,7 +289,7 @@ export const useChatStore = defineStore('chat', () => {
   // 多会话（0.2.25）：进行中的轮次各自继续，新建/切换不再被"有会话在跑"挡住。
   async function newSession() {
     sessionId.value = '' // '' 即草稿态
-    convoOf('').messages = []
+    ensureConvo('').messages = []
   }
 
   // 首聊即时入列：新会话发出第一条消息的瞬间就出现在侧栏并归属当前工作区，
@@ -252,7 +319,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // 发送到指定会话（多会话的核心：后台会话的排队续发也走这里，绝不发进当前视图）。
   async function sendTo(id: string, text: string) {
-    const c = convoOf(id)
+    const c = ensureConvo(id)
     c.messages.push(withId({ role: 'user', content: text, at: Date.now() }))
     // 不预建助手占位：助手消息按 ReAct 轮次由 onChunk 按需分段创建（0.2.14），
     // 每轮的思考/文本归属各自轮次，不再全部堆进同一个气泡
@@ -285,9 +352,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // 审批卡片：内核要"问"时插入一张带允许/拒绝按钮的卡片（ADR-0007）。
-  // sessionID 把卡片归位到发起它的会话（后台会话要审批时不能插到当前视图里）。
-  function onApproval(p: { id: string; sessionID?: string; toolName: string; arguments: string }) {
-    convoOf(p.sessionID ?? sessionId.value).messages.push(
+  // sessionID 必填：缺标识的卡片宁可丢弃并报错，也绝不插进当前视图（串会话）。
+  function onApproval(p: { id: string; sessionID: string; toolName: string; arguments: string }) {
+    if (!p.sessionID) {
+      error.value = '收到缺少会话标识的审批事件（已丢弃，避免串会话）'
+      return
+    }
+    ensureConvo(p.sessionID).messages.push(
       withId({
         role: 'approval',
         content: p.toolName,
@@ -353,7 +424,7 @@ export const useChatStore = defineStore('chat', () => {
   // 事件桥回调（App.vue onMounted 绑定）。多会话（0.2.25）：全部按 sessionID
   // 路由进各自的缓冲——后台会话的事件照常入账，绝不再因"不是当前视图"被丢弃。
   function onChunk(p: { sessionID: string; delta: string; thinking: string }) {
-    const c = convoOf(p.sessionID)
+    const c = ensureConvo(p.sessionID)
     let ast = inFlightAssistant(c)
     if (!ast) {
       // ReAct 新轮次：无进行中助手则新开一段——工具卡之后的增量落进下一段
@@ -374,7 +445,7 @@ export const useChatStore = defineStore('chat', () => {
     title?: string
     op?: string
   }) {
-    const c = convoOf(p.sessionID)
+    const c = ensureConvo(p.sessionID)
     if (p.name === 'todo') return // 任务清单由 onTodo/FloatingTodo 承载，不重复出工具卡
     if (p.name === 'ask_user') return // 问答卡由 onAsk/AskCard 承载，答案已在卡上
     // 封存当前段：ReAct 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（onChunk 再开新段）
@@ -396,7 +467,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // 任务清单：单卡原地更新（同会话只保留一张，位置保留首次出现处）
   function onTodo(p: { sessionID: string; items: TodoItem[] }) {
-    const c = convoOf(p.sessionID)
+    const c = ensureConvo(p.sessionID)
     const existing = c.messages.find((m) => m.role === 'todo')
     if (existing) {
       existing.todos = p.items
@@ -408,9 +479,14 @@ export const useChatStore = defineStore('chat', () => {
     c.messages.splice(i, 0, card)
   }
 
-  // 问答卡（ask_user）：插入待答卡片并封存当前段——叙事顺序 = 本轮文本 → 问答卡 → 回复
-  function onAsk(p: { id: string; sessionID?: string; question: string; options?: string[] }) {
-    const c = convoOf(p.sessionID ?? sessionId.value)
+  // 问答卡（ask_user）：插入待答卡片并封存当前段——叙事顺序 = 本轮文本 → 问答卡 → 回复。
+  // sessionID 必填（缺标识丢弃并报错，绝不插进当前视图）
+  function onAsk(p: { id: string; sessionID: string; question: string; options?: string[] }) {
+    if (!p.sessionID) {
+      error.value = '收到缺少会话标识的问答事件（已丢弃，避免串会话）'
+      return
+    }
+    const c = ensureConvo(p.sessionID)
     const ast = inFlightAssistant(c)
     if (ast) ast.streaming = false
     c.messages.push(
@@ -442,9 +518,10 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
-    const c = convoOf(p.sessionID)
+    const c = ensureConvo(p.sessionID)
     c.running = false
     c.stopping = false
+    clearStopTimer(p.sessionID) // 终态到达：撤销中断超时兜底
     const ast = inFlightAssistant(c)
     if (ast) {
       ast.streaming = false
@@ -523,34 +600,64 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 中断超时兜底：终态事件若丢失，该会话会永久"运行中"（中断按钮 disabled、
+  // 删除也被拒——用户只能重启应用）。10 秒未收到终态即强制复位并明示。
+  const stopTimers = new Map<string, number>()
+  function clearStopTimer(id: string) {
+    const t = stopTimers.get(id)
+    if (t !== undefined) {
+      window.clearTimeout(t)
+      stopTimers.delete(id)
+    }
+  }
+
   // 中断"当前正在看的会话"（按钮就长在它的输入框上）。
   function stop() {
     const id = sessionId.value
+    if (!id) return
     const c = convoOf(id)
-    if (!id || !c.running || c.stopping) return
+    if (!c || !c.running || c.stopping) return
     c.stopping = true
     c.queue = [] // 中断是停掉这一轮，不能在终态后把排队消息接着发出去
     void bridge().app.Stop(id)
+    clearStopTimer(id)
+    stopTimers.set(
+      id,
+      window.setTimeout(() => {
+        stopTimers.delete(id)
+        const cur = convos.get(id)
+        if (!cur?.running) return
+        cur.running = false
+        cur.stopping = false
+        const ast = inFlightAssistant(cur)
+        if (ast) {
+          ast.streaming = false
+          ast.error = true
+          ast.content += (ast.content ? '\n\n' : '') + '⚠ 未收到中断确认，已强制复位'
+        }
+        error.value = '未收到中断确认：已强制复位该会话的运行状态'
+      }, 10_000),
+    )
   }
 
   // 输入队列（0.2.14）：回合进行中的提交依次排队，终态后自动逐条发出（绝不与进行中轮次并发）。
   // 多会话（0.2.25）：队列按会话各一份，后台会话的队列续发不进当前视图。
   let queueSeq = 0
   function enqueue(text: string) {
-    convoOf(sessionId.value).queue.push({ id: ++queueSeq, text })
+    ensureConvo(sessionId.value).queue.push({ id: ++queueSeq, text })
   }
   function removeQueued(id: number) {
-    const c = convoOf(sessionId.value)
+    const c = ensureConvo(sessionId.value)
     c.queue = c.queue.filter((q) => q.id !== id)
   }
   function promoteQueued(id: number) {
-    const c = convoOf(sessionId.value)
+    const c = ensureConvo(sessionId.value)
     const i = c.queue.findIndex((q) => q.id === id)
     if (i > 0) c.queue.unshift(...c.queue.splice(i, 1))
   }
   // 取回编辑：返回文本并出队（调用方负责放回输入框）
   function editQueued(id: number): string | undefined {
-    const c = convoOf(sessionId.value)
+    const c = ensureConvo(sessionId.value)
     const q = c.queue.find((x) => x.id === id)
     if (!q) return undefined
     removeQueued(id)
@@ -570,8 +677,13 @@ export const useChatStore = defineStore('chat', () => {
     running,
     stopping,
     anyRunning,
+    anyPending,
+    runningSessions,
+    busyTarget,
+    pendingOf,
     error,
     summaries,
+    loadingSession,
     isRunning,
     titleOf,
     renameSession,

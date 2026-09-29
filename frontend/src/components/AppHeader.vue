@@ -22,10 +22,22 @@ const { push: toast } = useToast()
 
 const approvalOn = ref(false)
 
-// 顶栏只显示末级目录名（完整路径太长会挤掉状态区）；状态在 workspace store（侧栏分组同源）
+// 顶栏只显示末级目录名（完整路径太挤掉状态区）；状态在 workspace store（侧栏分组同源）
 const workspaceName = computed(
   () => ws.path.split(/[\\/]/).filter(Boolean).pop() ?? '选择工作区',
 )
+
+// 状态灯文案：后台运行 / 待答复都要与"空闲"区分（切走后顶栏不能装作没事）
+const statusText = computed(() => {
+  if (store.anyPending) return `${store.anyPending} 项待确认`
+  if (!store.anyRunning) return '空闲'
+  return store.running ? '运行中' : '后台运行中'
+})
+
+// 状态灯点击：跳到等待处理的会话（优先"待确认"，其次其他运行中会话）
+function jumpToBusy() {
+  if (store.busyTarget) void store.selectSession(store.busyTarget)
+}
 
 // ---- 工作区菜单（默认无工作区：进入/切换/退出都要显式、快速）----
 const wsMenuOpen = ref(false)
@@ -104,10 +116,12 @@ async function exportSession() {
   }
 }
 
-// 审批闸门开关（ADR-0007 默认关）：开启后 shell 命令执行前需你确认
+// 审批闸门开关（ADR-0007 默认关）：开启后 shell 命令执行前需你确认。
+// 0.2.27 起同时覆盖 ext_manage（MCP/Skill 增删会让本机执行新命令——它与 shell
+// 是同一类"执行面"，不纳入审批等于留了一条绕过确认的路径）
 async function toggleApproval() {
   approvalOn.value = !approvalOn.value
-  await store.setApprovalPolicy(approvalOn.value ? ['shell'] : [])
+  await store.setApprovalPolicy(approvalOn.value ? ['shell', 'ext_manage'] : [])
 }
 
 onMounted(async () => {
@@ -145,13 +159,28 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <span class="stat" :class="store.anyRunning ? 'text-[var(--c-primary)]' : ''">
+      <!-- 状态灯：后台会话在跑/待答复都要与"空闲"区分；有跳转目标时可点击直达 -->
+      <button
+        class="stat"
+        :class="
+          store.anyPending ? 'text-[var(--c-warn-text)]' : store.anyRunning ? 'text-[var(--c-primary)]' : ''
+        "
+        :disabled="!store.busyTarget"
+        :title="store.busyTarget ? '点击跳到等待处理的会话' : ''"
+        @click="jumpToBusy"
+      >
         <span
           class="h-1.5 w-1.5 rounded-full"
-          :class="store.anyRunning ? 'animate-pulse bg-[var(--c-primary)]' : 'bg-[var(--c-text-faint)]'"
+          :class="
+            store.anyPending
+              ? 'bg-[var(--c-warn)]'
+              : store.anyRunning
+                ? 'animate-pulse bg-[var(--c-primary)]'
+                : 'bg-[var(--c-text-faint)]'
+          "
         ></span>
-        {{ store.anyRunning ? '运行中' : '空闲' }}
-      </span>
+        {{ statusText }}
+      </button>
       <button
         class="chip"
         :disabled="!store.sessionId || store.running"

@@ -72,8 +72,13 @@ const items = computed(() => groupMessages(store.messages))
     aria-label="对话记录"
     @scroll.passive="onScroll"
   >
+    <!-- 历史载入中：先于空态渲染（否则点开有历史的会话会闪一下"没有消息"） -->
+    <div v-if="store.loadingSession" class="flex h-full items-center justify-center">
+      <p class="text-sm text-[var(--c-text-dim)]">正在载入历史…</p>
+    </div>
+
     <!-- 空状态 + 建议 chips -->
-    <div v-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4">
+    <div v-else-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4">
       <p class="text-sm text-[var(--c-text-dim)]">
         {{
           ws.path

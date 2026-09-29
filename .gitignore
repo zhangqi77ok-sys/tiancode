@@ -71,3 +71,7 @@ cmd/installer/payload/*
 
 # agent 本地工作状态（brainstorm 服务端口/token、会话临时产物）
 .superpowers/
+
+# agent 联调时的抓取快照等临时产物（0.2.26 曾误入库 9 个 _*.json）
+/_*.json
+/_*.md

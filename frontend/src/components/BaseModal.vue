@@ -40,7 +40,9 @@ function onKeydown(e: KeyboardEvent) {
   trapTab(e)
 }
 
-// 捕获阶段监听：优先于面板内部控件的 Esc 处理（如有）
+// 捕获阶段监听：优先于面板内部控件的 Esc 处理（如有）。
+// immediate 必须有：面板常以 v-if + open（恒定 true）挂载，watch 默认首帧不触发——
+// 少了它会 Esc 关不掉、焦点陷阱也从未注册（0.2.26 实机：渠道/MCP/技能三个面板都中招）。
 watch(
   () => props.open,
   async (open) => {
@@ -52,6 +54,7 @@ watch(
       document.removeEventListener('keydown', onKeydown, true)
     }
   },
+  { immediate: true },
 )
 
 onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))

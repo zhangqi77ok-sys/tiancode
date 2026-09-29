@@ -95,3 +95,22 @@ export function saveCollapsed(v: boolean): void {
     // 同上：折叠态不持久化不影响使用
   }
 }
+
+const HIDDEN_KEY = 'tiancode.todo.hidden'
+
+/** 读取/保存"用户隐藏"态（隐藏后出现新任务清单会自动恢复显示）。 */
+export function loadHidden(): boolean {
+  try {
+    return localStorage.getItem(HIDDEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveHidden(v: boolean): void {
+  try {
+    localStorage.setItem(HIDDEN_KEY, v ? '1' : '0')
+  } catch {
+    // 不持久化不影响使用
+  }
+}
