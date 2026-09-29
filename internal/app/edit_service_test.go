@@ -32,8 +32,9 @@ func TestEditGate_EndToEndWithService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var got EditEvent
-	s.SetEditHandler(func(e EditEvent) { got = e })
+	// 交接用带缓冲 channel（共享变量无同步边，CI 上轮询方可能永远观察不到写入——实测翻过车）
+	editCh := make(chan EditEvent, 1)
+	s.SetEditHandler(func(e EditEvent) { editCh <- e })
 
 	// --- 应用路径：异步执行 write，主协程收到事件后 ResolveEdit(true) ---
 	done := make(chan struct{})
@@ -50,11 +51,10 @@ func TestEditGate_EndToEndWithService(t *testing.T) {
 		}
 		resIsErr, resErrStr = res.IsError, res.Content
 	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for got.ID == "" && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if got.ID == "" {
+	var got EditEvent
+	select {
+	case got = <-editCh:
+	case <-time.After(2 * time.Second):
 		t.Fatal("未收到确认事件")
 	}
 	if got.Path != "n.txt" || !strings.Contains(got.Diff, "+confirmed content") {
@@ -73,6 +73,8 @@ func TestEditGate_EndToEndWithService(t *testing.T) {
 	}
 
 	// --- 跳过路径：ResolveEdit(false) → 结果写明未修改，文件不动 ---
+	skipCh := make(chan EditEvent, 1)
+	s.SetEditHandler(func(e EditEvent) { skipCh <- e })
 	done2 := make(chan struct{})
 	var skipContent string
 	var skipIsErr bool
@@ -87,18 +89,13 @@ func TestEditGate_EndToEndWithService(t *testing.T) {
 		}
 		skipIsErr, skipContent = res.IsError, res.Content
 	}()
-	deadline = time.Now().Add(2 * time.Second)
-	for len(s.pendingEdits) == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	var ev EditEvent
+	select {
+	case ev = <-skipCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到第二个确认事件")
 	}
-	// 取最近一个待确认 ID（表里只有一个）
-	var editID string
-	s.mu.Lock()
-	for id := range s.pendingEdits {
-		editID = id
-	}
-	s.mu.Unlock()
-	if err := s.ResolveEdit("s-edit", editID, false); err != nil {
+	if err := s.ResolveEdit("s-edit", ev.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	<-done2

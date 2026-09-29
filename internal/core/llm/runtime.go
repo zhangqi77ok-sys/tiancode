@@ -102,17 +102,22 @@ func (r *chatRuntime) Chat(ctx context.Context, req ChatRequest, policy RuntimeP
 					select {
 					case wrapped <- c:
 					case <-callCtx.Done():
-						// 预算到期/被取消且消费方停读：尽力补发终态后退出（close 由 defer 兜底）
+						// 预算到期/被取消且消费方停读：限时补发终态后退出（close 由 defer 兜底）。
+						// 补发绝不能 default 直接丢：消费方（agent 逐块落账循环）只是暂时不在
+						// 接收点上，非阻塞 send 会把 EndCancelled 丢成"通道关闭无终态"，
+						// agent 兜底 EndError 把主动中断渲染成错误（CI 的取消测试抓到）。
+						// 与 gateway.finishStopped 同一纪律：限时阻塞，真离开的消费方 500ms 后放行。
 						select {
 						case wrapped <- terminalOnCtxDone():
-						default:
+						case <-time.After(500 * time.Millisecond):
 						}
 						return
 					}
 				case <-callCtx.Done():
+					// 同上：限时补发，绝不 default 丢弃（见上方注释）
 					select {
 					case wrapped <- terminalOnCtxDone():
-					default:
+					case <-time.After(500 * time.Millisecond):
 					}
 					return
 				}

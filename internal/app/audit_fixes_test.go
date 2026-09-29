@@ -49,8 +49,8 @@ func TestChatService_SessionToolsArePerSession(t *testing.T) {
 
 	// 会话 A 首聊：归属 dirA（= 当时顶栏值）
 	drain("s-A")
-	if got := rootOf("s-A"); got != filepath.Clean(dirA) {
-		t.Fatalf("A 根 = %q, want %q", got, filepath.Clean(dirA))
+	if got := rootOf("s-A"); got != normalizeWorkspace(dirA) {
+		t.Fatalf("A 根 = %q, want %q", got, normalizeWorkspace(dirA))
 	}
 
 	// 用户在顶栏切到 dirB（只影响"新会话默认"，不碰 A）
@@ -60,18 +60,18 @@ func TestChatService_SessionToolsArePerSession(t *testing.T) {
 
 	// 会话 B 首聊：归属 dirB
 	drain("s-B")
-	if got := rootOf("s-B"); got != filepath.Clean(dirB) {
-		t.Fatalf("B 根 = %q, want %q", got, filepath.Clean(dirB))
+	if got := rootOf("s-B"); got != normalizeWorkspace(dirB) {
+		t.Fatalf("B 根 = %q, want %q", got, normalizeWorkspace(dirB))
 	}
 
 	// 关键断言：再向 A 发送（此时顶栏是 dirB）——A 的根仍是 dirA（不串根）
 	drain("s-A")
-	if got := rootOf("s-A"); got != filepath.Clean(dirA) {
-		t.Fatalf("再次发送后 A 根 = %q, want %q（不得串根）", got, filepath.Clean(dirA))
+	if got := rootOf("s-A"); got != normalizeWorkspace(dirA) {
+		t.Fatalf("再次发送后 A 根 = %q, want %q（不得串根）", got, normalizeWorkspace(dirA))
 	}
 	// 顶栏值保持用户选择（不被发送改写）
-	if got := s.Workspace(); got != filepath.Clean(dirB) {
-		t.Fatalf("顶栏工作区 = %q, want %q（发送不应改写全局）", got, filepath.Clean(dirB))
+	if got := s.Workspace(); got != normalizeWorkspace(dirB) {
+		t.Fatalf("顶栏工作区 = %q, want %q（发送不应改写全局）", got, normalizeWorkspace(dirB))
 	}
 }
 
@@ -145,8 +145,8 @@ func TestChatService_WorkspaceTrailingSlashNormalized(t *testing.T) {
 	if strings.HasSuffix(got, `\`) || strings.HasSuffix(got, `/`) {
 		t.Fatalf("工作区应去掉尾部反斜杠：%q", got)
 	}
-	if got != filepath.Clean(dir) {
-		t.Fatalf("规范化后应与 Clean 一致：%q vs %q", got, filepath.Clean(dir))
+	if got != normalizeWorkspace(dir) {
+		t.Fatalf("规范化后应与 normalizeWorkspace 一致：%q vs %q", got, normalizeWorkspace(dir))
 	}
 }
 

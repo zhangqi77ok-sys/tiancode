@@ -14,7 +14,7 @@ func TestChatService_SetWorkspace(t *testing.T) {
 	if err := s.SetWorkspace(dir); err != nil {
 		t.Fatalf("switch: %v", err)
 	}
-	if got := s.Workspace(); got != dir {
+	if got := s.Workspace(); got != normalizeWorkspace(dir) {
 		t.Fatalf("Workspace() = %q, want %q", got, dir)
 	}
 
@@ -31,7 +31,7 @@ func TestChatService_SetWorkspace(t *testing.T) {
 		t.Fatal("file path must be rejected")
 	}
 	// 被拒绝的调用不得改变当前工作区（否则 UI 与实际不一致）
-	if got := s.Workspace(); got != dir {
+	if got := s.Workspace(); got != normalizeWorkspace(dir) {
 		t.Fatalf("failed switch must not mutate workspace: %q", got)
 	}
 
