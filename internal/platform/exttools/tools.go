@@ -294,8 +294,9 @@ func (t *MCPTool) ProbeServer(ctx context.Context, spec catalog.Server) ([]strin
 	list, err := c.ListTools(ctx)
 	if err != nil {
 		// 连接失败：从 hub 摘掉刚拉起的实例（读-比-删在 hubMu 内，0.2.35 审计#9——
-		// 此前的无条件 Delete 可能删掉并发换上的新实例）
-		_ = t.dropClient(spec.Name, c)
+		// 此前的无条件 Delete 可能删掉并发换上的新实例）。
+		// 返回 false 表示实例已被并发替换：新实例归新的调用管，无需清理。
+		t.dropClient(spec.Name, c)
 		return nil, err
 	}
 	names := make([]string, 0, len(list))

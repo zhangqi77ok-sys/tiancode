@@ -21,7 +21,8 @@ import (
 // 尽力而为语义：无记录或解析失败都返回空，保持现状——归属缺失不阻断发送。
 func workspaceOfLedger(l *session.Ledger) string {
 	out := ""
-	_ = l.Replay(func(ev session.Event) error {
+	// Replay 失败按"无归属"处理：归属缺失不阻断发送（尽力而为语义，见函数注释）
+	if err := l.Replay(func(ev session.Event) error {
 		if ev.Kind() != session.EventWorkspace {
 			return nil
 		}
@@ -32,7 +33,9 @@ func workspaceOfLedger(l *session.Ledger) string {
 			out = p.Path
 		}
 		return nil
-	})
+	}); err != nil {
+		return ""
+	}
 	return out
 }
 
