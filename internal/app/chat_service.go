@@ -366,19 +366,24 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	// 都到"流收尾"为止：由转发 goroutine（或流未建立的错误路径）显式收尾。
 	watchStopped := make(chan struct{})
 	ag := s.newAgentWith(model, registry, approver, sessionID, watch)
+	// 以下三个前置失败路径都在看门狗/分发 goroutine 启动之前：就地释放 runCtx
+	//（看门狗未启动，无需 close(watchStopped)）
 	if err := s.applyExtensionPreface(ctx, ag); err != nil {
 		release()
+		cancelRun()
 		return nil, err
 	}
 	// ChatGPT 订阅凭证临期先自动续期（失败明确阻断：过期凭证发出去只会得到难解读的 401）
 	if err := s.ensureCodexFresh(ctx); err != nil {
 		release()
+		cancelRun()
 		return nil, err
 	}
 	// 记录本轮工作区快照：侧栏按空间分组取账本首个 workspace 事件，
 	// 会话归属 = 首次发送时的工作区（每轮都记，归属语义不受中途切换影响）。
 	if _, err := ledger.Append(session.EventWorkspace, map[string]string{"path": s.Workspace()}); err != nil {
 		release()
+		cancelRun()
 		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
 	}
 	stream, err := ag.Run(runCtx, ledger, text)
