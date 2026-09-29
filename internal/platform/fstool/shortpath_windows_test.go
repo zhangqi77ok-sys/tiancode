@@ -28,8 +28,14 @@ func TestResolveWithShortNameRoot(t *testing.T) {
 	if strings.EqualFold(tool.Root(), short) {
 		t.Fatalf("New 未把短名 root 解析成真实路径：%q", tool.Root())
 	}
-	if !strings.EqualFold(tool.Root(), dir) {
-		t.Fatalf("解析后的 root 应与原路径指向同一目录：%q vs %q", tool.Root(), dir)
+	// 期望值必须是**长名**（CI 上 t.TempDir() 本身就是短名 RUNNER~1——
+	// 拿它比对解析后的 root 就是在重演被修的 bug）
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(tool.Root(), real) {
+		t.Fatalf("解析后的 root 应与原路径指向同一目录：%q vs %q", tool.Root(), real)
 	}
 
 	// 相对路径写/读必须照常工作（修复前：write 直接报 path escapes workspace）

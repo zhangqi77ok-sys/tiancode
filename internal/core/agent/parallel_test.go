@@ -70,7 +70,10 @@ func chunkCalls(t *testing.T, cs ...llm.ToolCallChunk) []llm.ToolCall {
 	return acc.list()
 }
 
-// 只读工具连续出现时并发执行：峰值并发 >1 且总耗时明显小于串行之和。
+// 只读工具连续出现时并发执行：峰值并发 >1（确定性断言）。
+// 不再断言墙钟圈速：峰值 ≥2 已经证明执行重叠；而"总耗时 < 串行之和"依赖
+// 调度及时性——CI 2 核 runner 全包并行时，真重叠也会被调度拖过阈值
+// （实测 3×300ms 跑出 1.1s 而峰值并发正常），墙钟只会制造假红。
 func TestAgent_ReadOnlyCallsRunInParallel(t *testing.T) {
 	ledger, dir := newTestLedger(t)
 	defer ledger.Close()
@@ -93,19 +96,14 @@ func TestAgent_ReadOnlyCallsRunInParallel(t *testing.T) {
 	)}
 	loop := NewLoop(fr, "test-model", registry)
 
-	start := time.Now()
 	ch, err := loop.Run(context.Background(), ledger, "read three things")
 	if err != nil {
 		t.Fatal(err)
 	}
-	drain(t, ch, 5*time.Second)
-	elapsed := time.Since(start)
+	drain(t, ch, 15*time.Second)
 
 	if r3.peak.peak.Load() < 2 {
 		t.Fatalf("只读工具应并发执行，峰值并发 = %d", r3.peak.peak.Load())
-	}
-	if elapsed >= 900*time.Millisecond {
-		t.Fatalf("三个 300ms 只读调用串行会 ≥900ms，实测 %v（并行圈速未生效）", elapsed)
 	}
 	// 账本事件顺序保持原序（并行只发生在执行，落账按序）
 	verifyLedgerOrder(t, dir, []string{"c1", "c2", "c3"})
