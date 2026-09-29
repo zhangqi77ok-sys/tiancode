@@ -70,16 +70,18 @@ if (-not (Test-Path $notesFile)) { throw "missing release notes: $notesFile" }
 $notes = [System.IO.File]::ReadAllText($notesFile, $utf8)
 
 $rel = $releases | Where-Object { $_.tag_name -eq $tag }
-if ($null -eq $rel) {
-    Write-Host "==> creating release $tag"
-    $rel = Invoke-GhApi POST "https://api.github.com/repos/$Repo/releases" @{
-        tag_name = $tag
-        name     = "tiancode $tag"
-        body     = $notes
-    }
-} else {
-    Write-Host "==> release $tag exists, updating notes"
-    Invoke-GhApi PATCH "https://api.github.com/repos/$Repo/releases/$($rel.id)" @{ body = $notes } | Out-Null
+if ($null -ne $rel) {
+    # 重建：同名资产与 DELETE 的竞态很难逐个处理——整个 release 删掉重建
+    #（tag 保留，不重打；release body 随后由 POST 重新写入）
+    Write-Host "==> release $tag exists: recreating (drops old assets)"
+    Invoke-GhApi DELETE "https://api.github.com/repos/$Repo/releases/$($rel.id)" $null | Out-Null
+    Start-Sleep -Seconds 2
+}
+Write-Host "==> creating release $tag"
+$rel = Invoke-GhApi POST "https://api.github.com/repos/$Repo/releases" @{
+    tag_name = $tag
+    name     = "tiancode $tag"
+    body     = $notes
 }
 
 # ---- 3. upload assets (delete existing first, so content is always this build) ----
@@ -90,17 +92,42 @@ foreach ($f in @("tiancode-setup-v$Version.exe", "tiancode-v$Version-portable.zi
     $old = $existing | Where-Object { $_.name -eq $f }
     if ($old) {
         Write-Host "==> deleting old asset: $f"
-        Invoke-GhApi DELETE "https://api.github.com/repos/$Repo/releases/$($rel.id)/assets/$($old.id)" $null | Out-Null
+        try {
+            Invoke-GhApi DELETE "https://api.github.com/repos/$Repo/releases/$($rel.id)/assets/$($old.id)" $null | Out-Null
+            Start-Sleep -Milliseconds 500
+        } catch {
+            # 404 = 已不存在（幂等），继续上传
+            Write-Host "    (old asset already gone)"
+        }
     }
     Write-Host "==> uploading: $f ($([math]::Round((Get-Item $path).Length / 1MB, 2)) MB)"
     $uploadUri = "https://uploads.github.com/repos/$Repo/releases/$($rel.id)/assets?name=$f"
-    $out = & curl.exe -sS -X POST -H "Authorization: token $token" `
-        -H "Content-Type: application/octet-stream" `
-        --data-binary "@$path" $uploadUri 2>&1
-    $text = ($out | Out-String)
-    if ($text -notmatch '"state"\s*:\s*"uploaded"') {
+    $uploaded = $false
+    for ($attempt = 1; $attempt -le 3 -and -not $uploaded; $attempt++) {
+        $out = & curl.exe -sS -X POST -H "Authorization: token $token" `
+            -H "Content-Type: application/octet-stream" `
+            --data-binary "@$path" $uploadUri 2>&1
+        $text = ($out | Out-String)
+        if ($text -match '"state"\s*:\s*"uploaded"') {
+            $uploaded = $true
+            break
+        }
+        if ($text -match 'already_exists') {
+            # 同名资产仍在（删除有延迟）：重新拉列表按 id 删除后重试
+            $fresh = Invoke-GhApi GET "https://api.github.com/repos/$Repo/releases/$($rel.id)/assets" $null
+            foreach ($a in ($fresh | Where-Object { $_.name -eq $f })) {
+                try {
+                    Invoke-GhApi DELETE "https://api.github.com/repos/$Repo/releases/$($rel.id)/assets/$($a.id)" $null | Out-Null
+                } catch {
+                    Write-Host "    (delete retry: asset may be gone)"
+                }
+                Start-Sleep -Seconds 2
+            }
+            continue
+        }
         throw "upload failed $f : $($text.Substring(0, [Math]::Min(300, $text.Length)))"
     }
+    if (-not $uploaded) { throw "upload failed after retries: $f" }
 }
 
 Remove-Item $tmpJson -ErrorAction SilentlyContinue
