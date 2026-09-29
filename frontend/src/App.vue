@@ -14,6 +14,7 @@ import MessageList from './components/MessageList.vue'
 import SessionList from './components/SessionList.vue'
 import SkillSettings from './components/SkillSettings.vue'
 import ToastHost from './components/ToastHost.vue'
+import TurnReview from './components/TurnReview.vue'
 
 // 根组件退化为布局壳：顶栏/侧栏/对话/输入各自自治，事件桥在此统一接线。
 const store = useChatStore()
@@ -119,6 +120,13 @@ onMounted(() => {
   bridge().runtime.EventsOn('chat:terminal', (p: { sessionID: string; endReason: number; error: string }) => {
     store.onTerminal(p)
   })
+  // 油表（0.0.09）：本轮 prompt token（上下文大小读数），顶栏显示
+  bridge().runtime.EventsOn(
+    'chat:usage',
+    (p: { sessionID: string; prompt: number; completion: number; total: number }) => {
+      store.onUsage(p)
+    },
+  )
   bridge().runtime.EventsOn(
     'chat:tool',
     (p: {
@@ -178,6 +186,8 @@ onBeforeUnmount(() => {
 
       <main class="card relative flex min-w-0 flex-1 flex-col">
         <MessageList @suggest="draft = $event" />
+        <!-- 本轮变更审查带（0.0.09）：write/edit 收拢在输入框上方，点开即 diff -->
+        <TurnReview />
         <Composer v-model="draft" />
         <!-- 悬浮任务清单：挂在对话面板内（absolute 以面板为参照系），位置/折叠态跨重启保留 -->
         <FloatingTodo />

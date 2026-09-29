@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -236,24 +237,18 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 		}
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ToolCalls: calls})
+		// 0.0.09：只读工具并行圈速——好模型一次要读五个文件、搜两处，串行
+		// 每本都要等上一本读完再请求下一次模型，圈速浪费在等不在模型。
+		// 分段规则：**连续**的只读调用为一组并发执行；写类（write/replace/shell/
+		// ext_manage 及一切不确定的）单独串行——两个人同时改同一个文件绝不允许。
+		// 账本事件与 msgs 顺序始终按 calls 原序（并发只在执行本身，落账在收集后
+		// 按序做——Ledger.Append 内部有锁但这里根本不需要并发写）。
 		for i := range calls {
 			if calls[i].ID == "" {
 				calls[i].ID = fmt.Sprintf("call-%d", ledger.NextSeq())
 			}
-			call := calls[i]
-			if _, err := ledger.Append(session.EventToolCall, map[string]string{
-				"id": call.ID, "name": call.Name, "arguments": call.Arguments,
-			}); err != nil {
-				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
-				return
-			}
-			// running 事件（0.0.06）：执行前先上抛"进行中"动态（只进实时流，
-			// 不落账本——账本只有终态结果）。前端据此先出"执行中"卡并随
-			// 终态事件原地更新（CallID 配对），卡片输出随事件增长。
-			forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
-				Name: call.Name, Status: "running", Summary: "执行中…", CallID: call.ID,
-			}})
-			result := l.dispatchTool(ctx, call, ledger, forward)
+		}
+		finishCall := func(call llm.ToolCall, result tools.ToolResult) error {
 			// 账本 payload：模型可见字段之外，一并落 UI 专用数据——语义标签/diff
 			// （0.0.06）与撤销快照（0.0.07）。undo 携带旧全文：重启后仍能"恢复
 			// 写入前"；它只被后端恢复接口读取，derive 投影不解析（不进模型上下文）。
@@ -271,8 +266,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				payload["undo_note"] = result.UndoNote
 			}
 			if _, err := ledger.Append(session.EventToolResult, payload); err != nil {
-				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool result: %w", err)})
-				return
+				return err
 			}
 			// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
 			// 下一续步请求才合法（结果经 ToolCallID 与调用配对）
@@ -288,12 +282,9 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			summary := result.Content
 			if len(summary) > 200 {
-				// 为什么截断 200：工具卡片只需摘要，完整结果已在账本与模型上下文中。
 				// 走 truncateToBytes：按字节切会把中文切成非法 UTF-8（0.2.35 审计#8）
 				summary = truncateToBytes(summary, 200) + "…"
 			}
-			// 终态事件单帧携带全部 UI 数据：内容/摘要/diff/语义标签/撤销元数据
-			//（旧全文本身不进事件，只留在账本——恢复走后端接口）
 			undoPath, undoExists := "", false
 			if result.Undo != nil {
 				undoPath, undoExists = result.Undo.Path, result.Undo.OldExists
@@ -303,8 +294,74 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				Title: result.Title, Op: result.Op, CallID: call.ID,
 				HasUndo: result.Undo != nil, UndoPath: undoPath, UndoExists: undoExists, UndoNote: result.UndoNote,
 			}}) {
-				return
+				return errConsumerGone
 			}
+			return nil
+		}
+		emitCallStart := func(call llm.ToolCall) error {
+			if _, err := ledger.Append(session.EventToolCall, map[string]string{
+				"id": call.ID, "name": call.Name, "arguments": call.Arguments,
+			}); err != nil {
+				return err
+			}
+			// running 事件（0.0.06）：执行前先上抛"进行中"动态（只进实时流，
+			// 不落账本——账本只有终态结果）。前端据此先出"执行中"卡并随
+			// 终态事件原地更新（CallID 配对），卡片输出随事件增长。
+			forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+				Name: call.Name, Status: "running", Summary: "执行中…", CallID: call.ID,
+			}})
+			return nil
+		}
+		i := 0
+		for i < len(calls) {
+			if !isReadOnlyCall(calls[i]) {
+				call := calls[i]
+				i++
+				if err := emitCallStart(call); err != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
+					return
+				}
+				if err := finishCall(call, l.dispatchTool(ctx, call, ledger, forward)); err != nil {
+					if errors.Is(err, errConsumerGone) {
+						return // 消费方离开：事件已落账本，直接退出
+					}
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("finish tool result: %w", err)})
+					return
+				}
+				continue
+			}
+			// 只读段：[i, j) 连续只读——并发执行，按序收尾
+			j := i
+			for j < len(calls) && isReadOnlyCall(calls[j]) {
+				j++
+			}
+			seg := calls[i:j]
+			for _, call := range seg {
+				if err := emitCallStart(call); err != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
+					return
+				}
+			}
+			results := make([]tools.ToolResult, len(seg))
+			var wg sync.WaitGroup
+			for k := range seg {
+				wg.Add(1)
+				go func(k int, call llm.ToolCall) {
+					defer wg.Done()
+					results[k] = l.dispatchTool(ctx, call, ledger, forward)
+				}(k, seg[k])
+			}
+			wg.Wait()
+			for k := range seg {
+				if err := finishCall(seg[k], results[k]); err != nil {
+					if errors.Is(err, errConsumerGone) {
+						return // 消费方离开：事件已落账本，直接退出
+					}
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("finish tool result: %w", err)})
+					return
+				}
+			}
+			i = j
 		}
 		sb.Reset() // 新一步的文本从零累计；只有最终无工具调用步的文本进入锚点
 	}
@@ -420,6 +477,38 @@ func (l *Loop) execTool(ctx context.Context, call llm.ToolCall) tools.ToolResult
 		return tools.ToolResult{Content: fmt.Sprintf("tool %q mechanism error: %v", call.Name, err), IsError: true}
 	}
 	return res
+}
+
+// errConsumerGone：finishCall 里 forward 返回 true（消费方离开）时的哨兵——
+// 调用方据此退出循环（事件已落账本，不需要再 emitTerminal）。
+var errConsumerGone = errors.New("consumer gone")
+
+// isReadOnlyCall 判定一次工具调用是否只读（0.0.09 并行白名单）。
+// 白名单宁可窄：write/replace/shell/ext_manage 及一切解析不出的形态一律串行——
+// 两个人同时改同一个文件的代价远大于少并行几次。
+//   - fs：action ∈ {read,list,tree} 才只读（fs 是"一个名字两种人"，按参数分）；
+//   - search/git：整体只读（git 在本仓库只有 status/diff/log，无改写子命令——
+//     审计约束见工具描述与 ADR；新增子命令时必须回来更新这里）。
+func isReadOnlyCall(call llm.ToolCall) bool {
+	switch call.Name {
+	case "search", "git":
+		return true
+	case "fs":
+		var p struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal([]byte(call.Arguments), &p); err != nil {
+			return false // 解析不出 = 串行
+		}
+		switch p.Action {
+		case "read", "list", "tree":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 // callAccumulator 按分片 Index 累计流式工具调用（跨分片拼接 arguments）。

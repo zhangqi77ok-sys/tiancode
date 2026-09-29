@@ -154,6 +154,60 @@ func (b *Bind) RestoreToolWrite(sessionID, callID string) (string, error) {
 	return b.chat.RestoreToolWrite(sessionID, callID)
 }
 
+// SearchWorkspaceFiles 为输入框的 @ 引用列出工作区文件（0.0.09）：把路径直接
+// 递给模型，省掉"模型先花一步找文件"。只读遍历、有界（跳过依赖/构建目录、
+// 命中上限 20），query 为空返回常用文件前 20 个。无工作区显式报错。
+func (b *Bind) SearchWorkspaceFiles(query string) ([]string, error) {
+	root := b.chat.Workspace()
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("纯对话模式没有工作区，无法引用文件")
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("工作区目录不可用：%s", root)
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	skipped := map[string]bool{
+		".git": true, "node_modules": true, "vendor": true, "dist": true,
+		"build": true, "bin": true, "obj": true, ".idea": true, ".vscode": true,
+	}
+	var hits []string
+	visited := 0
+	maxVisited, maxHits := 5000, 20
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单个不可读条目不阻断遍历（尽力而为）
+		}
+		if visited >= maxVisited {
+			return filepath.SkipAll
+		}
+		visited++
+		name := d.Name()
+		if d.IsDir() {
+			if skipped[name] && p != root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+		if q == "" || strings.Contains(strings.ToLower(relSlash), q) {
+			hits = append(hits, relSlash)
+			if len(hits) >= maxHits {
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return hits, nil
+}
+
 // SaveTextFile 弹系统保存对话框并写入文本（0.0.06：导出会话"另存为文件"）。
 // 为什么放后端：原生保存对话框依赖 Wails 应用上下文；WebView 内的下载行为不可控。
 // 用户取消返回空串（前端据此不提示成功）；写盘失败显式报错。
@@ -245,6 +299,16 @@ func (b *Bind) Send(sessionID, text string) error {
 				"sessionID": sessionID,
 				"delta":     c.Delta,
 				"thinking":  c.Thinking,
+			})
+		}
+		if c.Usage != nil {
+			// 油表（0.0.09）：上游 token 用量透传——顶栏显示本轮 prompt token
+			//（上下文大小的直接读数）。没有上下文长度配置时不编百分比。
+			wruntime.EventsEmit(ctx, "chat:usage", map[string]any{
+				"sessionID":  sessionID,
+				"prompt":     c.Usage.PromptTokens,
+				"completion": c.Usage.CompletionTokens,
+				"total":      c.Usage.TotalTokens,
 			})
 		}
 		if c.ToolEvent != nil {

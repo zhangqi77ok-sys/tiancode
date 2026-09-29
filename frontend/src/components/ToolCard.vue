@@ -64,6 +64,11 @@ const iconName = computed(() => {
 // "在资源管理器中显示"（0.0.06）：只对文件类动作出按钮——主标签即工作区相对路径。
 // shell/git/search 的主标签是命令/搜索词，没有对应的文件位置。
 const revealable = computed(() => ['read', 'write', 'edit', 'list', 'tree'].includes(props.m.op ?? ''))
+
+// 审查带聚焦（0.0.09）：成功 write/edit 卡的文件名可点——diff 主视图在审查带
+const reviewable = computed(
+  () => props.m.status === 'success' && (props.m.op === 'write' || props.m.op === 'edit') && !!props.m.callId,
+)
 async function reveal() {
   try {
     await bridge().app.RevealInExplorer(props.m.title?.trim() || '')
@@ -124,7 +129,15 @@ function diffLineClass(line: string): string {
         :class="m.status === 'error' ? 'bg-[var(--c-err)]' : isRunning ? 'animate-pulse bg-[var(--c-warn)]' : 'bg-[var(--c-ok)]'"
       ></span>
       <AppIcon :name="iconName" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
-      <span class="min-w-0 truncate font-medium text-[var(--c-text)]" :title="m.content">{{ label }}</span>
+      <!-- 文件名主标签（0.0.09）：write/edit 的文件名点击 → 聚焦审查带里的
+           diff（diff 是主视图，资源管理器降级为次要动作） -->
+      <span
+        class="min-w-0 truncate font-medium text-[var(--c-text)]"
+        :class="reviewable ? 'cursor-pointer underline decoration-dotted underline-offset-2' : ''"
+        :title="reviewable ? `${label} · 点击在审查带中查看变更` : m.content"
+        @click.stop="reviewable ? store.focusReview(m.callId!) : undefined"
+        >{{ label }}</span
+      >
       <span
         v-if="opLabel"
         class="shrink-0 rounded-md bg-[var(--c-primary-soft)] px-1.5 py-0.5 text-[10px] text-[var(--c-primary)]"

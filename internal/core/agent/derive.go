@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"tiancode/internal/core/llm"
@@ -13,7 +14,26 @@ import (
 const toolResultModelLimit = 4096
 const toolEventIPCLimit = 64 * 1024
 
+// keepFullToolTurns：最近 N 个 user 轮次的只读工具结果保持全文，更早的收成
+// 单行（0.0.09 油表治理）。为什么只折叠只读：read/list/tree/search 的旧输出
+// 价值随时间衰减最快（"我读过什么"远不如"读到了什么"重要），而 write/replace
+// 的回执与 shell 的失败尾部承载可执行信息，一律不动。为什么不用摘要模型：
+// 会把行号和报错写错（0.0.09 用户裁决）——单行丢弃是确定性的，不引入新错误源。
+const keepFullToolTurns = 2
+
 func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
+	// 先数 user 轮次总数：折叠判定需要"最近 N 轮"的边界（账本是单向流，
+	// 投影前不知道后面还有没有新 turn）。
+	totalTurns := 0
+	if err := ledger.Replay(func(ev session.Event) error {
+		if ev.Kind() == session.EventUserMessage {
+			totalTurns++
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
 	var msgs []llm.Message
 	var calls []llm.ToolCall
 	results := []*llm.Message{}
@@ -23,6 +43,7 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 	// 的文本）；EventAssistantDelta 的半截内容绝不投影（不把未完成的回复
 	// 当成完成回复，thinking 也不进模型上下文）。
 	lastAssistant := -1
+	turn := -1
 
 	complete := func() bool {
 		if len(calls) == 0 {
@@ -60,6 +81,7 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 		case session.EventUserMessage:
 			flush()
 			lastAssistant = -1
+			turn++
 			var p struct {
 				Text string `json:"text"`
 			}
@@ -91,6 +113,7 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 				Name    string `json:"name"`
 				Content string `json:"content"`
 				IsError bool   `json:"is_error"`
+				Title   string `json:"title"`
 			}
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
@@ -99,10 +122,21 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 			if idx < 0 {
 				return nil
 			}
+			// 油表治理（0.0.09）：非最近轮次的**成功只读**结果收成单行——这是
+			// 丢弃旧读数，不是摘要；账本原文不动（账本即事实源）。错误结果与
+			// 写类工具永远全文（失败信息与改动回执是可执行信息）。
+			isOld := turn < totalTurns-keepFullToolTurns
+			isReadOnly := isReadOnlyCall(llm.ToolCall{Name: calls[idx].Name, Arguments: calls[idx].Arguments})
+			content := p.Content
+			if !p.IsError && isOld && isReadOnly {
+				content = foldOldReadOnly(calls[idx].Name, p.Title)
+			} else {
+				content = truncateToolResult(content)
+			}
 			results[idx] = &llm.Message{
 				Role:       "tool",
 				ToolCallID: calls[idx].ID,
-				Content:    truncateToolResult(p.Content),
+				Content:    content,
 			}
 		case session.EventAssistantMsg:
 			flush()
@@ -154,6 +188,16 @@ func truncateToolResult(content string) string {
 	// 0.0.06 头尾保留：工具结果里模型最需要的信息常在尾部（测试 FAIL 汇总、
 	// 命令最终错误、diff 末尾）。只留头部会让模型对着开头猜结局。
 	return tools.HeadTail(content, toolResultModelLimit)
+}
+
+// foldOldReadOnly 把旧轮次的只读结果收成确定性的单行（0.0.09）。
+// 明示"已省略"：模型若需要旧内容就重新 read，而不是对被裁的尾巴猜。
+func foldOldReadOnly(name, title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		t = "（无标题）"
+	}
+	return fmt.Sprintf("%s %s → 已读（旧轮次输出已省略，需要时请重新读取）", name, t)
 }
 
 func truncateToBytes(s string, n int) string {

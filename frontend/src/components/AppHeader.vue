@@ -40,6 +40,14 @@ const statusText = computed(() => {
   return store.running ? '运行中' : `后台运行中 · ${busyTitle.value}`
 })
 
+// 油表（0.0.09）：本轮 prompt token（上游 usage 的直接读数）。没有上下文长度
+// 配置时只显示绝对数字——不编百分比。
+const usageText = computed(() => {
+  const n = store.promptTokens
+  if (!n) return ''
+  return n >= 10000 ? `上下文 ≈${(n / 1000).toFixed(1)}k tok` : `上下文 ${n} tok`
+})
+
 // 状态灯点击：跳到等待处理的会话（优先"待确认"，其次其他运行中会话）
 function jumpToBusy() {
   if (store.busyTarget) void store.selectSession(store.busyTarget)
@@ -202,6 +210,8 @@ onBeforeUnmount(() => {
         ></span>
         {{ statusText }}
       </button>
+      <!-- 油表（0.0.09）：有读数才显示；纯数据展示用 .stat -->
+      <span v-if="usageText" class="stat">{{ usageText }}</span>
       <!-- 导出（0.0.06）：复制 / 另存文件二选一；生成中也可用（导出已落账部分） -->
       <div ref="exportMenuRef" class="relative">
         <button

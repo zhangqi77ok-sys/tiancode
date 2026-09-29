@@ -242,6 +242,8 @@ interface WailsApp {
   SaveTextFile(defaultName: string, content: string): Promise<string>
   // 恢复一次 write/replace 写入前的内容（0.0.07）。失败（文件被改过等）显式报错。
   RestoreToolWrite(sessionID: string, callID: string): Promise<string>
+  // @ 文件引用（0.0.09）：列出工作区文件（有界、跳过依赖/构建目录）。无工作区报错。
+  SearchWorkspaceFiles(query: string): Promise<string[] | null>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
   PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
@@ -389,6 +391,7 @@ export function bridge(): WailsBridge {
         RestoreToolWrite: async () => {
           throw new Error('离线模式：恢复不可用')
         },
+        SearchWorkspaceFiles: async () => [],
         DiscoverModels: offlineWrite,
         TestChannel: offlineWrite,
         ListCredentials: async () => [],

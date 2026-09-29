@@ -2,6 +2,8 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useChatStore } from '../stores/chat'
+import { parseAtToken, applyPick, type AtToken } from '../composables/atFile'
+import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 
 // 输入框高度（0.0.06）：默认约 3 行（72px）；可拖到大约半屏（50vh）。
@@ -19,6 +21,75 @@ const registerInput = inject<(el: HTMLTextAreaElement | null) => void>('register
 function setBoxRef(el: unknown) {
   box.value = el as HTMLTextAreaElement | null
   registerInput(box.value)
+}
+
+// ---- @ 文件引用（0.0.09）：输入 @ 用工作区文件列表补全，选中把路径放进消息——
+// 模型不用再花一步自己搜文件。IME 组合中不触发；Escape/失焦关闭。----
+const atFile = ref<AtToken | null>(null)
+const atHits = ref<string[]>([])
+const atIndex = ref(0)
+const atLoading = ref(false)
+let atTimer: ReturnType<typeof setTimeout> | null = null
+
+function onCaretChange() {
+  const t = box.value
+  if (!t) return
+  const token = parseAtToken(draft.value, t.selectionStart ?? 0)
+  atFile.value = token
+  if (!token) {
+    atHits.value = []
+    return
+  }
+  if (atTimer) clearTimeout(atTimer)
+  atTimer = setTimeout(async () => {
+    atLoading.value = true
+    try {
+      atHits.value = (await bridge().app.SearchWorkspaceFiles(token.query)) ?? []
+      atIndex.value = 0
+    } catch {
+      atHits.value = [] // 纯对话/目录不可用：不出浮层，不打断输入
+    } finally {
+      atLoading.value = false
+    }
+  }, 150)
+}
+
+function applyAtPick(path: string) {
+  const t = box.value
+  if (!t || !atFile.value) return
+  const r = applyPick(draft.value, t.selectionStart ?? 0, atFile.value, path)
+  draft.value = r.text
+  atFile.value = null
+  atHits.value = []
+  nextTickFocus(r.caret)
+}
+function nextTickFocus(caret: number) {
+  requestAnimationFrame(() => {
+    if (box.value) {
+      box.value.focus()
+      box.value.setSelectionRange(caret, caret)
+    }
+  })
+}
+function atKeydown(e: KeyboardEvent): boolean {
+  if (!atFile.value || !atHits.value.length) return false
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    atIndex.value = (atIndex.value + (e.key === 'ArrowDown' ? 1 : atHits.value.length - 1)) % atHits.value.length
+    return true
+  }
+  if (e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault()
+    applyAtPick(atHits.value[atIndex.value])
+    return true
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    atFile.value = null
+    atHits.value = []
+    return true
+  }
+  return false
 }
 
 // ---- 模型选择器（0.2.28 用户反馈：这里的模型应该是已有的模型，可以支持选择）----
@@ -47,16 +118,19 @@ function onDocMousedown(e: MouseEvent) {
 onMounted(() => document.addEventListener('mousedown', onDocMousedown))
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMousedown))
 
-// 自动增高且不超过半屏；发送后复位到默认高度
+// 自动增高且不超过半屏；发送后复位到默认高度。输入同时刷新 @ 引用状态。
 function autoGrow(e: Event) {
   const t = e.target as HTMLTextAreaElement
   t.style.height = 'auto'
   t.style.height = Math.min(t.scrollHeight, window.innerHeight / 2) + 'px'
+  onCaretChange()
 }
 
 // Enter 发送 / Shift+Enter 换行（ChatGPT/Cursor/Cline 通用惯例，替代旧版 Ctrl+Enter）。
 // isComposing 保护：中文输入法选词时的 Enter 是候选确认，不是发送意图——必须放行。
+// @ 浮层打开时：上下/Enter/Escape 归浮层（优先于发送）。
 function onComposerKeydown(e: KeyboardEvent) {
+  if (atKeydown(e)) return
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault()
     void submit()
@@ -174,7 +248,29 @@ function editQueued(id: number) {
       </div>
     </div>
 
-    <div class="flex items-end gap-3">
+    <div class="relative flex items-end gap-3">
+      <!-- @ 文件引用浮层（0.0.09） -->
+      <div
+        v-if="atFile && atHits.length"
+        class="absolute bottom-full left-3 z-40 mb-1 max-h-64 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        role="listbox"
+        aria-label="引用工作区文件"
+      >
+        <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">引用文件（Enter 选中，Esc 关闭）</div>
+        <button
+          v-for="(h, i) in atHits"
+          :key="h"
+          role="option"
+          :aria-selected="i === atIndex"
+          class="menu-item"
+          :class="i === atIndex ? 'bg-[var(--c-primary-soft)]' : ''"
+          @mousedown.prevent
+          @click="applyAtPick(h)"
+        >
+          <AppIcon name="file" :size="12" class="shrink-0 text-[var(--c-text-faint)]" />
+          <span class="min-w-0 flex-1 truncate text-left">{{ h }}</span>
+        </button>
+      </div>
       <textarea
         :ref="setBoxRef"
         v-model="draft"
@@ -182,9 +278,11 @@ function editQueued(id: number) {
         aria-label="消息输入框"
         class="min-w-0 flex-1 resize-y rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 transition-colors focus:border-[var(--c-primary)]"
         :style="{ minHeight: MIN_INPUT_HEIGHT_PX + 'px', maxHeight: MAX_INPUT_HEIGHT }"
-        placeholder="输入消息…（Enter 发送，Shift+Enter 换行；回合进行中自动排队）"
+        placeholder="输入消息…（Enter 发送，Shift+Enter 换行；@ 引用文件）"
         @keydown="onComposerKeydown"
         @input="autoGrow"
+        @click="onCaretChange"
+        @keyup="onCaretChange"
       ></textarea>
       <button
         v-if="store.running"

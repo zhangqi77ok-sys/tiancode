@@ -672,6 +672,21 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 油表（0.0.09）：本轮最后一次上游 usage 的 prompt token（= 当前上下文大小
+  // 的直接读数）。没有上下文长度配置，绝不显示编造的百分比。
+  const promptTokens = ref(0)
+  function onUsage(p: { sessionID: string; prompt: number; completion: number; total: number }) {
+    if (p.sessionID !== sessionId.value) return
+    promptTokens.value = p.prompt
+  }
+
+  // 审查带聚焦（0.0.09）：工具卡点文件名 → 审查带展开对应变更并滚动到位。
+  // 置 null 表示清除。资源管理器降级为次要动作，diff 是主视图。
+  const reviewFocus = ref<string | null>(null)
+  function focusReview(callId: string) {
+    reviewFocus.value = callId
+  }
+
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     const c = ensureConvo(p.sessionID)
     c.running = false
@@ -860,6 +875,10 @@ export const useChatStore = defineStore('chat', () => {
     onChunk,
     onTool,
     restoreWrite,
+    promptTokens,
+    onUsage,
+    reviewFocus,
+    focusReview,
     onTodo,
     onAsk,
     resolveAsk,
