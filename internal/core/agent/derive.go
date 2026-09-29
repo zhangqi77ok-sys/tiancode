@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -10,6 +12,11 @@ import (
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
 )
+
+// dataURL 构造图片的 data URL（base64）。
+func dataURL(mediaType string, b []byte) string {
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(b)
+}
 
 const toolResultModelLimit = 4096
 const toolEventIPCLimit = 64 * 1024
@@ -83,12 +90,51 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 			lastAssistant = -1
 			turn++
 			var p struct {
-				Text string `json:"text"`
+				Text        string                   `json:"text"`
+				Attachments []session.UserAttachment `json:"attachments"`
 			}
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
 			}
-			msgs = append(msgs, llm.Message{Role: "user", Content: p.Text})
+			// 附件（0.0.10）：重建发给模型的历史时图片必须仍然带图（data URL），
+			// 内联文件仍然带当时的内容——否则下一轮模型看不见截图/日志。
+			// 无附件 = 纯文本字符串 content（请求形态不变）。
+			if len(p.Attachments) == 0 {
+				msgs = append(msgs, llm.Message{Role: "user", Content: p.Text})
+				return nil
+			}
+			var parts []llm.ContentPart
+			text := p.Text
+			for _, att := range p.Attachments {
+				full := ledger.ResolveAttachmentPath(att.Path)
+				if att.Kind == "image" {
+					// 图片：data URL（上游按 image_url 读；不支持视觉的渠道展示上游错误）
+					b, err := os.ReadFile(full)
+					if err != nil {
+						text += fmt.Sprintf("\n[图片 %s 读取失败：%v]", att.Name, err)
+						continue
+					}
+					parts = append(parts, llm.ContentPart{Type: "text", Text: text})
+					text = ""
+					parts = append(parts, llm.ContentPart{Type: "image_url", ImageURL: dataURL(att.MediaType, b)})
+					continue
+				}
+				if att.Inline == "full" {
+					b, err := os.ReadFile(full)
+					if err == nil {
+						text += fmt.Sprintf("\n\n[附件文件 %s 内容如下]\n%s", att.Path, string(b))
+						continue
+					}
+					text += fmt.Sprintf("\n[附件 %s 读取失败：%v]", att.Name, err)
+					continue
+				}
+				// 只附路径
+				text += fmt.Sprintf("\n[附件文件 %s（未内联，需要时用 fs 读取）]", att.Path)
+			}
+			if text != "" || len(parts) == 0 {
+				parts = append([]llm.ContentPart{{Type: "text", Text: text}}, parts...)
+			}
+			msgs = append(msgs, llm.Message{Role: "user", Parts: parts})
 		case session.EventToolCall:
 			if complete() {
 				flush()

@@ -130,12 +130,17 @@ func (l *Loop) Phase() Phase { return Phase(l.phase.Load()) }
 //
 // 返回的通道恰好含一个 EndReason != EndNone 终态块后关闭；
 // 工具动态以 ToolEvent 块形式穿插其间。
-func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string) (<-chan llm.StreamChunk, error) {
+func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string, userAtts ...session.UserAttachment) (<-chan llm.StreamChunk, error) {
 	if !l.phase.CompareAndSwap(int32(PhaseIdle), int32(PhaseRunning)) {
 		return nil, ErrBusy
 	}
-	// 用户消息 write-ahead：持久化成功才允许继续（账本即事实源）
-	if _, err := ledger.Append(session.EventUserMessage, map[string]string{"text": userText}); err != nil {
+	// 用户消息 write-ahead：持久化成功才允许继续（账本即事实源）。
+	// 0.0.10：payload 携带附件引用（图片相对路径/文件路径与内联标记）。
+	userPayload := map[string]any{"text": userText}
+	if len(userAtts) > 0 {
+		userPayload["attachments"] = userAtts
+	}
+	if _, err := ledger.Append(session.EventUserMessage, userPayload); err != nil {
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
@@ -323,9 +328,22 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				}
 				if err := finishCall(call, l.dispatchTool(ctx, call, ledger, forward)); err != nil {
 					if errors.Is(err, errConsumerGone) {
-						return // 消费方离开：事件已落账本，直接退出
+						// 消费方离开：事件已落账本。但若是"用户停止"引发的取消，
+						// 必须补发终态（cancel 后 forward 的 select 可能随机走
+						// ctx.Done 分支把终态事件当"消费方离开"吞掉——0.0.10 修复）。
+						if ctx.Err() != nil {
+							emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
+						}
+						return
 					}
 					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("finish tool result: %w", err)})
+					return
+				}
+				// 停止打断（0.0.10）：工具执行完立即看取消——被中断的调用之后，
+				// 本轮不再执行剩余工具、不再请求模型，终态 EndCancelled。
+				// （此前只在下一轮开头看 ctx.Err，人点停止后界面要等命令自己结束。）
+				if ctx.Err() != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
 					return
 				}
 				continue
@@ -355,11 +373,21 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			for k := range seg {
 				if err := finishCall(seg[k], results[k]); err != nil {
 					if errors.Is(err, errConsumerGone) {
-						return // 消费方离开：事件已落账本，直接退出
+						// 消费方离开 + 用户停止：补发终态（同上）
+						if ctx.Err() != nil {
+							emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
+						}
+						return
 					}
 					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("finish tool result: %w", err)})
 					return
 				}
+			}
+			// 停止打断（0.0.10）：并行段收尾后同样立即检查（并行段内工具已感知
+			// 取消快速返回；这里保证不再进入后续段/模型请求）
+			if ctx.Err() != nil {
+				emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
+				return
 			}
 			i = j
 		}
@@ -410,6 +438,10 @@ func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *sess
 	}
 	if l.registry != nil {
 		if t, ok := l.registry.Get(call.Name); ok {
+			// CallID 注入（0.0.10）：文件确认卡与工具卡经同一 CallID 配对
+			if cs, isSetter := t.(interface{ SetCallID(string) }); isSetter {
+				cs.SetCallID(call.ID)
+			}
 			if ps, isSink := t.(tools.ProgressSink); isSink {
 				ps.SetProgress(func(partial string) {
 					_ = forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{

@@ -14,6 +14,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,6 +74,11 @@ type ChatService struct {
 	approvalTools    []string                       // 需要审批的工具名（空 = 关闭）
 	approvalEmit     func(ApprovalEvent)            // 事件回调（壳层注入）
 	pendingApprovals map[string]chan agent.Decision // 未决请求：ID → 答复通道
+
+	// 文件变更确认（0.0.10）：write/replace 落盘前的人为确认（应用/跳过）。
+	// pendingEdits: 确认 ID → 答复通道；editEmit 由壳层注入（chat:edit 事件）。
+	pendingEdits map[string]chan bool
+	editEmit     func(EditEvent)
 
 	// 问答交互状态（ask_user，0.2.15）：与审批同构的"问 → 等 → 答"配对
 	askEmit     func(AskEvent)         // 事件回调（壳层注入）
@@ -349,7 +355,22 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 // 互不串流。同一会话的并发发送由后端显式拒绝（0.2.27）：一份账本上交错写会让
 // Replay 顺序错乱——此前注释宣称"Loop 的 phase 互斥兜底"，但每轮新建 Loop，
 // 跨轮根本没有保护，只剩前端队列在兜。
+// Send 发送一条用户消息，返回流式块通道（恰好一个 EndReason 终态后关闭）。
 func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
+	return s.SendWithAttachments(ctx, sessionID, text, nil)
+}
+
+// SendWithAttachments 发送带附件的用户消息（0.0.10）：附件先物化（校验/落位/记引用），
+// 再走与 Send 相同的轮次链路（payload 带附件引用，derive 重建上下文时还原图片与内联内容）。
+func (s *ChatService) SendWithAttachments(ctx context.Context, sessionID, text string, rawAtts []IncomingAttachment) (<-chan llm.StreamChunk, error) {
+	atts, err := s.materializeAttachments(sessionID, rawAtts)
+	if err != nil {
+		return nil, err
+	}
+	return s.sendCore(ctx, sessionID, text, atts)
+}
+
+func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts []session.UserAttachment) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
@@ -432,7 +453,7 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 		cancelRun()
 		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
 	}
-	stream, err := ag.Run(runCtx, ledger, text)
+	stream, err := ag.Run(runCtx, ledger, text, atts...)
 	if err != nil {
 		release()
 		cancelRun()         // 流未建立：本轮 ctx 资源就地释放
@@ -515,9 +536,22 @@ type ChatMessage struct {
 	HasUndo  bool   `json:"hasUndo,omitempty"`
 	UndoPath string `json:"undoPath,omitempty"`
 	UndoNote string `json:"undoNote,omitempty"`
+	// 附件（0.0.10）：用户消息的图片/文件（重放后仍能显示；图片带 DataURL）
+	Attachments []ChatAttachment `json:"attachments,omitempty"`
 	// 问答卡（role="ask"）：问题与选项来自 tool_call 参数，答案在 Content
 	Question string   `json:"question,omitempty"`
 	Options  []string `json:"options,omitempty"`
+}
+
+// ChatAttachment 是重放后气泡里仍可显示的附件引用（0.0.10）。
+// 图片带 DataURL（重放时读附件文件生成）；文件带名字与路径。
+type ChatAttachment struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType,omitempty"`
+	DataURL   string `json:"dataUrl,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Inline    string `json:"inline,omitempty"`
 }
 
 // Replay 把会话账本投影为已确认消息列表，供前端恢复历史。
@@ -548,12 +582,25 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 		switch ev.Kind() {
 		case session.EventUserMessage:
 			var p struct {
-				Text string `json:"text"`
+				Text        string                   `json:"text"`
+				Attachments []session.UserAttachment `json:"attachments"`
 			}
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
 			}
-			out = append(out, ChatMessage{Role: "user", Content: p.Text})
+			msg := ChatMessage{Role: "user", Content: p.Text}
+			// 附件（0.0.10）：重放后气泡仍能显示图片/文件名——图片带 DataURL
+			//（重放时读附件文件），文件带名字与路径
+			for _, a := range p.Attachments {
+				ca := ChatAttachment{Name: a.Name, MediaType: a.MediaType, Path: a.Path, Inline: a.Inline, Kind: a.Kind}
+				if a.Kind == "image" {
+					if b, err := os.ReadFile(ledger.ResolveAttachmentPath(a.Path)); err == nil {
+						ca.DataURL = "data:" + a.MediaType + ";base64," + base64.StdEncoding.EncodeToString(b)
+					}
+				}
+				msg.Attachments = append(msg.Attachments, ca)
+			}
+			out = append(out, msg)
 		case session.EventAssistantDelta:
 			var p struct {
 				Text     string `json:"text"`

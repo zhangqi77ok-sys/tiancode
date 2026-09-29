@@ -75,7 +75,8 @@ md.use({
         '<div class="code-block">' +
         '<div class="code-head"><span class="code-lang">' +
         escapeHtml(label) +
-        '</span><button type="button" class="code-copy" data-copy>复制</button></div>' +
+        '</span><button type="button" class="code-copy" data-apply>应用到文件</button>' +
+        '<button type="button" class="code-copy" data-copy>复制</button></div>' +
         '<pre><code class="hljs language-' +
         escapeHtml(label) +
         '">' +

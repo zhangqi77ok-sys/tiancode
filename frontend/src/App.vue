@@ -127,6 +127,21 @@ onMounted(() => {
       store.onUsage(p)
     },
   )
+  // 文件变更确认（0.0.10）：write/replace 落盘前的确认卡，答复经 ResolveEdit 回流
+  bridge().runtime.EventsOn(
+    'chat:edit',
+    (p: {
+      id: string
+      sessionID: string
+      sessionTitle?: string
+      callId?: string
+      path: string
+      diff: string
+      isNew: boolean
+    }) => {
+      store.onEdit(p)
+    },
+  )
   bridge().runtime.EventsOn(
     'chat:tool',
     (p: {

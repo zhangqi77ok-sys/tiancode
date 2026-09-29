@@ -136,6 +136,16 @@ type Message struct {
 	Content    string
 	ToolCalls  []ToolCall
 	ToolCallID string // role=tool 时回填对应的调用 ID
+	// Parts 非空时（仅 user 消息）content 用多模态数组形态（0.0.10）：
+	// 文本 + 图片 data URL。空 Parts = 纯文本字符串 content（不改变既有请求形态）。
+	Parts []ContentPart
+}
+
+// ContentPart 是多模态消息的一个片段。
+type ContentPart struct {
+	Type     string `json:"type"` // "text" | "image_url"
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"-"` // data URL；序列化时包进 image_url 对象
 }
 
 // ToolCall 是一条完整的工具调用请求（由增量分片拼接而成）。

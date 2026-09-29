@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { closeUnbalancedFences, renderMarkdown } from '../markdown'
+import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
+import { useChatStore } from '../stores/chat'
 
 // 流式期间每个 chunk 都重跑 marked+DOMPurify 会让长回复卡顿：300ms 合帧渲染；
 // 且先把未闭合的 ``` 补齐（Streamdown「unterminated block」同款处理）——
@@ -15,11 +17,34 @@ const html = ref(renderMarkdown(props.content))
 let timer: ReturnType<typeof setTimeout> | null = null
 
 const { push: toast } = useToast()
+const dialogs = useDialogs()
+const store = useChatStore()
 
-// 事件委托：marked 渲染出的复制按钮（data-copy）统一在此处理——
+// 事件委托：marked 渲染出的复制/应用按钮统一在此处理——
 // v-html 内的元素无法直接绑 Vue 事件，委托到容器是标准做法
 async function onContentClick(e: MouseEvent) {
-  const btn = (e.target as HTMLElement).closest('[data-copy]')
+  const target = e.target as HTMLElement
+  const applyBtn = target.closest('[data-apply]')
+  if (applyBtn) {
+    const code = applyBtn.closest('.code-block')?.querySelector('pre code')?.textContent ?? ''
+    const lang = applyBtn.closest('.code-block')?.querySelector('.code-lang')?.textContent ?? ''
+    // 目标文件：语言名可当扩展名时给默认名；用户在对话框里改路径（不猜）
+    const ext = lang && /^[a-z0-9]{1,6}$/i.test(lang) ? `.${lang}` : '.txt'
+    const path = await dialogs.prompt({
+      title: '应用到文件',
+      message: '输入目标文件路径（工作区相对，进入确认卡后再落盘）：',
+      value: `untitled${ext}`,
+    })
+    if (!path) return // 取消/未选择：不产生任何写盘调用
+    try {
+      await store.proposeApplyCode(path, code)
+      toast('info', '已在下方生成确认卡：请核对 diff 后应用')
+    } catch (err) {
+      toast('error', String(err instanceof Error ? err.message : err))
+    }
+    return
+  }
+  const btn = target.closest('[data-copy]')
   if (!btn) return
   const code = btn.closest('.code-block')?.querySelector('pre code')?.textContent ?? ''
   try {

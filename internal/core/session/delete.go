@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// DeleteSession 删除会话账本文件。
+// DeleteSession 删除会话账本文件与附件目录。
 // 为什么幂等（不存在也返回 nil）：用户会连点/重试，重复删除报错会被读成"删不掉"。
 func DeleteSession(dir, sessionID string) error {
 	if err := validateSessionID(sessionID); err != nil {
@@ -16,6 +16,10 @@ func DeleteSession(dir, sessionID string) error {
 	path := filepath.Join(dir, sessionID+".jsonl")
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("删除会话失败：%w", err)
+	}
+	// 附件目录（0.0.10）：图片/临时文件随会话一起删，不留孤儿
+	if err := DeleteAttachments(dir, sessionID); err != nil {
+		return fmt.Errorf("删除会话附件失败：%w", err)
 	}
 	return nil
 }

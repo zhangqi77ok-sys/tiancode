@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -55,6 +56,18 @@ func New(chat *app.ChatService) *Bind {
 			"sessionID": e.SessionID,
 			"question":  e.Question,
 			"options":   e.Options,
+		})
+	})
+	// 文件变更确认桥（0.0.10）：write/replace 落盘前推确认卡，答复经 ResolveEdit 回流
+	chat.SetEditHandler(func(e app.EditEvent) {
+		wruntime.EventsEmit(b.appCtx(), "chat:edit", map[string]any{
+			"id":           e.ID,
+			"sessionID":    e.SessionID,
+			"sessionTitle": e.SessionTitle,
+			"callId":       e.CallID,
+			"path":         e.Path,
+			"diff":         e.Diff,
+			"isNew":        e.IsNew,
 		})
 	})
 	return b
@@ -143,6 +156,42 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 	return b.chat.ResolveApproval(id, approved, reason)
 }
 
+// ResolveEdit 提交用户对某次文件变更的答复（0.0.10：应用/跳过）。
+// 未确认前文件不会落盘；应用失败（外部改动）错误显式返回。
+func (b *Bind) ResolveEdit(sessionID, editID string, apply bool) error {
+	return b.chat.ResolveEdit(sessionID, editID, apply)
+}
+
+// ProposeFileWrite 把「应用到文件」的代码块内容变成待确认变更（0.0.10）。
+// 同一条确认链路：先看 diff，确认才落盘，取消不写。
+func (b *Bind) ProposeFileWrite(sessionID, path, content string) error {
+	return b.chat.ProposeFileWrite(sessionID, path, content)
+}
+
+// SendWithAttachments 发送带附件的用户消息（0.0.10）。attachments 是 JSON 数组
+// 字符串（图片/文件：name、kind、mediaType、dataB64、sourcePath）。
+// 发送失败时错误上抛——前端保留待发送区允许重试。
+func (b *Bind) SendWithAttachments(sessionID, text, attachments string) error {
+	ctx := b.appCtx()
+	runCtx, cancel := context.WithCancel(ctx)
+	b.mu.Lock()
+	b.cancels[sessionID] = cancel
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.cancels, sessionID)
+		b.mu.Unlock()
+	}()
+	var atts []app.IncomingAttachment
+	if strings.TrimSpace(attachments) != "" {
+		if err := json.Unmarshal([]byte(attachments), &atts); err != nil {
+			return fmt.Errorf("附件格式错误：%w", err)
+		}
+	}
+	_, sendErr := b.chat.SendWithAttachments(runCtx, sessionID, text, atts)
+	return sendErr
+}
+
 // ResolveAsk 提交用户对某次问答的答复（答案原样回流给模型继续推理）。
 func (b *Bind) ResolveAsk(id string, answer string) error {
 	return b.chat.ResolveAsk(id, answer)
@@ -156,11 +205,13 @@ func (b *Bind) RestoreToolWrite(sessionID, callID string) (string, error) {
 
 // SearchWorkspaceFiles 为输入框的 @ 引用列出工作区文件（0.0.09）：把路径直接
 // 递给模型，省掉"模型先花一步找文件"。只读遍历、有界（跳过依赖/构建目录、
-// 命中上限 20），query 为空返回常用文件前 20 个。无工作区显式报错。
-func (b *Bind) SearchWorkspaceFiles(query string) ([]string, error) {
-	root := b.chat.Workspace()
+// 命中上限 20），query 为空返回常用文件前 20 个。
+// 0.0.10：根 = **这场对话自己的工作区**（账本归属），不是顶栏里下一场新对话的根；
+// 纯对话没有归属 → 报错文案交给前端提示（不报错弹窗）。
+func (b *Bind) SearchWorkspaceFiles(sessionID, query string) ([]string, error) {
+	root := b.chat.SessionWorkspace(sessionID)
 	if strings.TrimSpace(root) == "" {
-		return nil, errors.New("纯对话模式没有工作区，无法引用文件")
+		return nil, errors.New("这场对话没有工作区")
 	}
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {

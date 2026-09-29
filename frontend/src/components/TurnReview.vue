@@ -5,13 +5,23 @@ import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 
-// 本轮变更审查带（0.0.09 驾驶舱）：编码时人要核对的是"这一轮改了哪些文件"——
-// 那些 write/edit 卡原本散落在消息流中间要往上翻。现在一条带子收拢在输入框
-// 上方：每个改动一行，点开就是那份 diff，旁边是已有的"恢复写入前"。
-// 不做完整编辑器/文件树/Monaco——先做这条审查带，比做文件树值。
+// 本轮变更审查带（0.0.09 驾驶舱）+ 待确认批量操作（0.0.10）。
 
 const store = useChatStore()
 const { push: toast } = useToast()
+
+// 待确认变更（0.0.10）：当前视图里的 pending_confirm 卡 ≥1 时出批量操作行
+//（同一轮多处改动：全部应用 / 全部跳过，逐个 ResolveEdit）
+const pendings = computed<ChatMsg[]>(() => store.messages.filter((m) => m.status === 'pending_confirm' && !!m.editId))
+const batchBusy = ref(false)
+async function resolveAll(apply: boolean) {
+  if (batchBusy.value) return
+  batchBusy.value = true
+  for (const m of pendings.value) {
+    await store.resolveEdit(m.editId!, apply)
+  }
+  batchBusy.value = false
+}
 
 // 本轮 = 最后一条 user 消息之后的成功 write/edit 卡（进行中实时出现，不必等终态）
 const changes = computed<ChatMsg[]>(() => {
@@ -98,6 +108,14 @@ function fileName(m: ChatMsg): string {
 </script>
 
 <template>
+  <div v-if="pendings.length" class="mx-1 mb-1.5 flex items-center gap-2 rounded-xl border border-[var(--c-warn)] bg-[var(--c-warn-soft)] px-3 py-2 text-xs">
+    <AppIcon name="shield" :size="13" class="text-[var(--c-warn-text)]" />
+    <span class="font-medium text-[var(--c-warn-text)]">{{ pendings.length }} 项文件改动待确认（确认前不写入）</span>
+    <div class="ml-auto flex gap-1.5">
+      <button class="btn-primary px-3 py-1 text-xs" :disabled="batchBusy" @click="resolveAll(true)">全部应用</button>
+      <button class="chip text-xs" :disabled="batchBusy" @click="resolveAll(false)">全部跳过</button>
+    </div>
+  </div>
   <div
     v-if="changes.length"
     ref="rowsEl"

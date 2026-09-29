@@ -15,19 +15,28 @@ const props = defineProps<{ m: ChatMsg }>()
 const { push: toast } = useToast()
 
 // 折叠态语义（0.0.06）：
-//   - 执行中（status === 'running'）：**强制展开**且不允许折叠——输出正在生长，
-//     用户需要看到车正在干什么；
+//   - 执行中 / 待确认（0.0.10）：**强制展开**且不允许折叠——输出正在生长，
+//     变更等你决策；
 //   - write/edit（有 diff）：默认展开 diff——变更就是这张卡的主体，不能藏；
 //   - 其余：默认折叠，用户手动开合后以手动为准。
 const userToggled = ref(false)
 const open = ref(false)
-const isRunning = computed(() => props.m.status === 'running')
+const isRunning = computed(() => props.m.status === 'running' || props.m.status === 'pending_confirm')
 const expandable = computed(() => isRunning.value || !!(props.m.diff && (props.m.op === 'write' || props.m.op === 'edit')))
 const effectiveOpen = computed(() => (isRunning.value ? true : userToggled.value ? open.value : expandable.value))
 function toggle() {
-  if (isRunning.value) return // 执行中不允许折叠（结束后再收）
+  if (isRunning.value) return // 执行中/待确认不允许折叠（结束后再收）
   userToggled.value = true
   open.value = !open.value
+}
+
+// 待确认操作（0.0.10）：应用/跳过经 ResolveEdit 回流；终态事件原地更新本卡
+const confirming = ref(false)
+async function confirmEdit(apply: boolean) {
+  if (!props.m.editId || confirming.value) return
+  confirming.value = true
+  await store.resolveEdit(props.m.editId, apply)
+  confirming.value = false
 }
 
 // 主标签：内核 Title 优先；旧数据回退"工具名 · 内容片段"
@@ -168,6 +177,15 @@ function diffLineClass(line: string): string {
       <div v-for="(l, li) in m.diff.split('\n')" :key="li" :class="diffLineClass(l)">{{ l }}</div>
     </div>
     <pre v-else-if="effectiveOpen" class="tool-full">{{ m.content }}</pre>
+
+    <!-- 待确认操作（0.0.10）：应用/跳过；本轮多处改动用审查带的"全部"按钮 -->
+    <div v-if="m.status === 'pending_confirm' && m.editId" class="flex gap-1.5 self-start px-1">
+      <button class="btn-primary px-4 py-1 text-xs" :disabled="confirming" @click="confirmEdit(true)">
+        {{ confirming ? '正在应用…' : '应用' }}
+      </button>
+      <button class="chip text-xs" :disabled="confirming" @click="confirmEdit(false)">跳过</button>
+      <span class="self-center text-[11px] text-[var(--c-text-faint)]">确认前文件不会写入</span>
+    </div>
 
     <!-- 撤销（0.0.07）：不可恢复说明优先显示（如超大文件未保存快照）；
          有快照时提供"恢复写入前"——走后端比对，文件被改过会被拒绝并说明 -->

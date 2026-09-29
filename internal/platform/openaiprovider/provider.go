@@ -54,9 +54,21 @@ type wireToolCall struct {
 
 type wireMessage struct {
 	Role       string         `json:"role"`
-	Content    string         `json:"content"`
+	Content    any            `json:"content"` // string；Parts 非空时为数组（0.0.10 多模态）
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+}
+
+// wireContentPart 是多模态 content 数组的元素（文本 / 图片 data URL）。
+type wireContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *wireImageURL `json:"image_url,omitempty"`
+}
+
+type wireImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type wireRequest struct {
@@ -67,10 +79,26 @@ type wireRequest struct {
 }
 
 // toWireMessages 把中性消息转换为 OpenAI 私有格式（工具调用需嵌套 function 对象）。
+// Parts 非空时（带图/内联文件的 user 消息）content 用数组形态：先 text（空则省略），
+// 再每个图片一个 image_url（detail=auto）。纯文本消息保持字符串形态不变。
 func toWireMessages(msgs []llm.Message) []wireMessage {
 	out := make([]wireMessage, 0, len(msgs))
 	for _, m := range msgs {
 		wm := wireMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		if len(m.Parts) > 0 {
+			parts := make([]wireContentPart, 0, len(m.Parts))
+			for _, p := range m.Parts {
+				switch p.Type {
+				case "image_url":
+					parts = append(parts, wireContentPart{Type: "image_url", ImageURL: &wireImageURL{URL: p.ImageURL, Detail: "auto"}})
+				default:
+					if strings.TrimSpace(p.Text) != "" {
+						parts = append(parts, wireContentPart{Type: "text", Text: p.Text})
+					}
+				}
+			}
+			wm.Content = parts
+		}
 		for _, tc := range m.ToolCalls {
 			wtc := wireToolCall{ID: tc.ID, Type: "function"}
 			wtc.Function.Name = tc.Name

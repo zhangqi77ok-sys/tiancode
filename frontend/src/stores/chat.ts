@@ -43,6 +43,10 @@ export interface ChatMsg {
   hasUndo?: boolean
   undoPath?: string
   undoNote?: string
+  // 待确认文件变更（0.0.10）：status='pending_confirm'，editId 用于 ResolveEdit 回流
+  editId?: string
+  // 用户消息附件（0.0.10）：重放后仍显示图片/文件
+  attachments?: { kind: string; name: string; mediaType?: string; dataUrl?: string; path?: string; inline?: string }[]
   at?: number
   term?: number
   streaming?: boolean
@@ -57,6 +61,18 @@ export interface ChatMsg {
 let msgSeq = 0
 function withId<T extends Omit<ChatMsg, 'id'>>(m: T): ChatMsg {
   return { ...m, id: `m-${++msgSeq}` }
+}
+
+// 待发送附件（0.0.10）：Composer 待发送区的单项。
+// dataB64：剪贴板/临时文件内容；sourcePath：磁盘文件路径（二选一）。
+export interface PendingAttachment {
+  kind: 'image' | 'file'
+  name: string
+  mediaType: string
+  size: number
+  dataB64?: string
+  sourcePath?: string
+  inline: 'full' | 'path' | 'none'
 }
 
 // EndReason 与 core/llm 的枚举一一对应（经事件桥以 int 传输）。
@@ -297,6 +313,7 @@ export const useChatStore = defineStore('chat', () => {
         hasUndo: m.hasUndo,
         undoPath: m.undoPath,
         undoNote: m.undoNote,
+        attachments: m.attachments,
       })
     })
   }
@@ -400,16 +417,18 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // 发送到"当前正在看的会话"（用户动作入口）。
-  function send(text: string) {
+  // 0.0.10：atts 非空时走带附件的 IPC；发送失败上抛（Composer 保留待发送区重试）。
+  function send(text: string, atts?: PendingAttachment[]) {
     if (!sessionId.value) {
       sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
       announcePending()
     }
-    return sendTo(sessionId.value, text)
+    return sendTo(sessionId.value, text, atts)
   }
 
   // 发送到指定会话（多会话的核心：后台会话的排队续发也走这里，绝不发进当前视图）。
-  async function sendTo(id: string, text: string) {
+  // 0.0.10：发送失败上抛——Composer 据此保留文字与附件允许重试。
+  async function sendTo(id: string, text: string, atts?: PendingAttachment[]) {
     const c = ensureConvo(id)
     c.messages.push(withId({ role: 'user', content: text, at: Date.now() }))
     // "正在思考"占位（0.2.28）：慢中转/上游挂起时用户立即看到反馈，而不是
@@ -420,8 +439,12 @@ export const useChatStore = defineStore('chat', () => {
     c.stopping = false
     c.turnStartedAt = Date.now()
     try {
-      // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
-      await bridge().app.Send(id, text)
+      if (atts && atts.length) {
+        await bridge().app.SendWithAttachments(id, text, JSON.stringify(atts))
+      } else {
+        // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
+        await bridge().app.Send(id, text)
+      }
     } catch (e) {
       const ast = inFlightAssistant(c)
       if (ast) {
@@ -436,6 +459,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       c.running = false
       c.stopping = false
+      throw e // 上抛：Composer 保留文字与附件允许重试
     }
   }
 
@@ -581,11 +605,13 @@ export const useChatStore = defineStore('chat', () => {
       c.messages.splice(i, 0, card)
       return
     }
-    // 终态事件：优先更新同 callId 的"执行中"卡（原地生长），没有则新建
+    // 终态事件：优先更新同 callId 的"执行中/待确认"卡（原地生长），没有则新建
     //（兼容旧后端/重放：终态事件总是独立成卡）
     let target: ChatMsg | undefined
     if (p.callID) {
-      target = c.messages.find((m) => m.role === 'tool' && m.callId === p.callID && m.status === 'running')
+      target = c.messages.find(
+        (m) => m.role === 'tool' && m.callId === p.callID && (m.status === 'running' || m.status === 'pending_confirm'),
+      )
     }
     if (target) {
       target.status = p.status
@@ -687,6 +713,59 @@ export const useChatStore = defineStore('chat', () => {
     reviewFocus.value = callId
   }
 
+  // 待确认文件变更（0.0.10）：确认卡随事件插入，应用/跳过经 ResolveEdit 回流；
+  // 工具终态事件（同 callId）到达后卡片原地更新为结果。
+  function onEdit(p: {
+    sessionID: string
+    id: string
+    callId?: string
+    path: string
+    diff: string
+    isNew: boolean
+    sessionTitle?: string
+  }) {
+    const c = ensureConvo(p.sessionID)
+    if (c.messages.some((m) => m.editId === p.id)) return // 重复事件不叠加
+    const ast = inFlightAssistant(c)
+    if (ast) ast.streaming = false
+    const card = withId({
+      role: 'tool' as const,
+      content: '',
+      toolName: 'fs',
+      status: 'pending_confirm',
+      title: p.path,
+      op: p.isNew ? 'write' : 'edit',
+      diff: p.diff,
+      editId: p.id,
+      callId: p.callId,
+      at: Date.now(),
+    })
+    const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
+    c.messages.splice(i, 0, card)
+  }
+
+  async function resolveEdit(editId: string, apply: boolean) {
+    error.value = ''
+    try {
+      await bridge().app.ResolveEdit(sessionId.value, editId, apply)
+      // 卡片终态由后端 ToolEvent（同 callId）原地更新，这里不重复改
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+    }
+  }
+
+  // 代码块"应用到文件"（0.0.10）：内容经 ProposeFileWrite 进入与模型 write
+  // 同一条确认链路（确认卡由 chat:edit 事件回流）；取消/未选目标不产生写盘。
+  async function proposeApplyCode(path: string, code: string) {
+    error.value = ''
+    try {
+      await bridge().app.ProposeFileWrite(sessionId.value, path, code)
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      throw e
+    }
+  }
+
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     const c = ensureConvo(p.sessionID)
     c.running = false
@@ -739,7 +818,7 @@ export const useChatStore = defineStore('chat', () => {
     // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去
     if (p.endReason !== END_REASON.CANCELLED && !c.stopping) {
       const next = c.queue.shift()
-      if (next) void sendTo(p.sessionID, next.text)
+      if (next) sendTo(p.sessionID, next.text).catch(() => {}) // 队列续发失败：错误气泡已可见
     }
   }
 
@@ -879,6 +958,9 @@ export const useChatStore = defineStore('chat', () => {
     onUsage,
     reviewFocus,
     focusReview,
+    onEdit,
+    resolveEdit,
+    proposeApplyCode,
     onTodo,
     onAsk,
     resolveAsk,

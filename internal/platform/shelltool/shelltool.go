@@ -225,7 +225,7 @@ func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int) (too
 		}, nil
 	case ctx.Err() != nil:
 		return tools.ToolResult{
-			Content:  fmt.Sprintf("%s\n[CANCELLED: process tree killed; partial output above]", strings.TrimRight(out, "\n")),
+			Content:  fmt.Sprintf("%s\n[已中断：进程树已终止，以上为部分输出]", strings.TrimRight(out, "\n")),
 			IsError:  true,
 			TimedOut: true,
 		}, nil

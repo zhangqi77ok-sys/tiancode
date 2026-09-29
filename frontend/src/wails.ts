@@ -18,6 +18,8 @@ export interface ChatMessageDTO {
   hasUndo?: boolean
   undoPath?: string
   undoNote?: string
+  // 附件（0.0.10）：用户消息的图片/文件（重放后仍显示；图片带 DataURL）
+  attachments?: { kind: string; name: string; mediaType?: string; dataUrl?: string; path?: string; inline?: string }[]
   // 问答卡（role='ask'）：问题与选项来自 tool_call 参数，Content 为用户答复
   question?: string
   options?: string[]
@@ -242,8 +244,14 @@ interface WailsApp {
   SaveTextFile(defaultName: string, content: string): Promise<string>
   // 恢复一次 write/replace 写入前的内容（0.0.07）。失败（文件被改过等）显式报错。
   RestoreToolWrite(sessionID: string, callID: string): Promise<string>
-  // @ 文件引用（0.0.09）：列出工作区文件（有界、跳过依赖/构建目录）。无工作区报错。
-  SearchWorkspaceFiles(query: string): Promise<string[] | null>
+  // @ 文件引用（0.0.09/0.0.10 会话化）：列出**这场对话**工作区的文件。
+  SearchWorkspaceFiles(sessionID: string, query: string): Promise<string[] | null>
+  // 带附件发送（0.0.10）：图片/文件 JSON 数组；失败上抛（前端保留待发送区）。
+  SendWithAttachments(sessionID: string, text: string, attachments: string): Promise<void>
+  // 文件变更确认（0.0.10）：应用/跳过一次待确认的 write/replace。
+  ResolveEdit(sessionID: string, editID: string, apply: boolean): Promise<void>
+  // 代码块"应用到文件"：把内容变成待确认变更（同一条确认链路）。
+  ProposeFileWrite(sessionID: string, path: string, content: string): Promise<void>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
   PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
@@ -392,6 +400,9 @@ export function bridge(): WailsBridge {
           throw new Error('离线模式：恢复不可用')
         },
         SearchWorkspaceFiles: async () => [],
+        SendWithAttachments: offlineWrite,
+        ResolveEdit: offlineWrite,
+        ProposeFileWrite: offlineWrite,
         DiscoverModels: offlineWrite,
         TestChannel: offlineWrite,
         ListCredentials: async () => [],

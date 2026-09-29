@@ -42,7 +42,20 @@ type Tool struct {
 	// 绝不写进任何送给模型的文件。
 	mu       sync.Mutex
 	lastRead map[string]bool
+
+	// gate 是文件写入的确认端口（0.0.10，可为 nil）：非 nil 时 write/replace 在
+	// 落盘前必须经用户确认（应用/跳过），确认时才执行 Apply（内部自验外部改动）。
+	gate EditGate
+
+	// callID 是 agent 分派前注入的当前工具调用 ID（确认卡与工具卡配对用）。
+	callID string
 }
+
+// SetEditGate 注入确认端口（app 装配时注入；nil = 不需要确认，直接落盘）。
+func (t *Tool) SetEditGate(g EditGate) { t.gate = g }
+
+// SetCallID 注入当前工具调用 ID（agent 每次分派前调用；fs 的写操作串行，单槽够用）。
+func (t *Tool) SetCallID(id string) { t.callID = id }
 
 // New 构造工具，root 为工作区绝对路径。
 func New(root string) *Tool { return &Tool{root: root, lastRead: map[string]bool{}} }
@@ -293,6 +306,9 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	var old string
 	haveDiff := false
 	undoExists := false
+	existed := false
+	var sizeAtPropose int64
+	var modAtPropose time.Time
 	info, statErr := os.Stat(full)
 	switch {
 	case statErr == nil:
@@ -303,6 +319,8 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 			return bizErrf("refusing to overwrite %s: 本会话没有整读过这个文件（只读片段就整体覆盖会丢掉未读内容）。已存在的文件请用 replace；若确要整文件重写，先不带 start_line/line_count 整读一遍再 write", path), nil
 		}
 		undoExists = true
+		existed = true
+		sizeAtPropose, modAtPropose = info.Size(), info.ModTime()
 		if info.Size() <= maxWriteBytes {
 			if data, readErr := os.ReadFile(full); readErr == nil {
 				old = string(data)
@@ -318,27 +336,76 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	default:
 		return bizErrf("stat before write failed: %v", statErr), nil
 	}
-	if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
-		return bizErrf("write failed: %v", err), nil
+
+	// Apply 是"确认后"的真正落盘（0.0.10）：内部自验外部改动（提案到确认之间
+	// 文件被其他程序改过 → 拒绝且原文件不动），原子写，更新整读标记，产出撤销快照。
+	applyFn := func() (*UndoSnapshot, error) {
+		if existed {
+			info2, err := os.Stat(full)
+			if err != nil || info2.Size() != sizeAtPropose || !info2.ModTime().Equal(modAtPropose) {
+				return nil, errors.New("文件已被其他程序修改，应用失败（原文件未动）")
+			}
+		}
+		if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
+			return nil, err
+		}
+		// 写入成功：模型刚给全了内容，视为"已知全文"（后续 write 无需重读）
+		t.mu.Lock()
+		t.lastRead[full] = true
+		t.mu.Unlock()
+		u := &UndoSnapshot{Path: path, OldExists: existed, OldContent: old, NewSHA256: sha256Hex([]byte(content))}
+		if !existed || !haveDiff {
+			u.OldContent = old // 超限时为空串（无法恢复语义由 UndoNote 表达）
+		}
+		return u, nil
 	}
-	// 写入成功：模型刚给全了内容，视为"已知全文"（后续 write 无需重读）
-	t.mu.Lock()
-	t.lastRead[full] = true
-	t.mu.Unlock()
+
+	fullDiff := ""
+	if haveDiff {
+		fullDiff = diffText(path, old, content)
+	}
+	var undo *UndoSnapshot
+	var undoNote string
+	if t.gate == nil {
+		u, err := applyFn()
+		if err != nil {
+			return bizErrf("write failed: %v", err), nil
+		}
+		undo = u
+	} else {
+		// 确认卡（0.0.10）：未确认不落盘；取消按跳过；没有超时自动应用。
+		applied, u, err := t.gate.ConfirmEdit(ctx, EditProposal{
+			Path: path, Diff: fullDiff, IsNew: !existed, CallID: t.callID, Apply: applyFn,
+		})
+		if err != nil {
+			return bizErrf("变更应用失败：%v（原文件未动）", err), nil
+		}
+		if !applied {
+			return tools.ToolResult{
+				Content: "用户跳过了这次修改，文件未修改。请尊重用户的决定：可以调整方案后再次提出，不要重复提交相同内容。",
+				Title:   path, Op: "write",
+			}, nil
+		}
+		undo = u
+	}
+	if undo == nil || (!undoExists && !existed) {
+		undoNote = "这次无法恢复：写入前的内容超过上限，未保存恢复数据"
+	}
 
 	res := tools.ToolResult{
 		Content: fmt.Sprintf("written %s (%d bytes)", path, len(content)),
 	}
-	if haveDiff {
-		res.Diff = diffText(path, old, content)
+	if haveDiff && undo != nil {
+		res.Diff = fullDiff
 		res.Content = withShortDiff(res.Content, path, res.Diff)
 	}
-	if !undoExists {
-		res.Undo = &tools.UndoData{Path: path, OldExists: false, OldContent: "", NewSHA256: sha256Hex([]byte(content))}
-	} else if haveDiff {
-		res.Undo = &tools.UndoData{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(content))}
-	} else {
-		res.UndoNote = "这次无法恢复：写入前的内容超过上限，未保存恢复数据"
+	switch {
+	case existed && haveDiff:
+		res.Undo = undo
+	case !existed:
+		res.Undo = undo // OldExists=false：新建文件没有旧内容
+	default:
+		res.UndoNote = undoNote
 	}
 	return res, nil
 }
@@ -360,12 +427,16 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	// 大小硬顶前置（0.2.37 审计）：replace 必须整份读入才能替换——先 Stat，超过
 	// 写入硬顶直接拒绝，不打开全文（打开再失败也挡不住那次内存分配）。给出分段
 	// 之外的合法出路：用 write 重写小文件，或先 read 分段。
+	var info0 os.FileInfo
 	if info, statErr := os.Stat(full); statErr != nil {
 		if !os.IsNotExist(statErr) {
 			return bizErrf("stat before replace failed: %v", statErr), nil
 		}
-	} else if info.Size() > maxWriteBytes {
-		return bizErrf("file too large to replace (%d bytes > %d)：请用 write 重写小文件，或先用 read 分段确认内容", info.Size(), maxWriteBytes), nil
+	} else {
+		info0 = info
+		if info.Size() > maxWriteBytes {
+			return bizErrf("file too large to replace (%d bytes > %d)：请用 write 重写小文件，或先用 read 分段确认内容", info.Size(), maxWriteBytes), nil
+		}
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
@@ -390,18 +461,51 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		return bizErrf("target matches %d locations; refusing ambiguous replace (set allow_multiple to replace all)", count), nil
 	}
 	updated := strings.ReplaceAll(old, target, replacement)
-	if err := atomicfile.WriteFileAtomic(full, []byte(updated), 0o600); err != nil {
-		return bizErrf("replace write failed: %v", err), nil
-	}
-	// 文件已被 replace 改变：此前的"整读过"标记失效（后续 write 需重新整读）
-	t.mu.Lock()
-	t.lastRead[full] = false
-	t.mu.Unlock()
+	sizeAtPropose, modAtPropose := info0.Size(), info0.ModTime()
 	fullDiff := diffText(path, old, updated)
+
+	// Apply（0.0.10）：确认后的真正落盘，自验外部改动（提案→确认间文件被改 → 拒绝）
+	applyFn := func() (*UndoSnapshot, error) {
+		info2, err := os.Stat(full)
+		if err != nil || info2.Size() != sizeAtPropose || !info2.ModTime().Equal(modAtPropose) {
+			return nil, errors.New("文件已被其他程序修改，应用失败（原文件未动）")
+		}
+		if err := atomicfile.WriteFileAtomic(full, []byte(updated), 0o600); err != nil {
+			return nil, err
+		}
+		// 文件已被 replace 改变：此前的"整读过"标记失效（后续 write 需重新整读）
+		t.mu.Lock()
+		t.lastRead[full] = false
+		t.mu.Unlock()
+		return &UndoSnapshot{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(updated))}, nil
+	}
+
+	var undo *UndoSnapshot
+	if t.gate == nil {
+		u, err := applyFn()
+		if err != nil {
+			return bizErrf("replace write failed: %v", err), nil
+		}
+		undo = u
+	} else {
+		applied, u, err := t.gate.ConfirmEdit(ctx, EditProposal{
+			Path: path, Diff: fullDiff, IsNew: false, CallID: t.callID, Apply: applyFn,
+		})
+		if err != nil {
+			return bizErrf("变更应用失败：%v（原文件未动）", err), nil
+		}
+		if !applied {
+			return tools.ToolResult{
+				Content: "用户跳过了这次修改，文件未修改。请尊重用户的决定：可以调整方案后再次提出，不要重复提交相同内容。",
+				Title:   path, Op: "edit",
+			}, nil
+		}
+		undo = u
+	}
 	return tools.ToolResult{
 		Content: withShortDiff(fmt.Sprintf("replaced %d occurrence(s) in %s", count, path), path, fullDiff),
 		Diff:    fullDiff,
-		Undo:    &tools.UndoData{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(updated))},
+		Undo:    undo,
 	}, nil
 }
 

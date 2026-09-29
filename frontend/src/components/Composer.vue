@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
-import { useChatStore } from '../stores/chat'
+import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { parseAtToken, applyPick, type AtToken } from '../composables/atFile'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -23,12 +23,11 @@ function setBoxRef(el: unknown) {
   registerInput(box.value)
 }
 
-// ---- @ 文件引用（0.0.09）：输入 @ 用工作区文件列表补全，选中把路径放进消息——
-// 模型不用再花一步自己搜文件。IME 组合中不触发；Escape/失焦关闭。----
+// ---- @ 文件引用（0.0.09，0.0.10 会话化）：候选来自这场对话自己的工作区 ----
 const atFile = ref<AtToken | null>(null)
 const atHits = ref<string[]>([])
 const atIndex = ref(0)
-const atLoading = ref(false)
+const atNotice = ref('') // 纯对话等场景的提示（不报错弹窗）
 let atTimer: ReturnType<typeof setTimeout> | null = null
 
 function onCaretChange() {
@@ -38,18 +37,19 @@ function onCaretChange() {
   atFile.value = token
   if (!token) {
     atHits.value = []
+    atNotice.value = ''
     return
   }
   if (atTimer) clearTimeout(atTimer)
   atTimer = setTimeout(async () => {
-    atLoading.value = true
     try {
-      atHits.value = (await bridge().app.SearchWorkspaceFiles(token.query)) ?? []
+      atHits.value = (await bridge().app.SearchWorkspaceFiles(store.sessionId, token.query)) ?? []
       atIndex.value = 0
-    } catch {
-      atHits.value = [] // 纯对话/目录不可用：不出浮层，不打断输入
-    } finally {
-      atLoading.value = false
+      atNotice.value = atHits.value.length ? '' : '没有匹配的文件'
+    } catch (e) {
+      // 纯对话没有工作区：提示而非报错，也不去用顶栏里下一场新对话的根
+      atHits.value = []
+      atNotice.value = String(e instanceof Error ? e.message : e)
     }
   }, 150)
 }
@@ -91,6 +91,116 @@ function atKeydown(e: KeyboardEvent): boolean {
   }
   return false
 }
+
+// ---- 附件（0.0.10）：粘贴/拖放/上传三路进入同一个待发送区 ----
+const atts = ref<PendingAttachment[]>([])
+const fileInput = ref<HTMLInputElement | null>(null)
+const dragOver = ref(false)
+
+function fmtSize(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`
+}
+
+function blobToAttachment(kind: 'image' | 'file', name: string, blob: Blob): Promise<PendingAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result)
+      resolve({
+        kind,
+        name,
+        mediaType: blob.type || 'application/octet-stream',
+        size: blob.size,
+        dataB64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+        inline: kind === 'image' ? 'none' : (blob.size <= 256 * 1024 ? 'full' : 'path'),
+      })
+    }
+    reader.onerror = () => reject(new Error(`读取 ${name} 失败`))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function pathAttachment(name: string, blob: Blob, path: string): Promise<PendingAttachment> {
+  return blobToAttachment('file', name, blob).then((a) => ({ ...a, sourcePath: path, dataB64: undefined }))
+}
+
+async function addFiles(items: { kind: 'image' | 'file'; name: string; blob: Blob; path?: string }[]) {
+  for (const it of items) {
+    try {
+      const a = it.path ? await pathAttachment(it.name, it.blob, it.path) : await blobToAttachment(it.kind, it.name, it.blob)
+      atts.value.push(a)
+    } catch {
+      atts.value.push({
+        kind: it.kind, name: it.name, mediaType: it.blob.type || 'application/octet-stream',
+        size: it.blob.size, sourcePath: it.path, inline: 'path',
+      })
+    }
+  }
+}
+
+function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  const collected: { kind: 'image' | 'file'; name: string; blob: Blob; path?: string }[] = []
+  let hasImage = false
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'file') {
+      const f = it.getAsFile()
+      if (!f) continue
+      if (f.type.startsWith('image/')) {
+        hasImage = true
+        collected.push({ kind: 'image', name: f.name || `截图.${f.type.split('/')[1] || 'png'}`, blob: f })
+      } else {
+        collected.push({ kind: 'file', name: f.name || '粘贴文件', blob: f, path: (f as unknown as { path?: string }).path })
+      }
+    }
+  }
+  if (hasImage || collected.some((c) => c.kind === 'file')) {
+    e.preventDefault() // 收下附件（普通文字粘贴不拦截）
+    void addFiles(collected)
+  }
+}
+
+function onDrop(e: DragEvent) {
+  e.preventDefault()
+  dragOver.value = false
+  const files = e.dataTransfer?.files
+  if (!files?.length) return
+  const collected: { kind: 'image' | 'file'; name: string; blob: Blob; path?: string }[] = []
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]
+    const anyF = f as unknown as { path?: string }
+    collected.push({
+      kind: f.type.startsWith('image/') ? 'image' : 'file',
+      name: f.name, blob: f, path: anyF.path,
+    })
+  }
+  void addFiles(collected)
+}
+
+function onFilePick(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files) return
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]
+    const anyF = f as unknown as { path?: string }
+    void addFiles([{
+      kind: f.type.startsWith('image/') ? 'image' : 'file',
+      name: f.name, blob: f, path: anyF.path,
+    }])
+  }
+  input.value = ''
+}
+
+function removeAt(i: number) {
+  atts.value.splice(i, 1)
+}
+function clearAtts() {
+  atts.value = []
+}
+defineExpose({ onPaste, onDrop })
 
 // ---- 模型选择器（0.2.28 用户反馈：这里的模型应该是已有的模型，可以支持选择）----
 // 数据源 = 全部可用渠道的模型列表；切换 = 激活对应渠道并指定模型（后端 SetActiveModel）。
@@ -143,17 +253,25 @@ function resetBox() {
 
 async function submit() {
   const text = draft.value.trim()
-  if (!text) return
+  const curAtts = atts.value
+  if (!text && !curAtts.length) return
   if (store.running) {
-    // 回合进行中：入队（终态后自动依次发出），不再拒绝提交（0.2.14）
+    // 回合进行中：入队（终态后自动依次发出），附件随文字入队（0.0.10 简化：先只排队文字）
     store.enqueue(text)
     draft.value = ''
     resetBox()
     return
   }
   draft.value = ''
+  atts.value = []
   resetBox()
-  await store.send(text)
+  try {
+    await store.send(text, curAtts)
+  } catch {
+    // 发送失败：文字与附件全部保留在输入区，允许重试
+    draft.value = text
+    atts.value = curAtts
+  }
 }
 
 // 队列编辑：取回文本并出队（焦点回到输入框继续改）
@@ -248,7 +366,57 @@ function editQueued(id: number) {
       </div>
     </div>
 
-    <div class="relative flex items-end gap-3">
+    <!-- 待发送附件区（0.0.10）：图片缩略图/文件名+大小+内联标记；可单个移除或全部移除 -->
+    <div v-if="atts.length" class="mb-2 flex flex-wrap items-center gap-2" aria-label="待发送附件">
+      <template v-for="(a, i) in atts" :key="`${a.name}-${i}`">
+        <div
+          v-if="a.kind === 'image' && a.dataB64"
+          class="group relative"
+          :title="`${a.name} · ${fmtSize(a.size)}`"
+        >
+          <img
+            :src="`data:${a.mediaType};base64,${a.dataB64}`"
+            class="h-14 w-14 rounded-lg border border-[var(--c-border)] object-cover"
+            :alt="a.name"
+          />
+          <span class="absolute bottom-0 left-0 right-0 rounded-b-lg bg-black/60 px-1 text-center text-[9px] text-white">
+            {{ fmtSize(a.size) }}
+          </span>
+          <button
+            class="absolute -right-1.5 -top-1.5 grid h-4.5 w-4.5 place-items-center rounded-full bg-[var(--c-err)] text-white"
+            aria-label="移除图片"
+            @click="removeAt(i)"
+          >
+            <AppIcon name="x" :size="9" />
+          </button>
+        </div>
+        <div
+          v-else
+          class="flex items-center gap-1.5 rounded-lg border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-2.5 py-1.5 text-xs"
+        >
+          <AppIcon name="file" :size="12" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="max-w-[10rem] truncate" :title="a.sourcePath || a.name">{{ a.name }}</span>
+          <span class="shrink-0 text-[var(--c-text-faint)]">{{ fmtSize(a.size) }}</span>
+          <span class="shrink-0 rounded bg-[var(--c-primary-soft)] px-1 text-[10px] text-[var(--c-primary)]">
+            {{ a.inline === 'full' ? '将内联' : '只附路径' }}
+          </span>
+          <button
+            class="shrink-0 rounded p-0.5 text-[var(--c-text-faint)] hover:text-[var(--c-err-text)]"
+            aria-label="移除附件"
+            @click="removeAt(i)"
+          >
+            <AppIcon name="x" :size="10" />
+          </button>
+        </div>
+      </template>
+      <button v-if="atts.length > 1" class="chip text-[11px]" @click="clearAtts">全部移除</button>
+    </div>
+
+    <div class="relative flex items-end gap-3" :class="dragOver ? 'rounded-[var(--r-input)] ring-2 ring-[var(--c-primary)]' : ''"
+      @dragover.prevent="dragOver = true"
+      @dragleave.prevent="dragOver = false"
+      @drop="onDrop"
+    >
       <!-- @ 文件引用浮层（0.0.09） -->
       <div
         v-if="atFile && atHits.length"
@@ -278,12 +446,17 @@ function editQueued(id: number) {
         aria-label="消息输入框"
         class="min-w-0 flex-1 resize-y rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 transition-colors focus:border-[var(--c-primary)]"
         :style="{ minHeight: MIN_INPUT_HEIGHT_PX + 'px', maxHeight: MAX_INPUT_HEIGHT }"
-        placeholder="输入消息…（Enter 发送，Shift+Enter 换行；@ 引用文件）"
+        placeholder="输入消息…（Enter 发送；@ 引用文件；可粘贴/拖入图片和文件）"
         @keydown="onComposerKeydown"
         @input="autoGrow"
         @click="onCaretChange"
         @keyup="onCaretChange"
+        @paste="onPaste"
       ></textarea>
+      <button class="chip h-10 shrink-0" title="上传图片或文件（可多选）" aria-label="上传附件" @click="fileInput?.click()">
+        <AppIcon name="plus" :size="14" />
+      </button>
+      <input ref="fileInput" type="file" multiple class="hidden" @change="onFilePick" />
       <button
         v-if="store.running"
         type="button"
@@ -298,7 +471,7 @@ function editQueued(id: number) {
         class="btn-icon shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
         title="发送（Enter）"
         aria-label="发送"
-        :disabled="!draft.trim()"
+        :disabled="!draft.trim() && !atts.length"
         @click="submit"
       >
         <AppIcon name="send" :size="16" />

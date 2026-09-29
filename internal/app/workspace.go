@@ -70,8 +70,8 @@ func firstWorkspaceOfLedger(l *session.Ledger) (string, bool) {
 // MCP/技能/扩展管理是进程共享的清单与连接，不随会话克隆（否则两套 MCP
 // 进程抢端口、一个会话添加的技能另一个会话看不到）。
 type sessionTools struct {
-	root   string         // 归属根（空 = 纯对话：只保留共享工具）
-	fs     tools.ToolPort // 以下四个仅在 root 非空时构造
+	root   string       // 归属根（空 = 纯对话：只保留共享工具）
+	fs     *fstool.Tool // 以下四个仅在 root 非空时构造（fs 需要具体类型：确认 gate/CallID 注入）
 	shell  tools.ToolPort
 	git    tools.ToolPort
 	search tools.ToolPort
@@ -105,6 +105,8 @@ func (s *ChatService) ensureSessionTools(sessionID, root string) (*sessionTools,
 	st := &sessionTools{root: root}
 	if root != "" {
 		st.fs = fstool.New(root)
+		// 文件写入确认（0.0.10）：write/replace 落盘前必须经用户应用/跳过
+		st.fs.SetEditGate(&chatEditGate{svc: s, sessionID: sessionID})
 		st.shell = shelltool.New(shelltool.Options{Root: root})
 		st.git = gittool.New(root)
 		st.search = searchtool.New(root)

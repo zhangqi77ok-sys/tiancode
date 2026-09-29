@@ -422,6 +422,27 @@ describe('chat store', () => {
     expect(shellCard?.status).toBe('running')
   })
 
+  // 0.0.10：待确认文件变更卡随 chat:edit 插入（status=pending_confirm），
+  // 工具终态事件（同 callId）到达后原地更新为结果
+  it('确认卡插入与终态原地更新', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('hi')
+    store.onEdit({ sessionID: store.sessionId, id: 'ed-1', callId: 'call-e1', path: 'a.txt', diff: '+x', isNew: true })
+    const card = store.messages.find((m) => m.role === 'tool')
+    expect(card?.status).toBe('pending_confirm')
+    expect(card?.editId).toBe('ed-1')
+    expect(card?.diff).toBe('+x')
+    // 重复事件不叠加
+    store.onEdit({ sessionID: store.sessionId, id: 'ed-1', callId: 'call-e1', path: 'a.txt', diff: '+x', isNew: true })
+    expect(store.messages.filter((m) => m.editId === 'ed-1')).toHaveLength(1)
+    // 终态：同 callId → 原地更新为结果（保留 editId 锚点）
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'written a.go', callID: 'call-e1' })
+    const done = store.messages.find((m) => m.role === 'tool')
+    expect(done?.status).toBe('success')
+    expect(done?.editId).toBe('ed-1')
+  })
+
   // 0.0.07：终态事件携带撤销元数据 → 卡片可显示"恢复写入前"；不可恢复说明透传
   it('终态事件携带撤销元数据与不可恢复说明', async () => {
     const store = useChatStore()

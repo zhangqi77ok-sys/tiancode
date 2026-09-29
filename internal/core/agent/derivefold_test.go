@@ -84,6 +84,69 @@ func TestDerive_FoldsOldReadOnlyResults(t *testing.T) {
 	}
 }
 
+// 0.0.10：shell 结果无论退出码都永不折叠——go test 的失败栈几轮后仍要完整可见
+// （退出码非 0 时 IsError=false，仅凭 IsError 判定会把失败收成一行）。
+// 旧的成功 read 仍被收成一行（对照）。
+func TestDerive_ShellResultsNeverFolded(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	shellFail := strings.Repeat("ok\n", 50) + "--- FAIL: TestX\n    expected 1, got 2"
+	shellOK := "build succeeded"
+	readBig := strings.Repeat("readline\n", 100)
+
+	appendTurn := func(id, user, name, action, content string, isErr bool) {
+		if _, err := ledger.Append(session.EventUserMessage, map[string]string{"text": user}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ledger.Append(session.EventToolCall, map[string]string{
+			"id": id, "name": name, "arguments": `{"action":"` + action + `"}`,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ledger.Append(session.EventToolResult, map[string]any{
+			"id": id, "name": name, "content": content, "is_error": isErr, "title": "go test ./...",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ledger.Append(session.EventTurnEnd, map[string]string{"reason": "done"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendTurn("s0", "先读", "fs", "read", readBig, false)  // turn0（旧 → 折叠）
+	appendTurn("s1", "跑测试", "shell", "", shellFail, true) // turn1（旧失败 shell → 保留）
+	appendTurn("s2", "再跑", "shell", "", shellOK, false)   // turn2（旧成功 shell → 保留）
+	appendTurn("s3", "读文件", "fs", "read", readBig, false) // turn3（最近 2 轮 → 全文）
+	appendTurn("s4", "总结", "fs", "read", "tail info", false)
+
+	msgs, err := deriveMessages(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolMsgs := map[string]string{}
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			toolMsgs[m.ToolCallID] = m.Content
+		}
+	}
+	// 旧 shell 失败：FAIL 栈仍在（头加尾保留）
+	if got := toolMsgs["s1"]; !strings.Contains(got, "FAIL: TestX") || !strings.Contains(got, "expected 1, got 2") {
+		t.Fatalf("旧 shell 失败结果不得折叠（FAIL 栈必须可见）：%q", got)
+	}
+	// 旧 shell 成功：全文保留
+	if got := toolMsgs["s2"]; got != shellOK {
+		t.Fatalf("旧 shell 成功结果不得折叠：%q", got)
+	}
+	// 旧成功 read：收成一行
+	if got := toolMsgs["s0"]; strings.Contains(got, "readline") {
+		t.Fatalf("旧成功 read 应收成一行：%q", got)
+	}
+	// 最近 2 轮内的 read：全文
+	if got := toolMsgs["s3"]; !strings.Contains(got, "readline") {
+		t.Fatalf("最近 2 轮内 read 应保持全文：%q", got)
+	}
+}
+
 // 折叠只影响模型投影：账本原文不动（重放两次结果一致，且账本文件未改写）。
 func TestDerive_FoldDoesNotMutateLedger(t *testing.T) {
 	ledger, dir := newTestLedger(t)
