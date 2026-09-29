@@ -23,11 +23,16 @@ import (
 
 // fileFormat 是 channels.json v2 的结构。Version=0 视为旧格式并自动迁移；
 // ApprovalTools（审批策略）是用户设置，随渠道文件同源持久化。
+//
+// ApprovalTools **不带 omitempty**（0.0.05）：空列表必须落盘为 "approvalTools": []。
+// 为什么：此前 omitempty 让"用户在界面里显式清空审批"与"旧版本文件根本没有这个
+// 字段"在磁盘上同形（都缺字段），导致缺字段的旧文件升级后永远无法安全地补上
+// 审批默认值——补了就会覆盖"明确选择关闭"的用户。显式关闭从此有独立形态。
 type fileFormat struct {
 	Version       int       `json:"version"`
 	Channels      []Channel `json:"channels"`
 	ActiveID      string    `json:"activeId"`
-	ApprovalTools []string  `json:"approvalTools,omitempty"`
+	ApprovalTools []string  `json:"approvalTools"`
 	// Proxy 是全局上游代理（0.2.22）：http(s)://host:port；空 = 直连。
 	// 为什么全局而非仅渠道级：OAuth 授权发生在"还没有渠道"的时刻，
 	// 且地区封锁是整条出口链路的问题（授权与推理会被同一地区策略拒绝）。
@@ -78,14 +83,21 @@ func (p *Pool) Load() error {
 			// shell 与 ext_manage 是"默认无人确认即执行"的两个危险口子：前者等于
 			// 任意命令，后者能把持久化提示写进后续每轮的系统说明。默认零干扰
 			// 只应是"用户显式关掉"的选择，不是出厂状态。
-			// 只对新装生效——已有文件（含用户显式保存过空清单）一律不动，
-			// 升级不偷偷改用户的配置。
 			p.approvalTools = defaultApprovalTools()
 			p.rebuildAbilityLocked()
 			return p.persistLocked()
 		}
 		return fmt.Errorf("渠道配置读取失败 %s：%w", p.path, err)
 	}
+	// approvalTools 字段存在性探测（0.0.05）：不靠版本号、不解析字段值——
+	// 只看原始 JSON 里有没有这个键。此前 omitempty 让"旧版本没这字段"与
+	// "用户显式清空"在磁盘同形，升级用户的审批闸门静默失效且无法安全补上。
+	var rawKeys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawKeys); err != nil {
+		return fmt.Errorf("渠道配置解析失败 %s：%w", p.path, err)
+	}
+	_, approvalSet := rawKeys["approvalTools"]
+
 	var ff fileFormat
 	if err := json.Unmarshal(data, &ff); err != nil {
 		return fmt.Errorf("渠道配置解析失败 %s：%w", p.path, err)
@@ -95,6 +107,15 @@ func (p *Pool) Load() error {
 	}
 	p.setLocked(ff)
 	p.rebuildAbilityLocked()
+	if !approvalSet {
+		// 缺字段 = 旧版本文件（v0 旧格式同样缺）：一次性迁移为默认审批清单并
+		// 落盘——此后磁盘有该字段，"显式关闭"（本版起落盘为 []）永远受尊重。
+		// 代价与取舍：曾在旧版本手动关掉审批的用户会被再问一次；这个群体远
+		// 小于"所有老用户的 shell/ext_manage 继续无人确认直接执行"。
+		p.approvalTools = defaultApprovalTools()
+		p.rebuildAbilityLocked()
+		return p.persistLocked()
+	}
 	return nil
 }
 

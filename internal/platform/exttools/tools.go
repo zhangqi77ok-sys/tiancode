@@ -113,8 +113,8 @@ func (t *SkillTool) Execute(_ context.Context, args json.RawMessage) (tools.Tool
 // MCPTool 把调用转到已启用的 MCP 服务器。
 type MCPTool struct {
 	Load  func() catalog.File
-	hub   sync.Map   // name -> *mcpclient.Client
-	hubMu sync.Mutex // 保护 hub 的读-改-删序列（0.2.35 审计#9：LoadAndDelete+Store 有盖掉新实例的窗口）
+	hub   sync.Map   // name -> *mcpclient.Client（写入只走原子 LoadOrStore，0.0.05）
+	hubMu sync.Mutex // 仅保护复合序列（dropClient 的读-比-删、Close 的 Range+Delete）；单次写入不拿它——原子原语自身互斥，锁内 Load→Store 两步反而制造竞窗
 }
 
 // NewMCP 构造 MCP 工具。
@@ -263,6 +263,12 @@ func (t *MCPTool) stdioClient(ctx context.Context, spec catalog.Server) (*mcpcli
 // hub 中若仍是这个实例才删除（只持锁一瞬间，绝不包住连接过程）；
 // **无论是否在 hub 都要关掉自己**——被替换的实例不在 hub 里，不关就是
 // 无主进程。关闭失败必须返回（设置页/mcp_add 结果要能看到）。
+//
+// 并发安全依据（0.0.05）：写入方（stdioClient/storeIfAbsent）走无锁的原子
+// LoadOrStore，本函数的删除有 hubMu 包裹——两侧单操作各自原子，且删除有
+// **指针比较守卫**：另一路并发放入新实例时，这里 Load 到的要么是旧值（与
+// c 同指针则删，语义正确）、要么是新值（不同指针则不删）。唯一需要 hubMu
+// 真正互斥的是 Close() 的 Range+Delete 复合序列。
 func (t *MCPTool) dropClient(name string, c *mcpclient.Client) error {
 	t.hubMu.Lock()
 	v, ok := t.hub.Load(name)
@@ -276,24 +282,30 @@ func (t *MCPTool) dropClient(name string, c *mcpclient.Client) error {
 	return nil
 }
 
-// storeIfAbsent 条件写入（0.2.37 审计）：hub 里已有实例时**不覆盖**——Probe 与
-// 正在进行的 mcp 调用交错时，无条件 Store 会把别人刚换上的新客户端盖掉且不关
-// 旧进程。语义与 stdioClient 的 LoadOrStore 一致：落败方关闭自己刚建的实例。
+// storeIfAbsent 条件写入（0.2.37 审计引入，0.0.05 修竞窗）：hub 里已有实例时**不覆盖**
+// ——Probe 与正在进行的 mcp 调用交错时，无条件 Store 会把别人刚换上的新客户端盖掉且不关
+// 旧进程。实现与 stdioClient **同源**：只做一次原子 LoadOrStore——0.0.04 版曾是
+// "hubMu 锁内 Load → Store" 两步，而 stdioClient 的 LoadOrStore 不拿 hubMu：两步之间
+// 另一路可先放入客户端 A，随后这次 Store 用 B 把 A 盖掉（A 不在表里也没人 Close）。
+// hubMu 此路径**不参与**：原子原语自身就是互斥，拿锁只会制造"已经互斥"的错觉。
 // 返回最终留在 hub 里的客户端（自己或赢家）与是否是自己的实例。
 func (t *MCPTool) storeIfAbsent(name string, c *mcpclient.Client) (*mcpclient.Client, bool, error) {
-	t.hubMu.Lock()
-	if v, ok := t.hub.Load(name); ok {
-		if winner, isClient := v.(*mcpclient.Client); isClient && winner != c {
-			t.hubMu.Unlock()
-			if err := c.Close(); err != nil {
-				return winner, false, fmt.Errorf("并发已有新实例，关闭落败实例失败：%w", err)
-			}
-			return winner, false, nil
-		}
+	actual, loaded := t.hub.LoadOrStore(name, c)
+	if !loaded {
+		return c, true, nil
 	}
-	t.hub.Store(name, c)
-	t.hubMu.Unlock()
-	return c, true, nil
+	winner, ok := actual.(*mcpclient.Client)
+	if !ok {
+		// 理论不可达（hub 只存 *mcpclient.Client）；防御：不留无主进程
+		if err := c.Close(); err != nil {
+			return nil, false, fmt.Errorf("并发已有新实例，关闭落败实例失败：%w", err)
+		}
+		return nil, false, nil
+	}
+	if err := c.Close(); err != nil {
+		return winner, false, fmt.Errorf("并发已有新实例，关闭落败实例失败：%w", err)
+	}
+	return winner, false, nil
 }
 
 // ProbeServer 连接单台 stdio 服务器并返回其公布的工具名（ext_manage 添加后的验证用）。

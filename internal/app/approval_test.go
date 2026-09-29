@@ -15,7 +15,8 @@ func TestChatService_ApprovalBridge(t *testing.T) {
 
 	// 新装默认清单（0.2.36 审计 R3）：shell 与 ext_manage 是"不确认就执行即危险"
 	// 的两个口子——默认零干扰只应是用户显式关掉的选择，不是出厂状态。
-	// （升级用户与显式保存过空的用户不受影响，见 channels 包的新装路径。）
+	// （0.0.05 起缺字段的旧文件也会一次性迁移为默认清单并落盘；显式保存过
+	// "approvalTools": [] 的用户不受影响，见 channels 包的迁移测试。）
 	if got := s.ApprovalPolicy(); len(got) != 2 || got[0] != "shell" || got[1] != "ext_manage" {
 		t.Fatalf("新装默认策略 = %v, want [shell ext_manage]", got)
 	}

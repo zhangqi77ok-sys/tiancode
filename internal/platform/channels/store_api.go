@@ -138,7 +138,12 @@ func (p *Pool) ApprovalTools() []string {
 }
 
 // SetApprovalTools 保存审批策略。
+// nil 规范化为空切片：persistLocked 落盘必须是 "approvalTools": []（显式关闭的
+// 独立形态），null 虽语义等价但磁盘形态要唯一。
 func (p *Pool) SetApprovalTools(tools []string) error {
+	if tools == nil {
+		tools = []string{}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.approvalTools = tools
