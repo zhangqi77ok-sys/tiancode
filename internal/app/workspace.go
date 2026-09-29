@@ -118,10 +118,13 @@ func (s *ChatService) SetWorkspace(dir string) error {
 	}
 	// 旧 shell 工具的后台任务随实例一起丢弃（0.2.35 审计#2）：显式收掉进程树，
 	// 否则任务表丢失，bg_status/bg_kill 再也够不着，进程成为孤儿。
+	// 终止失败时显式失败（不静默切换）：用户知道有进程没被收掉。
 	if s.registry != nil {
 		if sh, ok := s.registry.Get("shell"); ok {
 			if closer, ok := sh.(interface{ Close() error }); ok {
-				_ = closer.Close() // 终止失败无从上报（多半已退出）；cancel 幂等
+				if err := closer.Close(); err != nil {
+					return fmt.Errorf("切换工作区时终止旧后台任务失败：%w", err)
+				}
 			}
 		}
 	}
