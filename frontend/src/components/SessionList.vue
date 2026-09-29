@@ -34,6 +34,12 @@ const settingsMenuOpen = ref(false)
 const settingsMenuRef = ref<HTMLElement | null>(null)
 const mcpOn = computed(() => catalog.mcp.filter((s) => s.enabled).length)
 const skillOn = computed(() => catalog.skills.filter((s) => s.enabled).length)
+// 按钮 hover 提示：一句话说明当前模型（版面不显示，信息不丢）
+const settingsTitle = computed(() =>
+  channels.activeModel
+    ? `设置 · 当前模型 ${channels.activeModel}${channels.activeChannel ? `（${channels.activeChannel.name}）` : ''}`
+    : '设置 · 未配置模型，点击进入模型与渠道管理',
+)
 
 function onSettingsMousedown(e: MouseEvent) {
   if (!settingsMenuOpen.value) return
@@ -255,40 +261,40 @@ function select(id: string) {
 
     <div v-if="store.error" class="mt-2 px-1 text-xs text-[var(--c-err-text)]">{{ store.error }}</div>
 
-    <!-- 底部导航：模型/渠道/技能/MCP 统一入口（0.0.06）。模型名是主信息：
-         正文字号、正常文字色；未配置才给警示色引导 -->
+    <!-- 底部导航（0.0.07 收紧）：一个紧凑按钮——图标 + "设置"两个字；
+         当前模型/渠道信息收进菜单顶部（不占侧栏版面），未配置模型才给警示色 -->
     <div ref="settingsMenuRef" class="relative mt-2 border-t border-[var(--c-border)] px-1 pt-2">
       <button
-        class="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--c-surface-soft)]"
+        class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-text)]"
         aria-haspopup="menu"
         :aria-expanded="settingsMenuOpen"
-        title="模型、渠道、技能与 MCP 设置"
+        :title="settingsTitle"
         @click="settingsMenuOpen = !settingsMenuOpen"
       >
-        <AppIcon name="sliders" :size="14" class="mt-0.5 shrink-0 text-[var(--c-text-dim)]" />
-        <span class="min-w-0 flex-1">
-          <span class="block truncate text-sm text-[var(--c-text)]">
-            {{ channels.activeModel || '未选择模型' }}
-          </span>
-          <span
-            class="block truncate text-xs"
-            :class="channels.activeChannel ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
-          >
-            {{ channels.activeChannel ? channels.activeChannel.name : '未配置渠道 · 点击设置' }}
-          </span>
-        </span>
-        <AppIcon
-          name="chevron-down"
-          :size="12"
-          class="mt-1 shrink-0 text-[var(--c-text-faint)] transition-transform"
-          :class="settingsMenuOpen ? '' : '-rotate-90'"
-        />
+        <AppIcon name="sliders" :size="14" class="shrink-0" />
+        <span>设置</span>
+        <span
+          class="ml-auto h-1.5 w-1.5 rounded-full"
+          :class="channels.activeModel ? 'bg-[var(--c-ok)]' : 'bg-[var(--c-warn)]'"
+        ></span>
       </button>
       <div
         v-if="settingsMenuOpen"
         role="menu"
         class="absolute bottom-full left-0 z-40 mb-1 w-full rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
       >
+        <!-- 当前模型一览：信息保留，但只在这里占版面 -->
+        <div class="border-b border-[var(--c-border)] px-2 pb-1.5 pt-0.5">
+          <p class="truncate text-xs font-medium text-[var(--c-text)]" :title="channels.activeModel">
+            {{ channels.activeModel || '未选择模型' }}
+          </p>
+          <p
+            class="truncate text-[11px]"
+            :class="channels.activeChannel ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
+          >
+            {{ channels.activeChannel ? channels.activeChannel.name : '未配置渠道' }}
+          </p>
+        </div>
         <button role="menuitem" class="menu-item" @click="openSettings('channels')">
           <AppIcon name="sliders" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">模型与渠道管理</span>
