@@ -61,6 +61,10 @@ type Loop struct {
 	asker Asker
 	// preface 是每轮前置的系统说明（技能与 MCP 清单）。不写入账本，随配置变化。
 	preface string
+	// prefaceFn 是动态 preface（0.2.33）：每个执行步骤前实时取一次——扩展在
+	// 回合内被 ManageTool 增删后，模型在后续步骤立即看到最新清单，不必等下一轮。
+	// 设置了 prefaceFn 时每步覆盖静态 preface。
+	prefaceFn func() string
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -74,6 +78,33 @@ func (l *Loop) SetPreface(text string) {
 		return
 	}
 	l.preface = text
+}
+
+// SetPrefaceFn 设置动态系统说明：每个执行步骤前实时取值（0.2.33）。
+// 为什么需要：扩展自管理让模型在回合内增删技能/MCP——静态 preface 在回合
+// 开始就固定，模型添加后说"当前没有技能"、后续步骤也用不上。动态取值让
+// 清单每步刷新，添加当回合即可用。
+func (l *Loop) SetPrefaceFn(fn func() string) {
+	if l == nil {
+		return
+	}
+	l.prefaceFn = fn
+}
+
+// applyDynamicPreface 在每个执行步骤前刷新系统说明（prefaceFn 优先于静态）。
+func (l *Loop) applyDynamicPreface(msgs []llm.Message) []llm.Message {
+	if l.prefaceFn == nil {
+		return msgs
+	}
+	text := strings.TrimSpace(l.prefaceFn())
+	if text == "" {
+		return msgs // 取值失败/为空：保持现有 system，不打断回合
+	}
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		msgs[0].Content = text
+		return msgs
+	}
+	return append([]llm.Message{{Role: "system", Content: text}}, msgs...)
 }
 
 // Phase 返回当前轮次状态。
@@ -150,6 +181,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: err})
 			return
 		}
+		msgs = l.applyDynamicPreface(msgs) // 每步刷新：扩展回合内增删立即生效
 		ch, err := l.runtime.Chat(ctx, llm.ChatRequest{
 			Model:    l.model,
 			Messages: msgs,

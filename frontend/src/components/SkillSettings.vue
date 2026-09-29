@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { parseSkillMarkdown, type SkillDraft } from '../catalogImport'
 import { useDialogs } from '../composables/useDialogs'
 import { useCatalogStore, type SkillItem } from '../stores/catalog'
@@ -13,6 +13,16 @@ const mode = ref<'list' | 'paste' | 'manual'>('list')
 const error = ref('')
 const paste = ref('')
 const form = ref(blank())
+
+// 面板打开期间 AI 通过对话添加/删除扩展时实时刷新（后端保存成功即广播）
+let offChanged: (() => void) | undefined
+onMounted(() => {
+  const off = bridge().runtime.EventsOn('extensions:changed', () => {
+    void catalog.load()
+  })
+  offChanged = off as unknown as (() => void) | undefined
+})
+onBeforeUnmount(() => offChanged?.())
 
 function blank() {
   return { id: '', name: '', description: '', body: '', enabled: true }

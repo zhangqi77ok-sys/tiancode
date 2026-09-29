@@ -240,6 +240,15 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop)
 	}
 	// 只告诉模型有什么、怎么调用。不在发消息时启动 MCP：用不用由模型决定。
 	ag.SetPreface(exttools.Preface(file))
+	// 动态 preface（0.2.33）：每个执行步骤实时取——扩展在回合内被 ManageTool
+	// 增删后，模型在后续步骤立即看到最新清单（添加当回合即可用，不必等下一轮）。
+	ag.SetPrefaceFn(func() string {
+		f, err := s.extensions.Load()
+		if err != nil {
+			return "" // 读取失败：保持现有 system，不打断回合
+		}
+		return exttools.Preface(f)
+	})
 	return nil
 }
 
