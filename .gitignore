@@ -75,3 +75,6 @@ cmd/installer/payload/*
 # agent 联调时的抓取快照等临时产物（0.2.26 曾误入库 9 个 _*.json）
 /_*.json
 /_*.md
+
+# agent 本地工作状态（IDE 侧）
+.codebuddy/
