@@ -424,7 +424,7 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	// （CONNECT 阶段不受 ResponseHeaderTimeout 约束是 Go Transport 的已知行为），
 	// 实机表现是"发送后永久运行中，无任何反馈"。只对零事件生效：模型已在输出、
 	// 工具已在执行、正在等用户答复的轮次都算活动，绝不误杀长任务。
-	watch := &zeroEventWatch{start: time.Now()}
+	watch := &zeroEventWatch{start: time.Now(), window: firstEventTimeout}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	// 纪律（0.2.29 两次实测教训）：Send 是"返回通道即返回"的长调用——defer 在这里
 	// 一律等于"立刻执行"：cancelRun 不能 defer（会当场取消整轮），watchStopped
@@ -472,14 +472,16 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	out := make(chan llm.StreamChunk)
 	inject := make(chan llm.StreamChunk, 1)
 	go func() { // 看门狗：零事件超时 → 注入明确终态（用户没点中断，"已中断"文案会让人困惑）
-		t := time.NewTicker(firstEventTimeout / 4)
+		// 用 watch.window 快照而非包级变量：本 goroutine 可能活到测试收尾之后，
+		// 直读会被测试注入/恢复的全局写竞态击中（CI -race 抓到，详见 watchdog.go 注）。
+		t := time.NewTicker(watch.window / 4)
 		defer t.Stop()
 		for {
 			select {
 			case <-watchStopped:
 				return
 			case <-t.C:
-				if !watch.sawEvent.Load() && time.Since(watch.start) > firstEventTimeout {
+				if !watch.sawEvent.Load() && time.Since(watch.start) > watch.window {
 					watch.timedOut.Store(true)
 					cancelRun() // 尽力打断上游（HTTP/工具读全部响应 ctx）
 					inject <- llm.StreamChunk{EndReason: llm.EndError, Err: errors.New(watch.timeoutMessage())}

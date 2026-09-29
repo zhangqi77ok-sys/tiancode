@@ -23,6 +23,7 @@ var firstEventTimeout = 90 * time.Second
 // 绝不被误杀（长任务靠 ctx 取消链与用户手动中断覆盖）。
 type zeroEventWatch struct {
 	start    time.Time
+	window   time.Duration // 看门狗阈值快照：构造时从 firstEventTimeout 取值（见 timeoutMessage 的竞态注）
 	sawEvent atomic.Bool
 	timedOut atomic.Bool
 }
@@ -31,9 +32,13 @@ type zeroEventWatch struct {
 func (w *zeroEventWatch) mark() { w.sawEvent.Store(true) }
 
 // timeoutMessage 是看门狗触发后给用户的明确说明。
+//
+// 读快照字段而非包级变量：包级 firstEventTimeout 会被测试注入短值、收尾时恢复，
+// 而看门狗 goroutine 可能活到测试收尾之后——直读全局会与下一个测试的写入
+// 构成数据竞态（CI -race 抓到）。
 func (w *zeroEventWatch) timeoutMessage() string {
 	return fmt.Sprintf("响应超时：%d 秒内没有任何数据，已自动中断（上游无响应或网络挂起；请检查渠道地址与代理设置后重试）",
-		int(firstEventTimeout.Seconds()))
+		int(w.window.Seconds()))
 }
 
 // watchApprover 把"等待审批答复"计入看门狗活跃：模型第一轮直接调工具时，
