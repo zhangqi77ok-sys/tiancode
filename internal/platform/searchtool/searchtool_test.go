@@ -200,6 +200,35 @@ func TestSearch_NoMatchIsSuccess(t *testing.T) {
 	}
 }
 
+// 0.2.37：工作区里只有指向区外的链接、零命中时，不得谎报 "no matches"——
+// 跳过汇总就是答案本身（模型/用户需要知道"有内容但被安全策略跳过"）。
+func TestSearch_ZeroHitWithSkipsKeepsSummary(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "code.txt")
+	if err := os.WriteFile(secret, []byte("needle in outside code"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "outside-link.txt")); err != nil {
+		t.Skip("无法创建符号链接（需要特权）：", err)
+	}
+	write(t, root, "a.txt", "nothing relevant here")
+	tool := New(root)
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "needle"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("跳过汇总不是错误：%+v", res)
+	}
+	if !strings.Contains(res.Content, "outside workspace") {
+		t.Fatalf("零命中必须保留跳过汇总：%q", res.Content)
+	}
+	if strings.TrimSpace(res.Content) == "no matches" {
+		t.Fatalf("只有区外链接时不得谎报 no matches：%q", res.Content)
+	}
+}
+
 func TestSearch_TimeoutPartial(t *testing.T) {
 	root := t.TempDir()
 	var body strings.Builder

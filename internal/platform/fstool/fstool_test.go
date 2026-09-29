@@ -228,3 +228,67 @@ func TestFSList_NonRecursive(t *testing.T) {
 		t.Fatalf("missing top entries: %s", res.Content)
 	}
 }
+
+// 0.2.37 审计：大文件必须先查大小再读——replace 超 maxWriteBytes 直接拒绝（不打开
+// 全文）；write 对超大旧文件省略 diff（不为预览把整个文件读进内存），照常写入。
+// 用 Truncate 稀疏化构造超大文件，避免真实写 32MB。
+func TestFSOversized_ReplaceRejectsWriteSkipsDiff(t *testing.T) {
+	tool := newTool(t)
+	p := filepath.Join(tool.Root(), "huge.txt")
+
+	// --- replace：超限拒绝，且文件未被打开/修改 ---
+	mustWrite(t, tool, "huge.txt", "old-content needle")
+	f, err := os.OpenFile(p, os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxWriteBytes + 1); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{
+		"action": "replace", "path": "huge.txt", "target": "needle", "replacement": "x",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("oversized replace must be rejected: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "too large to replace") {
+		t.Fatalf("error must name the cap: %s", res.Content)
+	}
+	if info, _ := os.Stat(p); info == nil || info.Size() != maxWriteBytes+1 {
+		t.Fatalf("rejected replace must not touch file: size=%v", info)
+	}
+
+	// --- write：同样超大旧文件，写入成功、diff 省略、内容正确 ---
+	res, err = tool.Execute(context.Background(), mustArgs(t, map[string]any{
+		"action": "write", "path": "huge.txt", "content": "fresh small content",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("write over oversized old file must succeed: %s", res.Content)
+	}
+	if res.Diff != "" {
+		t.Fatalf("diff must be omitted for oversized old file, got %d bytes", len(res.Diff))
+	}
+	if got, _ := os.ReadFile(p); string(got) != "fresh small content" {
+		t.Fatalf("content = %q", got)
+	}
+
+	// --- 小文件回归：write 仍有 diff（省略只发生在超大场景） ---
+	res, err = tool.Execute(context.Background(), mustArgs(t, map[string]any{
+		"action": "write", "path": "small.txt", "content": "v2",
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("small write: %v %s", err, res.Content)
+	}
+	if res.Diff == "" {
+		t.Fatal("small file write must keep diff")
+	}
+}

@@ -227,20 +227,39 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	if err != nil {
 		return bizErr(err), nil
 	}
-	// 读旧内容只为生成 diff；文件不存在＝新建（正常），其他读失败则显式报错不静默
-	var old []byte
-	if data, readErr := os.ReadFile(full); readErr == nil {
-		old = data
-	} else if !os.IsNotExist(readErr) {
-		return bizErrf("read before write failed: %v", readErr), nil
+	// 读旧内容只为生成 diff（0.2.37 审计）：先 Stat 看大小——旧文件超过写入硬顶
+	// 时**不打开全文**（参数很小、文件很大时整份读入会把桌面进程打满），跳过 diff
+	// 直接写。注意不能拿空 old 凑数：diffText 会把它当"新文件"生成误导性预览。
+	// 文件不存在＝新建（正常，old 为空是真实状态），其他 Stat 失败则显式报错不静默。
+	var old string
+	haveDiff := false
+	info, statErr := os.Stat(full)
+	switch {
+	case statErr == nil && info.Size() > maxWriteBytes:
+		// 超限：跳过 diff，不做任何预读
+	case statErr == nil:
+		if data, readErr := os.ReadFile(full); readErr == nil {
+			old = string(data)
+			haveDiff = true
+		} else {
+			return bizErrf("read before write failed: %v", readErr), nil
+		}
+	case os.IsNotExist(statErr):
+		// 新建：old 为空是真实状态，保留 "+全文" 新建 diff（既有行为）
+		haveDiff = true
+	default:
+		return bizErrf("stat before write failed: %v", statErr), nil
 	}
 	if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
 		return bizErrf("write failed: %v", err), nil
 	}
-	return tools.ToolResult{
+	res := tools.ToolResult{
 		Content: fmt.Sprintf("written %s (%d bytes)", path, len(content)),
-		Diff:    diffText(path, string(old), content),
-	}, nil
+	}
+	if haveDiff {
+		res.Diff = diffText(path, old, content)
+	}
+	return res, nil
 }
 
 func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
@@ -250,6 +269,16 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
+	}
+	// 大小硬顶前置（0.2.37 审计）：replace 必须整份读入才能替换——先 Stat，超过
+	// 写入硬顶直接拒绝，不打开全文（打开再失败也挡不住那次内存分配）。给出分段
+	// 之外的合法出路：用 write 重写小文件，或先 read 分段。
+	if info, statErr := os.Stat(full); statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return bizErrf("stat before replace failed: %v", statErr), nil
+		}
+	} else if info.Size() > maxWriteBytes {
+		return bizErrf("file too large to replace (%d bytes > %d)：请用 write 重写小文件，或先用 read 分段确认内容", info.Size(), maxWriteBytes), nil
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {

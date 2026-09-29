@@ -295,8 +295,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		content += fmt.Sprintf("\n(%d path(s) with unresolved symlinks, kept by lexical path: %s)",
 			len(unresolvedLinks), strings.Join(headOf(unresolvedLinks, 5), ", "))
 	}
-	if matches == 0 && b.Len() == 0 {
+	// 零命中且确实什么都没发生（无跳过、无未解析链接）才是真正的"no matches"。
+	// 只搜到了被安全策略跳过的区外路径时不能谎报"没有匹配"——那会让模型和用户
+	// 以为这段代码不存在（0.2.37 审计）；此时上面的 R4 汇总就是答案本身。
+	if matches == 0 && b.Len() == 0 && len(skippedOutside) == 0 && len(unresolvedLinks) == 0 {
 		return tools.ToolResult{Content: "no matches"}, nil
+	}
+	if content == "" {
+		content = "no matches"
 	}
 	return tools.ToolResult{Content: content}, nil
 }

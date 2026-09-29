@@ -312,12 +312,11 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function selectSession(id: string) {
-    // 工具根跟这场对话走。否则点开 A 空间的会话，读写仍打在当前工作区 B 上。
-    // （ws.setPath/clear 内部自带可见报错，失败不阻断切换）
-    const sm = summaries.value.find((s) => s.id === id)
-    const ws = useWorkspaceStore()
-    if (sm?.workspace && sm.workspace !== ws.path) await ws.setPath(sm.workspace)
-    else if (sm && !sm.workspace && ws.path) await ws.clear()
+    // 切换会话只改视图，绝不碰工作区根（0.2.37 用户反馈）：已有会话的工具根由
+    // 后端账本首个 workspace 事件固定，切到这里改顶栏工作区既影响不到当前对话，
+    // 反而会改掉"还没发出去的下一场新对话"的根——点开未分组旧会话清空工作区
+    // （新对话变纯对话丢文件工具）、点开 B 项目会话把新对话写进 B。新对话的根
+    // 只在用户显式选择工作区、或在草稿上发送时确定。
     sessionId.value = id
     if (!convos.has(id)) {
       loadingSession.value = true

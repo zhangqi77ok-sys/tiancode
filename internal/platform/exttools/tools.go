@@ -276,6 +276,26 @@ func (t *MCPTool) dropClient(name string, c *mcpclient.Client) error {
 	return nil
 }
 
+// storeIfAbsent 条件写入（0.2.37 审计）：hub 里已有实例时**不覆盖**——Probe 与
+// 正在进行的 mcp 调用交错时，无条件 Store 会把别人刚换上的新客户端盖掉且不关
+// 旧进程。语义与 stdioClient 的 LoadOrStore 一致：落败方关闭自己刚建的实例。
+// 返回最终留在 hub 里的客户端（自己或赢家）与是否是自己的实例。
+func (t *MCPTool) storeIfAbsent(name string, c *mcpclient.Client) (*mcpclient.Client, bool, error) {
+	t.hubMu.Lock()
+	if v, ok := t.hub.Load(name); ok {
+		if winner, isClient := v.(*mcpclient.Client); isClient && winner != c {
+			t.hubMu.Unlock()
+			if err := c.Close(); err != nil {
+				return winner, false, fmt.Errorf("并发已有新实例，关闭落败实例失败：%w", err)
+			}
+			return winner, false, nil
+		}
+	}
+	t.hub.Store(name, c)
+	t.hubMu.Unlock()
+	return c, true, nil
+}
+
 // ProbeServer 连接单台 stdio 服务器并返回其公布的工具名（ext_manage 添加后的验证用）。
 // 连接失败时把刚拉起的会话从 hub 摘掉：留着一个连不上的客户端只会让下次调用更难排查。
 func (t *MCPTool) ProbeServer(ctx context.Context, spec catalog.Server) ([]string, error) {
@@ -327,10 +347,11 @@ func (t *MCPTool) Probe(ctx context.Context) (map[string][]string, map[string]st
 					}
 					continue
 				}
-				if closeErr := existing.Close(); closeErr != nil {
+				// 摘除必须走 dropClient（0.2.37 审计）：hub 里若已被并发调用换上
+				// 新实例，只关自己这个坏实例，绝不误删新实例
+				if closeErr := t.dropClient(s.Name, existing); closeErr != nil {
 					errs[s.Name] = closeErr.Error()
 				}
-				t.hub.Delete(s.Name)
 			}
 		}
 		c, err := mcpclient.DialStdio(s.Command, s.Args, s.Env)
@@ -356,7 +377,11 @@ func (t *MCPTool) Probe(ctx context.Context) (map[string][]string, map[string]st
 		for _, tool := range tools {
 			names[s.Name] = append(names[s.Name], tool.Name)
 		}
-		t.hub.Store(s.Name, c)
+		// 写入必须走 storeIfAbsent（0.2.37 审计）：探测期间并发调用可能已为该
+		// 服务器放入新客户端——落败方关闭自己刚拉起的进程，不覆盖赢家
+		if _, _, err := t.storeIfAbsent(s.Name, c); err != nil {
+			errs[s.Name] = err.Error()
+		}
 	}
 	return names, errs
 }

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 const h = vi.hoisted(() => ({
-  summaries: [] as { id: string; title: string }[],
+  summaries: [] as { id: string; title: string; workspace?: string }[],
   failRename: false,
   deleted: [] as string[],
   renamed: [] as { id: string; title: string }[],
@@ -27,6 +27,8 @@ const h = vi.hoisted(() => ({
   // 多会话：记录每次 Send 的目标会话（断言后台会话的队列续发归属）
   sendCalls: [] as { sessionID: string; text: string }[],
   resolvedAsks: [] as { id: string; answer: string }[],
+  // 工作区调用记录（0.2.37：切换会话绝不动工作区根）
+  setWorkspaceCalls: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
@@ -57,6 +59,10 @@ vi.mock('../wails', () => ({
       ResolveAsk: async (id: string, answer: string) => {
         h.resolvedAsks.push({ id, answer })
       },
+      GetWorkspace: async () => '',
+      SetWorkspace: async (dir: string) => {
+        h.setWorkspaceCalls.push(dir)
+      },
     },
     runtime: { EventsOn: () => {} },
   }),
@@ -79,6 +85,29 @@ describe('chat store', () => {
     h.sends = []
     h.sendCalls = []
     h.resolvedAsks = []
+    h.setWorkspaceCalls = []
+  })
+
+  // 0.2.37：切换会话只改视图，绝不改"下一场新对话"的根——已有会话的工具根由
+  // 后端账本首个 workspace 事件固定；在这里 setPath/clear 既影响不到正在看的
+  // 对话，还会把用户显式选好的顶栏工作区清掉或换掉（点开 B 项目会话 → 新对话
+  // 被写进 B）。
+  it('切换会话不动工作区根（分组/未分组会话都不碰）', async () => {
+    h.summaries = [
+      { id: 's-proj', title: 'B 项目', workspace: 'D:/proj-b' },
+      { id: 's-loose', title: '未分组' },
+    ]
+    const store = useChatStore()
+    const ws = useWorkspaceStore()
+    ws.path = 'D:/proj-a' // 用户显式选择的工作区
+
+    await store.selectSession('s-proj')
+    expect(ws.path).toBe('D:/proj-a')
+    expect(h.setWorkspaceCalls).toEqual([])
+
+    await store.selectSession('s-loose')
+    expect(ws.path).toBe('D:/proj-a')
+    expect(h.setWorkspaceCalls).toEqual([])
   })
 
   // 开源惯例（open-webui/lobe-chat）：首轮结束用首条消息截断自动命名，侧栏不再裸奔会话 ID
