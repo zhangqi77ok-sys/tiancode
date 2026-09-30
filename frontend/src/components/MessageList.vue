@@ -150,8 +150,9 @@ watch(
       <p class="text-sm text-[var(--c-text-dim)]">正在载入历史…</p>
     </div>
 
-    <!-- 空态（阶段 1）：不再是"一行灰字 + 三颗芯片"——当前模型、有没有工作区、
-         三条建议分三块摆清楚；无工作区时主按钮仍是「选择工作区」 -->
+    <!-- 空态（0.0.27 重排）：纯对话是**一等模式**，不是"缺工作区"的警告——
+         两种状态同一视觉权重、同一中性色；挂工作区是可选增强（次要按钮），
+         不再用警示色和主按钮逼人选。建议文案与实际能力一致。 -->
     <div v-else-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4 px-6">
       <div class="w-full max-w-md rounded-[var(--r-card)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-3 text-center">
         <p class="text-[13px] text-[var(--c-text)]">
@@ -159,15 +160,20 @@ watch(
           <span class="font-medium">{{ channels.activeModel || '未选择' }}</span>
           <span v-if="channels.activeChannel" class="text-[var(--c-text-dim)]"> · {{ channels.activeChannel.name }}</span>
         </p>
-        <p
-          class="mt-1 text-xs"
-          :class="ws.path ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
-          :title="ws.path"
-        >
-          {{ ws.path ? `工作区 ${shortDir(ws.path)}` : '未选择工作区 · 纯对话（文件与命令工具不可用）' }}
+        <p class="mt-1 text-xs text-[var(--c-text-dim)]" :title="ws.path">
+          {{
+            ws.path
+              ? `工作区 ${shortDir(ws.path)} · 可读写文件、跑命令、查 Git`
+              : '纯对话 · 直接提问即可；贴图与传文件照常可用'
+          }}
         </p>
-        <button v-if="!ws.path" class="btn-primary mt-3 gap-1.5 px-4 py-2 text-sm" @click="pickWorkspace">
-          <AppIcon name="folder" :size="13" /> 选择工作区
+        <button
+          v-if="!ws.path"
+          class="mt-3 inline-flex items-center gap-1.5 rounded-[var(--r-pill)] border border-[var(--c-border)] px-3 py-1.5 text-xs text-[var(--c-text-dim)] transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"
+          title="可选：选定目录后新对话归属它，解锁读写文件、跑命令、查 Git（当前这场对话不受影响）"
+          @click="pickWorkspace"
+        >
+          <AppIcon name="folder" :size="12" /> 挂上工作区（可选）
         </button>
       </div>
       <div class="flex flex-wrap justify-center gap-2">
