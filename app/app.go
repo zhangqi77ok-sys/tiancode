@@ -35,6 +35,8 @@ type Bind struct {
 	cancels map[string]context.CancelFunc
 	// AppCtx 是 Wails 应用上下文，由 main 的 OnStartup 注入（事件推送与取消传播都依赖它）。
 	AppCtx context.Context
+	// emit 是事件桥替身（仅测试注入；nil = 走 wruntime.EventsEmit）。
+	emit func(name string, payload any)
 }
 
 // New 装配壳层。
@@ -244,23 +246,29 @@ func (b *Bind) ProposeFileWrite(sessionID, path, content string) (app.ProposeWri
 // 发送失败时错误上抛——前端保留待发送区允许重试。
 func (b *Bind) SendWithAttachments(sessionID, text, attachments, forceTool string) error {
 	ctx := b.appCtx()
-	runCtx, cancel := context.WithCancel(ctx)
-	b.mu.Lock()
-	b.cancels[sessionID] = cancel
-	b.mu.Unlock()
-	defer func() {
-		b.mu.Lock()
-		delete(b.cancels, sessionID)
-		b.mu.Unlock()
-	}()
+	runCtx := b.openTurn(sessionID)
+	defer b.closeTurn(sessionID)
 	var atts []app.IncomingAttachment
 	if strings.TrimSpace(attachments) != "" {
 		if err := json.Unmarshal([]byte(attachments), &atts); err != nil {
 			return fmt.Errorf("附件格式错误：%w", err)
 		}
 	}
-	_, sendErr := b.chat.SendWithAttachments(runCtx, sessionID, text, atts, forceTool)
-	return sendErr
+	// 关键（0.0.26）：这条流**必须消费**——此前用 `_` 丢掉返回值，没人消费 →
+	// 服务转发卡在 `out <- c`、内核卡在第二块，界面永远"正在思考"（实机故障）。
+	ch, sendErr := b.chat.SendWithAttachments(runCtx, sessionID, text, atts, forceTool)
+	if sendErr != nil {
+		// 与 Send 同语义：流建立前被中断也必须发终态，前端才解锁输入框。
+		if runCtx.Err() != nil {
+			b.emitEvent(ctx, "chat:terminal", map[string]any{
+				"sessionID": sessionID, "endReason": int(llm.EndCancelled), "error": "cancelled",
+			})
+			return nil
+		}
+		return sendErr
+	}
+	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) })
+	return nil
 }
 
 // ResolveAsk 提交用户对某次问答的答复（答案原样回流给模型继续推理）。
@@ -389,51 +397,51 @@ func (b *Bind) Replay(sessionID string) ([]app.ChatMessage, error) {
 	return b.chat.Replay(sessionID)
 }
 
-// Send 发送一条消息；流式内容经事件桥推送：
-//   - "chat:chunk"    {sessionID, delta, thinking}
-//   - "chat:terminal" {sessionID, endReason, error}
-//
-// endReason 取值对应 core/llm：1=EndDone 2=EndError 3=EndCancelled 4=EndIdleTimeout。
-// 返回值仅在"流建立失败"（前置错误，如配置缺失/连接失败重试耗尽）时非 nil；
-// 流中终态一律经 chat:terminal 事件传递。
-func (b *Bind) Send(sessionID, text string) error {
-	ctx := b.appCtx() // 见 Bind 注释：ctx 不能作绑定方法参数
-	runCtx, cancel := context.WithCancel(ctx)
+// openTurn 注册本轮的取消函数（Send / SendWithAttachments 共用），返回本轮 ctx。
+func (b *Bind) openTurn(sessionID string) context.Context {
+	runCtx, cancel := context.WithCancel(b.appCtx()) // 见 Bind 注释：ctx 不能作绑定方法参数
 	b.mu.Lock()
 	b.cancels[sessionID] = cancel
 	b.mu.Unlock()
-	defer func() {
-		b.mu.Lock()
-		delete(b.cancels, sessionID)
-		b.mu.Unlock()
-	}()
+	return runCtx
+}
 
+// closeTurn 注销本轮的取消函数（取消本身由本轮 ctx 的持有者收尾）。
+func (b *Bind) closeTurn(sessionID string) {
+	b.mu.Lock()
+	delete(b.cancels, sessionID)
+	b.mu.Unlock()
+}
+
+// drainTurn 消费一轮的流并把事件推给前端。
+//
+// 0.0.26 修（实机故障"上传文件或图片后发出去没有回复"）：SendWithAttachments 此前把
+// 服务返回的通道直接丢掉（`_`），于是**没有人消费**——服务转发循环卡在 `out <- c`，
+// 内核随之卡在第二块上，表现是：账本只留一条增量、界面永远"正在思考"、90 秒后被看门狗
+// 当成"上游黑洞"收掉（日志里连上游超时都没有）。请求本身一直是好的。
+// 两条发送路径必须共用这一份消费逻辑，谁都不许再丢通道（用例锁住）。
+//
+// emit 注入是为了可测（Wails 事件桥在单元测试里不可用）。
+func drainTurn(
+	ctx context.Context,
+	sessionID string,
+	ch <-chan llm.StreamChunk,
+	emit func(name string, payload any),
+) {
 	// 为什么兜底合成终态：极端时序下（取消恰逢发送受阻）上游通道可能无终态关闭，
 	// 前端必须始终收到 chat:terminal 才能解锁输入框（C-APP-2 的 UI 侧保证）。
 	terminalSeen := false
 	emitTerminal := func(reason llm.EndReason, errText string) {
 		terminalSeen = true
-		wruntime.EventsEmit(ctx, "chat:terminal", map[string]interface{}{
+		emit("chat:terminal", map[string]any{
 			"sessionID": sessionID,
 			"endReason": int(reason),
 			"error":     errText,
 		})
 	}
-
-	ch, err := b.chat.Send(runCtx, sessionID, text)
-	if err != nil {
-		// 中断发生在流建立之前（例如还在连 MCP）：必须发终态，不能只返回错误。
-		// 只返回错误时前端会当成失败，输入框要等异常路径才解锁，观感是按钮没反应。
-		if runCtx.Err() != nil {
-			emitTerminal(llm.EndCancelled, "cancelled")
-			return nil
-		}
-		return err
-	}
-
 	for c := range ch {
 		if c.Delta != "" || c.Thinking != "" {
-			wruntime.EventsEmit(ctx, "chat:chunk", map[string]string{
+			emit("chat:chunk", map[string]string{
 				"sessionID": sessionID,
 				"delta":     c.Delta,
 				"thinking":  c.Thinking,
@@ -442,7 +450,7 @@ func (b *Bind) Send(sessionID, text string) error {
 		if c.Usage != nil {
 			// 油表（0.0.09）：上游 token 用量透传——顶栏显示本轮 prompt token
 			//（上下文大小的直接读数）。没有上下文长度配置时不编百分比。
-			wruntime.EventsEmit(ctx, "chat:usage", map[string]any{
+			emit("chat:usage", map[string]any{
 				"sessionID":  sessionID,
 				"prompt":     c.Usage.PromptTokens,
 				"completion": c.Usage.CompletionTokens,
@@ -451,7 +459,7 @@ func (b *Bind) Send(sessionID, text string) error {
 		}
 		if c.ToolEvent != nil {
 			// 工具卡片数据（M3）：执行动态实时推送，前端渲染独立卡片
-			wruntime.EventsEmit(ctx, "chat:tool", map[string]any{
+			emit("chat:tool", map[string]any{
 				"sessionID": sessionID,
 				"name":      c.ToolEvent.Name,
 				"status":    c.ToolEvent.Status,
@@ -475,14 +483,14 @@ func (b *Bind) Send(sessionID, text string) error {
 			for i, it := range c.Todo.Items {
 				items[i] = map[string]string{"text": it.Text, "status": it.Status}
 			}
-			wruntime.EventsEmit(ctx, "chat:todo", map[string]any{
+			emit("chat:todo", map[string]any{
 				"sessionID": sessionID,
 				"items":     items,
 			})
 		}
 		if c.Context != nil {
 			// 上下文治理读数（第 2 批）：油表显示预算/估算；折叠绝不静默
-			wruntime.EventsEmit(ctx, "chat:context", map[string]any{
+			emit("chat:context", map[string]any{
 				"sessionID":       sessionID,
 				"estimatedTokens": c.Context.EstimatedTokens,
 				"budgetTokens":    c.Context.BudgetTokens,
@@ -504,6 +512,44 @@ func (b *Bind) Send(sessionID, text string) error {
 	if !terminalSeen {
 		emitTerminal(llm.EndCancelled, "cancelled")
 	}
+}
+
+// emitEvent 是事件桥的正式出口（Wails EventsEmit）。测试用注入替身绕开它
+// （Wails 运行时在单元测试里不存在）。这也让"带附件发送"能端到端测：
+// 伪造上游 SSE → 走真实 ChatService → 断言事件真的推到了这一层。
+func (b *Bind) emitEvent(ctx context.Context, name string, payload any) {
+	if b.emit != nil {
+		b.emit(name, payload)
+		return
+	}
+	wruntime.EventsEmit(ctx, name, payload)
+}
+
+// Send 发送一条消息；流式内容经事件桥推送：
+//   - "chat:chunk"    {sessionID, delta, thinking}
+//   - "chat:terminal" {sessionID, endReason, error}
+//
+// endReason 取值对应 core/llm：1=EndDone 2=EndError 3=EndCancelled 4=EndIdleTimeout。
+// 返回值仅在"流建立失败"（前置错误，如配置缺失/连接失败重试耗尽）时非 nil；
+// 流中终态一律经 chat:terminal 事件传递。
+func (b *Bind) Send(sessionID, text string) error {
+	ctx := b.appCtx()
+	runCtx := b.openTurn(sessionID)
+	defer b.closeTurn(sessionID)
+
+	ch, err := b.chat.Send(runCtx, sessionID, text)
+	if err != nil {
+		// 中断发生在流建立之前（例如还在连 MCP）：必须发终态，不能只返回错误。
+		// 只返回错误时前端会当成失败，输入框要等异常路径才解锁，观感是按钮没反应。
+		if runCtx.Err() != nil {
+			b.emitEvent(ctx, "chat:terminal", map[string]any{
+				"sessionID": sessionID, "endReason": int(llm.EndCancelled), "error": "cancelled",
+			})
+			return nil
+		}
+		return err
+	}
+	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) })
 	return nil
 }
 
