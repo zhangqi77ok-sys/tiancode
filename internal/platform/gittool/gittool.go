@@ -107,7 +107,9 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 func buildArgs(action, path string, limit int) ([]string, error) {
 	switch action {
 	case "status":
-		args := []string{"status", "--porcelain"}
+		// -b（0.0.11）：带上 "## 分支" 头行——顶栏要显示当前分支，模型也该知道
+		// 自己在哪条分支上干活；仍是纯只读查询（-b 只加一个头行，不改行为）。
+		args := []string{"status", "--porcelain", "-b"}
 		if path != "" {
 			args = append(args, "--", path)
 		}

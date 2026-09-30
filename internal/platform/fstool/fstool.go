@@ -43,19 +43,94 @@ type Tool struct {
 	mu       sync.Mutex
 	lastRead map[string]bool
 
-	// gate 是文件写入的确认端口（0.0.10，可为 nil）：非 nil 时 write/replace 在
-	// 落盘前必须经用户确认（应用/跳过），确认时才执行 Apply（内部自验外部改动）。
-	gate EditGate
-
-	// callID 是 agent 分派前注入的当前工具调用 ID（确认卡与工具卡配对用）。
-	callID string
+	// 轮次检查点（第 6 批）：本轮首次修改某文件前的快照（roundCP/roundOrder 保序），
+	// roundOn 只在 BeginRound~EndRound 之间为真。由编排层在每次 Send 前后驱动。
+	roundCP    map[string]*tools.RoundCheckpoint
+	roundOrder []string
+	roundOn    bool
 }
 
-// SetEditGate 注入确认端口（app 装配时注入；nil = 不需要确认，直接落盘）。
-func (t *Tool) SetEditGate(g EditGate) { t.gate = g }
+// BeginRound 开始新一轮检查点收集（编排层每次 Send 前调用；清空上一轮残留）。
+func (t *Tool) BeginRound() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.roundCP = map[string]*tools.RoundCheckpoint{}
+	t.roundOrder = nil
+	t.roundOn = true
+}
 
-// SetCallID 注入当前工具调用 ID（agent 每次分派前调用；fs 的写操作串行，单槽够用）。
-func (t *Tool) SetCallID(id string) { t.callID = id }
+// EndRound 结束本轮收集并按首次修改顺序返回检查点（Map 无序，靠 roundOrder 保序）。
+func (t *Tool) EndRound() []tools.RoundCheckpoint {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.roundOn = false
+	out := make([]tools.RoundCheckpoint, 0, len(t.roundOrder))
+	for _, p := range t.roundOrder {
+		if cp, ok := t.roundCP[p]; ok {
+			out = append(out, *cp)
+		}
+	}
+	t.roundCP = map[string]*tools.RoundCheckpoint{}
+	t.roundOrder = nil
+	return out
+}
+
+// noteRound 记录本轮首次修改该文件前的快照；已记录的文件只更新"最后写入哈希"
+// （撤回前校验用），绝不覆盖首次快照——那才是"本轮开始前"的状态。
+func (t *Tool) noteRound(path, old string, existed, haveOld bool, newSHA string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.roundOn {
+		return
+	}
+	if cp, ok := t.roundCP[path]; ok {
+		cp.LastSHA256 = newSHA
+		return
+	}
+	cp := &tools.RoundCheckpoint{Path: path, OldExists: existed, LastSHA256: newSHA}
+	if existed && !haveOld {
+		cp.Note = "无法撤回：写入前的内容超过上限，未保存快照"
+	} else {
+		cp.OldContent = old
+	}
+	t.roundCP[path] = cp
+	t.roundOrder = append(t.roundOrder, path)
+}
+
+// RestoreCheckpoint 按轮次检查点恢复一个文件（「撤回本轮」）。
+// 校验纪律与单文件「恢复写入前」一致：当前内容必须与本轮最后一次写入一致
+// （哈希比对）——用户在本轮之后手工改过就拒绝，绝不覆盖用户改动。
+func (t *Tool) RestoreCheckpoint(cp tools.RoundCheckpoint) error {
+	if cp.Note != "" {
+		return errors.New(cp.Note)
+	}
+	full, err := t.resolve(cp.Path)
+	if err != nil {
+		return err
+	}
+	cur, err := os.ReadFile(full)
+	switch {
+	case err == nil:
+		if cp.LastSHA256 != "" && sha256Hex(cur) != cp.LastSHA256 {
+			return errors.New("文件在本轮之后被改过，已跳过（不覆盖你的改动）")
+		}
+	case os.IsNotExist(err):
+		if cp.OldExists {
+			return errors.New("文件已被删除，已跳过")
+		}
+		return nil // 本轮新建且现在不存在：无需恢复
+	default:
+		return err
+	}
+	if !cp.OldExists {
+		// 本轮新建的文件：撤回 = 删除（与单文件撤销的 OldExists=false 语义一致）
+		return os.Remove(full)
+	}
+	return atomicfile.WriteFileAtomic(full, []byte(cp.OldContent), 0o600)
+}
+
+// UndoSnapshot 与 tools.UndoData 同一类型（结果字段直接透传）。
+type UndoSnapshot = tools.UndoData
 
 // New 构造工具，root 为工作区绝对路径。
 //
@@ -149,9 +224,9 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	case "read":
 		return t.read(args.Path, args.StartLine, args.LineCount)
 	case "write":
-		return t.write(ctx, args.Path, args.Content)
+		return t.write(args.Path, args.Content)
 	case "replace":
-		return t.replace(ctx, args.Path, args.Target, args.Replacement, args.AllowMultiple)
+		return t.replace(args.Path, args.Target, args.Replacement, args.AllowMultiple)
 	case "list":
 		return t.list(args.Path)
 	case "tree":
@@ -308,7 +383,7 @@ const maxScanLineBytes = 1 << 20
 //     拒绝时写明出路（replace / 先整读）。目标不存在 = 新建，不需要先读。
 //   - 撤销快照：写入成功后把旧全文放进 Undo（只给界面/后端恢复用，不进模型
 //     上下文）；旧内容超上限时放弃快照并注明"无法恢复"——绝不为恢复多读一份。
-func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResult, error) {
+func (t *Tool) write(path, content string) (tools.ToolResult, error) {
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
@@ -348,8 +423,8 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 		return bizErrf("stat before write failed: %v", statErr), nil
 	}
 
-	// Apply 是"确认后"的真正落盘（0.0.10）：内部自验外部改动（提案到确认之间
-	// 文件被其他程序改过 → 拒绝且原文件不动），原子写，更新整读标记，产出撤销快照。
+	// applyFn 是真正的落盘：内部自验外部改动（快照到落盘之间文件被其他程序
+	// 改过 → 拒绝且原文件不动），原子写，更新整读标记，产出撤销快照。
 	applyFn := func() (*UndoSnapshot, error) {
 		if existed {
 			info2, err := os.Stat(full)
@@ -368,6 +443,8 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 		if !existed || !haveDiff {
 			u.OldContent = old // 超限时为空串（无法恢复语义由 UndoNote 表达）
 		}
+		// 第 6 批：轮次检查点（本轮首次修改前快照，供「撤回本轮」）
+		t.noteRound(path, old, existed, haveDiff, u.NewSHA256)
 		return u, nil
 	}
 
@@ -375,30 +452,11 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	if haveDiff {
 		fullDiff = diffText(path, old, content)
 	}
-	var undo *UndoSnapshot
-	var undoNote string
-	if t.gate == nil {
-		u, err := applyFn()
-		if err != nil {
-			return bizErrf("write failed: %v", err), nil
-		}
-		undo = u
-	} else {
-		// 确认卡（0.0.10）：未确认不落盘；取消按跳过；没有超时自动应用。
-		applied, u, err := t.gate.ConfirmEdit(ctx, EditProposal{
-			Path: path, Diff: fullDiff, IsNew: !existed, CallID: t.callID, Apply: applyFn,
-		})
-		if err != nil {
-			return bizErrf("变更应用失败：%v（原文件未动）", err), nil
-		}
-		if !applied {
-			return tools.ToolResult{
-				Content: "用户跳过了这次修改，文件未修改。请尊重用户的决定：可以调整方案后再次提出，不要重复提交相同内容。",
-				Title:   path, Op: "write",
-			}, nil
-		}
-		undo = u
+	undo, err := applyFn()
+	if err != nil {
+		return bizErrf("write failed: %v", err), nil
 	}
+	var undoNote string
 	if undo == nil || (!undoExists && !existed) {
 		undoNote = "这次无法恢复：写入前的内容超过上限，未保存恢复数据"
 	}
@@ -427,7 +485,7 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
+func (t *Tool) replace(path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
 	if target == "" {
 		return bizErrf("target is required for replace"), nil
 	}
@@ -475,7 +533,7 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	sizeAtPropose, modAtPropose := info0.Size(), info0.ModTime()
 	fullDiff := diffText(path, old, updated)
 
-	// Apply（0.0.10）：确认后的真正落盘，自验外部改动（提案→确认间文件被改 → 拒绝）
+	// applyFn 是真正的落盘：自验外部改动（快照到落盘间文件被改 → 拒绝）
 	applyFn := func() (*UndoSnapshot, error) {
 		info2, err := os.Stat(full)
 		if err != nil || info2.Size() != sizeAtPropose || !info2.ModTime().Equal(modAtPropose) {
@@ -488,30 +546,15 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		t.mu.Lock()
 		t.lastRead[full] = false
 		t.mu.Unlock()
-		return &UndoSnapshot{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(updated))}, nil
+		u := &UndoSnapshot{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(updated))}
+		// 第 6 批：轮次检查点（本轮首次修改前快照，供「撤回本轮」）
+		t.noteRound(path, old, true, true, u.NewSHA256)
+		return u, nil
 	}
 
-	var undo *UndoSnapshot
-	if t.gate == nil {
-		u, err := applyFn()
-		if err != nil {
-			return bizErrf("replace write failed: %v", err), nil
-		}
-		undo = u
-	} else {
-		applied, u, err := t.gate.ConfirmEdit(ctx, EditProposal{
-			Path: path, Diff: fullDiff, IsNew: false, CallID: t.callID, Apply: applyFn,
-		})
-		if err != nil {
-			return bizErrf("变更应用失败：%v（原文件未动）", err), nil
-		}
-		if !applied {
-			return tools.ToolResult{
-				Content: "用户跳过了这次修改，文件未修改。请尊重用户的决定：可以调整方案后再次提出，不要重复提交相同内容。",
-				Title:   path, Op: "edit",
-			}, nil
-		}
-		undo = u
+	undo, err := applyFn()
+	if err != nil {
+		return bizErrf("replace write failed: %v", err), nil
 	}
 	return tools.ToolResult{
 		Content: withShortDiff(fmt.Sprintf("replaced %d occurrence(s) in %s", count, path), path, fullDiff),
@@ -764,14 +807,20 @@ func bizErrf(format string, a ...any) tools.ToolResult {
 	return tools.ToolResult{Content: fmt.Sprintf(format, a...), IsError: true}
 }
 
-// fsTitle 卡片主标签：路径末段（read/write/replace 是文件，list 是目录）。
-// 只取末段：卡片一行内要一眼认出目标，全路径太长。
+// fsTitle 卡片主标签：**工作区相对路径**（分隔符统一正斜杠）。
+// 为什么不再只取末段：末段在多目录同名文件（agent.go）下无法区分，「本轮变更」
+// 列表会挤出一排同名条目；相对路径是唯一能区分目标的稳定标签，长度问题由 UI
+// 做两段式省略（目录暗、末段亮）。根/空路径回退 "(workspace)"。
 func fsTitle(path string) string {
-	base := filepath.Base(filepath.Clean(path))
-	if base == "." || base == string(filepath.Separator) {
+	p := strings.TrimSpace(path)
+	if p == "" {
 		return "(workspace)"
 	}
-	return base
+	p = filepath.ToSlash(filepath.Clean(p))
+	if p == "." || p == "/" {
+		return "(workspace)"
+	}
+	return p
 }
 
 // fsOp 卡片动作徽章：replace 的语义即"编辑"

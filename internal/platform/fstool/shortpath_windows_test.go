@@ -14,7 +14,7 @@ import (
 
 // CI（GitHub runner）的临时目录带 8.3 短名（RUNNER~1），本地通常是长名——
 // 这个环境差异曾让 resolve 的前缀比对把整个工作区判成越界（全部 write 报
-// "path escapes workspace: a.txt"，app 层 EditGate 端到端连坐）。
+// "path escapes workspace: a.txt"，连 app 层的文件写用例一起变红）。
 // 锁死契约：root 用短名构造时，New 必须把它解析成与候选路径同一形态，
 // 相对路径的读/写照常工作。卷未启用 8.3 时 Skip（此时无法构造不一致环境）。
 func TestResolveWithShortNameRoot(t *testing.T) {

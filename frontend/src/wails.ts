@@ -23,6 +23,8 @@ export interface ChatMessageDTO {
   // 问答卡（role='ask'）：问题与选项来自 tool_call 参数，Content 为用户答复
   question?: string
   options?: string[]
+  // 账本事件序号（第 6 批）：用户消息带它——「从这条消息重跑」的分叉锚点
+  seq?: number
 }
 
 // 审批请求载荷：内核要"问"时推送（UI 渲染确认卡片，答复经 ResolveApproval 回流）。
@@ -62,6 +64,8 @@ export interface ChannelDTO {
   headerOverride?: Record<string, string>
   // 渠道级鉴权（0.2.20）：缺省 = 协议默认（openai → Bearer；anthropic → x-api-key）
   auth?: AuthDTO
+  // 上下文上限（token；0/缺省 = 未配置）：本地派生历史时分级折叠用，不发给上游
+  contextLimit?: number
   // 凭证摘要（列表卡片"N 条 · M 禁用"；逐条管理走 ListCredentials）
   credentialCount?: number
   credentialDisabled?: number
@@ -130,6 +134,29 @@ export interface ProxyInfoDTO {
   country: string
 }
 
+// 「应用到文件」的写入回执（ProposeFileWrite 返回）：写入已完成（改了就是改了），
+// 界面据它出一张结果卡（路径 + diff + 新建/覆盖）。
+export interface ProposeWriteResultDTO {
+  path: string
+  isNew: boolean
+  diff: string
+  bytes: number
+}
+
+// 撤回本轮的结果（第 6 批）：restored = 已恢复；skipped = 撤不回（含原因）。
+export interface RevertResultDTO {
+  round: number
+  restored: string[]
+  skipped: string[]
+}
+
+// 从这条用户消息重跑的结果（第 6 批）：text = 原消息原文（前端据此重发）。
+export interface RerunResultDTO {
+  text: string
+  reverted: string[]
+  skipped: string[]
+}
+
 export interface ChannelListDTO {
   channels: ChannelDTO[]
   activeId: string
@@ -163,6 +190,9 @@ export interface ChannelInput {
   headerOverride?: Record<string, string>
   // 渠道级鉴权（0.2.20）：undefined/type=default = 协议默认
   auth?: AuthDTO
+  // 上下文上限（token；0 = 不限）。估算口径：4 个 ASCII 字符 ≈ 1 token、
+  // 1 个非 ASCII 字符 ≈ 1 token（保守上界）——见后端 derive.go。
+  contextLimit?: number
 }
 
 // createAppStub 生成"调用即明确报错"的桩。
@@ -238,22 +268,33 @@ interface WailsApp {
   SetWorkspace(dir: string): Promise<void>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
-  // 在资源管理器中显示（0.0.06）：工具卡"打开文件所在目录"。相对路径按当前工作区根解析。
-  RevealInExplorer(path: string): Promise<void>
+  // 顶栏分支（0.0.11）：已落账会话取该会话自己的工作区，草稿取"下一场新对话"的根；
+  // 没有工作区 / 不是 git 仓库 / 命令失败 → 空串（界面不显示，绝不编造分支名）。
+  CurrentBranch(sessionID: string): Promise<string | null>
+  // 在资源管理器中显示（0.0.06）：工具卡"打开文件所在目录"。
+  // 0.0.11：相对路径按**这场对话**的工作区根解析（此前用"下一场新对话"的根，
+  // 切换工作区后旧会话会指到别的目录）；无工作区/越界/不存在显式报错。
+  RevealInExplorer(sessionID: string, path: string): Promise<void>
+  // 用系统默认程序打开（0.0.11）：路径解析同 Reveal；目录直接打开目录本身。
+  OpenInDefaultApp(sessionID: string, path: string): Promise<void>
   // 系统保存对话框写文本文件（0.0.06：导出会话"另存为文件"）。取消返回空串。
   SaveTextFile(defaultName: string, content: string): Promise<string>
   // 打开内部日志目录（0.0.09）：排障入口——轮次/上游请求/看门狗事件按天落盘
   OpenLogDir(): Promise<void>
   // 恢复一次 write/replace 写入前的内容（0.0.07）。失败（文件被改过等）显式报错。
   RestoreToolWrite(sessionID: string, callID: string): Promise<string>
+  // 撤回最近一个未撤回的轮次（第 6 批）：按轮次检查点恢复该轮改过的文件。
+  // skipped 里是撤不回的文件（超限 / 本轮之后被改过），绝不静默。
+  RevertRound(sessionID: string): Promise<RevertResultDTO | null>
+  // 从这条用户消息重跑（第 6 批）：撤回其后文件改动 + 账本分叉（旧行不改写），
+  // 返回原文供重新发送；skipped 同上。
+  RerunFrom(sessionID: string, userSeq: number): Promise<RerunResultDTO | null>
   // @ 文件引用（0.0.09/0.0.10 会话化）：列出**这场对话**工作区的文件。
   SearchWorkspaceFiles(sessionID: string, query: string): Promise<string[] | null>
   // 带附件发送（0.0.10）：图片/文件 JSON 数组；失败上抛（前端保留待发送区）。
   SendWithAttachments(sessionID: string, text: string, attachments: string): Promise<void>
-  // 文件变更确认（0.0.10）：应用/跳过一次待确认的 write/replace。
-  ResolveEdit(sessionID: string, editID: string, apply: boolean): Promise<void>
-  // 代码块"应用到文件"：把内容变成待确认变更（同一条确认链路）。
-  ProposeFileWrite(sessionID: string, path: string, content: string): Promise<void>
+  // 代码块「应用到文件」：内容直接写入工作区，返回写入回执（路径 + diff + 新建/覆盖）。
+  ProposeFileWrite(sessionID: string, path: string, content: string): Promise<ProposeWriteResultDTO | null>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
   PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
@@ -396,7 +437,9 @@ export function bridge(): WailsBridge {
         DeleteChannel: offlineWrite,
         SetActiveChannel: offlineWrite,
         SetActiveModel: offlineWrite,
+        CurrentBranch: async () => '',
         RevealInExplorer: offlineWrite,
+        OpenInDefaultApp: offlineWrite,
         SaveTextFile: async () => '',
         OpenLogDir: offlineWrite,
         RestoreToolWrite: async () => {
@@ -404,8 +447,9 @@ export function bridge(): WailsBridge {
         },
         SearchWorkspaceFiles: async () => [],
         SendWithAttachments: offlineWrite,
-        ResolveEdit: offlineWrite,
         ProposeFileWrite: offlineWrite,
+        RevertRound: offlineWrite,
+        RerunFrom: offlineWrite,
         DiscoverModels: offlineWrite,
         TestChannel: offlineWrite,
         ListCredentials: async () => [],

@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
+import { useDialogs } from '../composables/useDialogs'
+import { useEscClose } from '../composables/useEsc'
 import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
@@ -20,8 +22,45 @@ const isUser = computed(() => props.m.role === 'user')
 // 图片放大（0.0.10）：点缩略图全屏看原图
 const lightbox = ref<string | null>(null)
 
+// Esc 关闭灯箱（第 3 批）：经消费栈注册——"关灯箱"绝不能顺手把正在跑的回合中断
+useEscClose(
+  computed(() => !!lightbox.value),
+  () => {
+    lightbox.value = null
+  },
+)
+
 const { push: toast } = useToast()
 const store = useChatStore()
+const dialogs = useDialogs()
+
+// 从这条消息重跑（第 6 批）：撤回其后文件改动 + 账本分叉（旧对话记录作废），
+// 然后按原文重新发送。危险动作，先确认；撤不回的文件在回执里明确列出。
+const rerunning = ref(false)
+async function rerun() {
+  if (!props.m.seq || rerunning.value || store.running) return
+  const ok = await dialogs.confirm({
+    title: '从这条消息重跑',
+    message: '将撤回这条消息之后的所有文件改动（撤不回的会明确列出），旧对话记录作废并重新执行这条消息。继续？',
+    confirmText: '重跑',
+    danger: true,
+  })
+  if (!ok) return
+  rerunning.value = true
+  try {
+    const res = await store.rerunFrom(props.m.seq)
+    if (res.reverted.length || res.skipped.length) {
+      const parts = [`已撤回 ${res.reverted.length} 个文件`]
+      if (res.skipped.length) parts.push(`撤不回：${res.skipped.join('；')}`)
+      toast(res.skipped.length ? 'error' : 'info', parts.join('；'))
+    }
+    await store.send(res.text)
+  } catch (e) {
+    toast('error', String(e instanceof Error ? e.message : e))
+  } finally {
+    rerunning.value = false
+  }
+}
 
 const showRetry = computed(() => {
   if (isUser.value || store.running) return false
@@ -77,6 +116,16 @@ function fmtTime(at?: number): string {
   <div v-if="isUser" class="flex flex-col items-end gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
       <span>你</span><span>{{ fmtTime(m.at) }}</span>
+      <!-- 从这条消息重跑（第 6 批）：仅账本已有该消息（有 seq）且空闲时可用 -->
+      <button
+        v-if="m.seq && !store.running"
+        class="flex items-center gap-0.5 text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-primary)]"
+        :disabled="rerunning"
+        title="从这条消息重跑：撤回其后的文件改动并重新执行（旧对话记录作废）"
+        @click="rerun"
+      >
+        <AppIcon name="refresh" :size="11" />{{ rerunning ? '重跑中…' : '重跑' }}
+      </button>
     </div>
     <!-- 图片：缩略图行（dataUrl 来自发送时本地回显或重放时后端读取附件文件） -->
     <div v-if="m.attachments?.some((a) => a.kind === 'image')" class="flex max-w-[75%] flex-wrap justify-end gap-1.5">

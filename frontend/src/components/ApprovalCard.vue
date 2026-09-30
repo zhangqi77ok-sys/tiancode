@@ -58,7 +58,9 @@ const dangerNote = computed(() => {
   const deleteish = /\b(rm|rmdir|del|rd|erase|format|Remove-Item|Clear-Content|truncate)\b|\/s\b|\/f\b|-rf\b/i.test(cmd)
   const overwriteish = (props.m.toolName === 'fs' && (act === 'write' || act === 'replace'))
   if (deleteish) return '这条命令可能删除或覆盖文件'
-  if (overwriteish) return '这将修改磁盘上的文件（不可自动撤销）'
+  // 0.0.11：写/改文件不再说"不可自动撤销"——单次 write/replace 有写入前快照
+  //（卡片上的「恢复写入前」/ 轮次撤回都能还原）；删除类命令的警示依旧保留
+  if (overwriteish) return '这将修改磁盘上的文件'
   return ''
 })
 

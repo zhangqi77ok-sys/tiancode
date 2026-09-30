@@ -32,13 +32,13 @@ async function onContentClick(e: MouseEvent) {
     const ext = lang && /^[a-z0-9]{1,6}$/i.test(lang) ? `.${lang}` : '.txt'
     const path = await dialogs.prompt({
       title: '应用到文件',
-      message: '输入目标文件路径（工作区相对，进入确认卡后再落盘）：',
+      message: '输入目标文件路径（工作区相对，确认后直接写入）：',
       value: `untitled${ext}`,
     })
     if (!path) return // 取消/未选择：不产生任何写盘调用
     try {
-      await store.proposeApplyCode(path, code)
-      toast('info', '已在下方生成确认卡：请核对 diff 后应用')
+      const res = await store.proposeApplyCode(path, code)
+      toast('info', `已写入 ${res?.path ?? path}`)
     } catch (err) {
       toast('error', String(err instanceof Error ? err.message : err))
     }

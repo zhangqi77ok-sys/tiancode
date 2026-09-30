@@ -28,6 +28,35 @@ function byRecency(a: SessionSummaryDTO, b: SessionSummaryDTO): number {
   return (b.lastActiveMs ?? Number.MAX_SAFE_INTEGER) - (a.lastActiveMs ?? Number.MAX_SAFE_INTEGER)
 }
 
+// 本地搜索（0.0.11）：标题（未命名回退会话 ID）与工作区路径的不区分大小写子串匹配。
+export function matchesSession(sm: SessionSummaryDTO, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const title = (sm.title || sm.id).toLowerCase()
+  const workspace = (sm.workspace || '').toLowerCase()
+  return title.includes(q) || workspace.includes(q)
+}
+
+// 过滤侧栏模型：只保留命中会话；空分区/空分组整体消失。
+// 分组规则本身不变（仍由 buildSidebar 决定）——这里只做"减法"。
+export function filterSidebar(sections: SidebarSection[], query: string): SidebarSection[] {
+  const q = query.trim()
+  if (!q) return sections
+  const out: SidebarSection[] = []
+  for (const sec of sections) {
+    if (sec.kind === 'spaces') {
+      const groups = sec.groups
+        .map((g) => ({ ...g, items: g.items.filter((sm) => matchesSession(sm, q)) }))
+        .filter((g) => g.items.length > 0)
+      if (groups.length) out.push({ ...sec, groups })
+      continue
+    }
+    const items = sec.items.filter((sm) => matchesSession(sm, q))
+    if (items.length) out.push({ ...sec, items })
+  }
+  return out
+}
+
 export function buildSidebar(summaries: SessionSummaryDTO[], currentPath: string): SidebarSection[] {
   const pinned = summaries.filter((s) => s.pinned).sort(byRecency)
   const rest = summaries.filter((s) => !s.pinned)

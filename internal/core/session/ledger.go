@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // EventKind 是事件类型枚举。一经发布不得改名
@@ -34,6 +35,21 @@ const (
 	EventToolResult     EventKind = "tool_result"
 	EventTurnEnd        EventKind = "turn_end"
 	EventError          EventKind = "error"
+
+	// 第 6 批（回合检查点 / 用户手动写入 / 分叉）——账本只追加，旧行永不改写。
+	//
+	// EventRoundCheckpoint 记录一轮结束时该轮改过的文件与"轮次开始前内容"快照
+	//（供「撤回本轮」整批恢复；超限条目带 note 表示撤不回）。
+	EventRoundCheckpoint EventKind = "round_checkpoint"
+	// EventRoundRevert 记录一次「撤回本轮」（恢复了哪些/哪些撤不回），
+	// 同时作为"该检查点已被消费"的标记（同一轮不会被撤回两次）。
+	EventRoundRevert EventKind = "round_revert"
+	// EventUserEdit 记录用户手动写入（代码块「应用到文件」）：Replay 投影为工具卡，
+	// 派生历史时给模型一句"用户已应用过"。
+	EventUserEdit EventKind = "user_edit"
+	// EventFork 标记分叉：派生/投影时丢弃 (from_seq, 本事件 Seq] 区间内的事件
+	//（「从这条用户消息重跑」），其后追加的新事件照常参与。
+	EventFork EventKind = "fork"
 )
 
 // Event 是账本中的最小事件单元。
@@ -53,14 +69,31 @@ type Event interface {
 // ErrClosed 在账本已关闭后仍被使用时返回。
 var ErrClosed = errors.New("session ledger closed")
 
+// 增量合批参数（第 1 批）：AssistantDelta 是唯一高频事件（长回复每 token 一次
+// fsync 会拖死整轮），攒批到"满块或窗口到期"才刷盘；取先到者。
+const (
+	deltaFlushBytes  = 64 << 10               // 满一块：64KB
+	deltaFlushWindow = 100 * time.Millisecond // 窗口到期
+)
+
 // Ledger 是单会话事件账本（JSONL 追加式，见 ADR-0002）。
-// 账本即事实源：Append 成功（含 fsync）后内存状态才允许推进。
+// 账本即事实源：Append 成功后内存状态才允许推进。
 // 并发约束：单实例内由 mu 串行化；同一文件允许多实例只读重放，但写入方应只有一个。
+//
+// 刷盘纪律（第 1 批）：AssistantDelta 攒批落盘（见 pending）；其余事件
+// （用户消息/工具调用与结果/todo/终态）一律先冲掉攒批再 fsync——崩溃最多丢
+// 最后一小段未刷的增量文本，绝不丢已完成的工具结果与用户消息。
 type Ledger struct {
 	mu      sync.Mutex
 	path    string
 	f       *os.File // 追加句柄；Close 后置 nil
 	lastSeq int64
+
+	// pending 是攒批中的增量行（含换行）；pendingFrom 是本批第一个字节的时刻
+	// （零值 = 无 pending）。syncCount 是 fsync 次数（测试观测合批效果用）。
+	pending     []byte
+	pendingFrom time.Time
+	syncCount   int64
 }
 
 // OpenLedger 打开（必要时创建）会话账本。
@@ -124,8 +157,10 @@ func repairLedger(path string) (int64, error) {
 	return lastSeq, nil
 }
 
-// Append 追加一个事件并 fsync 落盘。
-// 契约 C-SES-1/4：成功返回时事件行已持久化；任何失败返回错误且不推进序号水位。
+// Append 追加一个事件。
+// 契约 C-SES-1/4：成功返回时事件行已持久化（AssistantDelta 例外：成功返回仅表示
+// 已进入攒批缓冲，见包内 deltaFlushBytes/deltaFlushWindow——但紧随其后的任一
+// 非增量事件、Replay、Close 都会把缓冲一并 fsync）；任何失败返回错误且不推进序号水位。
 func (l *Ledger) Append(kind EventKind, data any) (Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -137,14 +172,51 @@ func (l *Ledger) Append(kind EventKind, data any) (Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := l.f.Write(append(line, '\n')); err != nil {
-		return nil, err
+	l.pending = append(l.pending, line...)
+	l.pending = append(l.pending, '\n')
+	if l.pendingFrom.IsZero() {
+		l.pendingFrom = time.Now()
 	}
-	if err := l.f.Sync(); err != nil {
-		return nil, err
+	// 刷盘判定：增量事件攒批（满块/窗口到期才刷）；其余事件立即刷
+	if kind != EventAssistantDelta || len(l.pending) >= deltaFlushBytes || time.Since(l.pendingFrom) >= deltaFlushWindow {
+		if err := l.flushLocked(); err != nil {
+			return nil, err
+		}
 	}
 	l.lastSeq = ev.seqN
 	return ev, nil
+}
+
+// flushLocked 把攒批缓冲一次写入并 fsync（调用方持锁）。
+// 失败语义：Write 一旦提交（返回 n>0）就绝不重发缓冲——宁可丢尾部，
+// 也不能把同一行写两遍让 Replay 看到重复事件。
+func (l *Ledger) flushLocked() error {
+	if len(l.pending) == 0 {
+		return nil
+	}
+	buf := l.pending
+	l.pending = l.pending[:0]
+	l.pendingFrom = time.Time{}
+	if _, err := l.f.Write(buf); err != nil {
+		return err
+	}
+	if err := l.f.Sync(); err != nil {
+		return err
+	}
+	l.syncCount++
+	return nil
+}
+
+// Flush 立即把攒批的增量刷盘（幂等；已关闭时为空操作——Close 时已刷过）。
+// 为什么需要显式入口：取消/错误终态路径没有"关键事件"来冲掉攒批的增量，
+// 用户中断后进程被杀时已产生的部分输出绝不能丢（C-APP-2 取消保留事件）。
+func (l *Ledger) Flush() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	return l.flushLocked()
 }
 
 // NextSeq 返回下一次 Append 将使用的序号，不推进水位。
@@ -160,6 +232,11 @@ func (l *Ledger) NextSeq() int64 {
 func (l *Ledger) Replay(visit func(Event) error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// 读事实源前先冲掉攒批：Append 已成功返回的增量必须能被 Replay 看到
+	//（read-your-writes；否则同实例的 Replay 会漏掉最近一段未刷的增量文本）。
+	if err := l.flushLocked(); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(l.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -186,16 +263,21 @@ func (l *Ledger) Replay(visit func(Event) error) error {
 	return nil
 }
 
-// Close 关闭追加句柄。Close 后 Append 返回 ErrClosed。
+// Close 关闭追加句柄（先刷掉攒批）。Close 后 Append 返回 ErrClosed。
 func (l *Ledger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.f == nil {
 		return nil
 	}
+	// 正常退出绝不丢已确认的增量：刷盘失败仍要释放句柄（错误照常上抛）
+	flushErr := l.flushLocked()
 	err := l.f.Close()
 	l.f = nil
-	return err
+	if err != nil {
+		return err
+	}
+	return flushErr
 }
 
 // event 是 Event 的最小实现。

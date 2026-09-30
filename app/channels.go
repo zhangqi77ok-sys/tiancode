@@ -35,6 +35,9 @@ type ChannelDTO struct {
 	// Auth 是渠道级鉴权配置（0.2.20）：nil = 协议默认（openai → Bearer；anthropic → x-api-key）
 	Auth *llm.AuthConfig `json:"auth,omitempty"`
 
+	// ContextLimit 是渠道声明的上下文上限（token；0 = 未配置）。见 llm.Channel 注释。
+	ContextLimit int `json:"contextLimit"`
+
 	// 凭证摘要：列表卡片显示"N 条 · M 禁用"（逐条管理走 ListCredentials）
 	CredentialCount    int `json:"credentialCount"`
 	CredentialDisabled int `json:"credentialDisabled"`
@@ -82,6 +85,8 @@ type ChannelInput struct {
 	ParamOverride  map[string]any    `json:"paramOverride"`
 	HeaderOverride map[string]string `json:"headerOverride"`
 	Auth           *llm.AuthConfig   `json:"auth"`
+	// ContextLimit 是上下文上限（token；0 = 不限）——估算口径见渠道表单说明。
+	ContextLimit int `json:"contextLimit"`
 }
 
 func (in ChannelInput) toDomain() llm.Channel {
@@ -103,6 +108,7 @@ func (in ChannelInput) toDomain() llm.Channel {
 		ParamOverride:  in.ParamOverride,
 		HeaderOverride: in.HeaderOverride,
 		Auth:           in.Auth,
+		ContextLimit:   in.ContextLimit,
 	}
 }
 
@@ -123,6 +129,7 @@ func fromView(v llm.ChannelView, activeID string) ChannelDTO {
 		ParamOverride:  v.ParamOverride,
 		HeaderOverride: v.HeaderOverride,
 		Auth:           v.Auth,
+		ContextLimit:   v.ContextLimit,
 
 		CredentialCount:    v.CredentialCount,
 		CredentialDisabled: v.CredentialDisabled,

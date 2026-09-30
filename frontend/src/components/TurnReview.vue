@@ -1,29 +1,19 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref } from 'vue'
 import { useChatStore, type ChatMsg } from '../stores/chat'
+import { diffStat } from '../composables/diffView'
+import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
-import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 
-// 本轮变更审查带（0.0.09 驾驶舱）+ 待确认批量操作（0.0.10）。
+// 本轮变更审查带（0.0.09 驾驶舱；第 2/3 批改造）：write/edit 收拢在输入框上方，
+// 默认折叠为一行汇总；展开后按文件聚合，点文件行 → 右侧文件详情面板看 diff
+//（diff 是主视图，不再挤在消息流与审查带里两处滚动）。
 
 const store = useChatStore()
-const { push: toast } = useToast()
 
-// 待确认变更（0.0.10）：当前视图里的 pending_confirm 卡 ≥1 时出批量操作行
-//（同一轮多处改动：全部应用 / 全部跳过，逐个 ResolveEdit）
-const pendings = computed<ChatMsg[]>(() => store.messages.filter((m) => m.status === 'pending_confirm' && !!m.editId))
-const batchBusy = ref(false)
-async function resolveAll(apply: boolean) {
-  if (batchBusy.value) return
-  batchBusy.value = true
-  for (const m of pendings.value) {
-    await store.resolveEdit(m.editId!, apply)
-  }
-  batchBusy.value = false
-}
-
-// 本轮 = 最后一条 user 消息之后的成功 write/edit 卡（进行中实时出现，不必等终态）
+// 本轮 = 最后一条 user 消息之后的成功 write/edit 卡（进行中实时出现，不必等终态）。
+// 不要求 callId：代码块「应用到文件」的本地写入卡（无 callId）同样属于本轮变更。
 const changes = computed<ChatMsg[]>(() => {
   const msgs = store.messages
   let lastUser = -1
@@ -34,143 +24,157 @@ const changes = computed<ChatMsg[]>(() => {
     }
   }
   return msgs.filter(
-    (m, i) =>
-      i > lastUser && m.role === 'tool' && m.status === 'success' && (m.op === 'write' || m.op === 'edit') && !!m.callId,
+    (m, i) => i > lastUser && m.role === 'tool' && m.status === 'success' && (m.op === 'write' || m.op === 'edit'),
   )
 })
 
-// 展开：点击行开合；外部聚焦（工具卡点文件名）强制展开并滚动到位
-const expanded = ref<Set<string>>(new Set())
-function toggle(id: string) {
-  const next = new Set(expanded.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  expanded.value = next
+// 按文件聚合：同一路径的多次改动合并为一行（改 N 次 + 累计 ±）——同文件被 replace
+// 多次时不再出现一排同名条目；路径拆两段（目录暗、末段亮）保证同名文件可区分。
+interface FileGroup {
+  path: string
+  dir: string
+  base: string
+  count: number
+  add: number
+  del: number
 }
-
-const rowsEl = ref<HTMLElement | null>(null)
-watch(
-  () => store.reviewFocus,
-  async (id) => {
-    if (!id) return
-    const next = new Set(expanded.value)
-    next.add(id)
-    expanded.value = next
-    await nextTick()
-    document.getElementById(`review-row-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    store.reviewFocus = null
-  },
-)
-
-// diff 行着色（与 ToolCard 同规则）
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'text-[var(--c-text-dim)]'
-  if (line.startsWith('@@')) return 'text-[var(--c-primary)]'
-  if (line.startsWith('+')) return 'text-[var(--c-ok-text)]'
-  if (line.startsWith('-')) return 'text-[var(--c-err-text)]'
-  return 'text-[var(--c-text-dim)]'
-}
-
-// stat 与次要动作（与 ToolCard 一致）
-function statOf(m: ChatMsg) {
-  let add = 0
-  let del = 0
-  for (const line of (m.diff || '').split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue
-    if (line.startsWith('+')) add++
-    else if (line.startsWith('-')) del++
+const groups = computed<FileGroup[]>(() => {
+  const out: FileGroup[] = []
+  const byPath = new Map<string, FileGroup>()
+  for (const m of changes.value) {
+    const path = (m.title || '').trim() || '(未知文件)'
+    let g = byPath.get(path)
+    if (!g) {
+      const i = path.lastIndexOf('/')
+      g = {
+        path,
+        dir: i > 0 ? path.slice(0, i + 1) : '',
+        base: i > 0 ? path.slice(i + 1) : path,
+        count: 0,
+        add: 0,
+        del: 0,
+      }
+      byPath.set(path, g)
+      out.push(g)
+    }
+    const s = diffStat(m.diff)
+    g.count++
+    g.add += s.add
+    g.del += s.del
   }
-  return { add, del }
+  return out
+})
+
+const totalAdd = computed(() => groups.value.reduce((n, g) => n + g.add, 0))
+const totalDel = computed(() => groups.value.reduce((n, g) => n + g.del, 0))
+
+// 面板默认折叠（用户要求）：只显示「本轮变更 · N 个文件 +A -D」标题行；折叠态记忆到
+// localStorage（跨重启保留用户偏好，与 FloatingTodo 同纪律）。
+const PANEL_KEY = 'tiancode.turnReview.panelOpen'
+const panelOpen = ref(localStorage.getItem(PANEL_KEY) === '1')
+function togglePanel() {
+  panelOpen.value = !panelOpen.value
+  localStorage.setItem(PANEL_KEY, panelOpen.value ? '1' : '0')
 }
 
-const restoring = ref<string | null>(null)
-async function restore(m: ChatMsg) {
-  if (!m.callId || restoring.value) return
-  restoring.value = m.callId
-  await store.restoreWrite(m.callId, m.undoPath)
-  restoring.value = null
+// 点文件行 → 右侧文件详情面板（逐次 diff + 撤销入口都在面板里）
+function openDetail(path: string) {
+  store.openFileDetail(path)
 }
 
-async function reveal(m: ChatMsg) {
+// 撤回本轮（第 6 批）：按轮次检查点恢复最近一轮改过的文件。危险动作先确认；
+// 文件在本轮之后被手工改过的会被跳过（不覆盖用户改动），结果与跳过原因都可见。
+const { push: toast } = useToast()
+const dialogs = useDialogs()
+const reverting = ref(false)
+async function revertRound() {
+  if (reverting.value) return
+  const ok = await dialogs.confirm({
+    title: '撤回本轮',
+    message: '按轮次检查点把最近一轮改过的文件恢复到本轮开始前？文件在本轮之后被手工改过的会被跳过（不覆盖你的改动）。',
+    confirmText: '撤回',
+    danger: true,
+  })
+  if (!ok) return
+  reverting.value = true
   try {
-    await bridge().app.RevealInExplorer(m.title?.trim() || '')
+    const res = await store.revertRound()
+    const parts = [`已恢复 ${res.restored.length} 个文件`]
+    if (res.skipped.length) parts.push(`撤不回 ${res.skipped.length} 个：${res.skipped.join('；')}`)
+    else if (res.restored.length === 0) parts.push('（最近一轮没有文件改动，或已撤回）')
+    toast(res.skipped.length ? 'error' : 'info', parts.join('；'))
   } catch (e) {
     toast('error', String(e instanceof Error ? e.message : e))
+  } finally {
+    reverting.value = false
   }
-}
-
-// 标题：纯文件名（title 可能是带斜杠的相对路径——取末段，完整路径在 hover）
-function fileName(m: ChatMsg): string {
-  const t = m.title || ''
-  const segs = t.split(/[\\/]/)
-  return segs[segs.length - 1] || t
 }
 </script>
 
 <template>
-  <div v-if="pendings.length" class="mx-1 mb-1.5 flex items-center gap-2 rounded-xl border border-[var(--c-warn)] bg-[var(--c-warn-soft)] px-3 py-2 text-xs">
-    <AppIcon name="shield" :size="13" class="text-[var(--c-warn-text)]" />
-    <span class="font-medium text-[var(--c-warn-text)]">{{ pendings.length }} 项文件改动待确认（确认前不写入）</span>
-    <div class="ml-auto flex gap-1.5">
-      <button class="btn-primary px-3 py-1 text-xs" :disabled="batchBusy" @click="resolveAll(true)">全部应用</button>
-      <button class="chip text-xs" :disabled="batchBusy" @click="resolveAll(false)">全部跳过</button>
-    </div>
-  </div>
   <div
-    v-if="changes.length"
-    ref="rowsEl"
+    v-if="groups.length"
     class="mx-1 mb-1.5 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-2 py-1.5"
     aria-label="本轮变更"
   >
-    <div class="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-[var(--c-text-faint)]">
-      <AppIcon name="pencil" :size="11" /> 本轮变更（{{ changes.length }}）
+    <!-- 标题行即折叠开关（右端：撤回本轮——第 6 批） -->
+    <div class="flex items-center gap-1">
+    <button
+      class="flex flex-1 items-center gap-1.5 rounded-lg px-1 py-0.5 text-[11px] text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-text)]"
+      :aria-expanded="panelOpen"
+      @click="togglePanel"
+    >
+      <AppIcon name="pencil" :size="11" />
+      <span>本轮变更（{{ groups.length }} 个文件 · {{ changes.length }} 处）</span>
+      <span class="font-mono">
+        <span class="text-[var(--c-ok-text)]">+{{ totalAdd }}</span>
+        <span class="ml-1 text-[var(--c-err-text)]">-{{ totalDel }}</span>
+      </span>
+      <AppIcon
+        name="chevron-down"
+        :size="12"
+        class="ml-auto shrink-0 transition-transform"
+        :class="panelOpen ? '' : '-rotate-90'"
+      />
+    </button>
+    <button
+      class="shrink-0 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-err-text)]"
+      :disabled="reverting"
+      title="撤回本轮：按轮次检查点恢复最近一轮改过的文件（撤不回的会明确列出）"
+      @click="revertRound"
+    >
+      {{ reverting ? '撤回中…' : '撤回本轮' }}
+    </button>
     </div>
-    <div class="max-h-52 space-y-0.5 overflow-y-auto">
-      <div v-for="m in changes" :id="`review-row-${m.callId}`" :key="m.callId">
-        <button
-          class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-[var(--c-surface)]"
-          :aria-expanded="expanded.has(m.callId!)"
-          @click="toggle(m.callId!)"
+
+    <div v-if="panelOpen" class="mt-1 max-h-52 space-y-0.5 overflow-y-auto">
+      <button
+        v-for="g in groups"
+        :key="g.path"
+        class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-[var(--c-surface)]"
+        :title="`${g.path} · 点击查看变更详情`"
+        @click="openDetail(g.path)"
+      >
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--c-ok)]"></span>
+        <span class="flex min-w-0 items-center">
+          <span v-if="g.dir" class="min-w-0 truncate text-[var(--c-text-faint)]">{{ g.dir }}</span>
+          <span class="shrink-0 font-medium text-[var(--c-text)]">{{ g.base }}</span>
+        </span>
+        <span
+          class="shrink-0 rounded bg-[var(--c-primary-soft)] px-1.5 py-0.5 text-[10px] text-[var(--c-primary)]"
         >
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--c-ok)]"></span>
-          <span class="min-w-0 truncate font-medium text-[var(--c-text)]" :title="m.title">{{ fileName(m) }}</span>
-          <span class="shrink-0 rounded bg-[var(--c-primary-soft)] px-1.5 py-0.5 text-[10px] text-[var(--c-primary)]">
-            {{ m.op === 'write' ? '新建' : '修改' }}
-          </span>
-          <span v-if="m.diff" class="shrink-0 font-mono text-[11px]">
-            <span class="text-[var(--c-ok-text)]">+{{ statOf(m).add }}</span>
-            <span class="ml-1 text-[var(--c-err-text)]">-{{ statOf(m).del }}</span>
-          </span>
-          <AppIcon
-            name="chevron-down"
-            :size="12"
-            class="ml-auto shrink-0 text-[var(--c-text-faint)] transition-transform"
-            :class="expanded.has(m.callId!) ? '' : '-rotate-90'"
-          />
-        </button>
-        <template v-if="expanded.has(m.callId!)">
-          <div
-            class="mx-2 mb-1 max-h-60 overflow-auto whitespace-pre rounded-lg border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-1.5 font-mono text-xs leading-5"
-          >
-            <div v-for="(l, li) in (m.diff || '').split('\n')" :key="li" :class="diffLineClass(l)">{{ l }}</div>
-          </div>
-          <div class="mb-1 flex gap-1.5 px-2">
-            <button
-              v-if="m.hasUndo"
-              class="chip text-[11px]"
-              :disabled="restoring === m.callId"
-              title="把文件写回这次修改之前的内容"
-              @click="restore(m)"
-            >
-              <AppIcon name="refresh" :size="11" />
-              {{ restoring === m.callId ? '正在恢复…' : '恢复写入前' }}
-            </button>
-            <button class="chip text-[11px]" title="打开文件所在目录并选中（次要动作）" @click="reveal(m)">
-              <AppIcon name="file" :size="11" /> 资源管理器
-            </button>
-          </div>
-        </template>
-      </div>
+          {{ g.count > 1 ? `改 ${g.count} 次` : '修改' }}
+        </span>
+        <span class="shrink-0 font-mono text-[11px]">
+          <span class="text-[var(--c-ok-text)]">+{{ g.add }}</span>
+          <span class="ml-1 text-[var(--c-err-text)]">-{{ g.del }}</span>
+        </span>
+        <AppIcon
+          name="chevron-down"
+          :size="12"
+          class="ml-auto shrink-0 -rotate-90 text-[var(--c-text-faint)]"
+        />
+      </button>
     </div>
   </div>
 </template>

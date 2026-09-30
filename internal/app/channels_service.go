@@ -103,6 +103,7 @@ func poolChannel(ch llm.Channel) channels.Channel {
 		ParamOverride:  ch.ParamOverride,
 		HeaderOverride: ch.HeaderOverride,
 		Auth:           ch.Auth,
+		ContextLimit:   ch.ContextLimit,
 	}
 }
 
@@ -181,6 +182,7 @@ func (s *ChatService) UpdateChannel(id string, upd llm.Channel) error {
 	existing.ParamOverride = upd.ParamOverride
 	existing.HeaderOverride = upd.HeaderOverride
 	existing.Auth = upd.Auth
+	existing.ContextLimit = upd.ContextLimit // 第 2 批：上下文上限随表单落盘（0 = 清除上限）
 	if err := llm.ValidateChannel(upd); err != nil {
 		return err
 	}

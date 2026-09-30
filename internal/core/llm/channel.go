@@ -47,6 +47,11 @@ type Channel struct {
 	HeaderOverride map[string]string `json:"headerOverride,omitempty"` // 请求头覆写（网关合并）
 	// Auth 是渠道级鉴权配置（0.2.20）：nil = 协议默认（openai → Bearer；anthropic → x-api-key）。
 	Auth *AuthConfig `json:"auth,omitempty"`
+	// ContextLimit 是渠道声明的上下文上限（token；0 = 未配置，不裁剪）。
+	// 只用于本地派生历史时的分级折叠，绝不发给上游；估算口径见
+	// internal/core/agent/derive.go 的 estimateTextTokens（ASCII 4 字符≈1 token、
+	// 1 个非 ASCII 字符≈1 token，保守取上界）。
+	ContextLimit int `json:"contextLimit,omitempty"`
 }
 
 // AuthConfig 是渠道级鉴权配置：独立于协议——适配器决定"怎么发请求"，
@@ -139,6 +144,9 @@ func ValidateChannel(c Channel) error {
 	}
 	if !c.Protocol.Valid() {
 		return fmt.Errorf("不支持的 protocol %q（当前仅支持 %s）", c.Protocol, ProtocolOpenAI)
+	}
+	if c.ContextLimit < 0 {
+		return fmt.Errorf("渠道 contextLimit 不能为负数（%d）", c.ContextLimit)
 	}
 	return c.Auth.Validate()
 }

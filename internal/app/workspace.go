@@ -37,6 +37,51 @@ func normalizeWorkspace(dir string) string {
 	return dir
 }
 
+// ResolveSessionPath 把会话内的路径解析成绝对路径并校验（0.0.11）：
+//   - 相对路径按**这场对话**的工作区根解析（sessionWorkspace），绝不用顶栏里
+//     "下一场新对话"的默认根——切换工作区后，旧会话的"在资源管理器显示 /
+//     用默认程序打开"曾指到别的目录（同名文件还会被判成"存在"）；
+//   - 绝对路径同样必须落在这场对话的工作区内（越界一律拒绝）；
+//   - 无工作区 / 路径为空 / 越界 / 不存在都是显式错误，绝不猜、不静默。
+//
+// isDir 供调用方选择"直接打开目录"或"选中文件"。
+func (s *ChatService) ResolveSessionPath(sessionID, path string) (abs string, isDir bool, err error) {
+	root := s.sessionWorkspace(sessionID)
+	if root == "" {
+		return "", false, fmt.Errorf("这场对话没有工作区，无法定位文件")
+	}
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return "", false, fmt.Errorf("路径为空")
+	}
+	abs = clean
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(root, clean)
+	}
+	abs = filepath.Clean(abs)
+	if !withinDir(root, abs) {
+		return "", false, fmt.Errorf("路径不在该对话的工作区内：%s", clean)
+	}
+	info, statErr := os.Stat(abs)
+	if statErr != nil {
+		return "", false, fmt.Errorf("文件不存在：%s", abs)
+	}
+	return abs, info.IsDir(), nil
+}
+
+// withinDir 报告 abs 是否位于 root 之内（"." 即 root 本身算在内）。
+// filepath.Rel 在 Windows 上按盘符大小写不敏感比较（同一目录的两种写法不成两个空间）。
+func withinDir(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // firstWorkspaceOfLedger 返回账本里**第一个** workspace 事件记录的路径
 // （0.2.36 审计 R1）。归属以首个为准（与侧栏分组、TestSessionSummaries_CarryWorkspace
 // 一致）：旧账本里后来若又写了别的路径也不改归属——否则侧栏分组与真实
@@ -71,7 +116,7 @@ func firstWorkspaceOfLedger(l *session.Ledger) (string, bool) {
 // 进程抢端口、一个会话添加的技能另一个会话看不到）。
 type sessionTools struct {
 	root   string       // 归属根（空 = 纯对话：只保留共享工具）
-	fs     *fstool.Tool // 以下四个仅在 root 非空时构造（fs 需要具体类型：确认 gate/CallID 注入）
+	fs     *fstool.Tool // 以下四个仅在 root 非空时构造（fs 需要具体类型：「应用到文件」走 ProposeWrite）
 	shell  tools.ToolPort
 	git    tools.ToolPort
 	search tools.ToolPort
@@ -105,8 +150,6 @@ func (s *ChatService) ensureSessionTools(sessionID, root string) (*sessionTools,
 	st := &sessionTools{root: root}
 	if root != "" {
 		st.fs = fstool.New(root)
-		// 文件写入确认（0.0.10）：write/replace 落盘前必须经用户应用/跳过
-		st.fs.SetEditGate(&chatEditGate{svc: s, sessionID: sessionID})
 		st.shell = shelltool.New(shelltool.Options{Root: root})
 		st.git = gittool.New(root)
 		st.search = searchtool.New(root)

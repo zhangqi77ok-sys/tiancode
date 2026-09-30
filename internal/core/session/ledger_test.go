@@ -139,6 +139,83 @@ func TestLedger_AppendErrorPropagates(t *testing.T) {
 	}
 }
 
+// 第 1 批：增量合批——窗口内连续 delta 不逐条 fsync；关键事件立即刷（含此前攒批）。
+// 断言用"远小于 N"而非精确 0：机器慢时窗口提前到期的少量刷盘是合法行为，
+// 但不能退化成"每条都刷"（那正是本改动的修复对象）。
+func TestLedger_DeltaBatching(t *testing.T) {
+	l, dir := newTestLedger(t)
+	defer l.Close()
+
+	for i := 0; i < 200; i++ {
+		if _, err := l.Append(EventAssistantDelta, map[string]string{"text": "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if l.syncCount >= 20 {
+		t.Fatalf("窗口内 200 条增量触发了 %d 次 fsync（合批失效）", l.syncCount)
+	}
+
+	// 关键事件（终态）必须立即落盘，并把此前攒批一并刷掉
+	if _, err := l.Append(EventTurnEnd, map[string]string{"reason": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(ledgerPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), `"kind":"assistant_delta"`); n != 200 {
+		t.Fatalf("终态落盘后应有 200 条增量行，实际 %d", n)
+	}
+	if !strings.Contains(string(raw), `"kind":"turn_end"`) {
+		t.Fatal("终态事件必须已落盘")
+	}
+}
+
+// 第 1 批：用户消息/工具调用与结果/todo/助手锚点/终态/错误一律立即 fsync
+// （崩溃最多丢最后一小段增量，绝不丢已完成的事实）。
+func TestLedger_CriticalKindsFlushImmediately(t *testing.T) {
+	l, dir := newTestLedger(t)
+	defer l.Close()
+
+	kinds := []EventKind{EventUserMessage, EventToolCall, EventToolResult, EventTodo, EventAssistantMsg, EventTurnEnd, EventError}
+	for i, k := range kinds {
+		before := l.syncCount
+		if _, err := l.Append(k, map[string]int{"i": i}); err != nil {
+			t.Fatal(err)
+		}
+		if l.syncCount != before+1 {
+			t.Fatalf("%s 未立即 fsync（syncCount %d → %d）", k, before, l.syncCount)
+		}
+		raw, err := os.ReadFile(ledgerPath(dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), string(k)) {
+			t.Fatalf("%s 未落盘", k)
+		}
+	}
+}
+
+// 第 1 批：Close 先刷攒批（进程正常退出不丢已确认的增量）。
+func TestLedger_CloseFlushesPendingDeltas(t *testing.T) {
+	l, dir := newTestLedger(t)
+	for i := 0; i < 3; i++ {
+		if _, err := l.Append(EventAssistantDelta, map[string]string{"text": "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(ledgerPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), `"kind":"assistant_delta"`); n != 3 {
+		t.Fatalf("Close 应刷掉 3 条增量，实际 %d", n)
+	}
+}
+
 // C-SES-6：轮内崩溃 → 重放恢复到最后一条完整事件（assistant_message 锚点）。
 func TestLedger_CrashReplayRecovery(t *testing.T) {
 	l, dir := newTestLedger(t)

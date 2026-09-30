@@ -24,7 +24,7 @@ func TestBuildArgs_LogWithPath(t *testing.T) {
 		{"log 自定义", "log", "pkg", 3,
 			[]string{"log", "--oneline", "-n", "3", "--", "pkg"}},
 		{"status 带 path", "status", "src", 0,
-			[]string{"status", "--porcelain", "--", "src"}},
+			[]string{"status", "--porcelain", "-b", "--", "src"}},
 		{"diff 带 path", "diff", "src", 0,
 			[]string{"diff", "--", "src"}},
 		{"diff 无 path", "diff", "", 0,

@@ -1,125 +1,62 @@
 package app
 
 import (
-	"context"
 	"fmt"
-	"sync/atomic"
-	"time"
 
-	"tiancode/internal/platform/fstool"
+	"tiancode/internal/core/session"
 )
 
-// EditEvent 是一次待确认文件变更（0.0.10）：推给界面渲染确认卡
-// （路径 + 短 diff + 新建/修改），用户「应用/跳过」后经 ResolveEdit 回流。
-type EditEvent struct {
-	ID           string `json:"id"`
-	SessionID    string `json:"sessionID"`
-	SessionTitle string `json:"sessionTitle,omitempty"`
-	CallID       string `json:"callId,omitempty"` // 与工具卡配对（终态原地更新）
-	Path         string `json:"path"`
-	Diff         string `json:"diff"`
-	IsNew        bool   `json:"isNew"`
+// ProposeWriteResult 是「应用到文件」的写入回执（UI 渲染一张写入卡：路径 + diff + 新建/覆盖）。
+// 为什么不复用工具事件：这是用户主动动作（非模型轮次），不参与工具卡配对，
+// 同步返回给调用方是最小且诚实的表达（与 RestoreToolWrite 返回说明同构）。
+// 第 6 批起写入结果同时落账本（EventUserEdit），Replay 后这张卡仍在。
+type ProposeWriteResult struct {
+	Path  string `json:"path"`
+	IsNew bool   `json:"isNew"`
+	Diff  string `json:"diff"`
+	Bytes int    `json:"bytes"`
 }
 
-// editSeq 生成确认请求 ID（进程内唯一，用于 UI 与答复配对）。
-var editSeq atomic.Int64
-
-// chatEditGate 把 fstool 的确认请求桥接到 UI：发事件 → 等用户答复 → 执行 Apply。
-// 纪律（0.0.10）：未确认不落盘；取消按跳过；**没有超时自动应用**。
-type chatEditGate struct {
-	svc       *ChatService
-	sessionID string
-}
-
-func (g *chatEditGate) ConfirmEdit(ctx context.Context, p fstool.EditProposal) (bool, *fstool.UndoSnapshot, error) {
-	s := g.svc
-	id := fmt.Sprintf("ed-%d", editSeq.Add(1))
-	ch := make(chan bool, 1)
-
-	s.mu.Lock()
-	if s.pendingEdits == nil {
-		s.pendingEdits = make(map[string]chan bool)
-	}
-	s.pendingEdits[id] = ch
-	emit := s.editEmit
-	title := s.sessionTitleOf(g.sessionID)
-	s.mu.Unlock()
-
-	if emit != nil {
-		emit(EditEvent{
-			ID: id, SessionID: g.sessionID, SessionTitle: title,
-			CallID: p.CallID, Path: p.Path, Diff: p.Diff, IsNew: p.IsNew,
-		})
-	}
-
-	select {
-	case applied := <-ch:
-		if !applied {
-			// 用户跳过：不落盘。结果文本由工具返回给模型（写明未修改）。
-			deletePendingEdit(s, id)
-			return false, nil, nil
-		}
-	case <-ctx.Done():
-		// 会话取消 = 按跳过（不写入），终态由 agent 上抛 EndCancelled
-		deletePendingEdit(s, id)
-		return false, nil, nil
-	}
-
-	u, err := p.Apply()
-	if err != nil {
-		// 应用失败（外部改动等）：原文件不动，错误回传给模型与界面
-		return true, nil, err
-	}
-	return true, u, nil
-}
-
-func deletePendingEdit(s *ChatService, id string) {
-	s.mu.Lock()
-	delete(s.pendingEdits, id)
-	s.mu.Unlock()
-}
-
-// SetEditHandler 注入确认事件回调（壳层负责推送到前端）；nil 表示只等不通知（测试用）。
-func (s *ChatService) SetEditHandler(fn func(EditEvent)) {
-	s.mu.Lock()
-	s.editEmit = fn
-	s.mu.Unlock()
-}
-
-// ResolveEdit 提交用户对某次文件变更的答复（应用/跳过）。
-// 未知或已处理的 ID 显式报错（UI 重复提交可见，不静默）。
-func (s *ChatService) ResolveEdit(sessionID, editID string, apply bool) error {
-	s.mu.Lock()
-	ch, ok := s.pendingEdits[editID]
-	if ok {
-		delete(s.pendingEdits, editID)
-	}
-	s.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("确认请求不存在或已处理：%s", editID)
-	}
-	select {
-	case ch <- apply:
-		return nil
-	case <-time.After(3 * time.Second):
-		return fmt.Errorf("确认答复送达失败（请求已结束）")
-	}
-}
-
-// ProposeFileWrite 把「应用到文件」的代码块内容变成一次待确认变更（0.0.10）：
-// 与模型 write 同一条确认链路——先给人看 diff，确认才落盘，取消不写。
-// 目标文件由用户显式选择，绕过模型的整读门卫（用户确认是更高授权）；
-// 但保留外部改动检测：应用时文件与提案时不一致就拒绝。
-func (s *ChatService) ProposeFileWrite(sessionID, path, content string) error {
+// ProposeFileWrite 把「应用到文件」的代码块内容直接写入工作区（改了就是改了，
+// 0.0.10 的确认卡链路已移除）：目标文件由用户显式选择，绕过模型的整读门卫
+// （用户确认是更高授权）；写入结果（diff/新建标记）同步返回，界面据此出回执卡。
+// 目标文件在读取快照后被其他程序改过时拒绝写入（原文件不动），错误原样上抛。
+//
+// 第 6 批：写入成功落账本（EventUserEdit，含写入前内容与超限说明）——
+// 重启/切回会话后卡片仍在（Replay 投影），派生历史时模型收到一句"已应用过"。
+func (s *ChatService) ProposeFileWrite(sessionID, path, content string) (ProposeWriteResult, error) {
 	root := s.sessionWorkspace(sessionID)
 	if root == "" {
-		return fmt.Errorf("这场对话没有工作区，无法写入文件")
+		return ProposeWriteResult{}, fmt.Errorf("这场对话没有工作区，无法写入文件")
 	}
 	st, err := s.ensureSessionTools(sessionID, root)
 	if err != nil {
-		return err
+		return ProposeWriteResult{}, err
 	}
-	return st.fs.ProposeWrite(context.Background(), path, content)
+	res, err := st.fs.ProposeWrite(path, content)
+	if err != nil {
+		return ProposeWriteResult{}, err
+	}
+	out := ProposeWriteResult{Path: res.Path, IsNew: res.IsNew, Diff: res.Diff, Bytes: res.Bytes}
+	ledger, lerr := s.ledgerFor(sessionID)
+	if lerr != nil {
+		return out, fmt.Errorf("写入成功，但账本打开失败（这张卡重启后会丢失）：%w", lerr)
+	}
+	payload := map[string]any{
+		"path": res.Path, "is_new": res.IsNew, "bytes": res.Bytes, "diff": res.Diff,
+	}
+	if res.Note != "" {
+		payload["note"] = res.Note
+	}
+	if res.OldExists {
+		// 写入前全文（上限内）随账本落盘：供撤回与审计（超限时由 note 说明）
+		payload["old_exists"] = true
+		payload["old_content"] = res.OldContent
+	}
+	if _, aerr := ledger.Append(session.EventUserEdit, payload); aerr != nil {
+		return out, fmt.Errorf("写入成功，但落账失败（这张卡重启后会丢失）：%w", aerr)
+	}
+	return out, nil
 }
 
 // sessionWorkspace 返回这场对话自己的工作区根（账本首个 workspace 事件；

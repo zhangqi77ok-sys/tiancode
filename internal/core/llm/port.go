@@ -91,9 +91,21 @@ type TodoEvent struct {
 	Items []TodoItem
 }
 
+// ContextEvent 是上下文治理读数（agent 每轮派生历史后上报一次，UI 油表用）：
+// 预算与估算用量，以及本轮为压回预算而执行的折叠——界面必须能看见"上下文被裁过"，
+// 折叠绝不静默（第 2 批）。
+type ContextEvent struct {
+	EstimatedTokens int  `json:"estimatedTokens"` // 本轮送给模型的上下文估算（token，保守口径见 agent.estimateTextTokens）
+	BudgetTokens    int  `json:"budgetTokens"`    // 渠道声明的上限（token；0 = 未配置，界面不显示比例）
+	FoldedImages    int  `json:"foldedImages"`    // 因超预算折叠的旧图片数（data URL → 路径说明）
+	FoldedTools     int  `json:"foldedTools"`     // 因超预算折叠的旧 shell/写入回执数（→ 一行摘要）
+	FoldedReads     int  `json:"foldedReads"`     // 因超预算额外折叠的只读结果数（收窄折叠窗口）
+	Dropped         bool `json:"dropped"`         // 已无可再丢仍超预算（界面须标明"已折叠"）
+}
+
 // StreamChunk 是流式传输的最小单元。
 // Delta 与 ToolCalls 可同时为空（例如仅携带 Usage 的收尾块）；
-// ToolEvent/Todo 非 nil 时为纯事件块（agent 产出，不经上游）；
+// ToolEvent/Todo/Context 非 nil 时为纯事件块（agent 产出，不经上游）；
 // Err 非 nil 的块必为终态块；EndReason 仅在终态块上非零，其余块必须为零值。
 type StreamChunk struct {
 	Delta     string          // 文本增量
@@ -101,6 +113,7 @@ type StreamChunk struct {
 	ToolCalls []ToolCallChunk // 工具调用增量分片（来自模型）
 	ToolEvent *ToolEvent      // 工具执行动态（来自 agent）
 	Todo      *TodoEvent      // 任务清单动态（来自 agent）
+	Context   *ContextEvent   // 上下文治理读数（来自 agent，每轮一次）
 	Usage     *Usage          // token 用量（上游返回时非 nil）
 	Err       error           // 终态错误（仅 EndError 终态块非 nil）
 	EndReason EndReason       // 仅终态块非零

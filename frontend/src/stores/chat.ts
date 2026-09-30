@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
-import { bridge, type SessionSummaryDTO } from '../wails'
+import { bridge, type RerunResultDTO, type RevertResultDTO, type SessionSummaryDTO } from '../wails'
 import { useWorkspaceStore } from './workspace'
 
 // 任务清单单项（todo 工具的全量快照）
@@ -43,8 +43,6 @@ export interface ChatMsg {
   hasUndo?: boolean
   undoPath?: string
   undoNote?: string
-  // 待确认文件变更（0.0.10）：status='pending_confirm'，editId 用于 ResolveEdit 回流
-  editId?: string
   // 用户消息附件（0.0.10）：重放后仍显示图片/文件
   attachments?: { kind: string; name: string; mediaType?: string; dataUrl?: string; path?: string; inline?: string }[]
   at?: number
@@ -55,6 +53,8 @@ export interface ChatMsg {
   durationMs?: number
   // 会话内唯一 id：列表 key 与折叠态的稳定锚点（下标会在工具卡插入时整体错位）
   id?: string
+  // 账本事件序号（第 6 批）：用户消息带它——「从这条消息重跑」的分叉锚点
+  seq?: number
 }
 
 // 消息序号：入库时统一发 id——Replay/事件/本地推送都走这一处
@@ -119,6 +119,15 @@ function newSessionId(): string {
   return `s-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${p(d.getMilliseconds(), 3)}-${++sessionSeq}`
 }
 
+// 排队消息（0.0.11 带附件）：回合进行中提交的那条，终态后由 onTerminal 续发。
+// 附件必须随文字一起排队——只排文字时用户贴的截图/拖入的文件会留在待发送区，
+// 续发的那条消息丢附件（用户以为发了，模型没收到）。
+export interface QueuedMessage {
+  id: number
+  text: string
+  atts: PendingAttachment[]
+}
+
 // 单个会话的运行态（0.2.25 多会话）：消息缓冲 + 运行标志 + 输入队列 + 本轮计时。
 // 为什么按会话各一份：回合进行中也允许切到别的会话继续聊——流式事件必须各归各位
 // （后台会话的事件照常入它自己的缓冲，不再被丢弃），切回来时原地接着看。
@@ -126,7 +135,7 @@ interface Conversation {
   messages: ChatMsg[]
   running: boolean
   stopping: boolean
-  queue: { id: number; text: string }[]
+  queue: QueuedMessage[]
   turnStartedAt: number // 0 = 无进行中轮次
 }
 
@@ -175,7 +184,7 @@ export const useChatStore = defineStore('chat', () => {
   // 空缓冲占位：只读路径的返回值（模板读 messages.length 不能拿到 undefined；
   // 常量共享且绝不被写入）
   const EMPTY_MESSAGES: ChatMsg[] = []
-  const EMPTY_QUEUE: { id: number; text: string }[] = []
+  const EMPTY_QUEUE: QueuedMessage[] = []
 
   // 当前视图 = 当前会话的运行态。读写都收敛到这里，组件无感（仍是 store.messages/running/queue）。
   const messages = computed(() => convoOf(sessionId.value)?.messages ?? EMPTY_MESSAGES)
@@ -193,7 +202,7 @@ export const useChatStore = defineStore('chat', () => {
   })
   const queue = computed({
     get: () => convoOf(sessionId.value)?.queue ?? EMPTY_QUEUE,
-    set: (v: { id: number; text: string }[]) => {
+    set: (v: QueuedMessage[]) => {
       ensureConvo(sessionId.value).queue = v
     },
   })
@@ -314,6 +323,7 @@ export const useChatStore = defineStore('chat', () => {
         undoPath: m.undoPath,
         undoNote: m.undoNote,
         attachments: m.attachments,
+        seq: m.seq,
       })
     })
   }
@@ -369,6 +379,7 @@ export const useChatStore = defineStore('chat', () => {
     // （新对话变纯对话丢文件工具）、点开 B 项目会话把新对话写进 B。新对话的根
     // 只在用户显式选择工作区、或在草稿上发送时确定。
     sessionId.value = id
+    contextInfo.value = null // 上下文读数属于具体会话：切换后显示新会话的最近读数（无则不显示）
     if (!convos.has(id)) {
       loadingSession.value = true
       const c = ensureConvo(id)
@@ -623,13 +634,11 @@ export const useChatStore = defineStore('chat', () => {
       c.messages.splice(i, 0, card)
       return
     }
-    // 终态事件：优先更新同 callId 的"执行中/待确认"卡（原地生长），没有则新建
+    // 终态事件：优先更新同 callId 的"执行中"卡（原地生长），没有则新建
     //（兼容旧后端/重放：终态事件总是独立成卡）
     let target: ChatMsg | undefined
     if (p.callID) {
-      target = c.messages.find(
-        (m) => m.role === 'tool' && m.callId === p.callID && (m.status === 'running' || m.status === 'pending_confirm'),
-      )
+      target = c.messages.find((m) => m.role === 'tool' && m.callId === p.callID && m.status === 'running')
     }
     if (target) {
       target.status = p.status
@@ -724,60 +733,94 @@ export const useChatStore = defineStore('chat', () => {
     promptTokens.value = p.prompt
   }
 
-  // 审查带聚焦（0.0.09）：工具卡点文件名 → 审查带展开对应变更并滚动到位。
-  // 置 null 表示清除。资源管理器降级为次要动作，diff 是主视图。
-  const reviewFocus = ref<string | null>(null)
-  function focusReview(callId: string) {
-    reviewFocus.value = callId
-  }
-
-  // 待确认文件变更（0.0.10）：确认卡随事件插入，应用/跳过经 ResolveEdit 回流；
-  // 工具终态事件（同 callId）到达后卡片原地更新为结果。
-  function onEdit(p: {
+  // 上下文治理读数（第 2 批）：渠道声明的预算 + 本轮为压回预算执行的折叠。
+  // 折叠绝不静默——有折叠时油表显式标注（dropped = 已无可再丢仍超预算）。
+  const contextInfo = ref<{ estimatedTokens: number; budgetTokens: number; folded: number; dropped: boolean } | null>(null)
+  function onContext(p: {
     sessionID: string
-    id: string
-    callId?: string
-    path: string
-    diff: string
-    isNew: boolean
-    sessionTitle?: string
+    estimatedTokens: number
+    budgetTokens: number
+    foldedImages: number
+    foldedTools: number
+    foldedReads: number
+    dropped: boolean
   }) {
-    const c = ensureConvo(p.sessionID)
-    if (c.messages.some((m) => m.editId === p.id)) return // 重复事件不叠加
-    const ast = inFlightAssistant(c)
-    if (ast) ast.streaming = false
-    const card = withId({
-      role: 'tool' as const,
-      content: '',
-      toolName: 'fs',
-      status: 'pending_confirm',
-      title: p.path,
-      op: p.isNew ? 'write' : 'edit',
-      diff: p.diff,
-      editId: p.id,
-      callId: p.callId,
-      at: Date.now(),
-    })
-    const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
-    c.messages.splice(i, 0, card)
-  }
-
-  async function resolveEdit(editId: string, apply: boolean) {
-    error.value = ''
-    try {
-      await bridge().app.ResolveEdit(sessionId.value, editId, apply)
-      // 卡片终态由后端 ToolEvent（同 callId）原地更新，这里不重复改
-    } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+    if (p.sessionID !== sessionId.value) return
+    contextInfo.value = {
+      estimatedTokens: p.estimatedTokens,
+      budgetTokens: p.budgetTokens,
+      folded: p.foldedImages + p.foldedTools + p.foldedReads,
+      dropped: p.dropped,
     }
   }
 
-  // 代码块"应用到文件"（0.0.10）：内容经 ProposeFileWrite 进入与模型 write
-  // 同一条确认链路（确认卡由 chat:edit 事件回流）；取消/未选目标不产生写盘。
+  // 撤回本轮（第 6 批）：按轮次检查点恢复本轮改过的文件；撤不回的由调用方展示
+  //（绝不静默）。失败原样上抛（调用方 toast）。
+  async function revertRound(): Promise<RevertResultDTO> {
+    error.value = ''
+    try {
+      const res = await bridge().app.RevertRound(sessionId.value)
+      return res ?? { round: 0, restored: [], skipped: [] }
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      throw e
+    }
+  }
+
+  // 从这条用户消息重跑（第 6 批）：后端撤回其后文件改动并分叉账本（丢弃该消息及其后
+  // 的旧历史，旧行不改写）；本地同步裁掉该消息及其后的缓冲，再按原文重发。
+  async function rerunFrom(userSeq: number): Promise<RerunResultDTO> {
+    error.value = ''
+    try {
+      const res = await bridge().app.RerunFrom(sessionId.value, userSeq)
+      if (!res) throw new Error('重跑失败：内核未返回结果')
+      const c = ensureConvo(sessionId.value)
+      const idx = c.messages.findIndex((m) => m.role === 'user' && m.seq === userSeq)
+      if (idx >= 0) c.messages.splice(idx)
+      return res
+    } catch (e) {
+      error.value = String(e instanceof Error ? e.message : e)
+      throw e
+    }
+  }
+
+  // 文件详情面板（第 3 批）：当前在右侧专看的文件路径（'' = 关闭）。
+  // 打开来源：本轮变更的文件行 / 工具卡文件名——diff 是主视图，右侧专区显示该文件的
+  // 全部改动（逐次 diff + 统计 + 撤销），不再把 diff 挤在消息流里。
+  const fileDetailPath = ref('')
+  function openFileDetail(path: string) {
+    const p = path.trim()
+    if (!p) return
+    fileDetailPath.value = p
+  }
+  function closeFileDetail() {
+    fileDetailPath.value = ''
+  }
+
+  // 代码块「应用到文件」：直接写入（改了就是改了，无确认步骤），成功后本地补一张
+  // 写入卡（路径 + diff）——写入不进账本（非模型轮次），卡片是本进程内的即时回执
+  //（与 restoreWrite 的"已恢复"卡同构）。
   async function proposeApplyCode(path: string, code: string) {
     error.value = ''
     try {
-      await bridge().app.ProposeFileWrite(sessionId.value, path, code)
+      const res = await bridge().app.ProposeFileWrite(sessionId.value, path, code)
+      if (res) {
+        const c = ensureConvo(sessionId.value)
+        const card = withId({
+          role: 'tool' as const,
+          content: `written ${res.path} (${res.bytes} bytes)`,
+          toolName: 'fs',
+          status: 'success',
+          title: res.path,
+          op: res.isNew ? 'write' : 'edit',
+          diff: res.diff,
+          at: Date.now(),
+        })
+        const ast = inFlightAssistant(c)
+        const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
+        c.messages.splice(i, 0, card)
+      }
+      return res
     } catch (e) {
       error.value = String(e instanceof Error ? e.message : e)
       throw e
@@ -836,7 +879,8 @@ export const useChatStore = defineStore('chat', () => {
     // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去
     if (p.endReason !== END_REASON.CANCELLED && !c.stopping) {
       const next = c.queue.shift()
-      if (next) sendTo(p.sessionID, next.text).catch(() => {}) // 队列续发失败：错误气泡已可见
+      // 附件随队列续发（0.0.11）：带附件时走 SendWithAttachments（sendTo 内部按需分派）
+      if (next) sendTo(p.sessionID, next.text, next.atts).catch(() => {}) // 队列续发失败：错误气泡已可见
     }
   }
 
@@ -915,8 +959,10 @@ export const useChatStore = defineStore('chat', () => {
   // 输入队列（0.2.14）：回合进行中的提交依次排队，终态后自动逐条发出（绝不与进行中轮次并发）。
   // 多会话（0.2.25）：队列按会话各一份，后台会话的队列续发不进当前视图。
   let queueSeq = 0
-  function enqueue(text: string) {
-    ensureConvo(sessionId.value).queue.push({ id: ++queueSeq, text })
+  // 入队（0.0.11：附件随行）：附件拷贝一份——调用方随后会清空待发送区，
+  // 队列里这条必须自持（否则续发时附件已被清掉，消息静默丢附件）。
+  function enqueue(text: string, atts: PendingAttachment[] = []) {
+    ensureConvo(sessionId.value).queue.push({ id: ++queueSeq, text, atts: [...atts] })
   }
   function removeQueued(id: number) {
     const c = ensureConvo(sessionId.value)
@@ -927,13 +973,13 @@ export const useChatStore = defineStore('chat', () => {
     const i = c.queue.findIndex((q) => q.id === id)
     if (i > 0) c.queue.unshift(...c.queue.splice(i, 1))
   }
-  // 取回编辑：返回文本并出队（调用方负责放回输入框）
-  function editQueued(id: number): string | undefined {
+  // 取回编辑：返回文字与附件并出队（调用方负责放回输入框/待发送区）
+  function editQueued(id: number): { text: string; atts: PendingAttachment[] } | undefined {
     const c = ensureConvo(sessionId.value)
     const q = c.queue.find((x) => x.id === id)
     if (!q) return undefined
     removeQueued(id)
-    return q.text
+    return { text: q.text, atts: q.atts }
   }
 
   async function init() {
@@ -972,12 +1018,15 @@ export const useChatStore = defineStore('chat', () => {
     onChunk,
     onTool,
     restoreWrite,
+    revertRound,
+    rerunFrom,
     promptTokens,
     onUsage,
-    reviewFocus,
-    focusReview,
-    onEdit,
-    resolveEdit,
+    contextInfo,
+    onContext,
+    fileDetailPath,
+    openFileDetail,
+    closeFileDetail,
     proposeApplyCode,
     onTodo,
     onAsk,

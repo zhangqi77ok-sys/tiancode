@@ -3,6 +3,7 @@ import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { parseAtToken, applyPick, type AtToken } from '../composables/atFile'
+import { useEscClose } from '../composables/useEsc'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 
@@ -209,6 +210,11 @@ const modelMenuOpen = ref(false)
 const modelMenuRef = ref<HTMLElement | null>(null)
 const modelOptions = computed(() => channels.modelOptions)
 
+// Esc 关闭模型菜单（第 3 批）：经消费栈注册（原先只有点外部关闭）
+useEscClose(modelMenuOpen, () => {
+  modelMenuOpen.value = false
+})
+
 function isCurrent(opt: { channelId: string; model: string }): boolean {
   return channels.activeChannel?.id === opt.channelId && channels.activeModel === opt.model
 }
@@ -256,9 +262,11 @@ async function submit() {
   const curAtts = atts.value
   if (!text && !curAtts.length) return
   if (store.running) {
-    // 回合进行中：入队（终态后自动依次发出），附件随文字入队（0.0.10 简化：先只排队文字）
-    store.enqueue(text)
+    // 回合进行中：入队（终态后自动依次发出）；附件随文字一起入队并清空待发送区——
+    // 只排文字会让续发的那条丢掉截图/文件（0.0.11）
+    store.enqueue(text, curAtts)
     draft.value = ''
+    atts.value = []
     resetBox()
     return
   }
@@ -274,13 +282,14 @@ async function submit() {
   }
 }
 
-// 队列编辑：取回文本并出队（焦点回到输入框继续改）
+// 队列编辑：取回文字与附件并出队（焦点回到输入框继续改）。
+// 取回的附件排在待发送区最前，原有附件不动（0.0.11——附件随消息走，不能丢）。
 function editQueued(id: number) {
-  const t = store.editQueued(id)
-  if (t !== undefined) {
-    draft.value = t
-    box.value?.focus()
-  }
+  const q = store.editQueued(id)
+  if (!q) return
+  draft.value = q.text
+  atts.value = [...q.atts, ...atts.value]
+  box.value?.focus()
 }
 </script>
 

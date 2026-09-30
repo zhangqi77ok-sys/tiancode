@@ -4,8 +4,9 @@ import { useChatStore } from '../stores/chat'
 import { useCatalogStore } from '../stores/catalog'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
-import { buildSidebar } from '../composables/sessionGrouping'
+import { buildSidebar, filterSidebar } from '../composables/sessionGrouping'
 import { useDialogs } from '../composables/useDialogs'
+import { useEscClose } from '../composables/useEsc'
 import AppIcon from './AppIcon.vue'
 import SessionRow from './SessionRow.vue'
 
@@ -32,6 +33,11 @@ const dialogs = useDialogs()
 const catalog = useCatalogStore()
 const settingsMenuOpen = ref(false)
 const settingsMenuRef = ref<HTMLElement | null>(null)
+
+// Esc 关闭设置菜单（第 3 批）：经消费栈注册（原先只有点外部关闭）
+useEscClose(settingsMenuOpen, () => {
+  settingsMenuOpen.value = false
+})
 const mcpOn = computed(() => catalog.mcp.filter((s) => s.enabled).length)
 const skillOn = computed(() => catalog.skills.filter((s) => s.enabled).length)
 // 按钮 hover 提示：一句话说明当前模型（版面不显示，信息不丢）
@@ -58,8 +64,15 @@ function openSettings(kind: 'channels' | 'mcp' | 'skills') {
 
 const VIEW_LIMIT = 5
 
+// 本地搜索（0.0.11）：标题 / 工作区路径子串过滤，纯前端（无新后端接口）。
+const query = ref('')
+const filtering = computed(() => query.value.trim().length > 0)
+
 // 分区模型（纯函数 + 单测）：sections = 置顶 / 会话 / 空间；只镜像账本，草稿会话不可见
-const sections = computed(() => buildSidebar(store.summaries, ws.path))
+const sections = computed(() => {
+  const all = buildSidebar(store.summaries, ws.path)
+  return filtering.value ? filterSidebar(all, query.value) : all
+})
 
 // 折叠状态：分区头与空间分组头共用（当前空间默认展开，其余默认收起；点击后以手动为准）
 const collapsed = ref<Record<string, boolean>>({})
@@ -69,10 +82,15 @@ function toggle(key: string) {
 function isOpen(key: string, defaultOpen: boolean): boolean {
   return collapsed.value[key] ?? defaultOpen
 }
+// 分组是否展开：搜索中默认展开——用户正在找东西，不该再点一次才看见结果
+function groupOpen(label: string, isCurrent: boolean): boolean {
+  return isOpen('fold:' + label, filtering.value || isCurrent)
+}
 
-// 查看更多：每个列表独立展开态
+// 查看更多：每个列表独立展开态；搜索中不受 5 条限制（命中项全列）
 const expanded = ref<Record<string, boolean>>({})
 function visible<T extends { id: string }>(items: T[], key: string): T[] {
+  if (filtering.value) return items
   return expanded.value[key] ? items : items.slice(0, VIEW_LIMIT)
 }
 // 查看更多点击：切换 expanded（0.2.10 曾误绑 toggle 折叠态——改的是另一张表，点击永远无效）
@@ -152,7 +170,19 @@ function select(id: string) {
       </button>
     </div>
 
+    <!-- 本地搜索（0.0.11）：标题与工作区路径子串匹配；命中分组自动展开、不限 5 条 -->
+    <input
+      v-model="query"
+      type="search"
+      aria-label="搜索会话"
+      placeholder="搜索会话或工作区…"
+      class="mb-2 w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-1.5 text-xs text-[var(--c-text)] outline-none focus:border-[var(--c-primary)]"
+    />
+
     <div class="min-h-0 flex-1 space-y-2 overflow-y-auto">
+      <p v-if="filtering && !sections.length" class="px-2 py-3 text-xs text-[var(--c-text-faint)]">
+        没有匹配的会话
+      </p>
       <template v-for="sec in sections" :key="sec.kind + sec.label">
         <!-- 置顶 / 会话：单列表 -->
         <div v-if="sec.kind !== 'spaces'" class="mb-1">
@@ -177,7 +207,7 @@ function select(id: string) {
             />
           </div>
           <button
-            v-if="sec.items.length > VIEW_LIMIT"
+            v-if="!filtering && sec.items.length > VIEW_LIMIT"
             class="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-primary)] transition-colors hover:bg-[var(--c-primary-soft)]"
             @click="toggleMore(sec.kind)"
           >
@@ -197,14 +227,14 @@ function select(id: string) {
             >
               <button
                 class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                :aria-expanded="isOpen('fold:' + g.label, g.isCurrent)"
+                :aria-expanded="groupOpen(g.label, g.isCurrent)"
                 @click="toggle('fold:' + g.label)"
               >
                 <AppIcon
                   name="chevron-down"
                   :size="10"
                   class="shrink-0 transition-transform"
-                  :class="isOpen('fold:' + g.label, g.isCurrent) ? '' : '-rotate-90'"
+                  :class="groupOpen(g.label, g.isCurrent) ? '' : '-rotate-90'"
                 />
                 <AppIcon
                   name="folder"
@@ -230,7 +260,7 @@ function select(id: string) {
               </button>
             </div>
 
-            <div v-if="isOpen('fold:' + g.label, g.isCurrent)" class="mt-0.5 space-y-0.5">
+            <div v-if="groupOpen(g.label, g.isCurrent)" class="mt-0.5 space-y-0.5">
               <SessionRow
                 v-for="sm in visible(g.items, 'more:' + g.label)"
                 :key="sm.id"
@@ -246,9 +276,9 @@ function select(id: string) {
                 @remove="remove(sm.id)"
               />
             </div>
-            <!-- 查看更多与文件夹折叠用不同 key，互不打架 -->
+            <!-- 查看更多与文件夹折叠用不同 key，互不打架；搜索中不折叠到 5 条 -->
             <button
-              v-if="g.items.length > VIEW_LIMIT && isOpen('fold:' + g.label, g.isCurrent)"
+              v-if="!filtering && g.items.length > VIEW_LIMIT && groupOpen(g.label, g.isCurrent)"
               class="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-[var(--c-primary)] transition-colors hover:bg-[var(--c-primary-soft)]"
               @click="toggleMore('more:' + g.label)"
             >

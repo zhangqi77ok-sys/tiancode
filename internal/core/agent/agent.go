@@ -66,6 +66,17 @@ type Loop struct {
 	// 回合内被 ManageTool 增删后，模型在后续步骤立即看到最新清单，不必等下一轮。
 	// 设置了 prefaceFn 时每步覆盖静态 preface。
 	prefaceFn func() string
+	// ctxBudgetTokens 是本轮的上下文预算（token；0 = 未配置上限）。
+	// 由装配层从渠道配置折算注入（第 2 批）：派生历史时按预算分级折叠旧内容。
+	ctxBudgetTokens int
+	// prefaceSkips 统计"preface 与上一手相同而跳过替换"的次数（第 5 批；
+	// 测试观测点——跳过即保持 system 前缀逐字节不变，prompt cache 不失效）。
+	prefaceSkips int
+	// WIP(todoTrack)：清单过期提醒未完成（todoTrack 类型未定义），暂注释待补全后恢复：
+	// todo 是本轮任务清单的进度（不进账本）。模型经常只提交一次快照，
+	// 随后干活却不再回写，界面就停在「全部未完成」。这里记下上次快照，
+	// 快照过期时在下一步提醒它重交——提醒只存在于本轮内存消息里。
+	// todo todoTrack
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -103,7 +114,47 @@ func (l *Loop) Preface() string {
 	return l.preface
 }
 
+// SetContextBudget 设置本轮的上下文预算（token；0 = 未配置上限，不裁剪）。
+// 第 2 批：装配层从渠道配置（contextLimit）折算注入，派生历史时按预算分级折叠。
+func (l *Loop) SetContextBudget(tokens int) {
+	if l == nil {
+		return
+	}
+	if tokens < 0 {
+		tokens = 0
+	}
+	l.ctxBudgetTokens = tokens
+}
+
+// attachPreface 把静态系统说明放到最前（派生结果本身不含 system；动态 preface
+// 由 applyDynamicPreface 每步覆盖）。Run 与"续跑前重新折叠"共用同一复原逻辑。
+func (l *Loop) attachPreface(msgs []llm.Message) []llm.Message {
+	text := strings.TrimSpace(l.preface)
+	if text == "" {
+		return msgs
+	}
+	return append([]llm.Message{{Role: "system", Content: text}}, msgs...)
+}
+
+// contextEvent 把派生读数封成上报块（油表：预算 / 估算 / 折叠项 / 超限标记）。
+// 预算未配置且没有折叠时返回 nil——保持旧行为零噪声（不新增事件）。
+func contextEvent(info DeriveInfo) *llm.ContextEvent {
+	if info.BudgetTokens <= 0 && info.FoldedImages+info.FoldedTools+info.FoldedReads == 0 {
+		return nil
+	}
+	return &llm.ContextEvent{
+		EstimatedTokens: info.EstimatedTokens,
+		BudgetTokens:    info.BudgetTokens,
+		FoldedImages:    info.FoldedImages,
+		FoldedTools:     info.FoldedTools,
+		FoldedReads:     info.FoldedReads,
+		Dropped:         info.Dropped,
+	}
+}
+
 // applyDynamicPreface 在每个执行步骤前刷新系统说明（prefaceFn 优先于静态）。
+// 第 5 批：文本与上一手完全相同就不触碰 system——逐字节不变的前缀是上游
+// prompt cache 命中的前提，无变化的覆盖是纯噪声（也避免无谓改写消息数组）。
 func (l *Loop) applyDynamicPreface(msgs []llm.Message) []llm.Message {
 	if l.prefaceFn == nil {
 		return msgs
@@ -113,6 +164,10 @@ func (l *Loop) applyDynamicPreface(msgs []llm.Message) []llm.Message {
 		return msgs // 取值失败/为空：保持现有 system，不打断回合
 	}
 	if len(msgs) > 0 && msgs[0].Role == "system" {
+		if msgs[0].Content == text {
+			l.prefaceSkips++ // 清单没变：跳过替换（测试观测点）
+			return msgs
+		}
 		msgs[0].Content = text
 		return msgs
 	}
@@ -144,25 +199,36 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
-	msgs, err := deriveMessages(ledger)
+	msgs, ctxInfo, err := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
 	if err != nil {
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("derive history: %w", err)
 	}
-	if text := strings.TrimSpace(l.preface); text != "" {
-		msgs = append([]llm.Message{{Role: "system", Content: text}}, msgs...)
+	// 折完仍超预算：不发请求（0.0.11）。发出去必然被上游按上下文长度拒绝，还会把
+	// "本地预算不够"伪装成上游错误；这里给明确终态，说清差在哪、能做什么。
+	// 用户原话已 write-ahead 落账本（上面几行），不会因这一判断丢失。
+	if ctxInfo.Dropped {
+		l.phase.Store(int32(PhaseIdle))
+		msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过渠道上限（%d tok）：折叠旧内容后仍装不下。"+
+			"可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。",
+			ctxInfo.EstimatedTokens, ctxInfo.BudgetTokens)
+		if _, aerr := ledger.Append(session.EventError, map[string]any{"message": msg}); aerr != nil {
+			return nil, fmt.Errorf("persist context overflow: %w", aerr)
+		}
+		return nil, errors.New(msg)
 	}
+	msgs = l.attachPreface(msgs)
 	var toolDefs []llm.ToolDef
 	if l.registry != nil {
 		toolDefs = l.registry.Definitions()
 	}
 	out := make(chan llm.StreamChunk)
-	go l.turn(ctx, ledger, msgs, toolDefs, out)
+	go l.turn(ctx, ledger, msgs, toolDefs, out, ctxInfo)
 	return out, nil
 }
 
 // turn 是多步消费循环：每步一次模型调用；工具调用触发续步。
-func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Message, toolDefs []llm.ToolDef, out chan llm.StreamChunk) {
+func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Message, toolDefs []llm.ToolDef, out chan llm.StreamChunk, ctxInfo DeriveInfo) {
 	// defer 顺序即执行顺序（LIFO）：先置 Idle 再 close(out)，
 	// 保证消费方见到关闭时 Phase 已回 Idle。
 	defer l.phase.Store(int32(PhaseIdle))
@@ -176,6 +242,12 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		terminalSent = true
 		if c.EndReason == llm.EndCancelled {
 			l.phase.Store(int32(PhaseCancelled))
+		}
+		// 终态兜底刷盘（第 1 批合批）：取消/错误路径没有"关键事件"来冲掉攒批的
+		// 增量——用户中断后进程被杀时，已产生的部分输出绝不能丢（C-APP-2）。
+		// 刷盘失败是硬错误：覆盖为 EndError 上抛（账本写不进去，本轮不算完成）。
+		if err := ledger.Flush(); err != nil {
+			c = llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("flush ledger: %w", err)}
 		}
 		select {
 		case out <- c:
@@ -192,7 +264,18 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		}
 	}
 
+	// 上下文治理读数（第 2 批）：每轮一次，界面油表显示预算/估算/折叠标记——
+	// 折叠绝不静默（预算已配置或发生了折叠才上报，保持旧行为零噪声）。
+	if ev := contextEvent(ctxInfo); ev != nil {
+		if forward(llm.StreamChunk{Context: ev}) {
+			return
+		}
+	}
+
 	var sb strings.Builder // 当前步已确认落盘的助手文本
+	// 步数分段（第 3 批）：默认每段 MaxStepsPerTurn 步；一段用尽先询问用户是否
+	// 续跑（见循环末尾），同意则重新计段，拒绝/取消/无问答通道走收尾。
+	segment := 1
 	for step := 1; step <= MaxStepsPerTurn; step++ {
 		if err := ctx.Err(); err != nil {
 			emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: err})
@@ -391,7 +474,45 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			i = j
 		}
+		// WIP(todoTrack)：清单过期提醒调用（待类型补全后恢复）
+		// // 本步干过活且清单还是旧快照：下一步先让模型重交，再写最终答复。
+		// // 同样不进账本（理由见收尾处的提醒）。
+		// if msg, ok := l.todo.consumeRefresh(false); ok {
+		// 	msgs = append(msgs, llm.Message{Role: "user", Content: msg})
+		// }
 		sb.Reset() // 新一步的文本从零累计；只有最终无工具调用步的文本进入锚点
+
+		// 步数分段（第 3 批）：一段用尽先发一条可取消的询问（复用 ask_user 通道），
+		// 用户同意再续跑一段；拒绝/取消/无问答通道则跳出走收尾。
+		// 旧行为是不经询问直接打一发"无工具总结"收工——长任务被硬停在 25 步。
+		if step >= MaxStepsPerTurn {
+			if l.continueAfterLimit(ctx, segment) {
+				segment++
+				// 续跑前重新折叠（0.0.11）：本段已把大量工具输出写进上下文，开局那次
+				// 派生结果已经过时——按当前预算重新派生一次，续跑段不背着满上下文；
+				// 油表读数同步刷新（此前续跑后仍显示开局数字，用户以为折叠没生效）。
+				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+				if derr != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
+					return
+				}
+				msgs = l.attachPreface(refreshed)
+				if ev := contextEvent(next); ev != nil {
+					if forward(llm.StreamChunk{Context: ev}) {
+						return
+					}
+				}
+				msgs = append(msgs, llm.Message{Role: "user", Content: fmt.Sprintf(
+					"用户同意继续：已跑满 %d 步（第 %d 段开始），现在继续执行，仍可使用全部工具。",
+					MaxStepsPerTurn, segment)})
+				step = 0 // 重新计一段（for 自增后回到 1）
+			} else if ctx.Err() != nil {
+				emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
+				return
+			} else {
+				break
+			}
+		}
 	}
 	// 步数耗尽（0.0.06 改造）：不再直接 EndError——强制一步"无工具总结"，
 	// 让模型把已完成/未完成讲清楚后正常收束（锚点照落、EndDone、UI 不报错）。
@@ -438,10 +559,6 @@ func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *sess
 	}
 	if l.registry != nil {
 		if t, ok := l.registry.Get(call.Name); ok {
-			// CallID 注入（0.0.10）：文件确认卡与工具卡经同一 CallID 配对
-			if cs, isSetter := t.(interface{ SetCallID(string) }); isSetter {
-				cs.SetCallID(call.ID)
-			}
 			if ps, isSink := t.(tools.ProgressSink); isSink {
 				ps.SetProgress(func(partial string) {
 					_ = forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
@@ -525,6 +642,17 @@ func isReadOnlyCall(call llm.ToolCall) bool {
 	switch call.Name {
 	case "search", "git":
 		return true
+	case "mcp":
+		// MCP（0.0.11）：只有 tool=list 是纯查询（拉服务器工具清单）；其余一律串行——
+		// server 侧工具名对我们是黑盒，可能是写操作，"两个人同时动同一资源"的代价
+		// 远大于少并行几次（白名单宁可窄，与 fs/search/git 同一纪律）。
+		var p struct {
+			Tool string `json:"tool"`
+		}
+		if err := json.Unmarshal([]byte(call.Arguments), &p); err != nil {
+			return false
+		}
+		return strings.EqualFold(strings.TrimSpace(p.Tool), "list")
 	case "fs":
 		var p struct {
 			Action string `json:"action"`

@@ -66,6 +66,37 @@ func TestGitTool_LogOnEmptyRepoIsBusinessError(t *testing.T) {
 	}
 }
 
+// 0.0.11：CurrentBranch 只读取分支名；不是仓库的普通目录返回空串而不是错误
+// （界面据此"不显示"，绝不编造分支名）。
+func TestCurrentBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	// 还没有首个提交的"未出生"分支也要有名字（界面上刚 init 的仓库不应显示为无分支）
+	runGit(t, repo, "checkout", "-b", "feature-x")
+	if got := CurrentBranch(repo); got != "feature-x" {
+		t.Fatalf("CurrentBranch = %q, want feature-x", got)
+	}
+	if got := CurrentBranch(t.TempDir()); got != "" {
+		t.Fatalf("非仓库目录必须返回空串，得到 %q", got)
+	}
+}
+
+// status -b（0.0.11）：输出带 "## 分支" 头行——顶栏分支显示与模型的分支感知同源。
+func TestGitTool_StatusShowsBranchHeader(t *testing.T) {
+	tool := newRepo(t)
+	runGit(t, tool.root, "checkout", "-b", "feature-y")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"action": "status"}))
+	if err != nil || res.IsError {
+		t.Fatalf("status failed: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "feature-y") {
+		t.Fatalf("status output = %q, want contains branch header", res.Content)
+	}
+}
+
 // 未知动作 → 业务失败并提示合法取值。
 func TestGitTool_UnknownAction(t *testing.T) {
 	tool := newRepo(t)

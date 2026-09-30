@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
+import { diffLineClass, diffStat } from '../composables/diffView'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -15,28 +16,18 @@ const props = defineProps<{ m: ChatMsg }>()
 const { push: toast } = useToast()
 
 // 折叠态语义（0.0.06）：
-//   - 执行中 / 待确认（0.0.10）：**强制展开**且不允许折叠——输出正在生长，
-//     变更等你决策；
+//   - 执行中：**强制展开**且不允许折叠——输出正在生长；
 //   - write/edit（有 diff）：默认展开 diff——变更就是这张卡的主体，不能藏；
 //   - 其余：默认折叠，用户手动开合后以手动为准。
 const userToggled = ref(false)
 const open = ref(false)
-const isRunning = computed(() => props.m.status === 'running' || props.m.status === 'pending_confirm')
+const isRunning = computed(() => props.m.status === 'running')
 const expandable = computed(() => isRunning.value || !!(props.m.diff && (props.m.op === 'write' || props.m.op === 'edit')))
 const effectiveOpen = computed(() => (isRunning.value ? true : userToggled.value ? open.value : expandable.value))
 function toggle() {
-  if (isRunning.value) return // 执行中/待确认不允许折叠（结束后再收）
+  if (isRunning.value) return // 执行中不允许折叠（结束后再收）
   userToggled.value = true
   open.value = !open.value
-}
-
-// 待确认操作（0.0.10）：应用/跳过经 ResolveEdit 回流；终态事件原地更新本卡
-const confirming = ref(false)
-async function confirmEdit(apply: boolean) {
-  if (!props.m.editId || confirming.value) return
-  confirming.value = true
-  await store.resolveEdit(props.m.editId, apply)
-  confirming.value = false
 }
 
 // 主标签：内核 Title 优先；旧数据回退"工具名 · 内容片段"
@@ -46,6 +37,17 @@ const label = computed(() => {
   const name = props.m.toolName || '工具'
   const s = (props.m.content || '').replace(/\s+/g, ' ').trim()
   return s ? `${name} · ${s}`.slice(0, 80) : name
+})
+
+// 路径两段式（第 2 批）：目录（暗色、可截断）+ 末段（亮色、不缩）——多目录同名
+// 文件（agent.go）一眼可区分。仅文件类操作且有层级时拆分；旧账本的末段标签
+// 天然单段，走通用分支。
+const pathParts = computed<{ dir: string; base: string } | null>(() => {
+  const t = props.m.title?.trim() || ''
+  if (!['read', 'write', 'edit', 'list', 'tree'].includes(props.m.op ?? '')) return null
+  const i = t.lastIndexOf('/')
+  if (i <= 0 || i === t.length - 1) return null
+  return { dir: t.slice(0, i + 1), base: t.slice(i + 1) }
 })
 
 // 动作徽章：内核 Op → 中文
@@ -74,13 +76,14 @@ const iconName = computed(() => {
 // shell/git/search 的主标签是命令/搜索词，没有对应的文件位置。
 const revealable = computed(() => ['read', 'write', 'edit', 'list', 'tree'].includes(props.m.op ?? ''))
 
-// 审查带聚焦（0.0.09）：成功 write/edit 卡的文件名可点——diff 主视图在审查带
+// 文件详情（第 3 批）：成功 write/edit 卡的文件名可点——右侧面板是 diff 主视图
 const reviewable = computed(
-  () => props.m.status === 'success' && (props.m.op === 'write' || props.m.op === 'edit') && !!props.m.callId,
+  () => props.m.status === 'success' && (props.m.op === 'write' || props.m.op === 'edit') && !!props.m.title?.trim(),
 )
 async function reveal() {
   try {
-    await bridge().app.RevealInExplorer(props.m.title?.trim() || '')
+    // 0.0.11：路径按这场对话的工作区解析（传当前会话 ID）
+    await bridge().app.RevealInExplorer(store.sessionId, props.m.title?.trim() || '')
   } catch (e) {
     toast('error', String(e instanceof Error ? e.message : e))
   }
@@ -97,28 +100,8 @@ async function restore() {
   restoring.value = false
 }
 
-// diffstat：内核 diff 统计增删行（+++ / --- 文件头不计）
-const stat = computed(() => {
-  if (!props.m.diff) return null
-  let add = 0
-  let del = 0
-  for (const line of props.m.diff.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue
-    if (line.startsWith('+')) add++
-    else if (line.startsWith('-')) del++
-  }
-  return { add, del }
-})
-
-// diff 行着色：只按前缀判定（diff 由内核生成，格式稳定）；
-// + / - 行作文字用 -text 色（AA 达标），装饰色只给圆点
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'text-[var(--c-text-dim)]'
-  if (line.startsWith('@@')) return 'text-[var(--c-primary)]'
-  if (line.startsWith('+')) return 'text-[var(--c-ok-text)]'
-  if (line.startsWith('-')) return 'text-[var(--c-err-text)]'
-  return 'text-[var(--c-text-dim)]'
-}
+// diffstat 与行着色（与审查带/详情面板同一来源：composables/diffView）
+const stat = computed(() => (props.m.diff ? diffStat(props.m.diff) : null))
 </script>
 
 <template>
@@ -138,15 +121,21 @@ function diffLineClass(line: string): string {
         :class="m.status === 'error' ? 'bg-[var(--c-err)]' : isRunning ? 'animate-pulse bg-[var(--c-warn)]' : 'bg-[var(--c-ok)]'"
       ></span>
       <AppIcon :name="iconName" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
-      <!-- 文件名主标签（0.0.09）：write/edit 的文件名点击 → 聚焦审查带里的
-           diff（diff 是主视图，资源管理器降级为次要动作） -->
+      <!-- 文件主标签（0.0.09 / 第 2 批两段式）：目录暗色可截断 + 末段亮色不缩——
+           多目录同名文件一眼可区分；write/edit 点击末段 → 右侧文件详情面板 -->
       <span
-        class="min-w-0 truncate font-medium text-[var(--c-text)]"
-        :class="reviewable ? 'cursor-pointer underline decoration-dotted underline-offset-2' : ''"
-        :title="reviewable ? `${label} · 点击在审查带中查看变更` : m.content"
-        @click.stop="reviewable ? store.focusReview(m.callId!) : undefined"
-        >{{ label }}</span
+        class="flex min-w-0 items-center font-medium text-[var(--c-text)]"
+        :class="reviewable ? 'cursor-pointer' : ''"
+        :title="reviewable ? `${label} · 点击在右侧查看变更详情` : m.content"
+        @click.stop="reviewable ? store.openFileDetail(m.title || '') : undefined"
       >
+        <span v-if="pathParts" class="min-w-0 truncate text-[var(--c-text-faint)]">{{ pathParts.dir }}</span>
+        <span
+          class="shrink-0"
+          :class="reviewable ? 'underline decoration-dotted underline-offset-2' : ''"
+          >{{ pathParts?.base ?? label }}</span
+        >
+      </span>
       <span
         v-if="opLabel"
         class="shrink-0 rounded-md bg-[var(--c-primary-soft)] px-1.5 py-0.5 text-[10px] text-[var(--c-primary)]"
@@ -177,15 +166,6 @@ function diffLineClass(line: string): string {
       <div v-for="(l, li) in m.diff.split('\n')" :key="li" :class="diffLineClass(l)">{{ l }}</div>
     </div>
     <pre v-else-if="effectiveOpen" class="tool-full">{{ m.content }}</pre>
-
-    <!-- 待确认操作（0.0.10）：应用/跳过；本轮多处改动用审查带的"全部"按钮 -->
-    <div v-if="m.status === 'pending_confirm' && m.editId" class="flex gap-1.5 self-start px-1">
-      <button class="btn-primary px-4 py-1 text-xs" :disabled="confirming" @click="confirmEdit(true)">
-        {{ confirming ? '正在应用…' : '应用' }}
-      </button>
-      <button class="chip text-xs" :disabled="confirming" @click="confirmEdit(false)">跳过</button>
-      <span class="self-center text-[11px] text-[var(--c-text-faint)]">确认前文件不会写入</span>
-    </div>
 
     <!-- 撤销（0.0.07）：不可恢复说明优先显示（如超大文件未保存快照）；
          有快照时提供"恢复写入前"——走后端比对，文件被改过会被拒绝并说明 -->

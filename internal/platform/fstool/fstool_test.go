@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -347,5 +348,25 @@ func TestFSWrite_ContentCarriesShortDiff(t *testing.T) {
 	}
 	if len(res.Diff) <= diffContentLimit {
 		t.Fatalf("Diff 字段应保留完整预览：%d", len(res.Diff))
+	}
+}
+
+// 卡片主标签 = 工作区相对路径：多目录同名文件必须可区分（末段标签会被 UI 聚合成
+// 一排 agent.go）；根/空路径回退 "(workspace)"，分隔符统一正斜杠。
+func TestFSTitle_RelativePath(t *testing.T) {
+	cases := map[string]string{
+		"internal/core/agent/agent.go": "internal/core/agent/agent.go",
+		"./a.go":                       "a.go",
+		".":                            "(workspace)",
+		"":                             "(workspace)",
+	}
+	if runtime.GOOS == "windows" {
+		// 模型偶尔给反斜杠风格路径：Windows 上必须归一化成正斜杠
+		cases[`internal\core\agent\agent.go`] = "internal/core/agent/agent.go"
+	}
+	for in, want := range cases {
+		if got := fsTitle(in); got != want {
+			t.Fatalf("fsTitle(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

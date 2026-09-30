@@ -81,6 +81,25 @@ func parseAsk(raw string) (AskRequest, error) {
 	return AskRequest{Question: a.Question, Options: cleaned}, nil
 }
 
+// continueAfterLimit 询问用户是否续跑下一段（第 3 批）。
+// 语义：经 ask_user 同款通道发一条可取消的询问；用户明确选择"继续"返回 true。
+// 拒绝/取消/无问答通道一律 false（调用方据此走收尾；取消由 ctx 收束）。
+func (l *Loop) continueAfterLimit(ctx context.Context, segment int) bool {
+	if l.asker == nil {
+		return false // 无问答通道（纯 API/测试）：保持旧的"总结收尾"行为
+	}
+	answer, err := l.asker.Ask(ctx, AskRequest{
+		Question: fmt.Sprintf("已连续执行 %d 步（第 %d 段用尽），是否继续执行下一段（再 %d 步）？",
+			segment*MaxStepsPerTurn, segment, MaxStepsPerTurn),
+		Options: []string{"继续执行", "就此结束"},
+	})
+	if err != nil {
+		return false
+	}
+	// 只有明确包含"继续"才续跑：自由回答里的其他内容一律按结束处理（保守）。
+	return strings.Contains(strings.TrimSpace(answer), "继续")
+}
+
 // runAsk 处理 ask_user 调用：校验 → 经问答端口阻塞等 UI 答复 → 答案作为工具结果回模型。
 // 纪律与审批一致：取消/超时是模型可见的失败（可据此收尾），绝不静默。
 func (l *Loop) runAsk(ctx context.Context, call llm.ToolCall) tools.ToolResult {

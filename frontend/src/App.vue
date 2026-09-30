@@ -2,12 +2,14 @@
 import { computed, provide, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type TodoItem } from './stores/chat'
 import { useCatalogStore } from './stores/catalog'
+import { consumeEsc } from './composables/useEsc'
 import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
+import FileDetailPanel from './components/FileDetailPanel.vue'
 import FloatingTodo from './components/FloatingTodo.vue'
 import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
@@ -46,6 +48,12 @@ const draft = computed({
     drafts.value[store.sessionId] = v
   },
 })
+
+// 切换/新建会话时关闭文件详情面板（面板展示的是"当前会话的改动"，跨会话显示会张冠李戴）
+watch(
+  () => store.sessionId,
+  () => store.closeFileDetail(),
+)
 
 // 模态打开函数（0.0.06：入口统一在侧栏底部，汉堡导航已下线）
 function openChannels() {
@@ -88,6 +96,10 @@ function onGlobalKeydown(e: KeyboardEvent) {
   if (anyModalOpen.value) return // 模态打开：不抢任何全局键（Esc 归模态）
   const mod = e.ctrlKey || e.metaKey
   if (e.key === 'Escape') {
+    // 浮层优先（第 3 批）：@ 候选等已 preventDefault；右侧文件面板/菜单/灯箱经
+    // Esc 消费栈注册。没有浮层消费时才轮到"中断生成"——否则关一个浮层会顺手
+    // 把正在跑的回合静默杀掉（coding 场景最恼火的一类误伤）。
+    if (e.defaultPrevented || consumeEsc()) return
     if (store.running) {
       e.preventDefault()
       store.stop()
@@ -127,21 +139,6 @@ onMounted(() => {
       store.onUsage(p)
     },
   )
-  // 文件变更确认（0.0.10）：write/replace 落盘前的确认卡，答复经 ResolveEdit 回流
-  bridge().runtime.EventsOn(
-    'chat:edit',
-    (p: {
-      id: string
-      sessionID: string
-      sessionTitle?: string
-      callId?: string
-      path: string
-      diff: string
-      isNew: boolean
-    }) => {
-      store.onEdit(p)
-    },
-  )
   bridge().runtime.EventsOn(
     'chat:tool',
     (p: {
@@ -172,6 +169,21 @@ onMounted(() => {
   bridge().runtime.EventsOn('chat:todo', (p: { sessionID: string; items: { text: string; status: string }[] }) => {
     store.onTodo({ sessionID: p.sessionID, items: p.items as TodoItem[] })
   })
+  // 上下文治理读数（第 2 批）：油表显示预算/估算与折叠标记——折叠绝不静默
+  bridge().runtime.EventsOn(
+    'chat:context',
+    (p: {
+      sessionID: string
+      estimatedTokens: number
+      budgetTokens: number
+      foldedImages: number
+      foldedTools: number
+      foldedReads: number
+      dropped: boolean
+    }) => {
+      store.onContext(p)
+    },
+  )
   // 问答卡：sessionID 必填（与审批同款，0.2.25 多会话）
   bridge().runtime.EventsOn(
     'chat:ask',
@@ -199,13 +211,18 @@ onBeforeUnmount(() => {
         @open-skills="openSkills"
       />
 
-      <main class="card relative flex min-w-0 flex-1 flex-col">
-        <MessageList @suggest="draft = $event" />
-        <!-- 本轮变更审查带（0.0.09）：write/edit 收拢在输入框上方，点开即 diff -->
-        <TurnReview />
-        <Composer v-model="draft" />
-        <!-- 悬浮任务清单：挂在对话面板内（absolute 以面板为参照系），位置/折叠态跨重启保留 -->
-        <FloatingTodo />
+      <main class="card relative flex min-w-0 flex-1">
+        <!-- 左列：消息流 + 本轮变更 + 输入（与右侧文件详情并存，互不遮挡） -->
+        <div class="flex min-w-0 flex-1 flex-col">
+          <MessageList @suggest="draft = $event" />
+          <!-- 本轮变更审查带（0.0.09；第 2 批默认折叠、按文件聚合）：点文件行开右侧详情 -->
+          <TurnReview />
+          <Composer v-model="draft" />
+          <!-- 悬浮任务清单：挂在对话面板内（absolute 以 main 为参照系），位置/折叠态跨重启保留 -->
+          <FloatingTodo />
+        </div>
+        <!-- 文件详情面板（第 3 批）：点文件行/工具卡文件名 → 右侧专看该文件的全部改动 -->
+        <FileDetailPanel v-if="store.fileDetailPath" />
       </main>
     </div>
 

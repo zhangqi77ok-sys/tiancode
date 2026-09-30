@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   sends: [] as string[],
   // 多会话：记录每次 Send 的目标会话（断言后台会话的队列续发归属）
   sendCalls: [] as { sessionID: string; text: string }[],
+  // 带附件发送记录（0.0.11：队列续发带附件必须走 SendWithAttachments，而不是纯文本 Send）
+  attachCalls: [] as { sessionID: string; text: string; attachments: string }[],
   resolvedAsks: [] as { id: string; answer: string }[],
   // 工作区调用记录（0.2.37：切换会话绝不动工作区根）
   setWorkspaceCalls: [] as string[],
@@ -42,6 +44,9 @@ vi.mock('../wails', () => ({
       Send: async (sessionID: string, text: string) => {
         h.sendCalls.push({ sessionID, text })
         h.sends.push(text)
+      },
+      SendWithAttachments: async (sessionID: string, text: string, attachments: string) => {
+        h.attachCalls.push({ sessionID, text, attachments })
       },
       Stop: async () => {},
       RenameSession: async (id: string, title: string) => {
@@ -84,6 +89,7 @@ describe('chat store', () => {
     h.resolved = []
     h.sends = []
     h.sendCalls = []
+    h.attachCalls = []
     h.resolvedAsks = []
     h.setWorkspaceCalls = []
   })
@@ -422,27 +428,6 @@ describe('chat store', () => {
     expect(shellCard?.status).toBe('running')
   })
 
-  // 0.0.10：待确认文件变更卡随 chat:edit 插入（status=pending_confirm），
-  // 工具终态事件（同 callId）到达后原地更新为结果
-  it('确认卡插入与终态原地更新', async () => {
-    const store = useChatStore()
-    await store.newSession()
-    await store.send('hi')
-    store.onEdit({ sessionID: store.sessionId, id: 'ed-1', callId: 'call-e1', path: 'a.txt', diff: '+x', isNew: true })
-    const card = store.messages.find((m) => m.role === 'tool')
-    expect(card?.status).toBe('pending_confirm')
-    expect(card?.editId).toBe('ed-1')
-    expect(card?.diff).toBe('+x')
-    // 重复事件不叠加
-    store.onEdit({ sessionID: store.sessionId, id: 'ed-1', callId: 'call-e1', path: 'a.txt', diff: '+x', isNew: true })
-    expect(store.messages.filter((m) => m.editId === 'ed-1')).toHaveLength(1)
-    // 终态：同 callId → 原地更新为结果（保留 editId 锚点）
-    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'written a.go', callID: 'call-e1' })
-    const done = store.messages.find((m) => m.role === 'tool')
-    expect(done?.status).toBe('success')
-    expect(done?.editId).toBe('ed-1')
-  })
-
   // 0.0.07：终态事件携带撤销元数据 → 卡片可显示"恢复写入前"；不可恢复说明透传
   it('终态事件携带撤销元数据与不可恢复说明', async () => {
     const store = useChatStore()
@@ -630,10 +615,33 @@ describe('chat store', () => {
     store.promoteQueued(store.queue[2].id) // 三 → 最前
     expect(store.queue.map((q) => q.text)).toEqual(['三', '一', '二'])
     const t = store.editQueued(store.queue[0].id)
-    expect(t).toBe('三')
+    expect(t).toEqual({ text: '三', atts: [] }) // 0.0.11：取回编辑连附件一起返回
     expect(store.queue.map((q) => q.text)).toEqual(['一', '二'])
     store.removeQueued(store.queue[0].id)
     expect(store.queue.map((q) => q.text)).toEqual(['二'])
+  })
+
+  // 0.0.11：附件随队列走——running 期间入队带图片，终态后续发必须走
+  // SendWithAttachments（此前只排文字，附件留在待发送区，续发消息静默丢附件）
+  it('队列消息带附件：续发走 SendWithAttachments', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('第一条')
+    const img = {
+      kind: 'image' as const,
+      name: 'shot.png',
+      mediaType: 'image/png',
+      size: 3,
+      dataB64: 'AAA',
+      inline: 'none' as const,
+    }
+    store.enqueue('带图的第二条', [img])
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.attachCalls.at(-1)).toMatchObject({ sessionID: store.sessionId, text: '带图的第二条' })
+    expect(h.attachCalls.at(-1)?.attachments).toContain('shot.png')
+    expect(h.sends).toEqual(['第一条']) // 续发不走纯文本 Send
+    expect(store.queue).toEqual([])
   })
 
   // —— 多会话并行（0.2.25）：运行中自由切换，事件各归各位 ——

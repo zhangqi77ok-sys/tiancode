@@ -45,6 +45,8 @@ const emptyForm = () => ({
   authType: 'default',
   authName: '',
   authValue: '',
+  // 第 2 批：上下文上限（token；0 = 不限）——本地派生折叠用，不发给上游
+  contextLimit: 0,
 })
 const form = ref(emptyForm())
 
@@ -133,6 +135,7 @@ function fillFrom(ch: ChannelDTO) {
     authType: ch.auth?.type && ch.auth.type !== 'default' ? ch.auth.type : 'default',
     authName: ch.auth?.name ?? '',
     authValue: ch.auth?.value ?? '',
+    contextLimit: ch.contextLimit ?? 0,
   }
 }
 
@@ -254,6 +257,7 @@ async function save() {
     headerOverride: Object.keys(headers).length ? headers : undefined,
     paramOverride: Object.keys(params).length ? params : undefined,
     auth,
+    contextLimit: form.value.contextLimit || 0,
   })
   if (!store.error) {
     view.value = 'list'
@@ -863,6 +867,23 @@ onMounted(async () => {
                 min="0"
                 class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
               />
+            </label>
+
+            <label class="block">
+              <span class="mb-1 block text-xs text-[var(--c-text-dim)]">
+                上下文上限（token，0 = 不限；本地折叠用，不发上游）
+              </span>
+              <input
+                v-model.number="form.contextLimit"
+                type="number"
+                min="0"
+                placeholder="例如 128000"
+                class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
+              />
+              <span class="mt-1 block text-[11px] text-[var(--c-text-faint)]">
+                估算口径：4 个 ASCII 字符 ≈ 1 token、1 个非 ASCII 字符 ≈ 1 token（保守上界）。
+                接近上限时按顺序折叠：旧图片 → 两轮以前的命令/写入回执 → 更早的只读结果。
+              </span>
             </label>
 
             <label class="block">

@@ -150,6 +150,11 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			lastErr = mergeBanErr(err, g.onChannelFault(sel)) // 网络失败 = 渠道级故障
 			exclude = append(exclude, sel.ChannelID)
 			tier++
+			// 建流前故障的短退避（0.0.11）：连接失败/429/5xx 立刻换渠道再打，
+			// 对端正在限流或重启时连打只会把窗口拖长
+			if !g.sleepBackoff(ctx, out, &forwarded, attempt) {
+				return
+			}
 			continue
 		}
 		applog.Infof("upstream connected host=%s status=%d elapsed=%s（建流完成，流层空闲看门狗开始计时）",
@@ -163,6 +168,10 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 				lastErr = mergeBanErr(serr, g.onChannelFault(sel))
 				exclude = append(exclude, sel.ChannelID)
 				tier++
+				// 建流前故障的短退避（0.0.11）：429/5xx 立刻重打只会加重限流
+				if !g.sleepBackoff(ctx, out, &forwarded, attempt) {
+					return
+				}
 				continue
 			case isCredentialFaultStatus(resp.StatusCode) && sel.CredentialIndex >= 0:
 				// 凭证级故障：auto_ban 禁当前 Key；同档重试（轮询游标已推进到下一条）
@@ -203,7 +212,22 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			lastErr = mergeBanErr(lastErr, g.onChannelFault(sel))
 			exclude = append(exclude, sel.ChannelID)
 			tier++
+			// 零块空闲超时同样属"流未建立"（0.0.11）：换渠道前同样退避
+			if !g.sleepBackoff(ctx, out, &forwarded, attempt) {
+				return
+			}
 			continue
+		}
+		if !forwarded {
+			// 零块且流已结束却没给出终态（0.0.11 修既有竞态）：用户中断恰逢上游静默
+			// 关流时，此前会"无终态 close"——消费方只看到通道关闭，agent 的兜底会把
+			// 主动中断渲染成错误（CI 的取消用例曾在并发压力下偶发变红）。按成因如实补发。
+			if ctx.Err() != nil {
+				g.finishStopped(out, ctx.Err(), &forwarded)
+				return
+			}
+			g.terminal(ctx, out, fmt.Errorf("上游在返回任何内容前结束了流"), &forwarded)
+			return
 		}
 		return // 终态已随流转发
 	}
@@ -237,6 +261,27 @@ func mergeBanErr(lastErr, banErr error) error {
 		return lastErr
 	}
 	return fmt.Errorf("%v; auto_ban: %v", lastErr, banErr)
+}
+
+// sleepBackoff 在两次渠道级重试之间等待 llm.BackoffFor(attempt)（0.0.11）。
+// 只被"流未建立"的失败路径调用（连接失败 / 429 / 5xx / 零块空闲超时）——
+// 流中途失败一律透传，绝不重放（见包注释的重试语义）。
+// 等待期间被用户取消走 finishStopped（那是取消，不是渠道故障）；返回 false
+// 表示调用方应立刻 return，不再进入下一轮尝试。
+func (g *Gateway) sleepBackoff(ctx context.Context, out chan llm.StreamChunk, forwarded *bool, attempt int) bool {
+	d := llm.BackoffFor(attempt)
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		g.finishStopped(out, ctx.Err(), forwarded)
+		return false
+	}
 }
 
 // isChannelFaultStatus 报告状态码是否属于渠道级可重试故障（429 / 5xx）。

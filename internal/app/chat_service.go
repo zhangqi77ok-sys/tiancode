@@ -78,11 +78,6 @@ type ChatService struct {
 	approvalEmit     func(ApprovalEvent)            // 事件回调（壳层注入）
 	pendingApprovals map[string]chan agent.Decision // 未决请求：ID → 答复通道
 
-	// 文件变更确认（0.0.10）：write/replace 落盘前的人为确认（应用/跳过）。
-	// pendingEdits: 确认 ID → 答复通道；editEmit 由壳层注入（chat:edit 事件）。
-	pendingEdits map[string]chan bool
-	editEmit     func(EditEvent)
-
 	// 问答交互状态（ask_user，0.2.15）：与审批同构的"问 → 等 → 答"配对
 	askEmit     func(AskEvent)         // 事件回调（壳层注入）
 	pendingAsks map[string]chan string // 未决请求：ID → 答复通道
@@ -315,9 +310,12 @@ func (s *ChatService) activate(model string) error {
 // 事件必须能归属到它自己的会话，否则会错插进当前正在看的会话里。
 // watch 非空时把"等待审批/等待答复"计入零事件看门狗的活跃（防误杀，见 zeroEventWatch）。
 func (s *ChatService) newAgentWith(model string, registry *tools.Registry, approver agent.Approver, sessionID string, watch *zeroEventWatch) *agent.Loop {
-	// 为什么总预算 10min：编码任务的推理流可达数分钟；空闲看门狗（适配器内 60s）
-	// 已覆盖挂起场景，总预算只防极端失控。
-	rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{Total: 10 * time.Minute})
+	// 超时预算（第 3 批分层）：
+	//   - FirstByte 3min：思考型模型建流后可能长时间无输出（推理阶段不产生增量）——
+	//     首字节单独给预算，不与"流中途挂起"（适配器空闲看门狗 60s）混为一谈；
+	//   - Total 30min：单次调用全程放宽（旧 10min 会把慢思考/长编码掐成错误）；
+	//     到期终态写明"本地预算用尽"，绝不伪装成上游错误。
+	rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{FirstByte: 3 * time.Minute, Total: 30 * time.Minute})
 	ag := agent.NewLoop(rt, model, registry)
 	var asker agent.Asker = &uiAsker{svc: s, sessionID: sessionID}
 	if watch != nil {
@@ -328,6 +326,9 @@ func (s *ChatService) newAgentWith(model string, registry *tools.Registry, appro
 		approver = &watchApprover{inner: approver, watch: watch}
 	}
 	ag.SetApprover(approver) // 审批器随轮注入，策略变更对下一轮生效
+	// 上下文预算（第 2 批）：取已启用渠道声明上限的最小值——运行时选路可能落到
+	// 任一条，按最小上限裁剪才能保证不超任何一条；全部未声明则不裁剪。
+	ag.SetContextBudget(s.pool.MinContextLimit())
 	return ag
 }
 
@@ -429,6 +430,11 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		delete(s.running, sessionID)
 		s.mu.Unlock()
 	}
+	// 轮次检查点（第 6 批）：开始收集"本轮首次修改某文件前"的快照，供「撤回本轮」。
+	// 收尾落账在转发 goroutine 的 defer 里（覆盖所有终态路径）。
+	if st != nil && st.fs != nil {
+		st.fs.BeginRound()
+	}
 	registry, err := s.assembleRegistry(st)
 	if err != nil {
 		release()
@@ -520,6 +526,21 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		defer release()
 		defer cancelRun()         // 流收尾后释放本轮 ctx 资源（防泄漏；绝不提前取消）
 		defer close(watchStopped) // 流收尾：看门狗退场
+		// 轮次检查点落账（第 6 批）：任何终态路径都经过这里——本轮改过的文件与
+		// "轮次开始前内容"一次性落账本，供「撤回本轮」。落账失败只记日志
+		//（轮次已收尾，不因检查点失败改写终态）。
+		defer func() {
+			if st == nil || st.fs == nil {
+				return
+			}
+			cps := st.fs.EndRound()
+			if len(cps) == 0 {
+				return
+			}
+			if _, err := ledger.Append(session.EventRoundCheckpoint, map[string]any{"files": cps}); err != nil {
+				applog.Errorf("append round checkpoint failed session=%s err=%v", sessionID, err)
+			}
+		}()
 		for {
 			select {
 			case c, ok := <-stream:
@@ -573,6 +594,9 @@ type ChatMessage struct {
 	// 问答卡（role="ask"）：问题与选项来自 tool_call 参数，答案在 Content
 	Question string   `json:"question,omitempty"`
 	Options  []string `json:"options,omitempty"`
+	// Seq 是账本事件序号（第 6 批）：用户消息投影携带它——前端「从这条消息重跑」
+	// 以它为分叉锚点（RerunFrom）。
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // ChatAttachment 是重放后气泡里仍可显示的附件引用（0.0.10）。
@@ -592,6 +616,11 @@ type ChatAttachment struct {
 // 每轮的思考与中间文本归属产生它们的轮次，不再全部挂到最后一条 assistant。
 func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 	ledger, err := s.ledgerFor(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	// 分叉区间（第 6 批）：「从这条用户消息重跑」丢弃的事件不参与投影
+	drops, err := ledger.ForkDrops()
 	if err != nil {
 		return nil, err
 	}
@@ -618,8 +647,37 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 		segThinking.Reset()
 	}
 	err = ledger.Replay(func(ev session.Event) error {
+		if session.ForkDropped(drops, ev.Seq()) {
+			return nil // 被重跑丢弃的区间：不投影、不占轮次
+		}
 		evSeq++
 		switch ev.Kind() {
+		case session.EventUserEdit:
+			// 用户手动写入（代码块「应用到文件」，第 6 批）：投影为工具卡——
+			// 重启/切回会话后这张卡仍在（此前只活在内存里，重启即消失）。
+			flushSegment()
+			var p struct {
+				Path  string `json:"path"`
+				IsNew bool   `json:"is_new"`
+				Bytes int    `json:"bytes"`
+				Diff  string `json:"diff"`
+				Note  string `json:"note"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			op := "edit"
+			if p.IsNew {
+				op = "write"
+			}
+			out = append(out, ChatMessage{
+				Role: "tool", ToolName: "fs", Status: "success",
+				Content:  fmt.Sprintf("written %s (%d bytes)", p.Path, p.Bytes),
+				Title:    p.Path,
+				Op:       op,
+				Diff:     p.Diff,
+				UndoNote: p.Note,
+			})
 		case session.EventUserMessage:
 			var p struct {
 				Text        string                   `json:"text"`
@@ -640,6 +698,7 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 				}
 				msg.Attachments = append(msg.Attachments, ca)
 			}
+			msg.Seq = ev.Seq() // 第 6 批：「从这条消息重跑」的分叉锚点
 			out = append(out, msg)
 			lastUserSeq = evSeq
 		case session.EventAssistantDelta:

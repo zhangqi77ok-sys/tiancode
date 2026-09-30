@@ -18,6 +18,7 @@ import (
 	"tiancode/internal/app"
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/applog"
+	"tiancode/internal/platform/gittool"
 )
 
 // Bind 是暴露给前端（Wails Bind）的入口对象。
@@ -57,18 +58,6 @@ func New(chat *app.ChatService) *Bind {
 			"sessionID": e.SessionID,
 			"question":  e.Question,
 			"options":   e.Options,
-		})
-	})
-	// 文件变更确认桥（0.0.10）：write/replace 落盘前推确认卡，答复经 ResolveEdit 回流
-	chat.SetEditHandler(func(e app.EditEvent) {
-		wruntime.EventsEmit(b.appCtx(), "chat:edit", map[string]any{
-			"id":           e.ID,
-			"sessionID":    e.SessionID,
-			"sessionTitle": e.SessionTitle,
-			"callId":       e.CallID,
-			"path":         e.Path,
-			"diff":         e.Diff,
-			"isNew":        e.IsNew,
 		})
 	})
 	return b
@@ -134,31 +123,50 @@ func (b *Bind) OpenLogDir() error {
 	return exec.Command("explorer", dir).Start()
 }
 
+// CurrentBranch 返回这场对话工作区当前的 git 分支（0.0.11：顶栏显示）。
+// 已落账会话取**该会话自己的**工作区（SessionWorkspace），草稿（sessionID 为空）
+// 取"下一场新对话"的根（= 顶栏 ws.path）。
+// 没有工作区 / 不是 git 仓库 / 命令失败一律返回空串——界面据此不显示，
+// 绝不编造分支名，也不把"不是仓库"当错误弹给用户。
+func (b *Bind) CurrentBranch(sessionID string) (string, error) {
+	root := b.chat.Workspace()
+	if sessionID != "" {
+		root = b.chat.SessionWorkspace(sessionID)
+	}
+	return gittool.CurrentBranch(root), nil
+}
+
 // RevealInExplorer 打开 path 所在目录的资源管理器并选中它（0.0.06：工具卡
-// "在资源管理器中显示"）。path 相对当前工作区根解析（工具卡 Title 即工作区
-// 相对路径）；绝对路径原样接受但必须存在。目录不存在/越界一律显式报错。
-func (b *Bind) RevealInExplorer(path string) error {
-	clean := strings.TrimSpace(path)
-	if clean == "" {
-		return errors.New("路径为空")
-	}
-	if !filepath.IsAbs(clean) {
-		root := b.chat.Workspace()
-		if root == "" {
-			return errors.New("当前没有工作区，无法定位文件位置")
-		}
-		clean = filepath.Join(root, clean)
-	}
-	info, err := os.Stat(clean)
+// "在资源管理器中显示"）。
+// 0.0.11：相对路径按**这场对话**的工作区解析（此前用"下一场新对话"的默认根，
+// 切换工作区后旧会话的"显示"会指到别的目录）。无工作区 / 越界 / 不存在显式报错。
+func (b *Bind) RevealInExplorer(sessionID, path string) error {
+	abs, isDir, err := b.chat.ResolveSessionPath(sessionID, path)
 	if err != nil {
-		return fmt.Errorf("文件不存在：%s", clean)
+		return err
 	}
-	if info.IsDir() {
+	if isDir {
 		// 目录：直接打开目录本身
-		return exec.Command("explorer", clean).Start()
+		return exec.Command("explorer", abs).Start()
 	}
 	// 文件：/select 打开所在目录并选中（explorer /select 需反斜杠路径）
-	return exec.Command("explorer", "/select,", clean).Start()
+	return exec.Command("explorer", "/select,", abs).Start()
+}
+
+// OpenInDefaultApp 用系统默认关联程序打开文件（0.0.11）：路径解析与 Reveal 同源
+// （这场对话的工作区，越界/不存在显式报错）；目录按 Reveal 同语义直接打开目录本身。
+// Windows 走 `cmd /c start "" <path>`——关联程序交给 Shell 决定，不硬编码任何编辑器。
+func (b *Bind) OpenInDefaultApp(sessionID, path string) error {
+	abs, isDir, err := b.chat.ResolveSessionPath(sessionID, path)
+	if err != nil {
+		return err
+	}
+	if isDir {
+		return exec.Command("explorer", abs).Start()
+	}
+	cmd := exec.Command("cmd", "/c", "start", "", abs)
+	hideConsole(cmd) // 不留一闪而过的黑窗
+	return cmd.Start()
 }
 
 // SetApprovalPolicy 设置需要审批的工具清单；传空数组即关闭审批（ADR-0007 默认关）。
@@ -170,15 +178,10 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 	return b.chat.ResolveApproval(id, approved, reason)
 }
 
-// ResolveEdit 提交用户对某次文件变更的答复（0.0.10：应用/跳过）。
-// 未确认前文件不会落盘；应用失败（外部改动）错误显式返回。
-func (b *Bind) ResolveEdit(sessionID, editID string, apply bool) error {
-	return b.chat.ResolveEdit(sessionID, editID, apply)
-}
-
-// ProposeFileWrite 把「应用到文件」的代码块内容变成待确认变更（0.0.10）。
-// 同一条确认链路：先看 diff，确认才落盘，取消不写。
-func (b *Bind) ProposeFileWrite(sessionID, path, content string) error {
+// ProposeFileWrite 把「应用到文件」的代码块内容直接写入工作区（改了就是改了）。
+// 写入回执（路径 + diff + 新建/覆盖）同步返回，前端据它出结果卡片；
+// 写入失败（无工作区 / 越界 / 外部改动）错误显式上抛。
+func (b *Bind) ProposeFileWrite(sessionID, path, content string) (app.ProposeWriteResult, error) {
 	return b.chat.ProposeFileWrite(sessionID, path, content)
 }
 
@@ -215,6 +218,18 @@ func (b *Bind) ResolveAsk(id string, answer string) error {
 // 恢复前比对写入后内容哈希——文件被人改过时拒绝并说明；成功返回可显示的说明文案。
 func (b *Bind) RestoreToolWrite(sessionID, callID string) (string, error) {
 	return b.chat.RestoreToolWrite(sessionID, callID)
+}
+
+// RevertRound 撤回最近一个（未被撤回的）轮次（第 6 批）：按轮次检查点恢复该轮
+// 改过的文件。撤不回的文件（超限 / 本轮之后被改过）在结果里明确列出，绝不静默。
+func (b *Bind) RevertRound(sessionID string) (app.RevertResult, error) {
+	return b.chat.RevertRound(sessionID)
+}
+
+// RerunFrom 从指定的用户消息重跑（第 6 批）：撤回其后的文件改动 + 账本分叉
+// （丢弃 [userSeq, fork] 的旧历史，旧行不改写），返回原文供前端重新发送。
+func (b *Bind) RerunFrom(sessionID string, userSeq int64) (app.RerunResult, error) {
+	return b.chat.RerunFrom(sessionID, userSeq)
 }
 
 // SearchWorkspaceFiles 为输入框的 @ 引用列出工作区文件（0.0.09）：把路径直接
@@ -409,6 +424,18 @@ func (b *Bind) Send(sessionID, text string) error {
 			wruntime.EventsEmit(ctx, "chat:todo", map[string]any{
 				"sessionID": sessionID,
 				"items":     items,
+			})
+		}
+		if c.Context != nil {
+			// 上下文治理读数（第 2 批）：油表显示预算/估算；折叠绝不静默
+			wruntime.EventsEmit(ctx, "chat:context", map[string]any{
+				"sessionID":       sessionID,
+				"estimatedTokens": c.Context.EstimatedTokens,
+				"budgetTokens":    c.Context.BudgetTokens,
+				"foldedImages":    c.Context.FoldedImages,
+				"foldedTools":     c.Context.FoldedTools,
+				"foldedReads":     c.Context.FoldedReads,
+				"dropped":         c.Context.Dropped,
 			})
 		}
 		if c.EndReason != llm.EndNone {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
+import { useEscClose } from '../composables/useEsc'
 import { useToast } from '../composables/useToast'
 import { THEME_LABEL, currentTheme, cycleTheme, type ThemeMode } from '../composables/useTheme'
 import { workspaceLabel } from '../composables/workspaceLabel'
@@ -31,6 +32,20 @@ const wsLabel = computed(() =>
   workspaceLabel({ isDraft: isDraft.value, sessionWorkspace: sessionWs.value, draftWorkspace: ws.path }),
 )
 
+// 当前分支（0.0.11）：已落账会话取**该会话的**工作区，草稿取"下一场新对话"的根。
+// 没有工作区 / 不是 git 仓库 / 命令失败 → 空串（不渲染，绝不编造分支名）；
+// 顶栏也不因此报错——「看分支」失败不该弹与用户操作无关的错误框。
+const branch = ref('')
+async function loadBranch() {
+  try {
+    branch.value = (await bridge().app.CurrentBranch(store.sessionId)) || ''
+  } catch {
+    branch.value = ''
+  }
+}
+// 切会话（归属换了）或换工作区（草稿的根换了）都要重取
+watch([() => store.sessionId, () => ws.path], () => void loadBranch(), { immediate: true })
+
 // 状态灯文案：后台运行 / 待答复都要与"空闲"区分（切走后顶栏不能装作没事）。
 // 0.0.06：带上会话标题——多个会话并行时"后台运行中"说不清是谁在跑。
 const busyTitle = computed(() => (store.busyTarget ? store.titleOf(store.busyTarget) || '未命名会话' : ''))
@@ -40,12 +55,19 @@ const statusText = computed(() => {
   return store.running ? '运行中' : `后台运行中 · ${busyTitle.value}`
 })
 
-// 油表（0.0.09）：本轮 prompt token（上游 usage 的直接读数）。没有上下文长度
-// 配置时只显示绝对数字——不编百分比。
+// 油表（0.0.09；第 2 批扩展）：prompt token 来自上游 usage 的直接读数；
+// 渠道声明了上下文上限（contextLimit）时同时显示剩余比例；本轮发生过折叠时
+// 显式标注（折叠绝不静默）。没有上限时不编造百分比（沿用 0.0.09 纪律）。
 const usageText = computed(() => {
   const n = store.promptTokens
   if (!n) return ''
-  return n >= 10000 ? `上下文 ≈${(n / 1000).toFixed(1)}k tok` : `上下文 ${n} tok`
+  const base = n >= 10000 ? `上下文 ≈${(n / 1000).toFixed(1)}k tok` : `上下文 ${n} tok`
+  const ctx = store.contextInfo
+  if (!ctx || ctx.budgetTokens <= 0) return base
+  const left = Math.max(0, ctx.budgetTokens - n)
+  const pct = Math.round((left / ctx.budgetTokens) * 100)
+  const fold = ctx.dropped ? ' · 已达上限' : ctx.folded > 0 ? ` · 已折叠 ${ctx.folded} 项` : ''
+  return `${base} / 上限 ${(ctx.budgetTokens / 1000).toFixed(0)}k（余 ${pct}%）${fold}`
 })
 
 // 状态灯点击：跳到等待处理的会话（优先"待确认"，其次其他运行中会话）
@@ -106,6 +128,15 @@ async function exitWorkspace() {
 // 生成中同样可用：导出走账本投影，已落账的部分不丢；运行中只导出"到目前为止"。
 const exportMenuOpen = ref(false)
 const exportMenuRef = ref<HTMLElement | null>(null)
+
+// Esc 关闭工作区/导出菜单（第 3 批）：经消费栈注册（原先只有点外部关闭）
+useEscClose(
+  computed(() => wsMenuOpen.value || exportMenuOpen.value),
+  () => {
+    wsMenuOpen.value = false
+    exportMenuOpen.value = false
+  },
+)
 
 async function currentMarkdown(): Promise<string | null> {
   if (!store.sessionId) return null
@@ -295,6 +326,8 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+      <!-- 当前分支（0.0.11）：只读展示；取不到就不显示（不是仓库时这里留空） -->
+      <span v-if="branch" class="stat" :title="`当前 Git 分支：${branch}`">分支 {{ branch }}</span>
       <button
         class="chip"
         :class="approvalOn ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"
