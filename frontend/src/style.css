@@ -18,6 +18,7 @@
   --c-surface: #ffffff; /* 卡片 */
   --c-surface-soft: #fafaff; /* 次级卡片/输入底 */
   --c-bubble: #f4f3fc; /* 助手气泡底：与白卡区分，重建对话层级 */
+  --c-code-bg: #eeedf7; /* 代码块底：略深于气泡（阶段 1）——代码与正文分层 */
   --c-border: #e9eaf2; /* 卡片描边 */
 
   /* 文字（对 #ffffff 实测：dim 5.13 / faint 4.85） */
@@ -65,6 +66,7 @@
   --c-surface: #1d1e2c;
   --c-surface-soft: #232433;
   --c-bubble: #20212f;
+  --c-code-bg: #1a1b28; /* 略深于气泡：深浅两色下代码块都要看得清 */
   --c-border: #34354b;
 
   --c-text: #e8e8f2;
@@ -97,6 +99,7 @@
     --c-surface: #1d1e2c;
     --c-surface-soft: #232433;
     --c-bubble: #20212f;
+    --c-code-bg: #1a1b28; /* 略深于气泡：深浅两色下代码块都要看得清 */
     --c-border: #34354b;
 
     --c-text: #e8e8f2;
@@ -379,6 +382,11 @@ select {
 }
 
 /* Markdown 正文：唯一一套排版规则（合并原 .md 与 .prose-md 双份真相） */
+/* 正文字号（阶段 1）：正文 0.9rem 与代码 0.84rem 分开——此前两者只差 0.055rem，
+   长回答里"哪些是解释、哪些是代码"要靠边框去认。 */
+.markdown-body {
+  font-size: 0.9rem;
+}
 .markdown-body > :first-child {
   margin-top: 0;
 }
@@ -395,14 +403,15 @@ select {
   font-weight: 600;
   line-height: 1.35;
 }
+/* 标题三档（阶段 1）：此前 h1 只有 1.05rem，长回答几乎看不出层次 */
 .markdown-body h1 {
-  font-size: 1.05rem;
+  font-size: 1.25rem;
 }
 .markdown-body h2 {
-  font-size: 1rem;
+  font-size: 1.12rem;
 }
 .markdown-body h3 {
-  font-size: 0.95rem;
+  font-size: 1.05rem;
 }
 .markdown-body ul,
 .markdown-body ol {
@@ -430,10 +439,11 @@ select {
   margin: 0.6rem 0;
   padding: 0.7rem 0.85rem;
   overflow-x: auto;
-  background: var(--c-surface-soft);
+  background: var(--c-code-bg); /* 略深于气泡：代码块与正文分层（阶段 1） */
   border: 1px solid var(--c-border);
   border-radius: 12px;
-  font-size: 0.82rem;
+  /* 正文与代码字号分开：正文 0.9rem（见下），代码 0.84rem */
+  font-size: 0.84rem;
   line-height: 1.55;
 }
 .markdown-body pre code {
@@ -469,7 +479,7 @@ select {
   border: 1px solid var(--c-border);
   border-radius: 12px;
   overflow: hidden;
-  background: var(--c-surface-soft);
+  background: var(--c-code-bg);
 }
 .markdown-body .code-block .code-head {
   display: flex;
@@ -502,7 +512,9 @@ select {
   border: 0;
   border-radius: 0;
 }
-/* hljs 主题（github.css）自带底色/内边距，交由 .code-block 统一，避免双层背景 */
+/* hljs 主题自带底色/内边距，交由 .code-block 统一，避免双层背景。
+   主题文件（github / github-dark）由 composables/hljsTheme.ts 按当前主题动态挂载；
+   这里的选择器更具体，所以无论动态样式插在哪都压得住它的 .hljs 底色。 */
 .markdown-body pre code.hljs {
   background: transparent;
   padding: 0;

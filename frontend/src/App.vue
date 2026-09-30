@@ -249,10 +249,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen flex-col gap-4 p-4 md:p-5">
+  <!-- 贴边布局（阶段 1）：整页不再留 p-4 / gap-4 与浮卡——侧栏、对话、文件区各占一列，
+       之间只有 1px 分隔线；圆角与阴影留给输入框、菜单、toast、模态。 -->
+  <div class="flex h-screen flex-col">
     <AppHeader />
 
-    <div class="flex min-h-0 flex-1 gap-4">
+    <div class="flex min-h-0 flex-1">
       <SessionList
         :collapsed="sidebarCollapsed"
         @toggle-collapsed="toggleSidebar"
@@ -263,7 +265,7 @@ onBeforeUnmount(() => {
         @open-workspace-settings="wsSettingsOpen = true"
       />
 
-      <main class="card relative flex min-w-0 flex-1">
+      <main class="relative flex min-w-0 flex-1 bg-[var(--c-surface)]">
         <!-- 左列：消息流 + 本轮变更 + 输入（与右侧文件详情并存，互不遮挡） -->
         <div class="flex min-w-0 flex-1 flex-col">
           <MessageList @suggest="draft = $event" @rerun="startRerun" />

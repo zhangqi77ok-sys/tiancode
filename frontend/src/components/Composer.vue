@@ -573,17 +573,22 @@ function editQueued(id: number) {
   <div data-composer class="border-t border-[var(--c-border)] p-4">
     <!-- 模型选择器（0.2.28）：列出全部可用渠道的模型，点击切换；当前项标记"当前" -->
     <div ref="modelMenuRef" class="relative mb-2">
-      <!-- 模型选择器行（0.0.06）：模型名不再是 11px 浅色次要字——正文级可读 -->
+      <!-- 模型选择器（阶段 1）：从 11px 浅色次要字提升为看得清的控件（描边 + 正文色 + 13px），
+           当前模型名始终可见；位置仍在输入框上方。样式用工具类写——style.css 的 .chip
+           在 CSS 层之外，工具类覆盖不了它的字号与颜色。 -->
       <button
-        class="flex items-center gap-1.5 px-1 text-xs text-[var(--c-text-dim)] transition-colors hover:text-[var(--c-text)]"
+        class="inline-flex max-w-full items-center gap-2 rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface)] px-3 py-1.5 text-[13px] text-[var(--c-text)] transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"
         aria-haspopup="menu"
         :aria-expanded="modelMenuOpen"
         :title="modelOptions.length ? '点击切换模型（来自已配置的渠道）' : '尚未配置模型：请在侧栏底部打开「渠道管理」'"
         @click="modelMenuOpen = !modelMenuOpen"
       >
-        {{ channels.activeModel ? `模型 ${channels.activeModel}` : '未选择模型' }}
-        <template v-if="channels.activeChannel"> · {{ channels.activeChannel.name }}</template>
-        <AppIcon name="chevron-down" :size="11" />
+        <AppIcon name="message" :size="13" class="shrink-0 text-[var(--c-text-dim)]" />
+        <span class="min-w-0 truncate font-medium">{{ channels.activeModel || '未选择模型' }}</span>
+        <span v-if="channels.activeChannel" class="shrink-0 text-[var(--c-text-dim)]">
+          · {{ channels.activeChannel.name }}
+        </span>
+        <AppIcon name="chevron-down" :size="11" class="shrink-0 text-[var(--c-text-dim)]" />
       </button>
       <div
         v-if="modelMenuOpen"

@@ -165,8 +165,8 @@ function select(id: string) {
 <template>
   <aside
     aria-label="会话列表"
-    class="card flex shrink-0 flex-col p-3"
-    :class="props.collapsed ? 'w-14' : 'w-60'"
+    class="flex shrink-0 flex-col border-r border-[var(--c-border)] bg-[var(--c-surface)] p-3"
+    :class="props.collapsed ? 'w-14' : 'w-64'"
   >
     <!-- 窄轨（第 8 批）：只剩图标——展开 / 新建 / 设置入口；搜索与会话列表整体隐藏 -->
     <template v-if="props.collapsed">

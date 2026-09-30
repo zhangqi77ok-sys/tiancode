@@ -5,6 +5,7 @@ import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages } from '../composables/messageGrouping'
+import { shortDir } from '../composables/workspaceLabel'
 import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import AskCard from './AskCard.vue'
@@ -108,23 +109,31 @@ const items = computed(() => groupMessages(store.messages))
       <p class="text-sm text-[var(--c-text-dim)]">正在载入历史…</p>
     </div>
 
-    <!-- 空状态 + 建议 chips -->
-    <div v-else-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4">
-      <p class="text-sm text-[var(--c-text-dim)]">
-        {{
-          ws.path
-            ? `当前模型 ${channels.activeModel || '未配置'} · 发一条消息开始，或试试：`
-            : `未选择工作区 · 纯对话（文件与命令不可用）· 当前模型 ${channels.activeModel || '未配置'}`
-        }}
-      </p>
+    <!-- 空态（阶段 1）：不再是"一行灰字 + 三颗芯片"——当前模型、有没有工作区、
+         三条建议分三块摆清楚；无工作区时主按钮仍是「选择工作区」 -->
+    <div v-else-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4 px-6">
+      <div class="w-full max-w-md rounded-[var(--r-card)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-3 text-center">
+        <p class="text-[13px] text-[var(--c-text)]">
+          模型
+          <span class="font-medium">{{ channels.activeModel || '未选择' }}</span>
+          <span v-if="channels.activeChannel" class="text-[var(--c-text-dim)]"> · {{ channels.activeChannel.name }}</span>
+        </p>
+        <p
+          class="mt-1 text-xs"
+          :class="ws.path ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
+          :title="ws.path"
+        >
+          {{ ws.path ? `工作区 ${shortDir(ws.path)}` : '未选择工作区 · 纯对话（文件与命令工具不可用）' }}
+        </p>
+        <button v-if="!ws.path" class="btn-primary mt-3 gap-1.5 px-4 py-2 text-sm" @click="pickWorkspace">
+          <AppIcon name="folder" :size="13" /> 选择工作区
+        </button>
+      </div>
       <div class="flex flex-wrap justify-center gap-2">
         <button v-for="s in suggestions" :key="s" class="chip" @click="emit('suggest', s)">
           {{ s }}
         </button>
       </div>
-      <button v-if="!ws.path" class="chip gap-1.5 border-[var(--c-primary)] text-[var(--c-primary)]" @click="pickWorkspace">
-        <AppIcon name="folder" :size="13" /> 选择工作区（解锁文件与命令工具）
-      </button>
     </div>
 
     <template v-for="item in items" :key="item.key">
