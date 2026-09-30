@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -581,6 +582,13 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 		options  []string
 	}
 	askCalls := map[string]pendingAsk{}
+	// 任务清单生命周期（0.0.06 实测反馈"任务清单一直显示旧的"）：todo 卡只在
+	// 它仍是"当前任务"时投影——之后如果出现了新的用户消息（= 新任务开始），
+	// 旧清单从重放投影中移除。否则重启/切回会话时，上一任务半程中断的清单会
+	// 在悬浮件复活（"全部完成退场"的前端规则只兜得住全 done 的快照）。
+	evSeq := 0
+	lastUserSeq := -1
+	todoSeq := map[int]int{} // out 索引 -> 该卡最新快照的事件序号
 	flushSegment := func() {
 		if strings.TrimSpace(segText.String()) != "" || segThinking.String() != "" {
 			out = append(out, ChatMessage{Role: "assistant", Content: segText.String(), Thinking: segThinking.String()})
@@ -589,6 +597,7 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 		segThinking.Reset()
 	}
 	err = ledger.Replay(func(ev session.Event) error {
+		evSeq++
 		switch ev.Kind() {
 		case session.EventUserMessage:
 			var p struct {
@@ -611,6 +620,7 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 				msg.Attachments = append(msg.Attachments, ca)
 			}
 			out = append(out, msg)
+			lastUserSeq = evSeq
 		case session.EventAssistantDelta:
 			var p struct {
 				Text     string `json:"text"`
@@ -707,12 +717,14 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 			for i := range out {
 				if out[i].Role == "todo" {
 					out[i].Content = string(b)
+					todoSeq[i] = evSeq
 					replaced = true
 					break
 				}
 			}
 			if !replaced {
 				out = append(out, ChatMessage{Role: "todo", Content: string(b)})
+				todoSeq[len(out)-1] = evSeq
 			}
 		case session.EventAssistantMsg:
 			var p struct {
@@ -727,6 +739,19 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 		}
 		return nil
 	})
+	// 生命周期收尾：todo 之后出现过新的用户消息 → 该清单已不属于当前任务，移除
+	if lastUserSeq >= 0 {
+		var dead []int
+		for idx, seq := range todoSeq {
+			if seq < lastUserSeq {
+				dead = append(dead, idx)
+			}
+		}
+		sort.Ints(dead)
+		for i := len(dead) - 1; i >= 0; i-- {
+			out = append(out[:dead[i]], out[dead[i]+1:]...)
+		}
+	}
 	return out, err
 }
 
