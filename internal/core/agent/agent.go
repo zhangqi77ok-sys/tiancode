@@ -81,11 +81,10 @@ type Loop struct {
 	// prefaceSkips 统计"preface 与上一手相同而跳过替换"的次数（第 5 批；
 	// 测试观测点——跳过即保持 system 前缀逐字节不变，prompt cache 不失效）。
 	prefaceSkips int
-	// WIP(todoTrack)：清单过期提醒未完成（todoTrack 类型未定义），暂注释待补全后恢复：
-	// todo 是本轮任务清单的进度（不进账本）。模型经常只提交一次快照，
-	// 随后干活却不再回写，界面就停在「全部未完成」。这里记下上次快照，
-	// 快照过期时在下一步提醒它重交——提醒只存在于本轮内存消息里。
-	// todo todoTrack
+	// todo 是本轮任务清单的进度跟踪（不进账本）：模型经常只提交一次快照、随后干活
+	// 却不再回写，界面就停在「全部未完成」。快照过期时在下一步提醒它重交——
+	// 提醒只存在于本轮内存消息里（阶段 4-1，见 todo_track.go）。
+	todo todoTrack
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -690,12 +689,18 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 			i = j
 		}
-		// WIP(todoTrack)：清单过期提醒调用（待类型补全后恢复）
-		// // 本步干过活且清单还是旧快照：下一步先让模型重交，再写最终答复。
-		// // 同样不进账本（理由见收尾处的提醒）。
-		// if msg, ok := l.todo.consumeRefresh(false); ok {
-		// 	msgs = append(msgs, llm.Message{Role: "user", Content: msg})
-		// }
+		// 清单过期提醒（阶段 4-1，只存在于本轮内存）：本步干过活（除 todo 以外的调用）
+		// 而清单还是旧快照 → 下一步请求前附一句提醒，让模型先重交清单再写最终答复。
+		// 不写账本：它不是用户原话、也不是本轮的事实。
+		for _, c := range calls {
+			if c.Name != todoToolName {
+				l.todo.markWork()
+				break
+			}
+		}
+		if msg := l.todo.consumeRefresh(); msg != "" {
+			msgs = append(msgs, llm.Message{Role: "user", Content: msg})
+		}
 		sb.Reset() // 新一步的文本从零累计；只有最终无工具调用步的文本进入锚点
 
 		// 步数分段（第 3 批）：一段用尽先发一条可取消的询问（复用 ask_user 通道），
@@ -771,7 +776,7 @@ func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *sess
 		return l.runAsk(ctx, call)
 	}
 	if call.Name == todoToolName {
-		return runTodo(call, ledger, forward)
+		return l.runTodo(call, ledger, forward)
 	}
 	if l.registry != nil {
 		if t, ok := l.registry.Get(call.Name); ok {

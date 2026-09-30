@@ -77,9 +77,10 @@ func todoItems(raw string) ([]llm.TodoItem, error) {
 	return a.Items, nil
 }
 
-// runTodo 处理 todo 调用：校验 → 落账 EventTodo → 实时推 TodoEvent →
+// runTodo 处理 todo 调用：校验 → 落账 EventTodo → 实时推 TodoEvent → 记下快照 →
 // 返回给模型的确认结果（带进度计数）。所有失败都以 IsError 结果回模型，不中断轮次。
-func runTodo(call llm.ToolCall, ledger *session.Ledger, forward func(llm.StreamChunk) bool) tools.ToolResult {
+// 挂在 Loop 上是为了记快照（阶段 4-1 的过期提醒判据）——todo 仍由 Loop 按名拦截。
+func (l *Loop) runTodo(call llm.ToolCall, ledger *session.Ledger, forward func(llm.StreamChunk) bool) tools.ToolResult {
 	const title, op = "任务清单", "todo"
 	items, err := todoItems(call.Arguments)
 	if err != nil {
@@ -88,6 +89,7 @@ func runTodo(call llm.ToolCall, ledger *session.Ledger, forward func(llm.StreamC
 	if _, err := ledger.Append(session.EventTodo, map[string]any{"items": items}); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("persist todo: %v", err), IsError: true, Title: title, Op: op}
 	}
+	l.todo.observe(items) // 进度已回写：清掉"该催重交"的状态
 	forward(llm.StreamChunk{Todo: &llm.TodoEvent{Items: items}})
 	done := 0
 	for _, it := range items {
