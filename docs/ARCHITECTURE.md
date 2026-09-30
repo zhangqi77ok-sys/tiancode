@@ -69,7 +69,7 @@ tiancode/
 | `fs` | `platform/fstool` | read / write / replace / list（非递归、有界） | C-FS-1~7 |
 | `shell` | `platform/shelltool` | 命令执行（超时/部分输出/后台有界） | C-TOOL-1~5 |
 | `git` | `platform/gittool` | 只读 status / diff / log | — |
-| `search` | `platform/searchtool` | 工作区内容搜索（有界、跳过内置忽略目录） | C-SEARCH-1~6 |
+| `search` | `platform/searchtool` | 工作区搜索：内容（每命中 ±2 行上下文）/ 按路径找文件（`files_only`）；有界、跳过内置忽略目录 | C-SEARCH-1~8 |
 
 ## 对话主线数据流（M2 完成后；M6 加粗跨轮回放）
 

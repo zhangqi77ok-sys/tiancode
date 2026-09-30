@@ -67,6 +67,8 @@
 | C-SEARCH-4 | 跳过二进制与内置忽略目录；显式 `path=vendor` 仍搜该根 | `TestSearch_SkipsIgnoredAndBinary` |
 | C-SEARCH-5 | 零匹配成功，`Content` 含 `no matches` | `TestSearch_NoMatchIsSuccess` |
 | C-SEARCH-6 | 超时预算内返回；有部分命中则带已捕获输出 | `TestSearch_TimeoutPartial` |
+| C-SEARCH-7 | 每条命中带前后各 2 行上下文（命中行 `path:line:text`、上下文行 `path-line-text`）；相邻命中并块不重复；上下文计入 64KiB 预算，超限在**块边界**少给（不给半截块） | `TestSearch_ContextLines` / `TestSearch_ContextMerged` / `TestSearch_ContextCountsTowardByteBudget` |
+| C-SEARCH-8 | `files_only=true` 只按工作区相对路径匹配、只返回路径（不读内容、不带行号、不受 1MiB 内容闸门约束）；忽略目录 / 越界检查 / 配额与内容搜索同一套 | `TestSearch_FilesOnlyByPath` / `TestSearch_FilesOnlyMaxMatches` |
 
 ## C-APP：编排纪律（M2 起持续生效）
 
@@ -121,6 +123,14 @@
 | C-APP-6 | 审批/问答事件**必须携带 sessionID**（随轮注入 uiApprover/uiAsker）：后台会话的审批卡/问答卡归位到发起它的会话，绝不插进当前视图 | `chat.test.ts: 审批卡按 sessionID 归位到后台会话` |
 | C-UI-5 | 前端运行态**按会话隔离**：流式/工具/todo/终态事件按 sessionID 路由进各自缓冲（后台会话不再被丢弃）；切回有缓冲的会话**不重放覆盖**；运行中允许切换/新建会话；删除运行中的会话必须显式拒绝且错误可见；队列续发仍发给原会话 | `chat.test.ts: 后台会话的增量落在它自己的缓冲里…/后台会话的终态不丢也不串…/删除运行中的会话被拒绝且错误可见/后台会话的队列续发仍发给它自己/切换回已有缓冲的会话不重放覆盖` |
 | C-UI-6 | 会话 ID **进程内唯一**（含毫秒与计数器）：ID 即账本文件名，同秒重复会让两个会话串写同一份账本 | `chat.test.ts: 后台会话的增量落在它自己的缓冲里…`（两会话不同 ID 才能通过） |
+
+### 交互输入与强制工具（0.0.12）
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-UI-7 | 出错不再"重发原文"：助手气泡**没有**「重试上一问」；用户气泡「重跑」只把原文与附件回填输入框（可改），确认后才 `RerunFrom` 并发送**输入框里的文字**（取消则什么都不撤回）；用户气泡「复制」复制该消息正文 | `MessageBubble.test.ts`（重跑只回填不发消息 / 无重试按钮 / 复制）；`Composer.test.ts`（确认后发送改过的文字 / 取消不撤回不发送） |
+| C-UI-8 | 工具卡「复制输出」复制当前展示全文（有 diff 给 diff）；对话区选中文字可「放进输入框」（追加，不替换草稿、不自动发送） | `ToolCard.test.ts`（命令卡/写卡复制输出）；`appendSelection.test.ts` |
+| C-APP-7 | 强制工具：只允许 `skill` / `mcp`（白名单），本轮**模型开口前**先调用一次，结果按普通工具调用/结果落账本并进上下文；失败**停轮**（零后续模型请求）；未指定时行为与旧版一致 | `forcedtool_test.go`（ForcedSkillCalledFirst / ForcedMCPCalledFirst / ForcedToolFailureStopsTurn / NoForcedToolUnchanged / ForcedToolWhitelist）；`Composer.test.ts`（/ 选技能、/ 选 MCP） |
 
 ### C-EXT：扩展自管理（0.2.26）
 
@@ -198,4 +208,6 @@
 | 2026-09-28 | **新增 C-APP-5 / C-APP-6 / C-UI-5 / C-UI-6** | 多会话并行对话（用户反馈："一个会话在运行就其他的没法操作"）：后端 agent 改为每轮独立构建（原 `agent.Loop.phase` 是全应用单轮互斥锁）；审批/问答事件带 sessionID 归位；前端运行态按会话隔离（事件路由、切换不重放、删除运行中会话显式拒绝、队列续发归属原会话）。顺带修一个测试抓到的真 bug：会话 ID 精确到秒，同一秒新建的两个会话共用一个账本文件 | 用户需求 + `TestChatService_ConcurrentSessionsRunInParallel`（上游等两路到齐，串行必超时） |
 | 2026-09-28 | **新增 C-EXT-1 ~ C-EXT-4** | 新工具 `ext_manage`：用户让 AI"添加 mcp、skill 数据"时，AI 自己完成配置（与设置面板同一条 catalog.Store 存储路径 + 保存后关闭旧 MCP 会话）；mcp_add 现场连接验证并带回工具清单，验证失败不回滚；重名/缺参报错可执行 | 用户需求 |
 | 2026-09-30 | **移除文件写入确认链路（原 0.0.10 EditGate）**；`fsTitle` 改工作区相对路径；新增右侧文件详情面板 | ① write/replace 不再需要"应用/跳过"（改了就是改了）：`chatEditGate`/`EditEvent`/`ResolveEdit`/`chat:edit` 事件与前端确认卡全链路删除；代码块「应用到文件」改直写并同步返回回执（`fstool.ProposeWrite` → `ProposeWriteResult`，不进账本故不提供撤销）；工具级审批（ADR-0007，默认关）不受影响。② 工具卡/审查带主标签由末段改为**相对路径**（`TestFSTitle_RelativePath`）：多目录同名文件（agent.go）可区分；审查带默认折叠 + 按文件聚合（"改 N 次" + 累计 ±），行点击开右侧详情。③ 点文件行/工具卡文件名 → 右侧 `FileDetailPanel`（逐次 diff + 恢复写入前 + 资源管理器）；Esc 改为**浮层优先消费**（`composables/useEsc.ts` 注册栈，`useEsc.test.ts`），关浮层不再顺手中断生成 | 用户反馈："修改代码不要有应用和全部应用的功能，改了就是改了"、"本轮变更列表默认折叠、显示具体文件名而不是统一叫 agent.go"、"修改的文件要有详情，点击后右侧弹出一区块" |
+| 2026-09-30 | **新增 C-UI-7 / C-UI-8 / C-APP-7**；输入框指定技能与 MCP | ① **不出错重发**：助手气泡删掉「重试上一问」（它只把上一问原文再发一遍，失败回合仍留在流里）——出错只保留「从这条用户消息重跑」；用户气泡加「复制」（剪贴板失败走 toast，不假装成功）。② **改字再重跑**：「重跑」只把原文与附件交回输入框（光标在文末、附件进待发送区），用户改完按发送时才确认分叉 → `RerunFrom`（撤回其后文件改动 + `EventFork` 分叉，旧行不改写）→ 发送**输入框里的文字**；取消确认则什么都不撤回（附件从当前前端消息上取，不动账本格式）。③ **工具卡复制输出**：复制当前展示的全文（有 diff 给 diff，否则原始输出；含搜索结果与命令输出），路径仍走 `OpenInDefaultApp` 且不定位到行。④ **选中文字放进输入框**：对话区（`data-conversation`）有非空选区时，输入框旁出现「放进输入框」，把选区**追加**到草稿末尾（已有内容空一行），不替换草稿、不自动发送。⑤ **队列按钮更正**：`promoteQueued` 的图标由 `send` 换成不表示发送的箭头，title/aria-label 统一为「提前：本轮结束后最先发出」（行为仍是置顶，不另开一轮）。⑥ **强制工具（`forced` 字段）**：`/` 菜单只列**已启用**的技能与 MCP 服务器；选中后程序在本轮**模型开口前**先调用现有 `skill`（参数 `name`）或 `mcp`（参数 `server`/`tool`/`arguments`）工具，结果按**普通工具调用/结果**落账本并进上下文（菜单里不留命令字样，模型改不了服务器名/工具名）；一条消息最多一个；MCP 工具名未知时用 `tool=list` 拉清单（不另写发现协议），参数用户填了就原样传入、没填则 `{}` 交工具自己报缺参；`ext_manage` 不进菜单（增删仍只在侧栏，审批不变）；强制调用失败**本轮停在这条工具错误上**（零后续模型请求，不假装用过）；白名单之外的名字一律拒绝（强制调用不得成为绕过模型与审批直接执行 fs/shell 的口子）；未指定时行为与旧版一致 | 用户反馈："出错不要再发一遍"、"改几个字再重跑，并能复制自己的话"、"工具卡输出能复制"、"选中文字放进输入框"、"队列里的发送图标不要再叫发送"、"在输入框里直接用技能和 MCP" |
+| 2026-09-30 | **新增 C-SEARCH-7 / C-SEARCH-8**；search 输出扩展 + 结果可点 | ① 每条命中带前后各 2 行上下文（`contextLines=2`）：命中行仍是 `path:line:text`、上下文行 `path-line-text`（rg 的 :/- 约定，一眼分辨哪行是命中），上下文计入 64KiB 预算、超限按块边界少给——此前只有命中那一行，模型定位后常要再 `read` 一次，每次定位多一轮往返。② `files_only=true` 按工作区相对路径匹配、只返回路径列表（不读内容、不受 1MiB 内容闸门约束）——此前"按名字找文件"只能靠 `glob`（内容搜索的过滤器）或 `tree` 逐层翻。③ 前端：搜索结果行与 `read` 卡片的路径可点，走既有 `OpenInDefaultApp`（**只打开文件**；行号不跳转，也不假装能跳）。**刻意未动**：read-后-才允许写、replace 多处匹配拒绝（防覆盖未读内容）、`tree` 深度、diff 的 `@@` 行号 | 用户反馈："搜索只有命中那一行，没有上下文"、"没有按文件名找"、"搜索结果点不了" |
 | 2026-09-30 | **新增回合检查点：撤回本轮 / 从这条用户消息重跑 / 账本合批 / 上下文治理 / 超时分层 / 步数分段 / 建流退避 / preface 幂等** | ① 账本合批刷盘：AssistantDelta 满 64KB 或 100ms 才 fsync，其余事件（用户消息/工具调用与结果/todo/助手锚点/终态）一律立即 fsync（先冲攒批）；新增 `Ledger.Flush`，agent 的 `emitTerminal` 兜底刷盘——**修掉取消路径丢 delta 的回归**（`TestAgent_CancelKeepsEvents` 抓到）；`Replay`/`Close` 前先刷（read-your-writes）。② 上下文治理：渠道 `contextLimit`（token，池取已启用渠道最小值），估算口径 4 ASCII 字符≈1 token、1 非 ASCII 字符≈1 token，图片 1500 token/张；达预算 85% 起分级折叠（旧图片→路径说明、两轮以前 shell/写回执→一行摘要、只读窗口收窄），用户原话不删、最近一轮全文保留，超限置 `dropped` 并经 `chat:context` 上报（油表显示剩余比例与折叠项）。③ 超时分层：`TimeoutBudget{FirstByte 3min, Total 30min}`，首字节独立看门狗；终态文案写明"本地预算用尽/等待首个数据超过 X"（绝不伪装上游错误）。④ 步数分段：25 步用尽**先询问**（可取消），同意续跑、拒绝/取消正常收尾（TurnEnd 落账）。⑤ 建流重试退避 200/500ms（换凭证走 gateway 既有 Select 轮询）。⑥ preface 与上一手相同不替换 system（prompt cache 幂等）。⑦ **回合检查点**：轮次内首次修改某文件前的快照（`tools.RoundCheckpoint`，fstool 收集，32MB 上限、超限记 Note）随轮次收尾落账本（`round_checkpoint`）；「撤回本轮」按检查点整批恢复（当前内容哈希不符则跳过，绝不覆盖用户改动），撤回动作落 `round_revert`；「从这条用户消息重跑」撤回其后文件改动 + 追加 `fork{from_seq}`（派生/投影丢弃 [from_seq, fork] 区间，**旧行永不改写**），目标消息本身也在丢弃范围内（重跑重新落一条同文本消息，避免模型看到两条重复输入）；`ProposeFileWrite`（代码块应用到文件）写入成功落 `user_edit` 账本事件——Replay 投影为工具卡（重启后仍在）、派生历史注入一句"用户已手动应用过"；用户消息投影携带 `seq` 作为重跑锚点 | 用户六块需求（性能与上下文治理批次）+ 上一条"应用到文件不进账本"缺口的收口 |

@@ -149,6 +149,133 @@ func TestSearch_SymlinkOutsideSkipped(t *testing.T) {
 	}
 }
 
+// 0.0.12：每条命中带前后各 2 行上下文；命中行 path:line:text、上下文行 path-line-text
+// （rg 的 :/- 约定——模型不必再 read 一次才能改那个函数）。
+func TestSearch_ContextLines(t *testing.T) {
+	tool := newWS(t)
+	write(t, tool.root, "a.txt", "one\ntwo\nthree\nNEEDLE\nfive\nsix\nseven\n")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "NEEDLE"}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	for _, want := range []string{"a.txt:4:NEEDLE", "a.txt-2-two", "a.txt-3-three", "a.txt-5-five", "a.txt-6-six"} {
+		if !strings.Contains(res.Content, want) {
+			t.Fatalf("缺少 %q：\n%s", want, res.Content)
+		}
+	}
+	// ±2 之外的行不得出现（否则就是把整个函数贴进来）
+	for _, bad := range []string{"-1-one", "-7-seven", ":1:", ":7:"} {
+		if strings.Contains(res.Content, bad) {
+			t.Fatalf("上下文超界（%q）：\n%s", bad, res.Content)
+		}
+	}
+}
+
+// 相邻命中的上下文窗口合并成一块：同一行只输出一次。
+func TestSearch_ContextMerged(t *testing.T) {
+	tool := newWS(t)
+	write(t, tool.root, "b.txt", "l1\nHIT-a\nl3\nHIT-b\nl5\n")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "HIT-"}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	lines := strings.Split(strings.TrimRight(res.Content, "\n"), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("合并后应恰好 5 行（不重复输出上下文）：%v", lines)
+	}
+	seen := map[string]int{}
+	for _, ln := range lines {
+		seen[ln]++
+		if seen[ln] > 1 {
+			t.Fatalf("重复输出 %q：\n%s", ln, res.Content)
+		}
+	}
+	if !strings.Contains(res.Content, "b.txt:2:HIT-a") || !strings.Contains(res.Content, "b.txt:4:HIT-b") {
+		t.Fatalf("两条命中都要标出（: 分隔）：\n%s", res.Content)
+	}
+}
+
+// 上下文计入 64KiB 预算：超了在块边界收手——要么给完整块，要么不给。
+func TestSearch_ContextCountsTowardByteBudget(t *testing.T) {
+	tool := newWS(t)
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		pad := strings.Repeat("c", 200)
+		b.WriteString(pad + "\n") // 命中前 2 行
+		b.WriteString(pad + "\n")
+		b.WriteString(fmt.Sprintf("NEEDLE-%03d%s\n", i, pad))
+		b.WriteString(pad + "\n") // 命中后 2 行
+		b.WriteString(pad + "\n")
+	}
+	write(t, tool.root, "big.txt", b.String())
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "NEEDLE", "max_matches": 200}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	if len(res.Content) > maxOutputBytes+4096 {
+		t.Fatalf("输出必须受 64KiB 预算约束：%d 字节", len(res.Content))
+	}
+	if !strings.Contains(res.Content, "64KiB") {
+		t.Fatalf("预算截断必须标注：\n%s", res.Content[len(res.Content)-200:])
+	}
+	// 不给半截块：每个被保留的命中块都应带齐 2 行前文（行首两块除外）与 2 行后文。
+	if !strings.Contains(res.Content, "big.txt-2-"+strings.Repeat("c", 200)) {
+		t.Fatalf("首个命中块的前文应完整保留")
+	}
+}
+
+// 0.0.12：files_only 只按路径找文件——不读内容、只给路径（找 handler.go 不必 tree 逐层翻）。
+func TestSearch_FilesOnlyByPath(t *testing.T) {
+	tool := newWS(t)
+	write(t, tool.root, "internal/app/handler.go", "package app")
+	write(t, tool.root, "internal/app/other.go", "package app // handler.go 只出现在内容里")
+	write(t, tool.root, "vendor/skip/handler.go", "package skip")
+	// 超过内容搜索的 1MiB 体积闸门：按名字找文件仍要能找到
+	write(t, tool.root, "lib/generated_handler.go", strings.Repeat("x", 2<<20))
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{
+		"pattern": `handler\.go$`, "files_only": true,
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "internal/app/handler.go") {
+		t.Fatalf("按名字应命中：\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "lib/generated_handler.go") {
+		t.Fatalf("大文件（不读内容）也该按名字找到：\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "other.go") {
+		t.Fatalf("名字不匹配的不得出现（files_only 不看内容）：\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "vendor") {
+		t.Fatalf("内置忽略目录仍要跳过：\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, ":1:") || strings.Contains(res.Content, "-1-") {
+		t.Fatalf("files_only 只给路径，不带行号：\n%s", res.Content)
+	}
+}
+
+// files_only 的配额同样有效：超了截断并标注。
+func TestSearch_FilesOnlyMaxMatches(t *testing.T) {
+	tool := newWS(t)
+	for i := 0; i < 10; i++ {
+		write(t, tool.root, filepath.Join("pkg", fmt.Sprintf("m%02d.go", i)), "package pkg")
+	}
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{
+		"pattern": `\.go$`, "files_only": true, "max_matches": 3,
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	got := strings.Count(res.Content, "pkg/m")
+	if got != 3 {
+		t.Fatalf("路径条数 = %d, want 3：\n%s", got, res.Content)
+	}
+	if !strings.Contains(res.Content, "truncated") {
+		t.Fatalf("超配额要标注截断：\n%s", res.Content)
+	}
+}
+
 func TestSearch_InvalidPattern(t *testing.T) {
 	tool := newWS(t)
 	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "["}))

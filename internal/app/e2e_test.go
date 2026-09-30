@@ -112,7 +112,7 @@ func TestE2E_AtReference_ReachesModelContext(t *testing.T) {
 	sid := "s-e2e-at"
 
 	// 第一轮：消息里带 @引用
-	ch, err := s.SendWithAttachments(context.Background(), sid, "请分析 @main.go 和 @docs/guide.md", nil)
+	ch, err := s.SendWithAttachments(context.Background(), sid, "请分析 @main.go 和 @docs/guide.md", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

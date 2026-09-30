@@ -69,9 +69,9 @@ func TestBind_AppCtxFallback(t *testing.T) {
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
 		"AddChannel", "ApprovalPolicy", "BindCodexOAuth", "ChannelPresets", "CheckProxy", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
-		"ExportSessionMarkdown", "GetExtensions", "GetProxy", "GetWorkspace", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
-		"ListSessions", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProposeFileWrite", "RenameSession", "Replay", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "SaveExtensions", "SaveTextFile", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
-		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "TestChannel", "UpdateChannel",
+		"ExportSessionMarkdown", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
+		"ListSessions", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProbeMcpServer", "ProposeFileWrite", "ReadSessionFile", "RenameSession", "Replay", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
+		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "TestChannel", "UpdateChannel", "WorkspaceSettings",
 	}
 	bindType := reflect.TypeOf(&Bind{})
 	got := make([]string, 0, bindType.NumMethod())

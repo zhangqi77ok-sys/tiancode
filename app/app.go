@@ -51,6 +51,10 @@ func New(chat *app.ChatService) *Bind {
 			"arguments":    e.Arguments,
 		})
 	})
+	// 工作区检查结果桥（第 8 批）：回合收尾后自动跑的命令，结果推给界面（列表 + 点击打开）
+	chat.SetCheckHandler(func(r app.CheckResult) {
+		wruntime.EventsEmit(b.appCtx(), "workspace:check", r)
+	})
 	// 问答事件桥（0.2.15）：ask_user 的选项卡推给前端，答复经 ResolveAsk 回流
 	chat.SetAskHandler(func(e app.AskEvent) {
 		wruntime.EventsEmit(b.appCtx(), "chat:ask", map[string]any{
@@ -136,6 +140,13 @@ func (b *Bind) CurrentBranch(sessionID string) (string, error) {
 	return gittool.CurrentBranch(root), nil
 }
 
+// ReadSessionFile 读取这场对话工作区内某个文件的正文（第 8 批）：文件详情面板的
+// 只读浏览。超限只给前半并标 truncated（上限与 fs 工具同一个数字）；越界/缺失/
+// 二进制显式报错——不用空白冒充已读。
+func (b *Bind) ReadSessionFile(sessionID, path string) (app.FileBody, error) {
+	return b.chat.ReadSessionFile(sessionID, path)
+}
+
 // RevealInExplorer 打开 path 所在目录的资源管理器并选中它（0.0.06：工具卡
 // "在资源管理器中显示"）。
 // 0.0.11：相对路径按**这场对话**的工作区解析（此前用"下一场新对话"的默认根，
@@ -161,12 +172,48 @@ func (b *Bind) OpenInDefaultApp(sessionID, path string) error {
 	if err != nil {
 		return err
 	}
-	if isDir {
-		return exec.Command("explorer", abs).Start()
-	}
-	cmd := exec.Command("cmd", "/c", "start", "", abs)
+	name, args := app.DefaultOpenArgv(abs, isDir)
+	cmd := exec.Command(name, args...)
 	hideConsole(cmd) // 不留一闪而过的黑窗
 	return cmd.Start()
+}
+
+// OpenAtLine 打开 path 并（在配置了「在这一行打开」时）定位到第 line 行（第 8 批）。
+//
+// 顺序：这场对话的工作区设了 openAtLine、目标不是目录、行号有效 → 按**空格**拆 argv
+// 起进程（不经 shell；工作目录 = 这场对话的工作区；{path}/{line} 已替换）；
+// 未配置 / 行号缺失 / 命令无法执行 → 与 OpenInDefaultApp **逐字相同**的退回路径
+// （同一个 argv 构造，见 app.DefaultOpenArgv），只打开文件、不假装跳了行。
+func (b *Bind) OpenAtLine(sessionID, path string, line int) error {
+	abs, isDir, err := b.chat.ResolveSessionPath(sessionID, path)
+	if err != nil {
+		return err
+	}
+	if tmpl := b.chat.WorkspaceSettingsFor(sessionID).OpenAtLine; tmpl != "" && !isDir {
+		if name, args, ok := app.OpenAtLineArgv(tmpl, abs, line); ok {
+			cmd := exec.Command(name, args...)
+			cmd.Dir = b.chat.SessionWorkspace(sessionID)
+			hideConsole(cmd)
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("「在这一行打开」命令启动失败：%w", err)
+			}
+			return nil
+		}
+	}
+	name, args := app.DefaultOpenArgv(abs, isDir)
+	cmd := exec.Command(name, args...)
+	hideConsole(cmd)
+	return cmd.Start()
+}
+
+// WorkspaceSettings 读取这场对话工作区的可选项（第 8 批）：在这一行打开 / 检查命令。
+func (b *Bind) WorkspaceSettings(sessionID string) (app.WorkspaceSettings, error) {
+	return b.chat.WorkspaceSettingsFor(sessionID), nil
+}
+
+// SaveWorkspaceSettings 保存这场对话工作区的可选项（key = 该会话的工作区绝对路径）。
+func (b *Bind) SaveWorkspaceSettings(sessionID string, ws app.WorkspaceSettings) error {
+	return b.chat.SaveWorkspaceSettings(sessionID, ws)
 }
 
 // SetApprovalPolicy 设置需要审批的工具清单；传空数组即关闭审批（ADR-0007 默认关）。
@@ -182,13 +229,20 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 // 写入回执（路径 + diff + 新建/覆盖）同步返回，前端据它出结果卡片；
 // 写入失败（无工作区 / 越界 / 外部改动）错误显式上抛。
 func (b *Bind) ProposeFileWrite(sessionID, path, content string) (app.ProposeWriteResult, error) {
-	return b.chat.ProposeFileWrite(sessionID, path, content)
+	res, err := b.chat.ProposeFileWrite(sessionID, path, content)
+	if err == nil {
+		// 写入之后同样跑一次工作区检查（第 8 批）；未配置则该调用什么都不做。
+		go b.chat.RunCheckAndEmit(sessionID)
+	}
+	return res, err
 }
 
 // SendWithAttachments 发送带附件的用户消息（0.0.10）。attachments 是 JSON 数组
 // 字符串（图片/文件：name、kind、mediaType、dataB64、sourcePath）。
+// forceTool（第 7 批）是"本轮开口前先调用"的工具 JSON（{"name","arguments"}；空 = 不强制）：
+// 用户在输入框里指定了技能或 MCP 工具时才有值，参数原样传给工具，模型改不了。
 // 发送失败时错误上抛——前端保留待发送区允许重试。
-func (b *Bind) SendWithAttachments(sessionID, text, attachments string) error {
+func (b *Bind) SendWithAttachments(sessionID, text, attachments, forceTool string) error {
 	ctx := b.appCtx()
 	runCtx, cancel := context.WithCancel(ctx)
 	b.mu.Lock()
@@ -205,7 +259,7 @@ func (b *Bind) SendWithAttachments(sessionID, text, attachments string) error {
 			return fmt.Errorf("附件格式错误：%w", err)
 		}
 	}
-	_, sendErr := b.chat.SendWithAttachments(runCtx, sessionID, text, atts)
+	_, sendErr := b.chat.SendWithAttachments(runCtx, sessionID, text, atts, forceTool)
 	return sendErr
 }
 

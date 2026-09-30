@@ -119,6 +119,13 @@ function newSessionId(): string {
   return `s-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${p(d.getMilliseconds(), 3)}-${++sessionSeq}`
 }
 
+// 强制工具（第 7 批）：本轮"模型开口前必须先调用"的工具——输入框里指定的技能或
+// MCP 工具。参数由前端给定（模型改不了服务器名/工具名），账本里仍是普通工具调用/结果。
+export interface ForcedToolDTO {
+  name: 'skill' | 'mcp'
+  arguments: Record<string, unknown>
+}
+
 // 排队消息（0.0.11 带附件）：回合进行中提交的那条，终态后由 onTerminal 续发。
 // 附件必须随文字一起排队——只排文字时用户贴的截图/拖入的文件会留在待发送区，
 // 续发的那条消息丢附件（用户以为发了，模型没收到）。
@@ -126,6 +133,9 @@ export interface QueuedMessage {
   id: number
   text: string
   atts: PendingAttachment[]
+  // 强制工具随队列走（第 7 批）：与附件同理——不跟着走的话，排队那条会静默丢掉
+  // "先调这个技能/MCP"的指定。
+  forced?: ForcedToolDTO
 }
 
 // 单个会话的运行态（0.2.25 多会话）：消息缓冲 + 运行标志 + 输入队列 + 本轮计时。
@@ -429,7 +439,11 @@ export const useChatStore = defineStore('chat', () => {
 
   // 发送到"当前正在看的会话"（用户动作入口）。
   // 0.0.10：atts 非空时走带附件的 IPC；throwOnError 由 Composer 传入（失败保留待发送区）。
-  function send(text: string, atts?: PendingAttachment[], opts?: { throwOnError?: boolean }) {
+  function send(
+    text: string,
+    atts?: PendingAttachment[],
+    opts?: { throwOnError?: boolean; forced?: ForcedToolDTO },
+  ) {
     if (!sessionId.value) {
       sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
       announcePending()
@@ -441,7 +455,12 @@ export const useChatStore = defineStore('chat', () => {
   // 0.0.10：带附件且 opts.throwOnError 时发送失败上抛——Composer 据此保留
   // 文字与附件允许重试；默认路径不抛（错误气泡已可见，调用方多为 fire-and-forget）。
   // 本地回显：user 消息立刻带附件形态（图片直接用 base64 展示，无需等重放）。
-  async function sendTo(id: string, text: string, atts?: PendingAttachment[], opts?: { throwOnError?: boolean }) {
+  async function sendTo(
+    id: string,
+    text: string,
+    atts?: PendingAttachment[],
+    opts?: { throwOnError?: boolean; forced?: ForcedToolDTO },
+  ) {
     const c = ensureConvo(id)
     const localAtts = atts?.map((a) => ({
       kind: a.kind,
@@ -468,8 +487,14 @@ export const useChatStore = defineStore('chat', () => {
     c.stopping = false
     c.turnStartedAt = Date.now()
     try {
-      if (atts && atts.length) {
-        await bridge().app.SendWithAttachments(id, text, JSON.stringify(atts))
+      if ((atts && atts.length) || opts?.forced) {
+        // 指定了技能/MCP 时也走带附件那条：本轮要先强制调用一次工具（第 7 批）
+        await bridge().app.SendWithAttachments(
+          id,
+          text,
+          JSON.stringify(atts ?? []),
+          opts?.forced ? JSON.stringify(opts.forced) : '',
+        )
       } else {
         // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
         await bridge().app.Send(id, text)
@@ -879,8 +904,8 @@ export const useChatStore = defineStore('chat', () => {
     // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去
     if (p.endReason !== END_REASON.CANCELLED && !c.stopping) {
       const next = c.queue.shift()
-      // 附件随队列续发（0.0.11）：带附件时走 SendWithAttachments（sendTo 内部按需分派）
-      if (next) sendTo(p.sessionID, next.text, next.atts).catch(() => {}) // 队列续发失败：错误气泡已可见
+      // 附件与强制工具随队列续发（0.0.11 / 第 7 批）：sendTo 内部按需分派
+      if (next) sendTo(p.sessionID, next.text, next.atts, { forced: next.forced }).catch(() => {}) // 队列续发失败：错误气泡已可见
     }
   }
 
@@ -961,8 +986,8 @@ export const useChatStore = defineStore('chat', () => {
   let queueSeq = 0
   // 入队（0.0.11：附件随行）：附件拷贝一份——调用方随后会清空待发送区，
   // 队列里这条必须自持（否则续发时附件已被清掉，消息静默丢附件）。
-  function enqueue(text: string, atts: PendingAttachment[] = []) {
-    ensureConvo(sessionId.value).queue.push({ id: ++queueSeq, text, atts: [...atts] })
+  function enqueue(text: string, atts: PendingAttachment[] = [], forced?: ForcedToolDTO) {
+    ensureConvo(sessionId.value).queue.push({ id: ++queueSeq, text, atts: [...atts], forced })
   }
   function removeQueued(id: number) {
     const c = ensureConvo(sessionId.value)

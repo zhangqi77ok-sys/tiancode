@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useChannelStore } from '../stores/channels'
-import { useChatStore } from '../stores/chat'
+import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages } from '../composables/messageGrouping'
@@ -11,8 +11,12 @@ import AskCard from './AskCard.vue'
 import MessageBubble from './MessageBubble.vue'
 import ToolCard from './ToolCard.vue'
 
-// 建议提示：点击回填输入框（由 App 把草稿传给 Composer）
-const emit = defineEmits<{ (e: 'suggest', text: string): void }>()
+// 建议提示：点击回填输入框（由 App 把草稿传给 Composer）；
+// 重跑（第 7 批）：用户气泡点「重跑」→ 原文与附件交回输入框（撤回与分叉在发送时确认）
+const emit = defineEmits<{
+  (e: 'suggest', text: string): void
+  (e: 'rerun', payload: { seq: number; text: string; attachments: PendingAttachment[] }): void
+}>()
 
 const store = useChatStore()
 const channels = useChannelStore()
@@ -96,6 +100,7 @@ const items = computed(() => groupMessages(store.messages))
     class="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4"
     role="log"
     aria-label="对话记录"
+    data-conversation
     @scroll.passive="onScroll"
   >
     <!-- 历史载入中：先于空态渲染（否则点开有历史的会话会闪一下"没有消息"） -->
@@ -132,8 +137,13 @@ const items = computed(() => groupMessages(store.messages))
            呈现，不再随消息流滚走。数据仍在 store/账本里（重放与实时同源），只是换了载体 -->
       <ApprovalCard v-else-if="item.kind === 'approval'" :m="item.m" />
       <AskCard v-else-if="item.kind === 'ask'" :m="item.m" />
-      <MessageBubble v-else-if="item.kind === 'turn'" :m="item.run[0]" :run="item.run" />
-      <MessageBubble v-else-if="item.kind === 'single'" :m="item.m" />
+      <MessageBubble
+        v-else-if="item.kind === 'turn'"
+        :m="item.run[0]"
+        :run="item.run"
+        @rerun="emit('rerun', $event)"
+      />
+      <MessageBubble v-else-if="item.kind === 'single'" :m="item.m" @rerun="emit('rerun', $event)" />
     </template>
   </div>
 

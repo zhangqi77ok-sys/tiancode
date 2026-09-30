@@ -66,6 +66,12 @@ type Loop struct {
 	// 回合内被 ManageTool 增删后，模型在后续步骤立即看到最新清单，不必等下一轮。
 	// 设置了 prefaceFn 时每步覆盖静态 preface。
 	prefaceFn func() string
+	// forced 是本轮"开口前必须先调用"的工具（第 7 批：输入框里指定的技能 / MCP 工具）。
+	// nil = 不强制——默认路径与旧版完全一致。
+	forced *ForcedTool
+	// trailingNote 返回"只存在于本次请求"的补充说明（第 8 批：工作区检查结果）。
+	// nil / 返回空串 = 不附。
+	trailingNote func() string
 	// ctxBudgetTokens 是本轮的上下文预算（token；0 = 未配置上限）。
 	// 由装配层从渠道配置折算注入（第 2 批）：派生历史时按预算分级折叠旧内容。
 	ctxBudgetTokens int
@@ -152,6 +158,113 @@ func contextEvent(info DeriveInfo) *llm.ContextEvent {
 	}
 }
 
+// ForcedTool 是用户在输入框里指定的"本轮必须用上"的工具（第 7 批；第 8 批细分两种语义）：
+//
+//	skill —— 程序代替模型发起这一次调用（技能正文是喂料，不需要模型先开口）；
+//	mcp   —— **钉住**：程序不替模型发，而是在本次请求里附一句"第一笔调用必须是这台
+//	         服务器的这个工具"的约束，参数由模型按工具说明填（用户不再填参数 JSON）。
+//	         server/tool 被模型改掉，本轮就停在这条错误上——不执行被改过的调用，
+//	         也不继续空答（否则用户以为在用它指定的工具，实际不是）。
+type ForcedTool struct {
+	Name      string // 只允许 skill / mcp（见 forcedToolAllowed）
+	Arguments string // skill：程序直接发起时原样传下去的 JSON（空 = {}）
+	Server    string // mcp：钉住的服务器名（模型不许改）
+	Tool      string // mcp：钉住的工具名（模型不许改）
+}
+
+// pinnedMCP 报告这是否是"钉住一笔 MCP 调用"的形态（第 8 批）：指定了 server/tool
+// 且**没有人手写参数**。带参数的旧消息（第 7 批遗留）仍走"程序代发、原样传入"。
+func (f *ForcedTool) pinnedMCP() bool {
+	return f != nil && f.Name == "mcp" &&
+		strings.TrimSpace(f.Server) != "" && strings.TrimSpace(f.Tool) != "" &&
+		strings.TrimSpace(f.Arguments) == ""
+}
+
+// callArguments 是"程序代发"时原样传给工具的 JSON。
+// skill：用户/内核给的参数；mcp（旧消息带参数）：server/tool 以钉住值为准，
+// 用户手写的那份参数原样嵌进 arguments（第 8 批：新界面不再产生这种消息）。
+func (f *ForcedTool) callArguments() string {
+	if f == nil {
+		return "{}"
+	}
+	if f.Name == "mcp" {
+		inner := strings.TrimSpace(f.Arguments)
+		if inner == "" || inner == "null" {
+			inner = "{}"
+		}
+		b, err := json.Marshal(map[string]any{
+			"server": f.Server, "tool": f.Tool, "arguments": json.RawMessage(inner),
+		})
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	args := strings.TrimSpace(f.Arguments)
+	if args == "" {
+		args = "{}"
+	}
+	return args
+}
+
+// pinnedCallNote 是钉住 MCP 调用时附在请求末尾的说明（第 8 批）。
+// 只存在于本次请求：不写账本、不进系统提示——系统提示必须在技能清单与语气设置
+// 不变时逐字相同，往那里塞逐轮变化的内容会打断上游 prompt cache。
+func pinnedCallNote(server, tool string) string {
+	return fmt.Sprintf("（本轮约束，不是新问题）请把第一笔工具调用固定为 mcp：server=%q、tool=%q，"+
+		"参数按该工具的说明填写。不要先调用别的工具，也不要改用其它 server 或 tool。",
+		server, tool)
+}
+
+// pinnedCallOK 校验模型本轮的第一笔工具调用是否就是钉住的那一笔（第 8 批）。
+// 返回空串表示通过；否则返回可读原因。
+func pinnedCallOK(ft *ForcedTool, calls []llm.ToolCall) string {
+	if len(calls) == 0 {
+		return fmt.Sprintf("你没有调用工具，选择了直接回答；本轮要求的第一笔调用是 mcp：server=%s、tool=%s",
+			ft.Server, ft.Tool)
+	}
+	first := calls[0]
+	if first.Name != "mcp" {
+		return fmt.Sprintf("第一笔调用是 %s，而不是 mcp：server=%s、tool=%s", first.Name, ft.Server, ft.Tool)
+	}
+	var p struct {
+		Server string `json:"server"`
+		Tool   string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(first.Arguments), &p); err != nil {
+		return fmt.Sprintf("mcp 调用的参数不是合法 JSON（%v）；本轮要求 server=%s、tool=%s", err, ft.Server, ft.Tool)
+	}
+	if strings.TrimSpace(p.Server) != ft.Server || strings.TrimSpace(p.Tool) != ft.Tool {
+		return fmt.Sprintf("你把调用改成了 server=%s、tool=%s；本轮要求的是 server=%s、tool=%s",
+			strings.TrimSpace(p.Server), strings.TrimSpace(p.Tool), ft.Server, ft.Tool)
+	}
+	return ""
+}
+
+// SetForcedTool 注入本轮的强制工具（nil = 不强制，行为与旧版完全一致）。
+func (l *Loop) SetForcedTool(ft *ForcedTool) {
+	if l == nil {
+		return
+	}
+	l.forced = ft
+}
+
+// SetTrailingNote 注入"只存在于本次请求"的补充说明（第 8 批：工作区检查结果）。
+// 它在真正的用户消息之后另附一条 user 消息——**不写账本、不进系统提示**
+// （系统提示必须在技能清单与语气设置不变时逐字相同，往那里塞逐轮变化的内容
+// 会打断上游 prompt cache）。返回空串 = 什么都不附。
+func (l *Loop) SetTrailingNote(fn func() string) {
+	if l == nil {
+		return
+	}
+	l.trailingNote = fn
+}
+
+// forcedToolAllowed 白名单：只有"给模型喂料"的工具可以被强制（skill 取技能正文、
+// mcp 转发 MCP 工具输出）。fs/shell 这类能改磁盘、能执行命令的绝不在这里放行——
+// 强制调用不能变成"绕过模型与审批直接执行工具"的口子。
+func forcedToolAllowed(name string) bool { return name == "skill" || name == "mcp" }
+
 // applyDynamicPreface 在每个执行步骤前刷新系统说明（prefaceFn 优先于静态）。
 // 第 5 批：文本与上一手完全相同就不触碰 system——逐字节不变的前缀是上游
 // prompt cache 命中的前提，无变化的覆盖是纯噪声（也避免无谓改写消息数组）。
@@ -218,6 +331,13 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 		return nil, errors.New(msg)
 	}
 	msgs = l.attachPreface(msgs)
+	// 仅本次请求的补充说明（第 8 批）：附在真正的用户消息之后——不写账本，
+	// 也不动系统提示（逐轮变化的文本进系统提示会打断上游 prompt cache）。
+	if l.trailingNote != nil {
+		if note := strings.TrimSpace(l.trailingNote()); note != "" {
+			msgs = append(msgs, llm.Message{Role: "user", Content: note})
+		}
+	}
 	var toolDefs []llm.ToolDef
 	if l.registry != nil {
 		toolDefs = l.registry.Definitions()
@@ -264,11 +384,142 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		}
 	}
 
+	// 工具调用落账 + 终态卡（0.0.06）：提到步循环外定义——第 7 批的"强制工具"要在模型
+	// 开口前先跑一次，走的是同一套落账/上报路径（结果形态与模型自发调用完全一致）。
+	finishCall := func(call llm.ToolCall, result tools.ToolResult) error {
+		// 账本 payload：模型可见字段之外，一并落 UI 专用数据——语义标签/diff
+		// （0.0.06）与撤销快照（0.0.07）。undo 携带旧全文：重启后仍能"恢复
+		// 写入前"；它只被后端恢复接口读取，derive 投影不解析（不进模型上下文）。
+		payload := map[string]any{
+			"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
+			"title": result.Title, "op": result.Op, "diff": result.Diff,
+		}
+		if result.Undo != nil {
+			payload["undo"] = map[string]any{
+				"path": result.Undo.Path, "old_exists": result.Undo.OldExists,
+				"old_content": result.Undo.OldContent, "new_sha256": result.Undo.NewSHA256,
+			}
+		}
+		if result.UndoNote != "" {
+			payload["undo_note"] = result.UndoNote
+		}
+		if _, err := ledger.Append(session.EventToolResult, payload); err != nil {
+			return err
+		}
+		// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
+		// 下一续步请求才合法（结果经 ToolCallID 与调用配对）
+		msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content})
+		status := "success"
+		if result.IsError {
+			status = "error"
+		}
+		content := result.Content
+		if len(content) > toolEventIPCLimit {
+			// 0.0.06 头尾保留：UI 完整视图同样需要尾部（失败汇总在末尾）
+			content = tools.HeadTail(content, toolEventIPCLimit)
+		}
+		summary := result.Content
+		if len(summary) > 200 {
+			// 走 truncateToBytes：按字节切会把中文切成非法 UTF-8（0.2.35 审计#8）
+			summary = truncateToBytes(summary, 200) + "…"
+		}
+		undoPath, undoExists := "", false
+		if result.Undo != nil {
+			undoPath, undoExists = result.Undo.Path, result.Undo.OldExists
+		}
+		if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+			Name: call.Name, Status: status, Summary: summary, Content: content, Diff: result.Diff,
+			Title: result.Title, Op: result.Op, CallID: call.ID,
+			HasUndo: result.Undo != nil, UndoPath: undoPath, UndoExists: undoExists, UndoNote: result.UndoNote,
+		}}) {
+			return errConsumerGone
+		}
+		return nil
+	}
+	emitCallStart := func(call llm.ToolCall) error {
+		if _, err := ledger.Append(session.EventToolCall, map[string]string{
+			"id": call.ID, "name": call.Name, "arguments": call.Arguments,
+		}); err != nil {
+			return err
+		}
+		// running 事件（0.0.06）：执行前先上抛"进行中"动态（只进实时流，
+		// 不落账本——账本只有终态结果）。前端据此先出"执行中"卡并随
+		// 终态事件原地更新（CallID 配对），卡片输出随事件增长。
+		forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+			Name: call.Name, Status: "running", Summary: "执行中…", CallID: call.ID,
+		}})
+		return nil
+	}
+
 	// 上下文治理读数（第 2 批）：每轮一次，界面油表显示预算/估算/折叠标记——
 	// 折叠绝不静默（预算已配置或发生了折叠才上报，保持旧行为零噪声）。
 	if ev := contextEvent(ctxInfo); ev != nil {
 		if forward(llm.StreamChunk{Context: ev}) {
 			return
+		}
+	}
+
+	// 强制工具（第 7 批）：用户在输入框里指定了技能或 MCP 工具——本轮**开口前**先调它。
+	// 参数由调用方给定（服务器名/工具名模型改不了），结果按普通工具调用进账本与上下文，
+	// 前端显示成一张普通工具卡。失败就停在这条工具错误上：不假装用过，也不让模型空答。
+	if l.forced != nil && !forcedToolAllowed(l.forced.Name) {
+		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf(
+			"不支持的强制工具：%s（只支持 skill / mcp）", l.forced.Name)})
+		return
+	}
+	// 钉住 MCP 调用（第 8 批）：程序不发这笔调用，只附一句**仅本次请求**的约束，
+	// 让模型带着自己的参数去调；下一段循环里校验它的第一笔调用（pinnedCallOK）。
+	pinPending := false
+	if l.forced.pinnedMCP() {
+		msgs = append(msgs, llm.Message{Role: "user", Content: pinnedCallNote(l.forced.Server, l.forced.Tool)})
+		pinPending = true
+	}
+	// 强制工具（第 7 批，skill 与"带参数的旧 mcp 消息"）：本轮**开口前**先调它。
+	// 参数由调用方给定；结果按普通工具调用进账本与上下文，前端显示成一张普通工具卡。
+	// 失败就停在这条工具错误上：不假装用过，也不让模型空答。
+	if l.forced != nil && !pinPending {
+		args := l.forced.callArguments()
+		call := llm.ToolCall{ID: fmt.Sprintf("call-%d", ledger.NextSeq()), Name: l.forced.Name, Arguments: args}
+		if err := emitCallStart(call); err != nil {
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist tool call: %w", err)})
+			return
+		}
+		result := l.dispatchTool(ctx, call, ledger, forward)
+		if err := finishCall(call, result); err != nil {
+			if errors.Is(err, errConsumerGone) {
+				if ctx.Err() != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
+				}
+				return
+			}
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("finish tool result: %w", err)})
+			return
+		}
+		if result.IsError {
+			detail := strings.TrimSpace(result.Content)
+			if detail == "" {
+				detail = "工具执行失败"
+			}
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf(
+				"指定的 %s 不可用：%s", l.forced.Name, detail)})
+			return
+		}
+		if ctx.Err() != nil {
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()})
+			return
+		}
+		// 结果进本轮上下文：与模型自发调用**同一形态**（assistant(tool_calls) + role=tool）
+		// ——直接从账本重新派生，不手搓消息序列（配对与折叠规则与后续步骤同源）。
+		refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+		if derr != nil {
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
+			return
+		}
+		msgs = l.attachPreface(refreshed)
+		if ev := contextEvent(next); ev != nil {
+			if forward(llm.StreamChunk{Context: ev}) {
+				return
+			}
 		}
 	}
 
@@ -298,6 +549,21 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			//（不写锚点——轮次未完成，已产生 delta 留在账本）
 			emitTerminal(terminal)
 			return
+		}
+		// 钉住的第一笔调用（第 8 批）：只校验本轮的**第一次**模型响应（之后模型可以
+		// 自由调用别的工具继续干活）。不通过就停在这里：不执行被改过的调用、不写锚点
+		// （避免留下孤儿 tool_call），也不进入"最终回答"分支——不能让模型绕开它空答。
+		if pinPending {
+			pinPending = false
+			if reason := pinnedCallOK(l.forced, calls); reason != "" {
+				msg := fmt.Sprintf("指定的 MCP 工具没有被调用：%s。本轮已停止，未被执行的调用没有落账。", reason)
+				if _, aerr := ledger.Append(session.EventError, map[string]any{"message": msg}); aerr != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist pinned call violation: %w", aerr)})
+					return
+				}
+				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: errors.New(msg)})
+				return
+			}
 		}
 		if len(calls) == 0 {
 			// 最终回答：锚点 write-ahead 后上抛 EndDone
@@ -335,70 +601,6 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			if calls[i].ID == "" {
 				calls[i].ID = fmt.Sprintf("call-%d", ledger.NextSeq())
 			}
-		}
-		finishCall := func(call llm.ToolCall, result tools.ToolResult) error {
-			// 账本 payload：模型可见字段之外，一并落 UI 专用数据——语义标签/diff
-			// （0.0.06）与撤销快照（0.0.07）。undo 携带旧全文：重启后仍能"恢复
-			// 写入前"；它只被后端恢复接口读取，derive 投影不解析（不进模型上下文）。
-			payload := map[string]any{
-				"id": call.ID, "name": call.Name, "content": result.Content, "is_error": result.IsError,
-				"title": result.Title, "op": result.Op, "diff": result.Diff,
-			}
-			if result.Undo != nil {
-				payload["undo"] = map[string]any{
-					"path": result.Undo.Path, "old_exists": result.Undo.OldExists,
-					"old_content": result.Undo.OldContent, "new_sha256": result.Undo.NewSHA256,
-				}
-			}
-			if result.UndoNote != "" {
-				payload["undo_note"] = result.UndoNote
-			}
-			if _, err := ledger.Append(session.EventToolResult, payload); err != nil {
-				return err
-			}
-			// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
-			// 下一续步请求才合法（结果经 ToolCallID 与调用配对）
-			msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content})
-			status := "success"
-			if result.IsError {
-				status = "error"
-			}
-			content := result.Content
-			if len(content) > toolEventIPCLimit {
-				// 0.0.06 头尾保留：UI 完整视图同样需要尾部（失败汇总在末尾）
-				content = tools.HeadTail(content, toolEventIPCLimit)
-			}
-			summary := result.Content
-			if len(summary) > 200 {
-				// 走 truncateToBytes：按字节切会把中文切成非法 UTF-8（0.2.35 审计#8）
-				summary = truncateToBytes(summary, 200) + "…"
-			}
-			undoPath, undoExists := "", false
-			if result.Undo != nil {
-				undoPath, undoExists = result.Undo.Path, result.Undo.OldExists
-			}
-			if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
-				Name: call.Name, Status: status, Summary: summary, Content: content, Diff: result.Diff,
-				Title: result.Title, Op: result.Op, CallID: call.ID,
-				HasUndo: result.Undo != nil, UndoPath: undoPath, UndoExists: undoExists, UndoNote: result.UndoNote,
-			}}) {
-				return errConsumerGone
-			}
-			return nil
-		}
-		emitCallStart := func(call llm.ToolCall) error {
-			if _, err := ledger.Append(session.EventToolCall, map[string]string{
-				"id": call.ID, "name": call.Name, "arguments": call.Arguments,
-			}); err != nil {
-				return err
-			}
-			// running 事件（0.0.06）：执行前先上抛"进行中"动态（只进实时流，
-			// 不落账本——账本只有终态结果）。前端据此先出"执行中"卡并随
-			// 终态事件原地更新（CallID 配对），卡片输出随事件增长。
-			forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
-				Name: call.Name, Status: "running", Summary: "执行中…", CallID: call.ID,
-			}})
-			return nil
 		}
 		i := 0
 		for i < len(calls) {

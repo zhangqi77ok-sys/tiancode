@@ -1,0 +1,207 @@
+// 工作区检查命令（第 8 批）：回合终态 / 写入文件之后跑一次用户配的命令，
+// 把输出里的 path:line(:col) 收成可点列表，并在下一轮给模型附一条
+// **仅本次请求可见**的说明（不进账本、不进系统提示）。
+//
+// 为什么绝不猜命令：跑什么检查是每个仓库自己的事（go test / npm test / make check…），
+// 猜错等于替用户执行了他没要求的动作。未配置 = 任何时候都不跑。
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+	"time"
+
+	"tiancode/internal/platform/applog"
+)
+
+// checkTimeout 是检查命令的固定超时（第 8 批：60 秒）。超时不编诊断，只把已捕获输出照实给出。
+const checkTimeout = 60 * time.Second
+
+// CheckRef 是输出里的一处位置引用（界面点它 = 第 6 项那个"打开"入口）。
+type CheckRef struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+	Text string `json:"text"`
+}
+
+// CheckResult 是一次检查的结果（Skipped = 命令为空或已有一次在跑，什么都没发生）。
+type CheckResult struct {
+	SessionID string     `json:"sessionID"`
+	Command   string     `json:"command"`
+	Output    string     `json:"output"`
+	Refs      []CheckRef `json:"refs"`
+	Failed    bool       `json:"failed"`
+	TimedOut  bool       `json:"timedOut"`
+	Skipped   bool       `json:"skipped"`
+	At        int64      `json:"at"` // Unix 毫秒
+}
+
+// checkRefRe 与前端 outputRows.ts 的 INLINE_REF 同一形态：`path:line` 或 `path:line:col`。
+// 路径不许含空白与冒号，且要"像路径"（含 / . \）——避免把说明文字里的编号当引用。
+var checkRefRe = regexp.MustCompile(`([^\s:]+?):(\d+)(?::(\d+))?:(.*)`)
+
+var checkPathLike = regexp.MustCompile(`[./\\]`)
+
+// ParseCheckRefs 从命令输出里收集位置引用（纯函数：可单测，也是"列表与附注同源"的保证）。
+func ParseCheckRefs(output string) []CheckRef {
+	var refs []CheckRef
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		m := checkRefRe.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil || !checkPathLike.MatchString(m[1]) {
+			continue
+		}
+		ref := CheckRef{Path: m[1], Text: strings.TrimSpace(m[4])}
+		fmt.Sscanf(m[2], "%d", &ref.Line)
+		if m[3] != "" {
+			fmt.Sscanf(m[3], "%d", &ref.Col)
+		}
+		key := fmt.Sprintf("%s:%d:%d", ref.Path, ref.Line, ref.Col)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+// checkRunner 是唯一启动进程的出口（测试注入，避免真跑用户的检查命令）。
+var checkRunner = func(ctx context.Context, name string, args []string, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// RunWorkspaceCheck 跑一次这场对话工作区的检查命令（第 8 批）。
+// 命令为空 / 已有一次在跑 → Skipped=true，且**不产生任何进程**。
+// 超时与命令失败都把已捕获的 stdout/stderr 原样带回（不编诊断）。
+func (s *ChatService) RunWorkspaceCheck(sessionID string) (CheckResult, error) {
+	root := s.sessionWorkspace(sessionID)
+	ws := loadWorkspaceSettings(root)
+	tmpl := strings.TrimSpace(ws.CheckCommand)
+	if tmpl == "" {
+		return CheckResult{Skipped: true}, nil
+	}
+	tokens := SplitArgv(tmpl)
+	if len(tokens) == 0 {
+		return CheckResult{Skipped: true}, nil
+	}
+	if !s.beginCheck(sessionID) {
+		return CheckResult{Skipped: true}, nil // 已有一次在跑：跳过，不并行两份
+	}
+	defer s.endCheck(sessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	out, err := checkRunner(ctx, tokens[0], tokens[1:], root)
+	res := CheckResult{
+		SessionID: sessionID,
+		Command:   tmpl,
+		Output:    out,
+		Refs:      ParseCheckRefs(out),
+		Failed:    err != nil,
+		// 超时按成因标注（不伪装成"命令失败"）
+		TimedOut: errors.Is(ctx.Err(), context.DeadlineExceeded),
+		At:       time.Now().UnixMilli(),
+	}
+	if res.TimedOut {
+		res.Output += fmt.Sprintf("\n(检查命令超过 %s 已终止)", checkTimeout)
+	}
+	s.setLastCheck(sessionID, res)
+	return res, nil
+}
+
+// SetCheckHandler 注入检查结果的推送回调（壳层挂事件桥；nil = 只记内存不推送）。
+func (s *ChatService) SetCheckHandler(fn func(CheckResult)) {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	s.checkEmit = fn
+}
+
+// RunCheckAndEmit 跑一次检查并把结果推给壳层（第 8 批）。跳过与失败都不打扰对话本身：
+// 跳过（未配置 / 已在跑）什么都不推，失败也只记日志（命令自身的输出照常带回）。
+func (s *ChatService) RunCheckAndEmit(sessionID string) {
+	res, err := s.RunWorkspaceCheck(sessionID)
+	if err != nil {
+		applog.Errorf("workspace check session=%s err=%v", sessionID, err)
+		return
+	}
+	if res.Skipped {
+		return
+	}
+	s.checkMu.Lock()
+	emit := s.checkEmit
+	s.checkMu.Unlock()
+	if emit != nil {
+		emit(res)
+	}
+}
+
+// LastCheck 返回这场对话最近一次检查结果（无 = 零值）。
+func (s *ChatService) LastCheck(sessionID string) CheckResult {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	return s.lastChecks[sessionID]
+}
+
+// checkNote 是"下一轮附给模型的说明"：标题写明不是用户原话，正文与界面列表一致。
+// 为空表示什么都不附。
+func (s *ChatService) checkNote(sessionID string) string {
+	res := s.LastCheck(sessionID)
+	if len(res.Refs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("【工作区检查，不是用户原话】上一步结束后自动跑了 ")
+	b.WriteString(res.Command)
+	b.WriteString("，以下是它报告的位置（与界面上的列表一致）：\n")
+	for _, r := range res.Refs {
+		pos := fmt.Sprintf("%s:%d", r.Path, r.Line)
+		if r.Col > 0 {
+			pos = fmt.Sprintf("%s:%d:%d", r.Path, r.Line, r.Col)
+		}
+		b.WriteString("- ")
+		b.WriteString(pos)
+		if r.Text != "" {
+			b.WriteString("  ")
+			b.WriteString(r.Text)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (s *ChatService) beginCheck(sessionID string) bool {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	if s.checkRunning == nil {
+		s.checkRunning = map[string]bool{}
+	}
+	if s.checkRunning[sessionID] {
+		return false
+	}
+	s.checkRunning[sessionID] = true
+	return true
+}
+
+func (s *ChatService) endCheck(sessionID string) {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	delete(s.checkRunning, sessionID)
+}
+
+func (s *ChatService) setLastCheck(sessionID string, res CheckResult) {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	if s.lastChecks == nil {
+		s.lastChecks = map[string]CheckResult{}
+	}
+	s.lastChecks[sessionID] = res
+}

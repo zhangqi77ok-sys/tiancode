@@ -6,9 +6,17 @@ import { useChatStore } from '../stores/chat'
 
 // 第 3 批：右侧文件详情面板——逐次 diff + 累计统计 + 关闭。
 
+// 第 8 批：只读正文（按这场对话的工作区读；越界/二进制由后端显式报错）
+const bodyCalls = vi.hoisted(() => ({ reads: [] as string[], fail: '' }))
+
 vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
+      ReadSessionFile: async (_sid: string, path: string) => {
+        bodyCalls.reads.push(path)
+        if (bodyCalls.fail) throw new Error(bodyCalls.fail)
+        return { path, content: 'package app\n\nfunc main() {}', truncated: false, limit: 10 << 20 }
+      },
       RevealInExplorer: async () => {},
       RestoreToolWrite: async () => 'ok',
       ListSessionSummaries: async () => [],
@@ -91,6 +99,31 @@ describe('FileDetailPanel（第 3 批）', () => {
     teardown()
     pinia = createPinia()
     setActivePinia(pinia)
+    bodyCalls.reads = []
+    bodyCalls.fail = ''
+  })
+
+  // 第 8 批：面板在 diff 上方显示只读正文；本会话没有变更时仍有正文
+  it('无变更的文本文件也显示只读正文', async () => {
+    const store = useChatStore()
+    store.openFileDetail('internal/app/main.go')
+    const el = await mountPanel()
+    await nextTick()
+    expect(bodyCalls.reads).toEqual(['internal/app/main.go']) // 按会话工作区读
+    expect(el.textContent).toContain('该文件在本会话没有变更记录')
+    expect(el.textContent).toContain('package app') // 正文照显示
+    expect(el.querySelector('textarea')).toBeNull() // 只读：没有编辑框
+  })
+
+  // 第 8 批：读不到时写明原因，不用空白冒充已读
+  it('越界/读失败：显示原因、不显示正文块', async () => {
+    bodyCalls.fail = '路径不在该对话的工作区内：../escape.go'
+    const store = useChatStore()
+    store.openFileDetail('../escape.go')
+    const el = await mountPanel()
+    await nextTick()
+    expect(el.textContent).toContain('路径不在该对话的工作区内')
+    expect(el.textContent).not.toContain('package app')
   })
 
   // 只列当前文件：逐次改动 + 累计统计（其他文件不出现）

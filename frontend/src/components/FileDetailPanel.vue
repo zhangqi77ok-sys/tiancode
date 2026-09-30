@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type ChatMsg } from '../stores/chat'
 import { useToast } from '../composables/useToast'
 import { registerEsc } from '../composables/useEsc'
@@ -52,6 +52,31 @@ onMounted(() => {
   offEsc = registerEsc(() => store.closeFileDetail())
 })
 onBeforeUnmount(() => offEsc?.())
+
+// 只读正文（第 8 批）：路径按**这场对话**的工作区解析（后端 ResolveSessionPath）。
+// 面板只读不写：没有编辑、没有保存。超限只给前半，照实写明被截断。
+const body = ref('')
+const bodyNote = ref('')
+const bodyLoading = ref(false)
+async function loadBody() {
+  bodyLoading.value = true
+  body.value = ''
+  bodyNote.value = ''
+  try {
+    const res = await bridge().app.ReadSessionFile(store.sessionId, path.value)
+    body.value = res?.content ?? ''
+    if (res?.truncated) {
+      const mb = Math.round((res.limit / (1024 * 1024)) * 10) / 10
+      bodyNote.value = `正文超过单次读取上限（${mb} MB），只显示前 ${mb} MB`
+    }
+  } catch (e) {
+    bodyNote.value = String(e instanceof Error ? e.message : e)
+  } finally {
+    bodyLoading.value = false
+  }
+}
+// 换文件 / 换会话都要重取（会话不同 → 工作区不同 → 同一个相对路径可能是别的文件）
+watch([path, () => store.sessionId], () => void loadBody(), { immediate: true })
 
 const restoring = ref<string | null>(null)
 async function restore(m: ChatMsg) {
@@ -113,6 +138,24 @@ async function openDefault() {
     </div>
 
     <div class="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
+      <!-- 只读正文（第 8 批）：本会话是否改过都显示——先看文件现在长什么样，
+           再看本轮改了什么。只读，不提供编辑/保存 -->
+      <div class="flex flex-col gap-1 pt-1">
+        <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
+          <span class="stat px-1.5 py-0.5">正文（只读）</span>
+          <span v-if="bodyNote" class="min-w-0 truncate" :title="bodyNote">{{ bodyNote }}</span>
+          <span v-else-if="bodyLoading" class="text-[var(--c-text-faint)]">读取中…</span>
+          <span v-else class="ml-auto tabular-nums">{{ body ? `${body.split('\n').length} 行` : '' }}</span>
+        </div>
+        <!-- 有正文才渲染内容块：读不到时上面那行已写明原因，绝不用空白冒充已读 -->
+        <div
+          v-if="body"
+          class="max-h-[42vh] overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-1.5 font-mono text-xs leading-5"
+        >
+          {{ body }}
+        </div>
+      </div>
+
       <div v-if="!cards.length" class="py-6 text-center text-xs text-[var(--c-text-faint)]">
         该文件在本会话没有变更记录
       </div>

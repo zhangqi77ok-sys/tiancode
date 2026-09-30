@@ -24,6 +24,11 @@ func newChannelService(t *testing.T, cfg Config) *ChatService {
 		cfg.WorkDir = t.TempDir()
 	}
 	cfg.ChannelsPath = filepath.Join(t.TempDir(), "channels.json")
+	// 语气设置（第 8 批）：每轮拼系统提示都会读它，用例必须指到临时文件，
+	// 绝不读用户真实的 %APPDATA%\tiancode\tones.json
+	if cfg.TonesPath == "" {
+		cfg.TonesPath = filepath.Join(t.TempDir(), "tones.json")
+	}
 	s, err := NewChatService(cfg)
 	if err != nil {
 		t.Fatalf("NewChatService: %v", err)

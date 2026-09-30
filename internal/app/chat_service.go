@@ -37,6 +37,7 @@ import (
 	"tiancode/internal/platform/configfile"
 	"tiancode/internal/platform/exttools"
 	"tiancode/internal/platform/gateway"
+	"tiancode/internal/platform/tones"
 )
 
 // Config 是对话服务的装配配置。
@@ -54,6 +55,8 @@ type Config struct {
 	ChannelsPath string
 	// ExtensionsPath 是 MCP/Skill 清单；缺省 %APPDATA%\tiancode\extensions.json。
 	ExtensionsPath string
+	// TonesPath 是语气设置；缺省 %APPDATA%\tiancode\tones.json（第 8 批）。
+	TonesPath string
 }
 
 // ChatService 编排对话用例。
@@ -82,6 +85,13 @@ type ChatService struct {
 	askEmit     func(AskEvent)         // 事件回调（壳层注入）
 	pendingAsks map[string]chan string // 未决请求：ID → 答复通道
 
+	// 工作区检查命令状态（第 8 批）：最近一次结果（供界面列表与下一轮附注共用）
+	// + "已有一次在跑就跳过"的守卫。都在内存：检查结果不是账本事实。
+	checkMu      sync.Mutex
+	checkRunning map[string]bool
+	lastChecks   map[string]CheckResult
+	checkEmit    func(CheckResult)
+
 	// codexAuth 管理 ChatGPT 订阅账号的 OAuth 授权会话与 1455 回环监听（0.2.21）
 	codexAuth   *codexauth.Manager
 	codexClient *codexauth.Client
@@ -90,6 +100,7 @@ type ChatService struct {
 	skillTool  *exttools.SkillTool
 	mcpTool    *exttools.MCPTool
 	extManage  *exttools.ManageTool
+	tones      *tones.Store // 语气设置（第 8 批）：每轮拼系统提示时读一次
 
 	// running 标记正在跑轮次的会话（0.2.27）：同一会话的并发 Send 会在一份账本上
 	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
@@ -150,6 +161,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
 	s.extensions = catalog.New(cfg.ExtensionsPath)
+	s.tones = tones.New(cfg.TonesPath)
 	s.skillTool = exttools.NewSkill(func() catalog.File {
 		f, err := s.extensions.Load()
 		if err != nil {
@@ -234,8 +246,8 @@ func (s *ChatService) attachExtensions(reg *tools.Registry) error {
 }
 
 // applyExtensionPreface 组装每步系统说明：技能/MCP 清单（exttools.Preface）+
-// 三行环境事实（sessionFacts，0.0.06）。环境事实随会话根固定——本轮 root 已
-// 定（账本归属或用户顶栏），每个执行步骤都带着走；绝不含任何密钥。
+// 三行环境事实（sessionFacts，0.0.06）+ 语气（tones，第 8 批）。环境事实随会话根
+// 固定——本轮 root 已定（账本归属或用户顶栏），每个执行步骤都带着走；绝不含任何密钥。
 func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop, root string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -244,9 +256,16 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 		return nil
 	}
 	facts := sessionFacts(root)
+	// 语气段每轮读一次并快照进本轮提示：回合内改设置不影响这一轮（逐字相同是
+	// prompt cache 与"文本未变不替换"的前提，改动下一轮生效）。读不出来显式阻断——
+	// 静默当成"没有语气"，用户会以为自己是照设置回答的。
+	tone, err := s.toneSection()
+	if err != nil {
+		return err
+	}
 	if s.extensions == nil {
-		ag.SetPreface(facts)
-		ag.SetPrefaceFn(func() string { return facts }) // 每步刷新语义一致（值固定）
+		ag.SetPreface(facts + "\n\n" + tone)
+		ag.SetPrefaceFn(func() string { return facts + "\n\n" + tone }) // 每步刷新语义一致（值固定）
 		return nil
 	}
 	file, err := s.extensions.Load()
@@ -254,15 +273,16 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 		return err
 	}
 	// 只告诉模型有什么、怎么调用。不在发消息时启动 MCP：用不用由模型决定。
-	ag.SetPreface(exttools.Preface(file) + "\n\n" + facts)
+	ag.SetPreface(exttools.Preface(file) + "\n\n" + facts + "\n\n" + tone)
 	// 动态 preface（0.2.33）：每个执行步骤实时取——扩展在回合内被 ManageTool
 	// 增删后，模型在后续步骤立即看到最新清单（添加当回合即可用，不必等下一轮）。
+	// 语气段不参与实时刷新（用上面的快照）：同一回合里它必须逐字不变。
 	ag.SetPrefaceFn(func() string {
 		f, err := s.extensions.Load()
 		if err != nil {
-			return facts // 清单读取失败：至少保留环境事实，不打断回合
+			return facts + "\n\n" + tone // 清单读取失败：至少保留环境事实与语气，不打断回合
 		}
-		return exttools.Preface(f) + "\n\n" + facts
+		return exttools.Preface(f) + "\n\n" + facts + "\n\n" + tone
 	})
 	return nil
 }
@@ -291,6 +311,36 @@ func (s *ChatService) SaveExtensions(f catalog.File) error {
 		}
 	}
 	return nil
+}
+
+// ProbeMcpServer 连接一台**已启用**的 MCP 服务器并返回它公布的工具名（第 8 批）：
+// 输入框 / 菜单里选中服务器后当场列出工具，点名字即绑定 server+tool——不必再花一轮
+// 让模型调 tool=list。
+//
+// 这不是一次对话发送：不写账本、不产生工具卡、不经过模型。远程服务器（http / 只有 URL）
+// 由 ProbeServer 返回现成的「不支持自动列工具」错误原文，调用方据此保留手打工具名；
+// 错误一律原样上抛（不包一层自己的话），界面显示的就是工具层给的原因。
+func (s *ChatService) ProbeMcpServer(ctx context.Context, name string) ([]string, error) {
+	server := strings.TrimSpace(name)
+	if server == "" {
+		return nil, errors.New("服务器名不能为空")
+	}
+	if s.mcpTool == nil || s.extensions == nil {
+		return nil, errors.New("MCP 未装配")
+	}
+	f, err := s.extensions.Load()
+	if err != nil {
+		return nil, fmt.Errorf("读取扩展清单失败：%w", err)
+	}
+	for _, spec := range f.MCP {
+		if !spec.Enabled || spec.Name != server {
+			continue
+		}
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return s.mcpTool.ProbeServer(pctx, spec)
+	}
+	return nil, fmt.Errorf("没有名为 %q 的已启用 MCP 服务器", server)
 }
 
 // activate 记录当前默认模型。这是唯一与"具体渠道"耦合的装配点：
@@ -365,20 +415,73 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 // 跨轮根本没有保护，只剩前端队列在兜。
 // Send 发送一条用户消息，返回流式块通道（恰好一个 EndReason 终态后关闭）。
 func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
-	return s.SendWithAttachments(ctx, sessionID, text, nil)
+	return s.SendWithAttachments(ctx, sessionID, text, nil, "")
 }
 
 // SendWithAttachments 发送带附件的用户消息（0.0.10）：附件先物化（校验/落位/记引用），
 // 再走与 Send 相同的轮次链路（payload 带附件引用，derive 重建上下文时还原图片与内联内容）。
-func (s *ChatService) SendWithAttachments(ctx context.Context, sessionID, text string, rawAtts []IncomingAttachment) (<-chan llm.StreamChunk, error) {
+// forceTool（第 7 批）是本轮"模型开口前必须先调用"的工具，JSON 形如
+// {"name":"skill","arguments":{"name":"x"}}；空串 = 不强制（行为与旧版一致）。
+// 用户在输入框里指定了技能或 MCP 工具时才有值——参数由前端给定，模型改不了。
+func (s *ChatService) SendWithAttachments(ctx context.Context, sessionID, text string, rawAtts []IncomingAttachment, forceTool string) (<-chan llm.StreamChunk, error) {
 	atts, err := s.materializeAttachments(sessionID, rawAtts)
 	if err != nil {
 		return nil, err
 	}
-	return s.sendCore(ctx, sessionID, text, atts)
+	forced, err := parseForcedTool(forceTool)
+	if err != nil {
+		return nil, err
+	}
+	return s.sendCore(ctx, sessionID, text, atts, forced)
 }
 
-func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts []session.UserAttachment) (<-chan llm.StreamChunk, error) {
+// parseForcedTool 解析强制工具参数（第 7 批）。白名单只放 skill / mcp：强制调用绝不能
+// 变成"绕过模型与审批直接跑 fs/shell"的口子。非法输入显式报错，不静默降级。
+func parseForcedTool(raw string) (*agent.ForcedTool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var p struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return nil, fmt.Errorf("强制工具参数格式错误：%w", err)
+	}
+	name := strings.TrimSpace(p.Name)
+	switch name {
+	case "skill":
+		args := strings.TrimSpace(string(p.Arguments))
+		if args == "" || args == "null" {
+			args = "{}"
+		}
+		return &agent.ForcedTool{Name: name, Arguments: args}, nil
+	case "mcp":
+		// 第 8 批：菜单只给 server/tool，参数由模型填（钉住语义）。旧消息（第 7 批界面
+		// 里用户手写过参数 JSON）仍带着 arguments —— 那份原样透传，走程序代发。
+		var spec struct {
+			Server    string          `json:"server"`
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(p.Arguments, &spec); err != nil {
+			return nil, fmt.Errorf("MCP 强制调用参数格式错误：%w", err)
+		}
+		server, tool := strings.TrimSpace(spec.Server), strings.TrimSpace(spec.Tool)
+		if server == "" || tool == "" {
+			return nil, errors.New("MCP 强制调用需要 server 与 tool")
+		}
+		args := strings.TrimSpace(string(spec.Arguments))
+		if args == "null" {
+			args = ""
+		}
+		return &agent.ForcedTool{Name: "mcp", Server: server, Tool: tool, Arguments: args}, nil
+	default:
+		return nil, fmt.Errorf("不支持的强制工具：%q（只支持 skill / mcp）", name)
+	}
+}
+
+func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
@@ -459,6 +562,10 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	// 都到"流收尾"为止：由转发 goroutine（或流未建立的错误路径）显式收尾。
 	watchStopped := make(chan struct{})
 	ag := s.newAgentWith(model, registry, approver, sessionID, watch)
+	ag.SetForcedTool(forced) // 第 7 批：本轮开口前先调用指定的技能 / MCP 工具
+	// 第 8 批：最近一次工作区检查有位置引用时，本轮请求末尾附一条"不是用户原话"的
+	// 说明（只存在于本次请求，不落账本、不进系统提示）。
+	ag.SetTrailingNote(func() string { return s.checkNote(sessionID) })
 	// 以下三个前置失败路径都在看门狗/分发 goroutine 启动之前：就地释放 runCtx
 	//（看门狗未启动，无需 close(watchStopped)）
 	if err := s.applyExtensionPreface(ctx, ag, root); err != nil {
@@ -522,6 +629,11 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		}
 	}()
 	go func() {
+		// 工作区检查（第 8 批）：**回合收尾之后**跑一次用户配的检查命令——正常、错误、
+		// 取消、看门狗超时各条终态路径都经过这里，与"chat:terminal 之后"同义。
+		// 放最后一个 defer（最先注册 = 最后执行），异步执行不拖住通道关闭；
+		// 未配置 = 不产生任何进程。
+		defer func() { go s.RunCheckAndEmit(sessionID) }()
 		defer close(out)
 		defer release()
 		defer cancelRun()         // 流收尾后释放本轮 ctx 资源（防泄漏；绝不提前取消）

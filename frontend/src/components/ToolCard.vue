@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
 import { diffLineClass, diffStat } from '../composables/diffView'
+import { openPathAt } from '../composables/openPath'
+import { parseOutputRows, type OutputRow } from '../composables/outputRows'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -102,6 +104,37 @@ async function restore() {
 
 // diffstat 与行着色（与审查带/详情面板同一来源：composables/diffView）
 const stat = computed(() => (props.m.diff ? diffStat(props.m.diff) : null))
+
+// 复制输出（第 7 批）：复制这张卡当前展示的全文——有 diff 给 diff，否则给原始输出
+//（搜索结果、命令输出都是纯文本）。失败同样 toast，不假装成功。
+const copyPayload = computed(() => (props.m.diff ? props.m.diff : (props.m.content ?? '')))
+async function copyOutput() {
+  const text = copyPayload.value
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    toast('info', '已复制输出')
+  } catch {
+    toast('error', '复制失败：剪贴板不可用')
+  }
+}
+
+// 打开文件（0.0.12；第 8 批加行号）：走统一入口 openPathAt——配了「在这一行打开」
+// 就用那条命令，没配则与 OpenInDefaultApp 完全一致。失败走 toast，绝不静默。
+async function openPath(path: string, line = 0) {
+  await openPathAt(store.sessionId, path, line, (m) => toast('error', m))
+}
+
+// 输出行（0.0.12 搜索结果 / 第 8 批 shell 等）：解析规则见 composables/outputRows.ts
+// （纯函数 + 单测）。第 8 批起，**其它非 diff 输出**（go test / go build 的报错行）里
+// 出现 `path:line:` / `path:line:col:` 时路径同样可点——此前那是一整块死文本。
+const resultRows = computed<OutputRow[] | null>(() => {
+  if (props.m.diff || props.m.status === 'running') return null
+  return parseOutputRows(props.m.content || '', {
+    isSearch: props.m.op === 'search' || props.m.toolName === 'search',
+    searchOK: props.m.status === 'success',
+  })
+})
 </script>
 
 <template>
@@ -165,6 +198,32 @@ const stat = computed(() => (props.m.diff ? diffStat(props.m.diff) : null))
     >
       <div v-for="(l, li) in m.diff.split('\n')" :key="li" :class="diffLineClass(l)">{{ l }}</div>
     </div>
+    <!-- 搜索结果（0.0.12）：命中行 = path:line:（浅底、路径可点开文件）；上下文行 =
+         path-line-（暗色）；files_only 的路径列表整行可点。行号不跳转——只打开文件。 -->
+    <div v-else-if="effectiveOpen && resultRows" class="tool-full space-y-0.5">
+      <div
+        v-for="r in resultRows"
+        :key="r.key"
+        class="flex items-baseline"
+        :class="r.hit ? 'rounded bg-[var(--c-primary-soft)]' : r.sep === '-' ? 'text-[var(--c-text-dim)]' : ''"
+      >
+        <button
+          v-if="r.openable && r.prefix"
+          class="shrink-0 cursor-pointer underline decoration-dotted underline-offset-2 hover:text-[var(--c-primary)]"
+          :title="
+            r.line
+              ? `打开 ${r.prefix}（配了「在这一行打开」时定位到第 ${r.line} 行）`
+              : `打开 ${r.prefix}（用系统默认程序，不定位到行）`
+          "
+          @click.stop="openPath(r.prefix, r.line)"
+        >
+          {{ r.prefix }}
+        </button>
+        <span v-else-if="r.prefix" class="shrink-0">{{ r.prefix }}</span>
+        <span v-if="r.sep" class="shrink-0 opacity-70">{{ r.sep }}{{ r.lineNo }}{{ r.sep }}</span>
+        <span class="min-w-0 truncate">{{ r.text }}</span>
+      </div>
+    </div>
     <pre v-else-if="effectiveOpen" class="tool-full">{{ m.content }}</pre>
 
     <!-- 撤销（0.0.07）：不可恢复说明优先显示（如超大文件未保存快照）；
@@ -180,13 +239,23 @@ const stat = computed(() => (props.m.diff ? diffStat(props.m.diff) : null))
       <AppIcon name="refresh" :size="11" /> {{ restoring ? '正在恢复…' : '恢复写入前' }}
     </button>
 
-    <button
-      v-if="revealable && effectiveOpen"
-      class="chip self-start text-[11px]"
-      title="打开文件所在目录并选中"
-      @click="reveal"
-    >
-      <AppIcon name="file" :size="11" /> 在资源管理器中显示
-    </button>
+    <div v-if="(revealable || copyPayload) && effectiveOpen" class="flex gap-1.5 self-start">
+      <button v-if="revealable" class="chip text-[11px]" title="打开文件所在目录并选中" @click="reveal">
+        <AppIcon name="file" :size="11" /> 在资源管理器中显示
+      </button>
+      <!-- 打开文件（0.0.12）：read/list 等卡片的主标签就是路径，可直接用系统默认程序打开 -->
+      <button
+        v-if="revealable"
+        class="chip text-[11px]"
+        title="用系统默认程序打开（不定位到行）"
+        @click="openPath(m.title || '')"
+      >
+        <AppIcon name="external" :size="11" /> 打开
+      </button>
+      <!-- 复制输出（第 7 批）：卡片全文（含搜索结果与命令输出）-->
+      <button v-if="copyPayload" class="chip text-[11px]" title="复制这张卡的输出全文" @click="copyOutput">
+        <AppIcon name="copy" :size="11" /> 复制输出
+      </button>
+    </div>
   </div>
 </template>

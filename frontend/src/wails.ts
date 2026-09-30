@@ -150,6 +150,58 @@ export interface RevertResultDTO {
   skipped: string[]
 }
 
+// 工作区检查命令的一处位置引用（第 8 批）：界面点它 = 与搜索结果同一打开入口。
+export interface CheckRefDTO {
+  path: string
+  line: number
+  col: number
+  text: string
+}
+
+// 一次检查的结果（skipped = 命令为空或已有一次在跑，什么都没发生）。
+export interface CheckResultDTO {
+  sessionID: string
+  command: string
+  output: string
+  refs: CheckRefDTO[]
+  failed: boolean
+  timedOut: boolean
+  skipped: boolean
+  at: number
+}
+
+// 工作区可选项（第 8 批）：openAtLine 空 = 用系统默认程序打开；
+// checkCommand 空 = 任何时候都不跑检查（绝不猜 go test）。
+export interface WorkspaceSettingsDTO {
+  openAtLine: string
+  checkCommand: string
+}
+
+// 语气设置（第 8 批）：内置 50 条由后端给（id / 名称 / 做法），前端不复制名单。
+export interface ToneEntryDTO {
+  id: string
+  name: string
+  practice: string
+}
+
+// 语气面板数据：mode 只可能 fixed / auto；default 不能出现在 disabled 里
+// （后端保存时拒绝，界面照实显示那条错误）。
+export interface TonesViewDTO {
+  mode: string
+  default: string
+  disabled: string[]
+  builtin: ToneEntryDTO[]
+}
+
+// 文件只读正文（第 8 批：文件详情面板）。limit 是 fs 的单次读取上限（字节），
+// truncated=true 表示只给了前 limit 字节——界面必须照实说明，不能装作读全了。
+export interface FileBodyDTO {
+  path: string
+  content: string
+  truncated: boolean
+  limit: number
+}
+
 // 从这条用户消息重跑的结果（第 6 批）：text = 原消息原文（前端据此重发）。
 export interface RerunResultDTO {
   text: string
@@ -277,6 +329,22 @@ interface WailsApp {
   RevealInExplorer(sessionID: string, path: string): Promise<void>
   // 用系统默认程序打开（0.0.11）：路径解析同 Reveal；目录直接打开目录本身。
   OpenInDefaultApp(sessionID: string, path: string): Promise<void>
+  // 打开文件并（配置了「在这一行打开」时）定位到第 line 行（第 8 批）。
+  // 未配置 / 行号 0 / 命令起不来 → 与 OpenInDefaultApp 完全一致的退回路径。
+  OpenAtLine(sessionID: string, path: string, line: number): Promise<void>
+  // 工作区可选项（第 8 批）：在这条对话的工作区上读写 workspace-settings.json。
+  WorkspaceSettings(sessionID: string): Promise<WorkspaceSettingsDTO>
+  SaveWorkspaceSettings(sessionID: string, ws: WorkspaceSettingsDTO): Promise<void>
+  // 读取这场对话工作区内某文件的正文（第 8 批：文件详情面板只读浏览）。
+  // 超限只给前半（truncated + limit 说明上限）；越界/缺失/二进制显式报错。
+  ReadSessionFile(sessionID: string, path: string): Promise<FileBodyDTO>
+  // 语气设置（第 8 批）：读取当前设置与内置 50 条（侧栏底部「语气」入口用）。
+  GetTones(): Promise<TonesViewDTO>
+  // 保存语气设置。非法值（如停用默认语气）报错并原样显示；下一轮对话生效。
+  SaveTones(file: { mode: string; default: string; disabled: string[] }): Promise<void>
+  // 列出已启用 MCP 服务器公布的工具名（第 8 批：/ 菜单里当场选工具，不花一轮 tool=list）。
+  // 只读探测：不写账本、不产生工具卡。远程服务器返回现成的「不支持自动列工具」错误原文。
+  ProbeMcpServer(name: string): Promise<string[]>
   // 系统保存对话框写文本文件（0.0.06：导出会话"另存为文件"）。取消返回空串。
   SaveTextFile(defaultName: string, content: string): Promise<string>
   // 打开内部日志目录（0.0.09）：排障入口——轮次/上游请求/看门狗事件按天落盘
@@ -292,7 +360,9 @@ interface WailsApp {
   // @ 文件引用（0.0.09/0.0.10 会话化）：列出**这场对话**工作区的文件。
   SearchWorkspaceFiles(sessionID: string, query: string): Promise<string[] | null>
   // 带附件发送（0.0.10）：图片/文件 JSON 数组；失败上抛（前端保留待发送区）。
-  SendWithAttachments(sessionID: string, text: string, attachments: string): Promise<void>
+  // forceTool（第 7 批）：本轮"模型开口前必须先调用"的工具 JSON（{"name","arguments"}；
+  // 空串 = 不强制）——用户在输入框里指定了技能或 MCP 工具时才有值。
+  SendWithAttachments(sessionID: string, text: string, attachments: string, forceTool: string): Promise<void>
   // 代码块「应用到文件」：内容直接写入工作区，返回写入回执（路径 + diff + 新建/覆盖）。
   ProposeFileWrite(sessionID: string, path: string, content: string): Promise<ProposeWriteResultDTO | null>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
@@ -438,6 +508,13 @@ export function bridge(): WailsBridge {
         SetActiveChannel: offlineWrite,
         SetActiveModel: offlineWrite,
         CurrentBranch: async () => '',
+        ReadSessionFile: async () => ({ path: '', content: '', truncated: false, limit: 0 }),
+        OpenAtLine: offlineWrite,
+        WorkspaceSettings: async () => ({ openAtLine: '', checkCommand: '' }),
+        SaveWorkspaceSettings: offlineWrite,
+        ProbeMcpServer: async () => [],
+        GetTones: async () => ({ mode: 'fixed', default: 'plain', disabled: [], builtin: [] }),
+        SaveTones: offlineWrite,
         RevealInExplorer: offlineWrite,
         OpenInDefaultApp: offlineWrite,
         SaveTextFile: async () => '',

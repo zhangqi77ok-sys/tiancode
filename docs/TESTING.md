@@ -31,7 +31,7 @@
 | M3 | C-FS-1 ~ C-FS-4、C-TOOL-1（fs 部分） | 4+ |
 | M4 | C-TOOL-1 ~ C-TOOL-5（shell/git） | 5 |
 | M5 | 全量回归 + 守卫 + 打包冒烟 | — |
-| M6 | C-AGT-1~4、C-FS-5~7、C-SEARCH-1~6、C-APP-3 | 14 |
+| M6 | C-AGT-1~4、C-FS-5~7、C-SEARCH-1~8、C-APP-3 | 16 |
 
 > M6 额外覆盖（非契约 ID 主列，但同批锁定）：`TestAgent_FillsEmptyToolCallIDInSameTurn`、`TestAgent_TruncatesToolEventForIPC`、`TestSearch_MaxMatchesExactNoTruncate`。
 > search 超时用例遵循下文时序纪律：轮询直到条件成立或超时；负载下若红，先隔离重跑 `go test ./internal/platform/searchtool/ -count=1`。

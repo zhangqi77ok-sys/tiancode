@@ -1,6 +1,7 @@
 // Package searchtool 实现工作区受控内容搜索。
 //
-// 做什么：按正则扫描工作区文本文件，返回 path:line:text；跳过内置忽略目录与二进制。
+// 做什么：按正则扫描工作区文本文件，返回 path:line:text 且每条命中带 ±2 行上下文
+// （0.0.12）；files_only=true 时只按路径找文件、只返回路径列表；跳过内置忽略目录与二进制。
 // 被谁依赖：internal/app（装配进工具注册表）。
 // 依赖谁：core/tools 端口、stdlib。
 package searchtool
@@ -31,6 +32,10 @@ const (
 	defaultMaxMatches = 50
 	capMaxMatches     = 200
 	headProbe         = 8 * 1024
+	// contextLines 是每条命中前后附带的行数（0.0.12，rg -C 同款）：只给命中那一行时，
+	// 模型要改一个函数还得再 read 一次，每次定位多一轮往返。上下文计入 64KiB 输出
+	// 预算——超了在块边界少给几条，绝不把整个函数贴进上下文。
+	contextLines = 2
 )
 
 // Tool 是工作区内容搜索工具。
@@ -62,7 +67,10 @@ func (t *Tool) Name() string { return "search" }
 
 // Description 实现工具端口。
 func (t *Tool) Description() string {
-	return "在工作区内搜索文件内容（正则）。返回 path:line:text。默认跳过 .git/node_modules/vendor/dist/bin。不要用 shell 做全库 rg。"
+	return "在工作区搜索。默认搜内容（正则）：返回 path:line:text，每条命中带前后各 " +
+		"2 行上下文（上下文行是 path-line-text，命中行是 path:line:text）。" +
+		"files_only=true 时只按文件路径匹配、只返回路径列表（找 handler.go 这类「按名字找文件」用这个，" +
+		"不要用 tree 逐层翻）。默认跳过 .git/node_modules/vendor/dist/bin。不要用 shell 做全库 rg。"
 }
 
 // Schema 实现工具端口。
@@ -70,9 +78,10 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "pattern": {"type": "string", "description": "Go 正则"},
+    "pattern": {"type": "string", "description": "Go 正则；files_only 时匹配工作区相对路径"},
     "path": {"type": "string", "description": "相对工作区的起点，默认 ."},
     "glob": {"type": "string", "description": "只匹配文件名，如 *.go"},
+    "files_only": {"type": "boolean", "description": "只按路径找文件：不读文件内容，只返回路径列表（默认 false = 搜内容）"},
     "max_matches": {"type": "integer", "description": "命中上限，默认 50，最大 200"}
   },
   "required": ["pattern"]
@@ -151,6 +160,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		Pattern    string `json:"pattern"`
 		Path       string `json:"path"`
 		Glob       string `json:"glob"`
+		FilesOnly  bool   `json:"files_only"`
 		MaxMatches int    `json:"max_matches"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -231,9 +241,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 				return nil
 			}
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > maxFileBytes {
-			return nil
+		if !a.FilesOnly {
+			// 体积闸门只约束内容搜索：按名字找文件不读内容，几 MB 的源文件也该找得到
+			info, err := d.Info()
+			if err != nil || info.Size() > maxFileBytes {
+				return nil
+			}
 		}
 		// 逐文件真实路径校验（0.2.36 审计 R4）：起点检查挡不住文件级符号链接；
 		// 区外跳过并记入汇总；解析失败按词法保留但标注（不因一个链接整次失败）。
@@ -247,32 +260,68 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 			truncatedMatches = true
 			return errStop
 		}
-		hits, err := searchFile(ctx, p, re)
+		rel := relSlash(p)
+		if a.FilesOnly {
+			// 按名字找文件（0.0.12）：正则匹配工作区相对路径，命中只给一行路径——
+			// 找 handler.go 不必再 tree 一层层翻，也不把任何文件内容拉进上下文。
+			if !re.MatchString(rel) {
+				return nil
+			}
+			if acc.Full() {
+				outputTruncated = true
+				return errStop
+			}
+			if matches+1 > max {
+				truncatedMatches = true
+				return errStop
+			}
+			acc.Write([]byte(rel + "\n"))
+			matches++
+			if matches >= max {
+				hitMax = true
+			}
+			return nil
+		}
+		hunks, err := searchFile(ctx, p, re)
 		if err != nil && ctx.Err() == nil {
 			return nil
 		}
-		rel, err := filepath.Rel(t.root, p)
-		if err != nil {
-			rel = p
-		}
-		rel = filepath.ToSlash(rel)
-		for i, h := range hits {
-			line := fmt.Sprintf("%s:%d:%s\n", rel, h.line, h.text)
-			acc.Write([]byte(line))
+		// 按块输出（0.0.12）：块 = 一段「命中 ± 上下文」的连续行（相邻命中自动合并）；
+		// 配额放不下整块就整块不给——宁可少给几条，也不给半截上下文。
+		for i := 0; i < len(hunks); {
+			end := i + 1
+			for end < len(hunks) && !hunks[end].newHunk {
+				end++
+			}
+			block := hunks[i:end]
+			n := countHits(block)
+			if matches+n > max {
+				truncatedMatches = true
+				return errStop
+			}
 			if acc.Full() {
 				// 预算耗尽：尾环已滚过一遍，此刻停下（尾部保留的是最后的命中）
 				outputTruncated = true
 				return errStop
 			}
-			matches++
-			if matches >= max {
-				if i+1 < len(hits) {
-					truncatedMatches = true
-					return errStop
+			for _, l := range block {
+				if l.match {
+					// 命中行：path:line:text（与旧格式一致，: 分隔即"这行是命中"）
+					acc.Write([]byte(fmt.Sprintf("%s:%d:%s\n", rel, l.line, l.text)))
+				} else {
+					// 上下文行：path-line-text（rg 的 :/- 约定，一眼分辨）
+					acc.Write([]byte(fmt.Sprintf("%s-%d-%s\n", rel, l.line, l.text)))
 				}
-				hitMax = true
-				break
 			}
+			matches += n
+			i = end
+			if acc.Full() {
+				outputTruncated = true
+				return errStop
+			}
+		}
+		if matches >= max {
+			hitMax = true
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -335,12 +384,31 @@ func headOf(items []string, n int) []string {
 
 var errStop = fmt.Errorf("search stop")
 
-type hit struct {
-	line int
-	text string
+// outLine 是一行输出：命中行（match）写成 path:line:text，上下文行写成
+// path-line-text；newHunk 标记"新上下文块的开始"（块与块之间隔着被跳过的行），
+// 输出预算按块边界检查，绝不把一块截成半截。
+type outLine struct {
+	line    int
+	text    string
+	match   bool
+	newHunk bool
 }
 
-func searchFile(ctx context.Context, path string, re *regexp.Regexp) ([]hit, error) {
+// countHits 数一块里有多少条命中（上下文行不占 max_matches 配额）。
+func countHits(block []outLine) int {
+	n := 0
+	for _, l := range block {
+		if l.match {
+			n++
+		}
+	}
+	return n
+}
+
+// searchFile 扫一遍文件：命中 + 前后各 contextLines 行上下文（相邻命中自动并块）。
+// 整文件读进内存（调用方已按 maxFileBytes 1MiB 限制）——换来上下文/合并逻辑直白，
+// 也省掉"先定位再回读"的第二遍 IO。
+func searchFile(ctx context.Context, path string, re *regexp.Regexp) ([]outLine, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -350,30 +418,64 @@ func searchFile(ctx context.Context, path string, re *regexp.Regexp) ([]hit, err
 	n, _ := io.ReadFull(f, head)
 	head = head[:n]
 	if bytes.IndexByte(head, 0) >= 0 {
-		return nil, nil
+		return nil, nil // 二进制：不是内容搜索的对象
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	var hits []hit
-	lineNo := 0
+	var (
+		lines []string
+		hits  []int // 0 起的行下标
+	)
 	for sc.Scan() {
 		if err := ctx.Err(); err != nil {
-			return hits, err
+			return nil, err
 		}
-		lineNo++
 		text := strings.TrimRight(sc.Text(), "\r")
-		if !utf8.ValidString(text) {
-			continue
-		}
-		if re.MatchString(text) {
-			hits = append(hits, hit{line: lineNo, text: text})
+		lines = append(lines, text)
+		if utf8.ValidString(text) && re.MatchString(text) {
+			hits = append(hits, len(lines)-1)
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return hits, err
+		return nil, err
 	}
-	return hits, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return hunksOf(lines, hits), nil
+}
+
+// hunksOf 把命中展开成带上下文的输出行：±contextLines 的行都保留，相邻/重叠的窗口
+// 自然并成一块（上下文不重复输出）。非法 UTF-8 行不出现在输出里（行号仍按真实行计）。
+func hunksOf(lines []string, hits []int) []outLine {
+	if len(hits) == 0 {
+		return nil
+	}
+	emit := make([]bool, len(lines))
+	isHit := make([]bool, len(lines))
+	for _, hi := range hits {
+		isHit[hi] = true
+		lo := max(0, hi-contextLines)
+		hi2 := min(len(lines)-1, hi+contextLines)
+		for i := lo; i <= hi2; i++ {
+			emit[i] = true
+		}
+	}
+	out := make([]outLine, 0, len(hits)*(2*contextLines+1))
+	newHunk := true
+	for i, text := range lines {
+		if !emit[i] {
+			newHunk = true // 中间有被跳过的行：下一段是新块
+			continue
+		}
+		if !utf8.ValidString(text) {
+			continue // 二进制残留行：不输出（洞不并块，行号照真实行计）
+		}
+		out = append(out, outLine{line: i + 1, text: text, match: isHit[i], newHunk: newHunk})
+		newHunk = false
+	}
+	return out
 }

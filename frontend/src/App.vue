@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, provide, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useChatStore, type TodoItem } from './stores/chat'
+import { useChatStore, type PendingAttachment, type TodoItem } from './stores/chat'
+import type { CheckResultDTO } from './wails'
 import { useCatalogStore } from './stores/catalog'
+import { loadSidebarCollapsed, matchShortcut, saveSidebarCollapsed } from './composables/shortcuts'
 import { consumeEsc } from './composables/useEsc'
 import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
+import CheckResults from './components/CheckResults.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
 import FileDetailPanel from './components/FileDetailPanel.vue'
@@ -16,7 +19,9 @@ import MessageList from './components/MessageList.vue'
 import SessionList from './components/SessionList.vue'
 import SkillSettings from './components/SkillSettings.vue'
 import ToastHost from './components/ToastHost.vue'
+import ToneSettings from './components/ToneSettings.vue'
 import TurnReview from './components/TurnReview.vue'
+import WorkspaceSettingsPanel from './components/WorkspaceSettingsPanel.vue'
 
 // 根组件退化为布局壳：顶栏/侧栏/对话/输入各自自治，事件桥在此统一接线。
 const store = useChatStore()
@@ -36,8 +41,14 @@ watch(
 const channelsOpen = ref(false)
 const mcpOpen = ref(false)
 const skillsOpen = ref(false)
+const tonesOpen = ref(false) // 语气设置（第 8 批）：侧栏底部入口，不进顶栏
+const wsSettingsOpen = ref(false) // 工作区设置（第 8 批）：在这一行打开 / 检查命令
+// 工作区检查结果（第 8 批）：最近一次自动检查的位置列表（只读展示）
+const checkResult = ref<CheckResultDTO | null>(null)
 // 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
-const anyModalOpen = computed(() => channelsOpen.value || mcpOpen.value || skillsOpen.value)
+const anyModalOpen = computed(
+  () => channelsOpen.value || mcpOpen.value || skillsOpen.value || tonesOpen.value || wsSettingsOpen.value,
+)
 
 // 输入草稿**按会话各存一份**：此前是全局单例——在 A 里敲的半句话切到 B
 // 回车就发进了 B（串会话），A 的草稿也随之丢失。切换/新建时草稿各归各位。
@@ -49,10 +60,23 @@ const draft = computed({
   },
 })
 
-// 切换/新建会话时关闭文件详情面板（面板展示的是"当前会话的改动"，跨会话显示会张冠李戴）
+// 重跑锚点（第 7 批）：用户气泡点「重跑」只做两件事——原文回填输入框（可改）、
+// 附件回到待发送区。撤回与账本分叉等用户按发送、确认之后才发生（见 Composer）。
+const pendingRerun = ref<{ seq: number; attachments: PendingAttachment[] } | null>(null)
+function startRerun(p: { seq: number; text: string; attachments: PendingAttachment[] }) {
+  draft.value = p.text
+  pendingRerun.value = { seq: p.seq, attachments: p.attachments }
+}
+
+// 切换/新建会话时关闭文件详情面板（面板展示的是"当前会话的改动"，跨会话显示会张冠李戴）；
+// 待重跑锚点同理作废——草稿按会话各存一份，锚点不能跨会话用
 watch(
   () => store.sessionId,
-  () => store.closeFileDetail(),
+  () => {
+    store.closeFileDetail()
+    pendingRerun.value = null
+    checkResult.value = null // 检查结果按会话各归各位（跨会话显示会张冠李戴）
+  },
 )
 
 // 模态打开函数（0.0.06：入口统一在侧栏底部，汉堡导航已下线）
@@ -64,6 +88,9 @@ function openMcp() {
 }
 function openSkills() {
   skillsOpen.value = true
+}
+function openTones() {
+  tonesOpen.value = true
 }
 
 // ---- 快捷键（0.0.06）----
@@ -92,9 +119,16 @@ function cycleSession(delta: number) {
   void store.selectSession(ids[next])
 }
 
+// 侧栏折叠（第 8 批）：Ctrl+B 收起成窄轨（文件详情占右侧时对话列不再被挤扁）。
+// 状态记 localStorage（跨重启保留）；模态打开时不抢键——上面那行 return 已经兜住。
+const sidebarCollapsed = ref(loadSidebarCollapsed())
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  saveSidebarCollapsed(sidebarCollapsed.value)
+}
+
 function onGlobalKeydown(e: KeyboardEvent) {
   if (anyModalOpen.value) return // 模态打开：不抢任何全局键（Esc 归模态）
-  const mod = e.ctrlKey || e.metaKey
   if (e.key === 'Escape') {
     // 浮层优先（第 3 批）：@ 候选等已 preventDefault；右侧文件面板/菜单/灯箱经
     // Esc 消费栈注册。没有浮层消费时才轮到"中断生成"——否则关一个浮层会顺手
@@ -106,20 +140,29 @@ function onGlobalKeydown(e: KeyboardEvent) {
     }
     return
   }
-  if (!mod) return
-  const k = e.key.toLowerCase()
-  if (k === 'n') {
-    e.preventDefault()
-    void store.newSession()
-  } else if (k === 'i' || k === '/') {
-    e.preventDefault()
-    composerInput.value?.focus()
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    cycleSession(-1)
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    cycleSession(1)
+  switch (matchShortcut(e)) {
+    case 'new-session':
+      e.preventDefault()
+      void store.newSession()
+      break
+    case 'focus-input':
+      e.preventDefault()
+      composerInput.value?.focus()
+      break
+    case 'prev-session':
+      e.preventDefault()
+      cycleSession(-1)
+      break
+    case 'next-session':
+      e.preventDefault()
+      cycleSession(1)
+      break
+    case 'toggle-sidebar':
+      e.preventDefault()
+      toggleSidebar()
+      break
+    default:
+      break
   }
 }
 
@@ -169,6 +212,11 @@ onMounted(() => {
   bridge().runtime.EventsOn('chat:todo', (p: { sessionID: string; items: { text: string; status: string }[] }) => {
     store.onTodo({ sessionID: p.sessionID, items: p.items as TodoItem[] })
   })
+  // 工作区检查结果（第 8 批）：回合收尾后自动跑的命令，结果只给当前会话显示
+  bridge().runtime.EventsOn('workspace:check', (p: CheckResultDTO) => {
+    if (p?.sessionID && p.sessionID !== store.sessionId) return // 后台会话的结果不插进当前视图
+    checkResult.value = p?.refs?.length ? p : null
+  })
   // 上下文治理读数（第 2 批）：油表显示预算/估算与折叠标记——折叠绝不静默
   bridge().runtime.EventsOn(
     'chat:context',
@@ -206,18 +254,23 @@ onBeforeUnmount(() => {
 
     <div class="flex min-h-0 flex-1 gap-4">
       <SessionList
+        :collapsed="sidebarCollapsed"
+        @toggle-collapsed="toggleSidebar"
         @open-channels="openChannels"
         @open-mcp="openMcp"
         @open-skills="openSkills"
+        @open-tones="openTones"
+        @open-workspace-settings="wsSettingsOpen = true"
       />
 
       <main class="card relative flex min-w-0 flex-1">
         <!-- 左列：消息流 + 本轮变更 + 输入（与右侧文件详情并存，互不遮挡） -->
         <div class="flex min-w-0 flex-1 flex-col">
-          <MessageList @suggest="draft = $event" />
+          <MessageList @suggest="draft = $event" @rerun="startRerun" />
           <!-- 本轮变更审查带（0.0.09；第 2 批默认折叠、按文件聚合）：点文件行开右侧详情 -->
           <TurnReview />
-          <Composer v-model="draft" />
+          <CheckResults :result="checkResult" />
+          <Composer v-model="draft" :rerun="pendingRerun" @rerun-done="pendingRerun = null" />
           <!-- 悬浮任务清单：挂在对话面板内（absolute 以 main 为参照系），位置/折叠态跨重启保留 -->
           <FloatingTodo />
         </div>
@@ -230,6 +283,8 @@ onBeforeUnmount(() => {
     <ChannelSettings v-if="channelsOpen" @close="channelsOpen = false" />
     <McpSettings v-if="mcpOpen" @close="mcpOpen = false" />
     <SkillSettings v-if="skillsOpen" @close="skillsOpen = false" />
+    <ToneSettings v-if="tonesOpen" @close="tonesOpen = false" />
+    <WorkspaceSettingsPanel v-if="wsSettingsOpen" @close="wsSettingsOpen = false" />
     <DialogHost />
     <ToastHost />
   </div>

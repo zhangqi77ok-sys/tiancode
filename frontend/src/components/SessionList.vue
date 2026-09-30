@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useCatalogStore } from '../stores/catalog'
 import { useChannelStore } from '../stores/channels'
+import { useTonesStore } from '../stores/tones'
 import { useWorkspaceStore } from '../stores/workspace'
 import { buildSidebar, filterSidebar } from '../composables/sessionGrouping'
 import { useDialogs } from '../composables/useDialogs'
@@ -15,11 +16,18 @@ import SessionRow from './SessionRow.vue'
 // 每个列表默认显示 5 条，超出折叠为"查看更多 (N)"。
 // 底部导航：模型/渠道/技能/MCP 的**统一**设置入口（0.0.06——此前拆在汉堡导航与
 // 侧栏底部两处，现已收敛到这一处；汉堡导航整体下线）。
+// 折叠成窄轨（第 8 批）：Ctrl+B 收起后只剩图标（新建 / 设置入口 / 展开），
+// 文件详情面板占右侧时对话列不再被挤扁。状态由 App 持有（localStorage 持久化），
+// 这里只负责渲染与请求切换。
+const props = defineProps<{ collapsed?: boolean }>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'open-channels'): void
   (e: 'open-mcp'): void
   (e: 'open-skills'): void
+  (e: 'open-tones'): void
+  (e: 'open-workspace-settings'): void
+  (e: 'toggle-collapsed'): void
 }>()
 
 const store = useChatStore()
@@ -31,6 +39,7 @@ const dialogs = useDialogs()
 // 此前入口拆在汉堡导航与侧栏底部两处，用户不知道去哪找。模型名在这里是
 // 主信息（正文字号、正常色），不再是 11px 浅色次要字。
 const catalog = useCatalogStore()
+const tones = useTonesStore()
 const settingsMenuOpen = ref(false)
 const settingsMenuRef = ref<HTMLElement | null>(null)
 
@@ -52,14 +61,20 @@ function onSettingsMousedown(e: MouseEvent) {
   const el = settingsMenuRef.value
   if (el && !el.contains(e.target as Node)) settingsMenuOpen.value = false
 }
-onMounted(() => document.addEventListener('mousedown', onSettingsMousedown))
+onMounted(() => {
+  document.addEventListener('mousedown', onSettingsMousedown)
+  // 语气设置（第 8 批）：底部入口要显示当前语气。这里失败不拦界面（只影响那行后缀，
+  // 不显示即"不知道"），真正的错误在面板打开时再读一次并原样显示。
+  if (!tones.loaded) void tones.load()
+})
 onBeforeUnmount(() => document.removeEventListener('mousedown', onSettingsMousedown))
 
-function openSettings(kind: 'channels' | 'mcp' | 'skills') {
+function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones') {
   settingsMenuOpen.value = false
   if (kind === 'channels') emit('open-channels')
   else if (kind === 'mcp') emit('open-mcp')
-  else emit('open-skills')
+  else if (kind === 'skills') emit('open-skills')
+  else emit('open-tones')
 }
 
 const VIEW_LIMIT = 5
@@ -150,10 +165,31 @@ function select(id: string) {
 <template>
   <aside
     aria-label="会话列表"
-    class="card flex w-60 shrink-0 flex-col p-3"
+    class="card flex shrink-0 flex-col p-3"
+    :class="props.collapsed ? 'w-14' : 'w-60'"
   >
+    <!-- 窄轨（第 8 批）：只剩图标——展开 / 新建 / 设置入口；搜索与会话列表整体隐藏 -->
+    <template v-if="props.collapsed">
+      <button
+        class="chip mb-2 justify-center px-0 py-2"
+        title="展开侧栏（Ctrl+B）"
+        aria-label="展开侧栏"
+        @click="emit('toggle-collapsed')"
+      >
+        <AppIcon name="chevron-down" :size="14" class="-rotate-90" />
+      </button>
+      <button
+        class="btn-primary mb-2 justify-center gap-0 px-0 py-2"
+        :title="ws.path ? `在当前工作区（${ws.path}）新建对话` : '新建通用对话（未选择工作区）'"
+        aria-label="新建对话"
+        @click="store.newSession(); emit('close')"
+      >
+        <AppIcon name="plus" :size="16" />
+      </button>
+    </template>
+
     <!-- 双动作入口：新建对话（当前工作区）+ 打开工作区（切换归属） -->
-    <div class="mb-3 flex gap-1.5">
+    <div v-if="!props.collapsed" class="mb-3 flex gap-1.5">
       <button
         class="btn-primary min-w-0 flex-1 gap-1.5 py-2 text-sm"
         :title="ws.path ? `在当前工作区（${ws.path}）新建对话` : '新建通用对话（未选择工作区）'"
@@ -172,6 +208,7 @@ function select(id: string) {
 
     <!-- 本地搜索（0.0.11）：标题与工作区路径子串匹配；命中分组自动展开、不限 5 条 -->
     <input
+      v-if="!props.collapsed"
       v-model="query"
       type="search"
       aria-label="搜索会话"
@@ -179,7 +216,7 @@ function select(id: string) {
       class="mb-2 w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-1.5 text-xs text-[var(--c-text)] outline-none focus:border-[var(--c-primary)]"
     />
 
-    <div class="min-h-0 flex-1 space-y-2 overflow-y-auto">
+    <div v-if="!props.collapsed" class="min-h-0 flex-1 space-y-2 overflow-y-auto">
       <p v-if="filtering && !sections.length" class="px-2 py-3 text-xs text-[var(--c-text-faint)]">
         没有匹配的会话
       </p>
@@ -291,40 +328,61 @@ function select(id: string) {
 
     <div v-if="store.error" class="mt-2 px-1 text-xs text-[var(--c-err-text)]">{{ store.error }}</div>
 
-    <!-- 底部导航（0.0.07 收紧）：一个紧凑按钮——图标 + "设置"两个字；
-         当前模型/渠道信息收进菜单顶部（不占侧栏版面），未配置模型才给警示色 -->
+    <!-- 底部设置入口（0.0.12 重排）：一行 = 图标 + "设置" + 状态点 + 展开指示；
+         菜单向上弹，与条目共用同一列网格（图标列 / 文本列 / 右侧状态列），
+         当前模型收进菜单顶部当"标题块"（带图标，与条目图标同列） -->
     <div ref="settingsMenuRef" class="relative mt-2 border-t border-[var(--c-border)] px-1 pt-2">
       <button
-        class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-text)]"
+        class="flex w-full items-center gap-2 rounded-lg py-2 text-[13px] transition-colors"
+        :class="[
+          props.collapsed ? 'justify-center px-0' : 'px-3',
+          settingsMenuOpen
+            ? 'bg-[var(--c-surface-soft)] text-[var(--c-text)]'
+            : 'text-[var(--c-text-dim)] hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-text)]',
+        ]"
         aria-haspopup="menu"
         :aria-expanded="settingsMenuOpen"
         :title="settingsTitle"
         @click="settingsMenuOpen = !settingsMenuOpen"
       >
         <AppIcon name="sliders" :size="14" class="shrink-0" />
-        <span>设置</span>
-        <span
-          class="ml-auto h-1.5 w-1.5 rounded-full"
-          :class="channels.activeModel ? 'bg-[var(--c-ok)]' : 'bg-[var(--c-warn)]'"
-        ></span>
+        <span v-if="!props.collapsed" class="min-w-0 flex-1 text-left">设置</span>
+        <template v-if="!props.collapsed">
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full"
+            :class="channels.activeModel ? 'bg-[var(--c-ok)]' : 'bg-[var(--c-warn)]'"
+            aria-hidden="true"
+          ></span>
+          <AppIcon
+            name="chevron-down"
+            :size="12"
+            class="shrink-0 rotate-180 text-[var(--c-text-faint)]"
+            aria-hidden="true"
+          />
+        </template>
       </button>
       <div
         v-if="settingsMenuOpen"
         role="menu"
-        class="absolute bottom-full left-0 z-40 mb-1 w-full rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        class="absolute bottom-full left-0 z-40 mb-1.5 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-[var(--shadow-float)]"
+        :class="props.collapsed ? 'w-56' : 'w-full'"
       >
-        <!-- 当前模型一览：信息保留，但只在这里占版面 -->
-        <div class="border-b border-[var(--c-border)] px-2 pb-1.5 pt-0.5">
-          <p class="truncate text-xs font-medium text-[var(--c-text)]" :title="channels.activeModel">
-            {{ channels.activeModel || '未选择模型' }}
-          </p>
-          <p
-            class="truncate text-[11px]"
-            :class="channels.activeChannel ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
-          >
-            {{ channels.activeChannel ? channels.activeChannel.name : '未配置渠道' }}
-          </p>
+        <!-- 当前模型：带图标的一行块——图标与条目图标同列，文本与条目文本同列 -->
+        <div class="flex items-center gap-2 px-2 py-2">
+          <AppIcon name="message" :size="14" class="shrink-0 text-[var(--c-text-faint)]" aria-hidden="true" />
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-xs font-medium text-[var(--c-text)]" :title="channels.activeModel">
+              {{ channels.activeModel || '未选择模型' }}
+            </p>
+            <p
+              class="mt-0.5 truncate text-[11px]"
+              :class="channels.activeChannel ? 'text-[var(--c-text-dim)]' : 'text-[var(--c-warn-text)]'"
+            >
+              {{ channels.activeChannel ? channels.activeChannel.name : '未配置渠道' }}
+            </p>
+          </div>
         </div>
+        <div class="my-1 h-px bg-[var(--c-border)]"></div>
         <button role="menuitem" class="menu-item" @click="openSettings('channels')">
           <AppIcon name="sliders" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">模型与渠道管理</span>
@@ -332,16 +390,30 @@ function select(id: string) {
         <button role="menuitem" class="menu-item" @click="openSettings('mcp')">
           <AppIcon name="plug" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">MCP 管理</span>
-          <span class="text-[11px] text-[var(--c-text-faint)]">
+          <span class="shrink-0 pl-2 text-[11px] text-[var(--c-text-faint)]">
             {{ catalog.mcp.length ? `已启用 ${mcpOn}/${catalog.mcp.length}` : '未添加' }}
           </span>
         </button>
         <button role="menuitem" class="menu-item" @click="openSettings('skills')">
           <AppIcon name="book" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">Skill 管理</span>
-          <span class="text-[11px] text-[var(--c-text-faint)]">
+          <span class="shrink-0 pl-2 text-[11px] text-[var(--c-text-faint)]">
             {{ catalog.skills.length ? `已启用 ${skillOn}/${catalog.skills.length}` : '未添加' }}
           </span>
+        </button>
+        <!-- 语气（第 8 批）：固定一条 / 按每条消息自动选——与模型、渠道、MCP、技能并列，
+             入口只在侧栏底部（不进顶栏）。后缀显示当前语气，读不到就不显示。 -->
+        <button role="menuitem" class="menu-item" @click="openSettings('tones')">
+          <AppIcon name="message" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">语气</span>
+          <span v-if="tones.loaded" class="shrink-0 pl-2 text-[11px] text-[var(--c-text-faint)]">
+            {{ tones.label }}
+          </span>
+        </button>
+        <!-- 工作区设置（第 8 批）：在这一行打开 / 检查命令——按工作区存，不进顶栏 -->
+        <button role="menuitem" class="menu-item" @click="emit('open-workspace-settings'); settingsMenuOpen = false">
+          <AppIcon name="wrench" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">工作区设置</span>
         </button>
       </div>
     </div>

@@ -305,6 +305,9 @@ select {
   padding: 7px 8px;
   font-size: 13px;
   color: var(--c-text);
+  /* 按钮默认 text-align: center——标签列（flex-1）会按各自剩余宽度居中，
+     长短不一的条目就"歪成一排"（右侧还有计数时偏移更明显）。菜单条目一律左对齐。 */
+  text-align: left;
   transition: background-color 120ms;
 }
 .menu-item:hover {

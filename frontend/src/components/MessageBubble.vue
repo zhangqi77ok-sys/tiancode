@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ChatMsg } from '../stores/chat'
+import type { ChatMsg, PendingAttachment } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
-import { useDialogs } from '../composables/useDialogs'
 import { useEscClose } from '../composables/useEsc'
 import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
@@ -16,6 +15,12 @@ import ToolCard from './ToolCard.vue'
 // - agent 回合（run）：单一消息头 + 内部段落流（思考 → 文本 → 工具卡 → 思考 → …）——
 //   整个回合是"一个输出"，不再每个助手段各起一个 AGENT 头（0.2.16 用户反馈）。
 const props = defineProps<{ m: ChatMsg; run?: ChatMsg[] }>()
+
+// 重跑（第 7 批）：不再由气泡直接重发——把原文回填输入框让人改，确认分叉后才发送。
+// 载荷带上这条消息原有的附件（从当前前端消息上取，不动账本格式）。
+const emit = defineEmits<{
+  (e: 'rerun', payload: { seq: number; text: string; attachments: PendingAttachment[] }): void
+}>()
 
 const segments = computed<ChatMsg[]>(() => props.run ?? [props.m])
 const isUser = computed(() => props.m.role === 'user')
@@ -32,47 +37,31 @@ useEscClose(
 
 const { push: toast } = useToast()
 const store = useChatStore()
-const dialogs = useDialogs()
 
-// 从这条消息重跑（第 6 批）：撤回其后文件改动 + 账本分叉（旧对话记录作废），
-// 然后按原文重新发送。危险动作，先确认；撤不回的文件在回执里明确列出。
-const rerunning = ref(false)
-async function rerun() {
-  if (!props.m.seq || rerunning.value || store.running) return
-  const ok = await dialogs.confirm({
-    title: '从这条消息重跑',
-    message: '将撤回这条消息之后的所有文件改动（撤不回的会明确列出），旧对话记录作废并重新执行这条消息。继续？',
-    confirmText: '重跑',
-    danger: true,
-  })
-  if (!ok) return
-  rerunning.value = true
-  try {
-    const res = await store.rerunFrom(props.m.seq)
-    if (res.reverted.length || res.skipped.length) {
-      const parts = [`已撤回 ${res.reverted.length} 个文件`]
-      if (res.skipped.length) parts.push(`撤不回：${res.skipped.join('；')}`)
-      toast(res.skipped.length ? 'error' : 'info', parts.join('；'))
-    }
-    await store.send(res.text)
-  } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
-  } finally {
-    rerunning.value = false
+// 附件回填（第 7 批）：账本/重放里的附件是 {dataUrl, path} 形态，待发送区要
+// {dataB64, sourcePath}——这里做一次形态转换（图片 base64 直接搬），不动账本格式。
+function toPending(a: NonNullable<ChatMsg['attachments']>[number]): PendingAttachment {
+  const comma = a.dataUrl ? a.dataUrl.indexOf(',') : -1
+  return {
+    kind: a.kind === 'image' ? 'image' : 'file',
+    name: a.name,
+    mediaType: a.mediaType || 'application/octet-stream',
+    size: 0, // 回显不带宽高：只影响待发送区的尺寸文案，不影响发送内容
+    dataB64: comma >= 0 ? a.dataUrl!.slice(comma + 1) : undefined,
+    sourcePath: a.path,
+    inline: a.inline === 'full' || a.inline === 'none' ? a.inline : 'path',
   }
 }
 
-const showRetry = computed(() => {
-  if (isUser.value || store.running) return false
-  const last = store.messages.at(-1)
-  if (!last || !segments.value.includes(last)) return false
-  return segments.value.some((s) => s.error)
-})
-
-async function retry() {
-  const lastUser = [...store.messages].reverse().find((m) => m.role === 'user' && m.content.trim())
-  if (!lastUser || store.running) return
-  await store.send(lastUser.content)
+// 重跑（第 7 批）：只把原文与附件交回输入框（可改）；撤回与分叉在用户按下发送、
+// 确认之后才发生（见 Composer.submitRerun）——气泡这里绝不撤回任何东西。
+function startRerun() {
+  if (!props.m.seq || store.running) return
+  emit('rerun', {
+    seq: props.m.seq,
+    text: props.m.content ?? '',
+    attachments: (props.m.attachments ?? []).map(toPending),
+  })
 }
 
 // 思考折叠：按段独立记忆；流式段默认展开，终态后回到折叠（用户手动开合后以手动为准）
@@ -90,6 +79,16 @@ function toggleThinking(seg: ChatMsg, i: number) {
 // 回合头：时间取首个助手段；耗时取各段之和（通常只有终段带）
 const startedAt = computed(() => segments.value.find((s) => s.role === 'assistant')?.at)
 const durationMs = computed(() => segments.value.reduce((a, s) => a + (s.durationMs ?? 0), 0))
+
+// 复制这条用户消息的正文（第 7 批）：剪贴板失败必须说清，不假装成功
+async function copyUser() {
+  try {
+    await navigator.clipboard.writeText(props.m.content ?? '')
+    toast('info', '已复制消息')
+  } catch {
+    toast('error', '复制失败：剪贴板不可用')
+  }
+}
 
 async function copyMessage() {
   const text = segments.value
@@ -116,15 +115,25 @@ function fmtTime(at?: number): string {
   <div v-if="isUser" class="flex flex-col items-end gap-1">
     <div class="flex items-center gap-2 text-xs text-[var(--c-text-dim)]">
       <span>你</span><span>{{ fmtTime(m.at) }}</span>
-      <!-- 从这条消息重跑（第 6 批）：仅账本已有该消息（有 seq）且空闲时可用 -->
+      <!-- 复制（第 7 批）：复制这条消息的正文，失败 toast（不假装成功） -->
+      <button
+        v-if="m.content"
+        class="flex items-center gap-0.5 text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-primary)]"
+        title="复制这条消息"
+        aria-label="复制这条消息"
+        @click="copyUser"
+      >
+        <AppIcon name="copy" :size="11" />复制
+      </button>
+      <!-- 重跑（第 7 批）：仅账本已有该消息（有 seq）且空闲时可用；点了先把原文放回
+           输入框（可改），撤回与分叉等用户按发送时确认 -->
       <button
         v-if="m.seq && !store.running"
         class="flex items-center gap-0.5 text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-primary)]"
-        :disabled="rerunning"
-        title="从这条消息重跑：撤回其后的文件改动并重新执行（旧对话记录作废）"
-        @click="rerun"
+        title="重跑：把这条消息放回输入框（可改），确认后撤回其后的文件改动并重新执行"
+        @click="startRerun"
       >
-        <AppIcon name="refresh" :size="11" />{{ rerunning ? '重跑中…' : '重跑' }}
+        <AppIcon name="refresh" :size="11" />重跑
       </button>
     </div>
     <!-- 图片：缩略图行（dataUrl 来自发送时本地回显或重放时后端读取附件文件） -->
@@ -242,7 +251,6 @@ function fmtTime(at?: number): string {
       <AskCard v-else-if="seg.role === 'ask'" :m="seg" />
       <ApprovalCard v-else-if="seg.role === 'approval'" :m="seg" />
     </template>
-    <button v-if="showRetry" class="chip mt-1 text-xs" @click="retry">重试上一问</button>
   </div>
 
   <!-- 图片放大遮罩（0.0.10）：点缩略图全屏看原图 -->

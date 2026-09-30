@@ -2,8 +2,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +69,61 @@ func (s *ChatService) ResolveSessionPath(sessionID, path string) (abs string, is
 		return "", false, fmt.Errorf("文件不存在：%s", abs)
 	}
 	return abs, info.IsDir(), nil
+}
+
+// FileBody 是「只读浏览」返回的正文（第 8 批：文件详情面板看文件当前内容）。
+type FileBody struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated"` // 超过单次读取上限：只给了前半
+	Limit     int    `json:"limit"`     // 上限字节数（界面据此说明截断，不另编数字）
+}
+
+// ReadSessionFile 读取这场对话工作区内某个文件的正文（第 8 批）：文件详情面板的
+// 只读浏览。路径走 ResolveSessionPath（会话自己的工作区，越界/缺失显式拒绝）。
+//
+// 上限复用 fs 的单次读取上限（fstool.MaxReadBytes）：超了只给前半并标 Truncated，
+// 界面照实说明——绝不悄悄截断还装作读全了。二进制（含 NUL）与目录按显式错误返回，
+// 不用空白正文冒充已读。
+//
+// 只读语义：不写盘、不落账本、不参与"整读过"记账（那是 write 门卫的凭据，
+// 面板浏览不该替模型作证）。
+func (s *ChatService) ReadSessionFile(sessionID, path string) (FileBody, error) {
+	abs, isDir, err := s.ResolveSessionPath(sessionID, path)
+	if err != nil {
+		return FileBody{}, err
+	}
+	shown := strings.TrimSpace(path)
+	if isDir {
+		return FileBody{}, fmt.Errorf("这是一个目录，不是文件：%s", shown)
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return FileBody{}, fmt.Errorf("读取失败：%w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return FileBody{}, fmt.Errorf("读取失败：%w", err)
+	}
+	head := make([]byte, 8*1024)
+	n, _ := io.ReadFull(f, head)
+	if bytes.IndexByte(head[:n], 0) >= 0 {
+		return FileBody{}, fmt.Errorf("二进制文件，不显示正文：%s", shown)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return FileBody{}, fmt.Errorf("读取失败：%w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, fstool.MaxReadBytes))
+	if err != nil {
+		return FileBody{}, fmt.Errorf("读取失败：%w", err)
+	}
+	return FileBody{
+		Path:      shown,
+		Content:   string(data),
+		Truncated: info.Size() > int64(fstool.MaxReadBytes),
+		Limit:     fstool.MaxReadBytes,
+	}, nil
 }
 
 // withinDir 报告 abs 是否位于 root 之内（"." 即 root 本身算在内）。
