@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { closeUnbalancedFences, renderMarkdown, unclosedCodeFrom } from '../markdown'
+import { defaultFileName } from '../composables/codeExt'
 import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
 import { useChatStore } from '../stores/chat'
@@ -38,12 +39,12 @@ async function onContentClick(e: MouseEvent) {
   if (applyBtn) {
     const code = applyBtn.closest('.code-block')?.querySelector('pre code')?.textContent ?? ''
     const lang = applyBtn.closest('.code-block')?.querySelector('.code-lang')?.textContent ?? ''
-    // 目标文件：语言名可当扩展名时给默认名；用户在对话框里改路径（不猜）
-    const ext = lang && /^[a-z0-9]{1,6}$/i.test(lang) ? `.${lang}` : '.txt'
+    // 目标文件：默认名用「语言名 → 扩展名」的小映射（阶段 3-3：语言名当扩展名会写出
+    // untitled.typescript / untitled.bash），映射不到用 .txt；用户可在对话框里改路径
     const path = await dialogs.prompt({
       title: '应用到文件',
       message: '输入目标文件路径（工作区相对，确认后直接写入）：',
-      value: `untitled${ext}`,
+      value: defaultFileName(lang),
     })
     if (!path) return // 取消/未选择：不产生任何写盘调用
     try {

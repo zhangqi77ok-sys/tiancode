@@ -24,6 +24,15 @@ const emit = defineEmits<{
 
 const segments = computed<ChatMsg[]>(() => props.run ?? [props.m])
 const isUser = computed(() => props.m.role === 'user')
+
+// 文件附件（图片另走缩略图行）：这里算一次，模板不重复过滤
+const fileAtts = computed(() => (props.m.attachments ?? []).filter((a) => a.kind === 'file'))
+
+// 附件的 hover 说明：内联与否决定"模型能不能看到内容"，不能只藏在版面之外
+function fileTitle(a: { name: string; path?: string; inline?: string }): string {
+  const how = a.inline === 'full' ? '已内联（内容随请求一起发给模型）' : '只附路径（模型需要自己读）'
+  return `${a.name} · ${how}${a.path ? ` · ${a.path}` : ''}`
+}
 // 图片放大（0.0.10）：点缩略图全屏看原图
 const lightbox = ref<string | null>(null)
 
@@ -148,21 +157,25 @@ function fmtTime(at?: number): string {
         @click="lightbox = a.dataUrl!"
       />
     </div>
-    <!-- 文件：名字 + 路径行 -->
-    <div
-      v-for="(a, i) in m.attachments?.filter((x) => x.kind === 'file') ?? []"
-      :key="`file-${i}`"
-      class="flex max-w-[75%] items-center gap-1.5 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-2.5 py-1.5 text-xs"
-    >
-      <AppIcon name="file" :size="12" class="shrink-0 text-[var(--c-text-dim)]" />
-      <span class="max-w-[12rem] truncate" :title="a.path">{{ a.name }}</span>
-      <span class="shrink-0 text-[var(--c-text-faint)]">{{ a.inline === 'full' ? '已内联' : '只附路径' }}</span>
-    </div>
-    <div
-      v-if="m.content"
-      class="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
-    >
-      {{ m.content }}
+    <!-- 文件附件 + 正文（0.0.21 按用户给的样式）：附件收成内联小 chip（图标 + 文件名），
+         与正文同排——短消息时 chip 就在正文前面那一行，长消息时折到上一行；
+         内联与否与附件路径进 title（不占版面）。此前是每行一个方框，很难看也很难扫。 -->
+    <div v-if="fileAtts.length || m.content" class="flex max-w-[85%] flex-wrap items-center justify-end gap-1.5">
+      <span
+        v-for="(a, i) in fileAtts"
+        :key="`file-${i}`"
+        class="inline-flex max-w-[16rem] items-center gap-1.5 rounded-md border border-[var(--c-border)] bg-[var(--c-primary-soft)] px-2 py-1 text-xs text-[var(--c-primary)]"
+        :title="fileTitle(a)"
+      >
+        <AppIcon name="file" :size="12" class="shrink-0" />
+        <span class="min-w-0 truncate">{{ a.name }}</span>
+      </span>
+      <div
+        v-if="m.content"
+        class="max-w-full whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
+      >
+        {{ m.content }}
+      </div>
     </div>
   </div>
 

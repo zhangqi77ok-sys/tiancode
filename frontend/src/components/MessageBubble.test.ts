@@ -100,4 +100,25 @@ describe('MessageBubble（第 7 批）', () => {
     })
     expect(el.textContent ?? '').not.toContain('重试上一问')
   })
+
+  // 0.0.21 用户给的样式：文件附件是内联小 chip（图标 + 文件名），不是一行一个方框
+  it('文件附件渲染成内联 chip，内联状态进 title', () => {
+    const el = mount({
+      id: 'u9',
+      role: 'user',
+      content: '写的什么内容',
+      at: Date.now(),
+      attachments: [
+        { kind: 'file', name: '#1065.txt', path: 'att/s/file-1-#1065.txt', inline: 'full' },
+      ],
+    })
+    const chip = el.querySelector('[title*="#1065.txt"]') as HTMLElement | null
+    expect(chip, '附件要有可 hover 的 chip').toBeTruthy()
+    expect(chip?.textContent).toContain('#1065.txt')
+    expect(chip?.getAttribute('title')).toContain('已内联')
+    expect(chip?.getAttribute('title')).toContain('att/s/file-1-#1065.txt')
+    // 正文照旧渲染（chip 与正文同排，不再各自占一行）
+    expect(el.textContent ?? '').toContain('写的什么内容')
+    expect(chip?.parentElement?.textContent ?? '').toContain('写的什么内容')
+  })
 })

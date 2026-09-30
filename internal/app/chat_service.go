@@ -554,7 +554,7 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	// （CONNECT 阶段不受 ResponseHeaderTimeout 约束是 Go Transport 的已知行为），
 	// 实机表现是"发送后永久运行中，无任何反馈"。只对零事件生效：模型已在输出、
 	// 工具已在执行、正在等用户答复的轮次都算活动，绝不误杀长任务。
-	watch := newZeroEventWatch(firstEventTimeout)
+	watch := newZeroEventWatch(firstEventTimeout, inlineAttachmentNote(atts))
 	runCtx, cancelRun := context.WithCancel(ctx)
 	// 纪律（0.2.29 两次实测教训）：Send 是"返回通道即返回"的长调用——defer 在这里
 	// 一律等于"立刻执行"：cancelRun 不能 defer（会当场取消整轮），watchStopped

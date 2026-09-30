@@ -33,6 +33,27 @@ const (
 	maxFiles         = 8
 )
 
+// inlineAttachmentNote 汇总本轮**整体内联进请求体**的附件（个数 + 字节），供超时归因。
+//
+// 为什么只报事实：内联内容随请求体一起发给上游，体积直接影响首字节时间，但"是不是
+// 体积导致的超时"本地无法证明——用户只有知道"这轮带了多大"，才能自己用"去掉附件
+// 重试"区分开。只附路径的附件不计数（它们不进请求体）。
+func inlineAttachmentNote(atts []session.UserAttachment) string {
+	var count int
+	var total int64
+	for _, a := range atts {
+		if a.Inline == "full" {
+			count++
+			total += a.Size
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("本轮有 %d 个附件的内容被内联进请求体（共 %dKB）；反复超时的话，去掉附件或换渠道重试即可区分是附件体积还是渠道问题",
+		count, total/1024)
+}
+
 // materializeAttachments 校验并落位附件，返回账本引用形态。
 func (s *ChatService) materializeAttachments(sessionID string, raw []IncomingAttachment) ([]session.UserAttachment, error) {
 	var out []session.UserAttachment

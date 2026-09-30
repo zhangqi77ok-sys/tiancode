@@ -31,10 +31,11 @@ type zeroEventWatch struct {
 	paused   atomic.Bool  // true = 正在等待审批/答复：判定挂起
 	timedOut atomic.Bool
 	window   time.Duration // 看门狗阈值快照：构造时从 firstEventTimeout 取值（见 timeoutMessage 的竞态注）
+	note     string        // 超时文案要补的事实（本轮内联附件等）：构造时给定，此后不再变
 }
 
-func newZeroEventWatch(window time.Duration) *zeroEventWatch {
-	w := &zeroEventWatch{window: window}
+func newZeroEventWatch(window time.Duration, note string) *zeroEventWatch {
+	w := &zeroEventWatch{window: window, note: note}
 	w.start.Store(time.Now())
 	return w
 }
@@ -60,8 +61,15 @@ func (w *zeroEventWatch) hasTimedOut() bool { return w.timedOut.Load() }
 // 而看门狗 goroutine 可能活到测试收尾之后——直读全局会与下一个测试的写入
 // 构成数据竞态（CI -race 抓到）。
 func (w *zeroEventWatch) timeoutMessage() string {
-	return fmt.Sprintf("响应超时：%d 秒内没有任何数据，已自动中断（上游无响应或网络挂起；请检查渠道地址与代理设置后重试）",
+	msg := fmt.Sprintf("响应超时：%d 秒内没有任何数据，已自动中断（上游无响应或网络挂起；请检查渠道地址与代理设置后重试）",
 		int(w.window.Seconds()))
+	// 补一句本轮请求的体量事实（0.0.21，实机反馈"发文件后一直没输出"）：
+	// 同样的超时，可能是渠道问题，也可能是这轮请求体特别大——用户要能自己区分，
+	// 不该被要求去翻日志里的 bytes= 行。
+	if w.note != "" {
+		msg += "。" + w.note
+	}
+	return msg
 }
 
 // watchApprover 把"等待审批答复"处理为判定挂起：进入等待 pause，答复返回 resume。
