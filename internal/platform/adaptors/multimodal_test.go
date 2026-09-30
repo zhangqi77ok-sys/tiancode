@@ -13,6 +13,7 @@ import (
 //   - derive 在有附件时把正文放进 Parts（文字 + 图片 data URL），Content 也写同一份文字；
 //   - OpenAI 兼容读 Parts ✓；Anthropic 只读 Content ✗（那条用户消息一个块都不生成、
 //     随后被 flush 丢掉）；Codex 只写 m.Content ✗（空串 input_text）。
+//
 // 这个夹具就是 derive 实际产出的形态（Content 与 Parts 同源的文字 + 内联图片）。
 const attImageB64 = "UE5HREFUQQ==" // "PNGDATA" 的 base64
 
@@ -95,7 +96,7 @@ func TestAnthropic_AttachmentMessageCarriesTextAndInlineImage(t *testing.T) {
 }
 
 // Anthropic：Content 与 Parts 都为空 → 明确报错，不静默省略这条用户消息
-//（此前静默省略正表现为"消息发出去了，上游什么都没收到"）。
+// （此前静默省略正表现为"消息发出去了，上游什么都没收到"）。
 func TestAnthropic_EmptyUserMessageFailsLoud(t *testing.T) {
 	_, err := Anthropic{}.ConvertRequest(RouteContext{Model: "claude"}, llm.ChatRequest{
 		Messages: []llm.Message{{Role: "user"}},
