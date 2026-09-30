@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
-import { closeUnbalancedFences, renderMarkdown } from '../markdown'
+import { closeUnbalancedFences, renderMarkdown, unclosedCodeFrom } from '../markdown'
 import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
 import { useChatStore } from '../stores/chat'
@@ -9,11 +9,21 @@ import { useChatStore } from '../stores/chat'
 // 且先把未闭合的 ``` 补齐（Streamdown「unterminated block」同款处理）——
 // 半截代码栅栏不能吞掉后续正文，否则流式过程中排版会乱跳；
 // 终态立即渲染原始全文，保证所见即最终结果。
+//
+// 阶段 2 两点变化：① 结果走 markdown.ts 的缓存（同一内容只解析一次，
+// 让"整表重渲染"不再等于"整表重解析"）；② 未闭合的那个代码块先用纯文本，
+// 闭合后再高亮一次——配合缓存，那一次只发生一次。
 const RENDER_THROTTLE_MS = 300
 
 const props = defineProps<{ content: string; streaming?: boolean }>()
 
-const html = ref(renderMarkdown(props.content))
+// 唯一渲染入口：终态用原文全高亮；流式补栅栏 + 让正在输入的那块保持纯文本。
+function renderFor(content: string, streaming: boolean): string {
+  if (!streaming) return renderMarkdown(content)
+  return renderMarkdown(closeUnbalancedFences(content), { plainCodeFrom: unclosedCodeFrom(content) })
+}
+
+const html = ref(renderFor(props.content, !!props.streaming))
 let timer: ReturnType<typeof setTimeout> | null = null
 
 const { push: toast } = useToast()
@@ -56,7 +66,7 @@ async function onContentClick(e: MouseEvent) {
 }
 
 function renderNow(src: string) {
-  html.value = renderMarkdown(props.streaming ? closeUnbalancedFences(src) : src)
+  html.value = renderFor(src, true)
 }
 
 // 内容增量：流式期间合帧；非流式（历史回放）直接渲染
@@ -64,7 +74,7 @@ watch(
   () => props.content,
   (content) => {
     if (!props.streaming) {
-      html.value = renderMarkdown(content)
+      html.value = renderFor(content, false)
       return
     }
     if (timer) return // 已有待执行帧：本帧合流，避免每 chunk 都排定时器
@@ -75,7 +85,7 @@ watch(
   },
 )
 
-// 流结束：清掉挂起帧并立即渲染最终内容（原文，无栅栏补齐）
+// 流结束：清掉挂起帧并立即渲染最终内容（原文，无栅栏补齐，全部高亮）
 watch(
   () => props.streaming,
   (streaming) => {
@@ -84,7 +94,7 @@ watch(
       clearTimeout(timer)
       timer = null
     }
-    html.value = renderMarkdown(props.content)
+    html.value = renderFor(props.content, false)
   },
 )
 

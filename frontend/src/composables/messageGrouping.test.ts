@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { groupMessages } from './messageGrouping'
+import { groupMessages, stabilizeItems } from './messageGrouping'
 import type { ChatMsg } from '../stores/chat'
 
 function msg(partial: Partial<ChatMsg> & { role: ChatMsg['role'] }): ChatMsg {
@@ -106,5 +106,47 @@ describe('groupMessages', () => {
   it('缺 id 的消息回退下标 key（仅测试直插场景）', () => {
     const items = groupMessages([msg({ role: 'user' })])
     expect(items[0].key).toBe('i-0')
+  })
+})
+
+// 阶段 2：稳定化——流式增量不该让整表重渲染（否则长会话每 300ms 全列重渲染一次）
+describe('stabilizeItems', () => {
+  const msgs = [
+    msg({ role: 'user', id: 'm-1', content: '问' }),
+    msg({ role: 'assistant', id: 'm-2', content: '答' }),
+    msg({ role: 'user', id: 'm-3', content: '再问' }),
+    msg({ role: 'assistant', id: 'm-4', content: '再答' }),
+  ]
+
+  it('成员没变时沿用上一轮的 item 对象（引用相等）', () => {
+    const first = groupMessages(msgs)
+    const second = stabilizeItems(first, groupMessages(msgs))
+    expect(second).toHaveLength(first.length)
+    second.forEach((it, i) => expect(it).toBe(first[i]))
+  })
+
+  it('原地改内容（流式增量）也不换对象——更新由消息自身的响应式驱动', () => {
+    const first = groupMessages(msgs)
+    msgs[3].content = '再答（变长）'
+    const second = stabilizeItems(first, groupMessages(msgs))
+    expect(second[3]).toBe(first[3]) // 该回合对象复用
+    const run = second[3].kind === 'turn' ? second[3].run : []
+    expect(run[0]).toBe(msgs[3]) // 复用的 run 里就是那条被原地更新的消息
+  })
+
+  it('成员增删（新工具卡/新段落）必须换新 item，否则新卡永远不出现', () => {
+    const first = groupMessages(msgs)
+    const grown = [...msgs, msg({ role: 'tool', id: 'm-5', toolName: 'fs', content: 'x' })]
+    const second = stabilizeItems(first, groupMessages(grown))
+    expect(second[3]).not.toBe(first[3]) // 该回合成员变了 → 必须重渲染
+    expect(second[0]).toBe(first[0]) // 其它回合照旧复用
+  })
+
+  it('空列表与键变化都能安全处理', () => {
+    const items = groupMessages(msgs)
+    expect(stabilizeItems([], items)).toEqual(items)
+    const replaced = [msg({ role: 'user', id: 'other', content: '换了一条' })]
+    const out = stabilizeItems(items, groupMessages(replaced))
+    expect(out[0].key).toBe('other')
   })
 })

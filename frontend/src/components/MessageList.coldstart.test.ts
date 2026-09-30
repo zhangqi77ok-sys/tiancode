@@ -109,6 +109,29 @@ describe('冷启动直接对话（DOM 集成）', () => {
     expect(el.textContent).not.toContain('未选择工作区 · 纯对话')
   })
 
+  // 阶段 2：上百条消息的长会话只挂窗口内的回合——但"最新一条"必须始终在 DOM 里
+  // （贴底跟随、发送后到底、切换会话落最新都指着尾部这一条）。
+  it('长会话只挂尾部窗口，最新一条始终可见', async () => {
+    const many: { role: string; content: string }[] = []
+    for (let i = 0; i < 200; i++) {
+      many.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `第 ${i} 条` })
+    }
+    h.summaries = [{ id: 's-long', title: '长会话', lastActiveMs: 1 }]
+    h.replayById['s-long'] = many
+
+    const el = mountList()
+    const store = useChatStore()
+    await store.init()
+    await flush()
+
+    expect(store.messages.length).toBe(200)
+    // 滚动容器的直接子元素就是当前挂着的回合（顺序与键与完整分组一致）
+    const scroller = el.querySelector('[data-conversation]') as HTMLElement
+    expect(scroller.children.length).toBe(40) // WINDOW_INITIAL_TAIL：不是 200 个回合全挂
+    expect(el.textContent).toContain('第 199 条') // 尾部挂着
+    expect(el.textContent).not.toContain('第 0 条') // 最老的一段没挂
+  })
+
   // 抢跑场景：用户快于 init（loadSessions 还挂着）就发送。核心契约：
   //   1) 消息进用户自己领取的会话（数据立即正确）；
   //   2) init 完成后**不抢视图**（用户正在进行的对话留在眼前，0.2.31 抢跑保护）；

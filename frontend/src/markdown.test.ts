@@ -1,6 +1,12 @@
 import DOMPurify from 'dompurify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { closeUnbalancedFences, renderMarkdown } from './markdown'
+import {
+  clearRenderCache,
+  closeUnbalancedFences,
+  renderCacheStats,
+  renderMarkdown,
+  unclosedCodeFrom,
+} from './markdown'
 
 describe('renderMarkdown', () => {
   afterEach(() => {
@@ -64,6 +70,60 @@ describe('renderMarkdown', () => {
     const html = renderMarkdown('<b>加粗</b><script>alert(1)</script>')
     expect(html).toContain('<b>加粗</b>')
     expect(html.toLowerCase()).not.toContain('<script')
+  })
+})
+
+// 阶段 2：渲染结果缓存——流式增量会让整张列表重渲染，已完成消息不能反复重解析
+describe('渲染缓存（阶段 2）', () => {
+  it('同一内容只解析一次，两次拿到同一份 HTML', () => {
+    clearRenderCache()
+    const src = '```go\nfunc main() {}\n```'
+    const first = renderMarkdown(src)
+    const second = renderMarkdown(src)
+    expect(second).toBe(first)
+    expect(renderCacheStats().entries).toBe(1)
+  })
+
+  it('未闭合与闭合是两份结果，不能互相顶掉', () => {
+    clearRenderCache()
+    const src = '```json\n{"a": 1}\n```'
+    const lit = renderMarkdown(src)
+    const plain = renderMarkdown(src, { plainCodeFrom: 0 })
+    expect(plain).not.toBe(lit)
+    expect(renderCacheStats().entries).toBe(2)
+  })
+
+  it('缓存有上限，不随长会话无限长大', () => {
+    clearRenderCache()
+    for (let i = 0; i < 420; i++) renderMarkdown(`第 ${i} 段`)
+    expect(renderCacheStats().entries).toBeLessThanOrEqual(400)
+  })
+})
+
+// 阶段 2：正在输入的那个代码块先用纯文本，闭合后再高亮一次
+describe('未闭合栅栏先用纯文本（阶段 2）', () => {
+  it('unclosedCodeFrom 只数行首栅栏', () => {
+    expect(unclosedCodeFrom('正文')).toBeUndefined()
+    expect(unclosedCodeFrom('```go\nx := 1\n```')).toBeUndefined()
+    expect(unclosedCodeFrom('```go\nx := 1')).toBe(0)
+    expect(unclosedCodeFrom('```go\na\n```\n\n```go\nb')).toBe(1)
+  })
+
+  it('未闭合的那块不高亮；闭合后（下一帧）才高亮', () => {
+    const partial = '```json\n{"a": 1}\n' // 正在输入：栅栏未闭合
+    const plain = renderMarkdown(closeUnbalancedFences(partial), { plainCodeFrom: unclosedCodeFrom(partial) })
+    expect(plain).toContain('language-json')
+    expect(plain).not.toContain('hljs-attr') // 纯文本，无高亮标记
+
+    const closed = '```json\n{"a": 1}\n```'
+    expect(renderMarkdown(closed)).toContain('hljs-attr')
+  })
+
+  it('已闭合的块在流式期间照常高亮（只让最后那块保持纯文本）', () => {
+    const src = '```json\n{"a": 1}\n```\n\n```go\nfunc main() {'
+    const html = renderMarkdown(closeUnbalancedFences(src), { plainCodeFrom: unclosedCodeFrom(src) })
+    expect(html).toContain('hljs-attr') // 第一块已闭合：高亮
+    expect(html).not.toContain('hljs-keyword') // 第二块在输入：纯文本
   })
 })
 

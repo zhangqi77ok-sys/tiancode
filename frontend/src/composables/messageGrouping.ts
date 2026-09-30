@@ -21,6 +21,39 @@ export function keyOf(i: number, id?: string): string {
   return id ?? `i-${i}`
 }
 
+// ---- 稳定化（阶段 2）：流式增量不该让整表重渲染 ----
+//
+// 为什么需要：groupMessages 每次都返回全新对象，Vue 会认为每个 item 的 props 都变了，
+// 于是整列子组件一起重渲染（长会话每 300ms 一次，与回复长度成正比）。
+// 消息对象本身是**原地更新**的响应式对象（onChunk 里 `ast.content += delta`），
+// 所以只要组成成员没变，就可以沿用上一轮的 item：其余子组件不重渲染，真正在流的那
+// 一条靠它自己读到的字段变化驱动。
+export function stabilizeItems(prev: RenderItem[], next: RenderItem[]): RenderItem[] {
+  if (!prev.length) return next
+  const byKey = new Map(prev.map((it) => [it.key, it]))
+  return next.map((it) => {
+    const old = byKey.get(it.key)
+    if (!old || old.kind !== it.kind || !sameMembers(old, it)) return it
+    return old
+  })
+}
+
+function membersOf(it: RenderItem): ChatMsg[] {
+  return it.kind === 'turn' ? it.run : [it.m]
+}
+
+// sameMembers 只比对象引用：成员增删（新工具卡、新段落）必然换新 item——
+// 那种情况必须重渲染，否则新卡不会出现。
+function sameMembers(a: RenderItem, b: RenderItem): boolean {
+  const x = membersOf(a)
+  const y = membersOf(b)
+  if (x.length !== y.length) return false
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] !== y[i]) return false
+  }
+  return true
+}
+
 export function groupMessages(msgs: ChatMsg[]): RenderItem[] {
   const out: RenderItem[] = []
   for (let i = 0; i < msgs.length; i++) {

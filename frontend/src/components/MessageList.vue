@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
-import { groupMessages } from '../composables/messageGrouping'
+import { groupMessages, stabilizeItems, type RenderItem } from '../composables/messageGrouping'
+import { growFrom, initialFrom, shouldGrow, trimFrom } from '../composables/messageWindow'
 import { shortDir } from '../composables/workspaceLabel'
 import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
@@ -40,14 +41,52 @@ const suggestions = computed(() =>
 const scroller = ref<HTMLElement | null>(null)
 const { anchored, onScroll, toBottom } = useAutoScroll(scroller)
 
+// ---- 窗口（阶段 2）：长会话只挂视口附近的回合 ----
+// allItems 是完整分组（顺序与键完全不变），items 只是它的一段切片。
+// 尾部永远挂着（贴底跟随 / 发送后到底 / 切换会话落最新都指着尾部），
+// 老的一侧按块增挂、超上限再按块裁——规则是纯函数，见 composables/messageWindow.ts。
+let prevItems: RenderItem[] = []
+const allItems = computed(() => {
+  prevItems = stabilizeItems(prevItems, groupMessages(store.messages))
+  return prevItems
+})
+const fromIndex = ref(0)
+const items = computed(() => allItems.value.slice(fromIndex.value))
+
+// 滚动：先走既有锚定判定，再维护窗口。
+// 向上补块后要做等高补偿（新内容在视口上方，不补会让视图整体下滑）。
+async function onScrollWindow() {
+  onScroll()
+  const node = scroller.value
+  if (!node) return
+  if (shouldGrow(fromIndex.value, node.scrollTop)) {
+    const before = node.scrollHeight
+    fromIndex.value = growFrom(fromIndex.value, allItems.value.length)
+    await nextTick()
+    node.scrollTop += node.scrollHeight - before
+    return
+  }
+  await trimIfNeeded()
+}
+
+// 只在贴底时裁掉最老的一块：用户在上方看历史时裁顶部＝把他正在看的内容抽走。
+async function trimIfNeeded() {
+  const next = trimFrom(fromIndex.value, allItems.value.length, anchored.value)
+  if (next === fromIndex.value) return
+  fromIndex.value = next
+  await nextTick()
+  void toBottom(true)
+}
+
 // 最后一条消息：流式增量只改尾部消息，盯着它即可，避免深度监听整表
 const lastMsg = computed(() => store.messages[store.messages.length - 1])
 
 // 新消息与流式增量都只在"用户锚定底部"时跟随滚动（修掉旧版滚动劫持）
 watch(
   () => store.messages.length,
-  () => {
-    void toBottom()
+  async () => {
+    await toBottom()
+    await trimIfNeeded() // 尾部在长，若已超上限且贴底就顺手裁最老一块
   },
 )
 
@@ -60,8 +99,10 @@ watch(
   () => [store.sessionId, store.loadingSession] as const,
   async ([, loading]) => {
     if (loading) return
+    fromIndex.value = initialFrom(allItems.value.length) // 窗口复位：只挂尾部
     await toBottom(true)
   },
+  { immediate: true },
 )
 
 // 用户主动发送（缓冲尾部出现新的 user 消息）：强制落到底——发送是主动动作，
@@ -90,8 +131,8 @@ watch(
 )
 
 // 渲染分组：纯函数（composables/messageGrouping.ts，有单测）——
-// 工具卡并入助手回合块（思考 → 执行 → 回复），绝不冒充消息气泡、绝不双重渲染
-const items = computed(() => groupMessages(store.messages))
+// 工具卡并入助手回合块（思考 → 执行 → 回复），绝不冒充消息气泡、绝不双重渲染。
+// 分组结果与窗口切片的组合见上面的 allItems / items（阶段 2）。
 </script>
 
 <template>
@@ -102,7 +143,7 @@ const items = computed(() => groupMessages(store.messages))
     role="log"
     aria-label="对话记录"
     data-conversation
-    @scroll.passive="onScroll"
+    @scroll.passive="onScrollWindow"
   >
     <!-- 历史载入中：先于空态渲染（否则点开有历史的会话会闪一下"没有消息"） -->
     <div v-if="store.loadingSession" class="flex h-full items-center justify-center">
@@ -136,6 +177,10 @@ const items = computed(() => groupMessages(store.messages))
       </div>
     </div>
 
+    <!-- 窗口切片（阶段 2）：items 只是完整分组的一段（尾部常挂），顺序与键完全不变。
+         于是这个容器的**直接子元素**就是"当前挂了哪些回合"——窗口测试按它计数。
+         为什么不给每个回合打 data-item-key：MessageBubble 是多根组件（气泡 + 灯箱），
+         Vue 无法把透传属性落到某个根上，会出现"属性丢失"的假象。 -->
     <template v-for="item in items" :key="item.key">
       <!-- 空卡守卫（0.0.06）：无标题/内容/diff 且非执行中的工具事件不出卡 -->
       <ToolCard
