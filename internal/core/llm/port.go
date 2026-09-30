@@ -13,6 +13,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // EndReason 标记一次流式调用的终态。终态互斥且整个流中恰好出现一个非 EndNone 块：
@@ -34,6 +35,23 @@ const (
 	// 为什么单独一态：挂起与显式错误的处置不同——前者应提示重试，后者应展示原因。
 	EndIdleTimeout
 )
+
+// String 让终态在日志/错误里可读（0.0.09：诊断日志直接打 reason=done 而不是数字）。
+func (r EndReason) String() string {
+	switch r {
+	case EndNone:
+		return "none"
+	case EndDone:
+		return "done"
+	case EndError:
+		return "error"
+	case EndCancelled:
+		return "cancelled"
+	case EndIdleTimeout:
+		return "idle_timeout"
+	}
+	return fmt.Sprintf("reason(%d)", int(r))
+}
 
 // ToolEvent 是工具执行动态（UI 工具卡片的数据源；同时落账本供审计）。
 type ToolEvent struct {

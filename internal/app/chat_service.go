@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/adaptors"
+	"tiancode/internal/platform/applog"
 	"tiancode/internal/platform/catalog"
 	"tiancode/internal/platform/channels"
 	"tiancode/internal/platform/codexauth"
@@ -106,6 +108,10 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("chat service: data dir required")
 	}
+	// 内部文件日志（0.0.09 用户要求）：排障不能只靠截图猜。按天轮转、保留 7 天，
+	// 关键链路埋点（轮次/上游请求/看门狗/审批问答）——设置页可一键打开日志目录。
+	applog.SetDir(filepath.Join(cfg.DataDir, "logs"))
+	applog.Infof("chatservice init datadir=%s", cfg.DataDir)
 	// 工作区可为空 = 纯对话模式（默认态：无本地文件工具，只保留 todo/ask 交互工具）。
 	// 非空必须是已存在的目录：fs/shell/git 的受控根都指向它，
 	// 不存在时"启动看似正常、首次读写才报错"最难排查（实机事故）。
@@ -315,7 +321,7 @@ func (s *ChatService) newAgentWith(model string, registry *tools.Registry, appro
 	ag := agent.NewLoop(rt, model, registry)
 	var asker agent.Asker = &uiAsker{svc: s, sessionID: sessionID}
 	if watch != nil {
-		asker = &watchAsker{inner: asker, watch: watch}
+		asker = &watchAsker{inner: asker, watch: watch, sessionID: sessionID}
 	}
 	ag.SetAsker(asker) // 问答通道常开（无 UI 时模型收到引导性结果）
 	if watch != nil && approver != nil {
@@ -394,6 +400,11 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		return nil, err // running 尚未注册，无需占位释放
 	}
 	atts = append(atts, atAtts...)
+	// 轮次开始埋点（0.0.09）：排障第一现场——文本只记长度与首 60 字（不复制全文），
+	// 附件分开记（图片/文件），@ 引用数单独记（用户报"没效果"时先看这里）
+	turnStart := time.Now()
+	applog.Infof("turn start session=%s root=%q text=%q atts=%d attRefs=%d",
+		sessionID, root, applog.Truncate(text, 60), len(atts), len(atAtts))
 	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
 	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()
@@ -423,6 +434,7 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		release()
 		return nil, err
 	}
+	applog.Infof("turn model=%s", model)
 	if model == "" {
 		release()
 		return nil, errors.New("尚未配置模型渠道：请在设置中新增渠道并设为默认")
@@ -494,6 +506,8 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 				// mark 刷新起点、pause/resume 挂起等待——不再有"一次性豁免"。
 				if !watch.paused.Load() && time.Since(watch.start.Load().(time.Time)) > watch.window {
 					watch.timedOut.Store(true)
+					applog.Errorf("watchdog fired session=%s idle=%s window=%s（上游黑洞/挂死，注入终态）",
+						sessionID, time.Since(watch.start.Load().(time.Time)).Round(time.Second), watch.window)
 					cancelRun() // 尽力打断上游（HTTP/工具读全部响应 ctx）
 					inject <- llm.StreamChunk{EndReason: llm.EndError, Err: errors.New(watch.timeoutMessage())}
 					return
@@ -510,14 +524,19 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 			select {
 			case c, ok := <-stream:
 				if !ok {
+					applog.Infof("turn end session=%s reason=stream-closed（无终态块，异常路径）", sessionID)
 					return // 上游流关闭（契约保证终态已发）
 				}
 				watch.mark() // 任何块（增量/工具/清单）都算活动
 				out <- c
 				if c.EndReason != llm.EndNone {
+					applog.Infof("turn end session=%s reason=%s err=%v elapsed=%s",
+						sessionID, c.EndReason, c.Err, time.Since(turnStart).Round(time.Millisecond))
 					return
 				}
 			case c := <-inject:
+				applog.Infof("turn end session=%s reason=%s err=%v elapsed=%s（看门狗注入）",
+					sessionID, c.EndReason, c.Err, time.Since(turnStart).Round(time.Millisecond))
 				out <- c
 				return
 			}

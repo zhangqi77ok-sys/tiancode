@@ -21,10 +21,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"tiancode/internal/core/llm"
+	"tiancode/internal/platform/applog"
 )
 
 // 编译期保证实现端口契约。
@@ -180,18 +182,37 @@ func (p *Provider) StreamChat(ctx context.Context, req llm.ChatRequest) (<-chan 
 		httpReq.Header.Set("Authorization", "Bearer "+p.opts.APIKey)
 	}
 
+	// 上游请求埋点（0.0.09）：不记 API key 与消息全文——host+模型+字节量足够
+	// 定位"请求发给了谁、多大"；"卡在建流"时这行是最后一行日志，即定位证据
+	applog.Infof("upstream request host=%s model=%s bytes=%d",
+		hostOf(p.opts.BaseURL), req.Model, len(payload))
+	start := time.Now()
 	resp, err := p.opts.HTTPClient.Do(httpReq)
 	if err != nil {
 		// 连接失败发生在流开始前：以 error 返回，交由 ChatRuntime 决定是否重试
+		applog.Errorf("upstream connect failed host=%s elapsed=%s err=%v",
+			hostOf(p.opts.BaseURL), time.Since(start).Round(time.Millisecond), err)
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		resp.Body.Close()
+		applog.Errorf("upstream HTTP %d host=%s body=%s",
+			resp.StatusCode, hostOf(p.opts.BaseURL), applog.Truncate(string(body), 160))
 		return nil, fmt.Errorf("upstream returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	applog.Infof("upstream connected host=%s status=200（建流完成，流层空闲看门狗开始计时）", hostOf(p.opts.BaseURL))
 
 	return p.ParseSSE(ctx, resp.Body), nil
+}
+
+// hostOf 从 BaseURL 提取主机名（日志不记完整 URL：query 可能带敏感参数）。
+func hostOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(invalid)"
+	}
+	return u.Host
 }
 
 // ParseSSE 从已建立的 SSE 响应体解析流式块（导出给多协议网关的 OpenAI 适配器复用
@@ -248,9 +269,11 @@ func (p *Provider) stream(ctx context.Context, body io.ReadCloser, out chan llm.
 	for {
 		select {
 		case <-ctx.Done():
+			applog.Infof("upstream stream end reason=cancelled host=%s", hostOf(p.opts.BaseURL))
 			decide(llm.EndCancelled, ctx.Err())
 			return
 		case <-watchdog.C:
+			applog.Errorf("upstream idle timeout host=%s（%s 无数据，流层看门狗收束）", hostOf(p.opts.BaseURL), p.opts.IdleTimeout)
 			decide(llm.EndIdleTimeout, nil)
 			return
 		case err := <-scanErrC:

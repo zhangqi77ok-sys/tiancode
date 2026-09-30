@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tiancode/internal/core/agent"
+	"tiancode/internal/platform/applog"
 )
 
 // firstEventTimeout 是零事件看门狗的阈值（包级变量：测试注入短值）。
@@ -80,15 +81,22 @@ func (w *watchApprover) Review(ctx context.Context, req agent.ApprovalRequest) (
 
 // watchAsker 与 watchApprover 同构：等待用户作答 = 挂起判定，答复返回 = 重新计时。
 type watchAsker struct {
-	inner agent.Asker
-	watch *zeroEventWatch
+	inner     agent.Asker
+	watch     *zeroEventWatch
+	sessionID string // 日志归属（0.0.09）
 }
 
 func (w *watchAsker) Ask(ctx context.Context, req agent.AskRequest) (string, error) {
+	applog.Infof("ask wait session=%s question=%q（判定挂起，等多久都不超时）", w.sessionID, applog.Truncate(req.Question, 80))
 	w.watch.pause()
 	ans, err := w.inner.Ask(ctx, req)
 	// 0.0.07 实机：答复后带图请求挂在中转上，旧"一次性 mark"语义让看门狗永久
 	// 豁免，轮次卡"运行中"38 分钟无终态。resume 后黑洞在窗口内照常收束。
 	w.watch.resume()
+	if err != nil {
+		applog.Errorf("ask end session=%s err=%v（未答复，轮次将收束）", w.sessionID, err)
+	} else {
+		applog.Infof("ask answered session=%s answer=%q（判定恢复，重新计时）", w.sessionID, applog.Truncate(ans, 60))
+	}
 	return ans, err
 }

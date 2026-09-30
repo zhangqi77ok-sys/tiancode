@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useDialogs } from '../composables/useDialogs'
+import { useToast } from '../composables/useToast'
 import { bridge, openExternal } from '../wails'
 import type { AuthDTO, ChannelDTO, CredentialDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -17,6 +18,7 @@ import BaseModal from './BaseModal.vue'
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useChannelStore()
 const dialogs = useDialogs()
+const { push: toast } = useToast()
 
 const view = ref<'list' | 'form' | 'keys' | 'codex'>('list')
 const editingID = ref('')
@@ -528,6 +530,15 @@ async function checkProxy() {
   }
 }
 
+// 打开内部日志目录（0.0.09）：排障时按时间翻当天日志——"卡在哪一层"一眼可见
+async function openLogDir() {
+  try {
+    await bridge().app.OpenLogDir()
+  } catch (e) {
+    toast('error', String(e instanceof Error ? e.message : e))
+  }
+}
+
 onBeforeUnmount(stopCodexPoll)
 
 onMounted(async () => {
@@ -569,6 +580,16 @@ onMounted(async () => {
         <template v-if="proxyInfo">✓ 出口 {{ proxyInfo.ip }}（地区 {{ proxyInfo.country }}）</template>
         <template v-else>{{ proxyMsg }}</template>
       </p>
+    </div>
+
+    <!-- 诊断日志（0.0.09）：内部日志按天记录轮次/上游/看门狗事件——
+         遇到"卡住/没反应"先打开这里按时间找最后一行 -->
+    <div class="mx-5 mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--c-border)] px-3 py-2">
+      <span class="shrink-0 text-xs text-[var(--c-text-dim)]">诊断日志</span>
+      <span class="min-w-0 flex-1 text-[11px] text-[var(--c-text-faint)]">
+        每次对话的上游请求、超时与工具执行都留有记录（保留 7 天）
+      </span>
+      <button class="chip shrink-0" @click="openLogDir">打开日志文件夹</button>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-5">

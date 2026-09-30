@@ -17,6 +17,7 @@ import (
 
 	"tiancode/internal/app"
 	"tiancode/internal/core/llm"
+	"tiancode/internal/platform/applog"
 )
 
 // Bind 是暴露给前端（Wails Bind）的入口对象。
@@ -119,6 +120,19 @@ func (b *Bind) PickWorkspace() (string, error) {
 
 // ApprovalPolicy 返回当前需要执行前审批的工具清单（空 = 审批关闭，默认）。
 func (b *Bind) ApprovalPolicy() []string { return b.chat.ApprovalPolicy() }
+
+// OpenLogDir 打开内部日志目录（0.0.09：排障入口——"哪一轮卡在哪"按时间翻
+// app-YYYYMMDD.log 即可）。目录未生成（全新安装从未运行过）时显式报错。
+func (b *Bind) OpenLogDir() error {
+	dir := applog.Dir()
+	if dir == "" {
+		return errors.New("日志目录尚未初始化（服务未启动）")
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fmt.Errorf("日志目录不存在：%s", dir)
+	}
+	return exec.Command("explorer", dir).Start()
+}
 
 // RevealInExplorer 打开 path 所在目录的资源管理器并选中它（0.0.06：工具卡
 // "在资源管理器中显示"）。path 相对当前工作区根解析（工具卡 Title 即工作区

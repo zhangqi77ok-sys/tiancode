@@ -19,13 +19,24 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/adaptors"
+	"tiancode/internal/platform/applog"
 	"tiancode/internal/platform/channels"
 )
+
+// hostOf 从 BaseURL 提取主机名（日志不记完整 URL：query 可能带敏感参数）。
+func hostOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(invalid)"
+	}
+	return u.Host
+}
 
 // Gateway 实现 llm.ProviderPort：对 agent 而言它就是一个"供应商"。
 type Gateway struct {
@@ -122,6 +133,11 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 		}
 		adaptors.ApplyHeaderOverride(hdr, sel.HeaderOverride, sel.Credential)
 
+		// 上游请求埋点（0.0.09）：日志诊断链 = turn start → 本行 → 建流/超时/终态。
+		// 只记 host/模型/协议/字节量——绝不记凭证与消息全文（见 applog 包注释）。
+		applog.Infof("upstream request host=%s model=%s protocol=%s bytes=%d",
+			hostOf(rc.BaseURL), rc.Model, sel.Type, len(body))
+		reqStart := time.Now()
 		resp, err := adv.DoRequest(ctx, rc, hdr, body)
 		if err != nil {
 			// 用户中断不是渠道故障：不禁用、不换渠道重试，否则点了中断请求还会再发出去。
@@ -129,11 +145,15 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 				g.finishStopped(out, ctx.Err(), &forwarded)
 				return
 			}
+			applog.Errorf("upstream connect failed host=%s elapsed=%s err=%v",
+				hostOf(rc.BaseURL), time.Since(reqStart).Round(time.Millisecond), err)
 			lastErr = mergeBanErr(err, g.onChannelFault(sel)) // 网络失败 = 渠道级故障
 			exclude = append(exclude, sel.ChannelID)
 			tier++
 			continue
 		}
+		applog.Infof("upstream connected host=%s status=%d elapsed=%s（建流完成，流层空闲看门狗开始计时）",
+			hostOf(rc.BaseURL), resp.StatusCode, time.Since(reqStart).Round(time.Millisecond))
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			msg := adaptors.ReadErrBody(resp)
 			serr := fmt.Errorf("渠道 %s 上游 HTTP %d: %s", sel.ChannelID, resp.StatusCode, msg)

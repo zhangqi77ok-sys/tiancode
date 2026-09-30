@@ -242,6 +242,8 @@ interface WailsApp {
   RevealInExplorer(path: string): Promise<void>
   // 系统保存对话框写文本文件（0.0.06：导出会话"另存为文件"）。取消返回空串。
   SaveTextFile(defaultName: string, content: string): Promise<string>
+  // 打开内部日志目录（0.0.09）：排障入口——轮次/上游请求/看门狗事件按天落盘
+  OpenLogDir(): Promise<void>
   // 恢复一次 write/replace 写入前的内容（0.0.07）。失败（文件被改过等）显式报错。
   RestoreToolWrite(sessionID: string, callID: string): Promise<string>
   // @ 文件引用（0.0.09/0.0.10 会话化）：列出**这场对话**工作区的文件。
@@ -396,6 +398,7 @@ export function bridge(): WailsBridge {
         SetActiveModel: offlineWrite,
         RevealInExplorer: offlineWrite,
         SaveTextFile: async () => '',
+        OpenLogDir: offlineWrite,
         RestoreToolWrite: async () => {
           throw new Error('离线模式：恢复不可用')
         },
