@@ -104,8 +104,16 @@ const usage = computed(() => {
   }
   const left = Math.max(0, ctx.budgetTokens - n)
   const pct = Math.round((left / ctx.budgetTokens) * 100)
-  const fold = ctx.dropped ? ' · 已达上限' : ctx.folded > 0 ? ` · 已折叠 ${ctx.folded} 项` : ''
   const budget = `${(ctx.budgetTokens / 1000).toFixed(0)}k tok`
+  // 折完了还是超：两种情况含义不同（阶段 5-2 修订）——渠道上限是硬限制（不发请求），
+  // 默认值只是折叠阈值（照发）。写成同一句会让用户以为默认预算也能拒掉他的回合。
+  const fold = ctx.dropped
+    ? ctx.budgetDefault
+      ? ' · 已尽量折叠'
+      : ' · 已达上限'
+    : ctx.folded > 0
+      ? ` · 已折叠 ${ctx.folded} 项`
+      : ''
   // 预算来源（阶段 5-2）：渠道没声明上限时用的是保守默认值——必须写明"按默认预算"，
   // 否则用户会以为渠道里填过这个数（折叠不是静默行为）
   return {
@@ -113,7 +121,8 @@ const usage = computed(() => {
     bar: pct > 30 ? 'bg-[var(--c-primary)]' : pct > 10 ? 'bg-[var(--c-warn)]' : 'bg-[var(--c-err)]',
     short: ctx.budgetDefault ? `余 ${pct}% · 按默认预算${fold}` : `余 ${pct}%${fold}`,
     full: ctx.budgetDefault
-      ? `上下文 ${n} tok / 默认预算 ${budget}（余 ${pct}%）${fold}；渠道未声明上下文上限，这是保守默认值——在「渠道管理」里填 contextLimit 可覆盖`
+      ? `上下文 ${n} tok / 默认预算 ${budget}（余 ${pct}%）${fold}；渠道未声明上下文上限，这是保守默认值——在「渠道管理」里填 contextLimit 可覆盖` +
+        (ctx.dropped ? '（默认值只作折叠阈值、不是硬限制：本轮照发，若上游装不下会自己报错）' : '')
       : `上下文 ${n} tok / 上限 ${budget}（余 ${pct}%）${fold}`,
   }
 })

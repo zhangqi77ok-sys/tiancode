@@ -77,6 +77,52 @@ func TestLoop_ContextOverflowFailsBeforeRequest(t *testing.T) {
 	}
 }
 
+// 阶段 5-2 修订：**默认**预算折完仍超 → 照发，不许阻断回合。
+// 为什么（实机回归）：默认值不是用户定的限制。拿它拒掉回合，等于惩罚"没填 contextLimit"——
+// 用户那场 58k/79k tok 的会话被 32k 默认值硬拒，直接没法继续对话。
+// 折叠照做（体量压到最小），读数里 Dropped + BudgetDefault 都要在，油表据此写"已尽量折叠"。
+func TestLoop_DefaultBudgetDoesNotBlockTurn(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+	if _, err := ledger.Append(session.EventUserMessage, map[string]string{
+		"text": strings.Repeat("这一段历史很长，用来把默认预算撑爆。", 30),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{{{Delta: "照答"}, {EndReason: llm.EndDone}}}}
+	loop := NewLoop(fr, "m", nil)
+	loop.SetContextBudget(1, true) // 极小**默认**预算：折完仍装不下，但不得拒发
+
+	ch, err := loop.Run(context.Background(), ledger, "再来一轮")
+	if err != nil {
+		t.Fatalf("按默认预算折完仍超也必须照发，不得报错：%v", err)
+	}
+	var ctxEv *llm.ContextEvent
+	for c := range ch {
+		if c.Context != nil {
+			ctxEv = c.Context
+		}
+	}
+	if len(fr.reqs) != 1 {
+		t.Fatalf("必须把请求发出去：calls=%d", len(fr.reqs))
+	}
+	if ctxEv == nil || !ctxEv.Dropped || !ctxEv.BudgetDefault {
+		t.Fatalf("读数要说明「按默认预算折叠后仍超、已照发」：%+v", ctxEv)
+	}
+	if loop.Phase() != PhaseIdle {
+		t.Fatalf("回合结束后必须回到 Idle：%v", loop.Phase())
+	}
+	// 不落 error 事件：这不是失败（用户看到的应该是正常回答）
+	if err := ledger.Replay(func(ev session.Event) error {
+		if ev.Kind() == session.EventError {
+			t.Fatalf("照发不是失败，不得落 error 事件：%s", string(ev.Data()))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 0.0.11：续跑前重新折叠——第二段开始时会重新派生并再报一次油表读数
 // （此前续跑后仍显示开局数字，用户以为折叠没生效）。
 func TestLoop_ContinueRefoldsContext(t *testing.T) {

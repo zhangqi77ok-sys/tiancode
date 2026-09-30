@@ -323,21 +323,19 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("derive history: %w", err)
 	}
-	// 折完仍超预算：不发请求（0.0.11）。发出去必然被上游按上下文长度拒绝，还会把
-	// "本地预算不够"伪装成上游错误；这里给明确终态，说清差在哪、能做什么。
+	// 折完仍超预算（0.0.11，阶段 5-2 修订了适用范围）：
+	//   - **渠道/用户声明**了上限：不发请求。发出去必然被上游按上下文长度拒绝，还会把
+	//     "本地预算不够"伪装成上游错误；这里给明确终态，说清差在哪、能做什么。
+	//   - 只是**我们兜底的默认值**：照发。默认值不是用户定的限制，拿它阻断回合等于惩罚
+	//     "没填 contextLimit"（实机回归：58k/79k 的会话被 32k 默认值硬拒，用户没法继续这场
+	//     对话）。折叠已经做到位（体量压到最小），油表标"已尽量折叠"；上游真装不下会自己
+	//     报错——可见且可归因（超时文案带本轮附件体量，见 inlineAttachmentNote）。
 	// 用户原话已 write-ahead 落账本（上面几行），不会因这一判断丢失。
-	if ctxInfo.Dropped {
+	if ctxInfo.Dropped && !l.ctxBudgetDefault {
 		l.phase.Store(int32(PhaseIdle))
-		// 装不下的说明要指出"预算是哪来的"（阶段 5-2）：渠道没声明上限时用的是保守
-		// 默认预算，用户此前没被要求填过这个数——不说清会把"按默认值折叠"误读成渠道故障。
-		source := "渠道上限"
-		hint := "可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。"
-		if l.ctxBudgetDefault {
-			source = "默认预算（渠道未声明上限）"
-			hint = "可以在「渠道管理」里给该渠道填 contextLimit 覆盖默认预算，或新开一轮对话。"
-		}
-		msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过%s（%d tok）：折叠旧内容后仍装不下。%s",
-			ctxInfo.EstimatedTokens, source, ctxInfo.BudgetTokens, hint)
+		msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过渠道上限（%d tok）：折叠旧内容后仍装不下。"+
+			"可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。",
+			ctxInfo.EstimatedTokens, ctxInfo.BudgetTokens)
 		if _, aerr := ledger.Append(session.EventError, map[string]any{"message": msg}); aerr != nil {
 			return nil, fmt.Errorf("persist context overflow: %w", aerr)
 		}

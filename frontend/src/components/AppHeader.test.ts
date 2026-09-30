@@ -173,5 +173,32 @@ describe('AppHeader（阶段 1）', () => {
     expect(noted, '默认预算的完整读数在 title 里').toBeTruthy()
     expect(noted?.getAttribute('title')).toContain('渠道未声明上下文上限')
     expect(noted?.getAttribute('title')).toContain('contextLimit')
+
+    // 折完仍超的两种含义必须分开（阶段 5-2 修订）：默认预算只是折叠阈值（照发），
+    // 渠道上限是硬限制（不发请求）——写成同一句会让用户以为回合被拒了
+    store.contextInfo = {
+      estimatedTokens: 40000,
+      budgetTokens: 32768,
+      budgetDefault: true,
+      folded: 3,
+      dropped: true,
+    }
+    await nextTick()
+    expect(text()).toContain('已尽量折叠')
+    expect(text()).not.toContain('已达上限')
+    expect(
+      headerEl().querySelector('[title*="不是硬限制"]'),
+      '默认预算下超了要说清"照发"',
+    ).toBeTruthy()
+
+    store.contextInfo = {
+      estimatedTokens: 120000,
+      budgetTokens: 100000,
+      budgetDefault: false,
+      folded: 3,
+      dropped: true,
+    }
+    await nextTick()
+    expect(text()).toContain('已达上限')
   })
 })
