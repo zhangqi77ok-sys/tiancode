@@ -70,20 +70,9 @@ async function save() {
     <div class="space-y-3 p-5">
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs text-[var(--c-text-dim)]">模式</span>
-        <button
-          class="chip"
-          :class="draft.mode === 'fixed' ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"
-          :aria-pressed="draft.mode === 'fixed'"
-          @click="setMode('fixed')"
-        >
-          固定一条
-        </button>
-        <button
-          class="chip"
-          :class="draft.mode === 'auto' ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"
-          :aria-pressed="draft.mode === 'auto'"
-          @click="setMode('auto')"
-        >
+        <!-- 选中态由 style.css 的 .chip[aria-pressed='true'] 表达（组件里写工具栏覆盖无效） -->
+        <button class="chip" :aria-pressed="draft.mode === 'fixed'" @click="setMode('fixed')">固定一条</button>
+        <button class="chip" :aria-pressed="draft.mode === 'auto'" @click="setMode('auto')">
           按每条消息自动选
         </button>
       </div>
@@ -109,7 +98,6 @@ async function save() {
         >
           <button
             class="chip shrink-0"
-            :class="isOff(e.id) ? '' : 'border-[var(--c-primary)] text-[var(--c-primary)]'"
             :aria-pressed="!isOff(e.id)"
             :title="isOff(e.id) ? '点击启用' : '点击停用'"
             @click="toggle(e.id)"
@@ -125,7 +113,6 @@ async function save() {
           </div>
           <button
             class="chip shrink-0"
-            :class="draft.default === e.id ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"
             :aria-pressed="draft.default === e.id"
             title="把这条设为默认"
             @click="setDefault(e.id)"

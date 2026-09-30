@@ -158,7 +158,6 @@ async function save() {
       >
         <button
           class="chip shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
-          :class="row.enabled ? 'border-[var(--c-primary)] text-[var(--c-primary)]' : ''"
           :aria-pressed="row.enabled"
           :disabled="catalog.busy"
           :title="row.enabled ? '点击停用' : '点击启用'"

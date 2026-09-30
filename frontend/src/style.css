@@ -223,6 +223,17 @@ body {
   cursor: not-allowed;
 }
 
+/* 选中 / 启用态：唯一真相在 aria-pressed 上。
+   为什么必须写在 style.css：.chip 位于 CSS 层之外，组件里用工具栏覆盖它的
+   color / border 一律无效（工具类在 @layer utilities 里）——0.0.18 实机反馈
+   "语气面板点『按每条消息自动选』没反应"，其实是状态变了、只是看不出高亮；
+   MCP / Skill 面板的「已启用」同理。颜色只在这里定义一份，组件不再重复声明。 */
+.chip[aria-pressed='true'] {
+  color: var(--c-primary);
+  border-color: var(--c-primary);
+  background: var(--c-primary-soft);
+}
+
 /* 纯数据状态药丸：刻意没有 hover 态（不暗示可点） */
 .stat {
   display: inline-flex;
