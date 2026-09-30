@@ -82,6 +82,9 @@ describe('AppHeader（阶段 1）', () => {
     expect(cls).toContain('flex-nowrap')
     expect(cls).toContain('shrink-0')
     expect(cls).not.toContain('flex-wrap')
+    // 不折行不许用裁切换：图标菜单是 header 内的 absolute 浮层，overflow-hidden
+    // 会把菜单整张剪掉——点"更多"就像没反应（0.0.17 实机反馈，jsdom 不模拟裁切，只能锁类名）
+    expect(cls).not.toContain('overflow-hidden')
   })
 
   it('中段只显示工作区末段，完整路径进 title；两者都没有就不占位', async () => {

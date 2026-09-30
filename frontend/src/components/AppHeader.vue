@@ -238,9 +238,12 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- 无边框窗口标题栏（阶段 1 瘦身）：固定 40px 且 **不换行**（1280 宽也不折两行）；
+       不折行靠 flex-nowrap + 中段 min-w-0 truncate + 右侧 shrink-0。
+       **这里不能加 overflow-hidden**：图标菜单是 header 内的 absolute 浮层，
+       裁切会把整张菜单剪没——点"更多"看起来就像没反应（0.0.17 实机反馈）。
        整条可拖拽（button/input 等交互元素在 style.css 里统一 no-drag） -->
   <header
-    class="flex h-10 shrink-0 flex-nowrap items-center gap-3 overflow-hidden border-b border-[var(--c-border)] bg-[var(--c-surface)] px-3"
+    class="flex h-10 shrink-0 flex-nowrap items-center gap-3 border-b border-[var(--c-border)] bg-[var(--c-surface)] px-3"
     style="--wails-draggable: drag"
   >
     <!-- 左：品牌标记 + 产品名 -->
