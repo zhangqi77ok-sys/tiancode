@@ -360,10 +360,14 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 
 // turn 是多步消费循环：每步一次模型调用；工具调用触发续步。
 func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Message, toolDefs []llm.ToolDef, out chan llm.StreamChunk, ctxInfo DeriveInfo) {
-	// defer 顺序即执行顺序（LIFO）：先置 Idle 再 close(out)，
+	// defer 顺序即执行顺序（LIFO：**后注册的先执行**）：先置 Idle、再 close(out)，
 	// 保证消费方见到关闭时 Phase 已回 Idle。
-	defer l.phase.Store(int32(PhaseIdle))
+	// 此前写反了（close 先跑、Idle 后跑）：消费方在通道关闭后立刻发起下一轮会偶发
+	// ErrBusy（"agent is already running a turn"）——测试 TestAgent_DerivesToolHistoryAcrossTurns
+	// 以约 1/3 概率抓到（同一 Loop 连跑两轮）；生产侧每轮新建 Loop 故未暴露，
+	// 但"关闭即可再次运行"是这条 defer 顺序的唯一理由，必须照注释执行。
 	defer close(out)
+	defer l.phase.Store(int32(PhaseIdle))
 
 	var terminalSent bool
 	emitTerminal := func(c llm.StreamChunk) {
