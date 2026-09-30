@@ -758,13 +758,21 @@ export const useChatStore = defineStore('chat', () => {
     promptTokens.value = p.prompt
   }
 
-  // 上下文治理读数（第 2 批）：渠道声明的预算 + 本轮为压回预算执行的折叠。
-  // 折叠绝不静默——有折叠时油表显式标注（dropped = 已无可再丢仍超预算）。
-  const contextInfo = ref<{ estimatedTokens: number; budgetTokens: number; folded: number; dropped: boolean } | null>(null)
+  // 上下文治理读数（第 2 批 + 阶段 5-2）：本轮预算（含"渠道未声明→默认值"的来源标记）
+  // 与本轮为压回预算执行的折叠。折叠绝不静默——有折叠时油表显式标注
+  //（dropped = 已无可再丢仍超预算）。
+  const contextInfo = ref<{
+    estimatedTokens: number
+    budgetTokens: number
+    budgetDefault: boolean
+    folded: number
+    dropped: boolean
+  } | null>(null)
   function onContext(p: {
     sessionID: string
     estimatedTokens: number
     budgetTokens: number
+    budgetDefault?: boolean
     foldedImages: number
     foldedTools: number
     foldedReads: number
@@ -774,6 +782,7 @@ export const useChatStore = defineStore('chat', () => {
     contextInfo.value = {
       estimatedTokens: p.estimatedTokens,
       budgetTokens: p.budgetTokens,
+      budgetDefault: p.budgetDefault === true,
       folded: p.foldedImages + p.foldedTools + p.foldedReads,
       dropped: p.dropped,
     }

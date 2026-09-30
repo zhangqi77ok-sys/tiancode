@@ -75,6 +75,9 @@ type Loop struct {
 	// ctxBudgetTokens 是本轮的上下文预算（token；0 = 未配置上限）。
 	// 由装配层从渠道配置折算注入（第 2 批）：派生历史时按预算分级折叠旧内容。
 	ctxBudgetTokens int
+	// ctxBudgetDefault 标记这个预算是"渠道没声明、按默认值兜底"来的（阶段 5-2）。
+	// 只影响读数（界面要写明「未配置，按默认值」）——折叠算法不区分来源。
+	ctxBudgetDefault bool
 	// prefaceSkips 统计"preface 与上一手相同而跳过替换"的次数（第 5 批；
 	// 测试观测点——跳过即保持 system 前缀逐字节不变，prompt cache 不失效）。
 	prefaceSkips int
@@ -120,9 +123,11 @@ func (l *Loop) Preface() string {
 	return l.preface
 }
 
-// SetContextBudget 设置本轮的上下文预算（token；0 = 未配置上限，不裁剪）。
+// SetContextBudget 设置本轮的上下文预算（token；0 = 不裁剪）。
 // 第 2 批：装配层从渠道配置（contextLimit）折算注入，派生历史时按预算分级折叠。
-func (l *Loop) SetContextBudget(tokens int) {
+// budgetIsDefault（阶段 5-2）：这个数来自"渠道未声明时的保守默认值"而非用户填写的上限——
+// 只用于读数（油表写明「未配置，按默认值」），折叠行为与声明上限完全一致。
+func (l *Loop) SetContextBudget(tokens int, budgetIsDefault bool) {
 	if l == nil {
 		return
 	}
@@ -130,6 +135,7 @@ func (l *Loop) SetContextBudget(tokens int) {
 		tokens = 0
 	}
 	l.ctxBudgetTokens = tokens
+	l.ctxBudgetDefault = budgetIsDefault && tokens > 0
 }
 
 // attachPreface 把静态系统说明放到最前（派生结果本身不含 system；动态 preface
@@ -144,13 +150,14 @@ func (l *Loop) attachPreface(msgs []llm.Message) []llm.Message {
 
 // contextEvent 把派生读数封成上报块（油表：预算 / 估算 / 折叠项 / 超限标记）。
 // 预算未配置且没有折叠时返回 nil——保持旧行为零噪声（不新增事件）。
-func contextEvent(info DeriveInfo) *llm.ContextEvent {
+func (l *Loop) contextEvent(info DeriveInfo) *llm.ContextEvent {
 	if info.BudgetTokens <= 0 && info.FoldedImages+info.FoldedTools+info.FoldedReads == 0 {
 		return nil
 	}
 	return &llm.ContextEvent{
 		EstimatedTokens: info.EstimatedTokens,
 		BudgetTokens:    info.BudgetTokens,
+		BudgetDefault:   l.ctxBudgetDefault,
 		FoldedImages:    info.FoldedImages,
 		FoldedTools:     info.FoldedTools,
 		FoldedReads:     info.FoldedReads,
@@ -322,9 +329,16 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 	// 用户原话已 write-ahead 落账本（上面几行），不会因这一判断丢失。
 	if ctxInfo.Dropped {
 		l.phase.Store(int32(PhaseIdle))
-		msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过渠道上限（%d tok）：折叠旧内容后仍装不下。"+
-			"可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。",
-			ctxInfo.EstimatedTokens, ctxInfo.BudgetTokens)
+		// 装不下的说明要指出"预算是哪来的"（阶段 5-2）：渠道没声明上限时用的是保守
+		// 默认预算，用户此前没被要求填过这个数——不说清会把"按默认值折叠"误读成渠道故障。
+		source := "渠道上限"
+		hint := "可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。"
+		if l.ctxBudgetDefault {
+			source = "默认预算（渠道未声明上限）"
+			hint = "可以在「渠道管理」里给该渠道填 contextLimit 覆盖默认预算，或新开一轮对话。"
+		}
+		msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过%s（%d tok）：折叠旧内容后仍装不下。%s",
+			ctxInfo.EstimatedTokens, source, ctxInfo.BudgetTokens, hint)
 		if _, aerr := ledger.Append(session.EventError, map[string]any{"message": msg}); aerr != nil {
 			return nil, fmt.Errorf("persist context overflow: %w", aerr)
 		}
@@ -453,7 +467,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 
 	// 上下文治理读数（第 2 批）：每轮一次，界面油表显示预算/估算/折叠标记——
 	// 折叠绝不静默（预算已配置或发生了折叠才上报，保持旧行为零噪声）。
-	if ev := contextEvent(ctxInfo); ev != nil {
+	if ev := l.contextEvent(ctxInfo); ev != nil {
 		if forward(llm.StreamChunk{Context: ev}) {
 			return
 		}
@@ -516,7 +530,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			return
 		}
 		msgs = l.attachPreface(refreshed)
-		if ev := contextEvent(next); ev != nil {
+		if ev := l.contextEvent(next); ev != nil {
 			if forward(llm.StreamChunk{Context: ev}) {
 				return
 			}
@@ -699,7 +713,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 					return
 				}
 				msgs = l.attachPreface(refreshed)
-				if ev := contextEvent(next); ev != nil {
+				if ev := l.contextEvent(next); ev != nil {
 					if forward(llm.StreamChunk{Context: ev}) {
 						return
 					}

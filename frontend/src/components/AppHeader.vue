@@ -94,22 +94,27 @@ const usage = computed(() => {
   const tok = n >= 10000 ? `≈${(n / 1000).toFixed(1)}k tok` : `${n} tok`
   const ctx = store.contextInfo
   if (!ctx || ctx.budgetTokens <= 0) {
-    // 没有上限就不编造百分比（沿用 0.0.09 纪律），但要有一句短文案说清楚"为什么没有条"
+    // 读数缺失（正常路径下不会出现：未声明上限时后端也会给默认预算），不编造百分比
     return {
       pct: 100,
       bar: 'bg-[var(--c-text-faint)]',
-      short: `${tok} · 未配置上限`,
-      full: `上下文 ${n} tok · 渠道未声明上下文上限（不显示剩余比例；想要油表请在「渠道管理」里填 contextLimit）`,
+      short: `${tok} · 无预算读数`,
+      full: `上下文 ${n} tok · 本轮没有上下文预算读数（后端未上报）`,
     }
   }
   const left = Math.max(0, ctx.budgetTokens - n)
   const pct = Math.round((left / ctx.budgetTokens) * 100)
   const fold = ctx.dropped ? ' · 已达上限' : ctx.folded > 0 ? ` · 已折叠 ${ctx.folded} 项` : ''
+  const budget = `${(ctx.budgetTokens / 1000).toFixed(0)}k tok`
+  // 预算来源（阶段 5-2）：渠道没声明上限时用的是保守默认值——必须写明"按默认预算"，
+  // 否则用户会以为渠道里填过这个数（折叠不是静默行为）
   return {
     pct,
     bar: pct > 30 ? 'bg-[var(--c-primary)]' : pct > 10 ? 'bg-[var(--c-warn)]' : 'bg-[var(--c-err)]',
-    short: `余 ${pct}%${fold}`,
-    full: `上下文 ${n} tok / 上限 ${(ctx.budgetTokens / 1000).toFixed(0)}k tok（余 ${pct}%）${fold}`,
+    short: ctx.budgetDefault ? `余 ${pct}% · 按默认预算${fold}` : `余 ${pct}%${fold}`,
+    full: ctx.budgetDefault
+      ? `上下文 ${n} tok / 默认预算 ${budget}（余 ${pct}%）${fold}；渠道未声明上下文上限，这是保守默认值——在「渠道管理」里填 contextLimit 可覆盖`
+      : `上下文 ${n} tok / 上限 ${budget}（余 ${pct}%）${fold}`,
   }
 })
 

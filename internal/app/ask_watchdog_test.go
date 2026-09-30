@@ -65,8 +65,14 @@ func TestChatService_WatchdogResetsAfterAskAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		for range ch {
+	// 像真实 UI 一样**持续**消费流：阶段 5-2 起每轮的第一个 chunk 就是上下文读数
+	//（以前没有预算就不上报）；若等到最后才读，转发会阻塞在第一个 chunk 上、整轮停住
+	// 被看门狗收掉——那是消费端的问题，不是内核的问题。后台收齐，断言在读端做。
+	stream := make(chan llm.StreamChunk, 256)
+	go func() {
+		defer close(stream)
+		for c := range ch {
+			stream <- c
 		}
 	}()
 
@@ -86,7 +92,7 @@ func TestChatService_WatchdogResetsAfterAskAnswer(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case c, ok := <-ch:
+		case c, ok := <-stream:
 			if !ok {
 				t.Fatal("流关闭但未收到终态")
 			}

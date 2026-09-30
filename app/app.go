@@ -486,6 +486,7 @@ func (b *Bind) Send(sessionID, text string) error {
 				"sessionID":       sessionID,
 				"estimatedTokens": c.Context.EstimatedTokens,
 				"budgetTokens":    c.Context.BudgetTokens,
+				"budgetDefault":   c.Context.BudgetDefault,
 				"foldedImages":    c.Context.FoldedImages,
 				"foldedTools":     c.Context.FoldedTools,
 				"foldedReads":     c.Context.FoldedReads,

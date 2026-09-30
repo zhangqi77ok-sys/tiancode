@@ -95,12 +95,15 @@ type TodoEvent struct {
 // 预算与估算用量，以及本轮为压回预算而执行的折叠——界面必须能看见"上下文被裁过"，
 // 折叠绝不静默（第 2 批）。
 type ContextEvent struct {
-	EstimatedTokens int  `json:"estimatedTokens"` // 本轮送给模型的上下文估算（token，保守口径见 agent.estimateTextTokens）
-	BudgetTokens    int  `json:"budgetTokens"`    // 渠道声明的上限（token；0 = 未配置，界面不显示比例）
-	FoldedImages    int  `json:"foldedImages"`    // 因超预算折叠的旧图片数（data URL → 路径说明）
-	FoldedTools     int  `json:"foldedTools"`     // 因超预算折叠的旧 shell/写入回执数（→ 一行摘要）
-	FoldedReads     int  `json:"foldedReads"`     // 因超预算额外折叠的只读结果数（收窄折叠窗口）
-	Dropped         bool `json:"dropped"`         // 已无可再丢仍超预算（界面须标明"已折叠"）
+	EstimatedTokens int `json:"estimatedTokens"` // 本轮送给模型的上下文估算（token，保守口径见 agent.estimateTextTokens）
+	BudgetTokens    int `json:"budgetTokens"`    // 渠道声明的上限（token；0 = 未配置，界面不显示比例）
+	// BudgetDefault 标记预算来自"渠道未声明时的保守默认值"（阶段 5-2）：界面要写明
+	// 「未配置，按默认值」——不能让人以为渠道里填了这个数。
+	BudgetDefault bool `json:"budgetDefault"`
+	FoldedImages  int  `json:"foldedImages"` // 因超预算折叠的旧图片数（data URL → 路径说明）
+	FoldedTools   int  `json:"foldedTools"`  // 因超预算折叠的旧 shell/写入回执数（→ 一行摘要）
+	FoldedReads   int  `json:"foldedReads"`  // 因超预算额外折叠的只读结果数（收窄折叠窗口）
+	Dropped       bool `json:"dropped"`      // 已无可再丢仍超预算（界面须标明"已折叠"）
 }
 
 // StreamChunk 是流式传输的最小单元。

@@ -376,9 +376,12 @@ func (s *ChatService) newAgentWith(model string, registry *tools.Registry, appro
 		approver = &watchApprover{inner: approver, watch: watch}
 	}
 	ag.SetApprover(approver) // 审批器随轮注入，策略变更对下一轮生效
-	// 上下文预算（第 2 批）：取已启用渠道声明上限的最小值——运行时选路可能落到
-	// 任一条，按最小上限裁剪才能保证不超任何一条；全部未声明则不裁剪。
-	ag.SetContextBudget(s.pool.MinContextLimit())
+	// 上下文预算（第 2 批 + 阶段 5-2）：取已启用渠道声明上限的最小值——运行时选路可能
+	// 落到任一条，按最小上限裁剪才能保证不超任何一条；**全部未声明时退回保守默认值**
+	// （未声明 ≠ 无限：不折叠就是每轮重发整段历史，请求体会一路涨到上游不响应的量级）。
+	// 来源随预算一起下发，界面据此写明「未配置，按默认值」。
+	budget, byDefault := resolveContextBudget(s.pool.MinContextLimit())
+	ag.SetContextBudget(budget, byDefault)
 	return ag
 }
 

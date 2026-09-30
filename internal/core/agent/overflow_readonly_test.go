@@ -48,7 +48,7 @@ func TestLoop_ContextOverflowFailsBeforeRequest(t *testing.T) {
 	}
 	fr := &fakeRuntime{script: [][]llm.StreamChunk{{{Delta: "不该发生"}, {EndReason: llm.EndDone}}}}
 	loop := NewLoop(fr, "m", nil)
-	loop.SetContextBudget(1) // 极小预算：折完仍装不下
+	loop.SetContextBudget(1, false) // 极小预算：折完仍装不下
 
 	_, err := loop.Run(context.Background(), ledger, "再来一轮")
 	if err == nil {
@@ -91,7 +91,7 @@ func TestLoop_ContinueRefoldsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	loop := NewLoop(fr, "m", registry)
-	loop.SetContextBudget(100000) // 配了预算 → 每段上报油表读数（含续跑前的重新折叠）
+	loop.SetContextBudget(100000, false) // 配了预算 → 每段上报油表读数（含续跑前的重新折叠）
 	loop.SetAsker(&fakeAsker{replies: []string{"继续执行"}})
 
 	ch, err := loop.Run(context.Background(), ledger, "hi")

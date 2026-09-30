@@ -136,19 +136,42 @@ describe('AppHeader（阶段 1）', () => {
     expect(menuEl()).toBeNull()
   })
 
-  it('油表：未配置上限只给短文案；配了上限才算比例并如实标注折叠', async () => {
+  it('油表：无读数不编比例；渠道上限与默认预算要能分辨', async () => {
     mountHeader()
     await nextTick()
     const store = useChatStore()
     store.promptTokens = 12345
     await nextTick()
-    expect(text()).toContain('未配置上限')
+    expect(text()).toContain('无预算读数') // 后端未上报读数时不编造百分比
 
-    store.contextInfo = { estimatedTokens: 12345, budgetTokens: 100000, folded: 2, dropped: false }
+    // 渠道声明了上限：给剩余比例 + 折叠标注，全文进 title
+    store.contextInfo = {
+      estimatedTokens: 12345,
+      budgetTokens: 100000,
+      budgetDefault: false,
+      folded: 2,
+      dropped: false,
+    }
     await nextTick()
     expect(text()).toContain('余 88%')
     expect(text()).toContain('已折叠 2 项')
     const bar = headerEl().querySelector('[title*="上限 100k"]') as HTMLElement | null
     expect(bar, '完整读数（tok / 上限 / 剩余 / 折叠）在 title 里').toBeTruthy()
+
+    // 阶段 5-2：渠道未声明上限 → 后端按保守默认预算折叠，油表必须写明来源，
+    // 并给出"在哪覆盖"（否则用户会以为渠道里填过这个数）
+    store.contextInfo = {
+      estimatedTokens: 12345,
+      budgetTokens: 32768,
+      budgetDefault: true,
+      folded: 0,
+      dropped: false,
+    }
+    await nextTick()
+    expect(text()).toContain('按默认预算')
+    const noted = headerEl().querySelector('[title*="默认预算 33k"]') as HTMLElement | null
+    expect(noted, '默认预算的完整读数在 title 里').toBeTruthy()
+    expect(noted?.getAttribute('title')).toContain('渠道未声明上下文上限')
+    expect(noted?.getAttribute('title')).toContain('contextLimit')
   })
 })
