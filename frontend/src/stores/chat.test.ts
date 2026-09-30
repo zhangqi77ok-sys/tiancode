@@ -295,6 +295,22 @@ describe('chat store', () => {
     expect(store.messages.filter((m) => m.role === 'assistant')).toHaveLength(0)
   })
 
+  // 0.0.25：带附件的一轮正常结束却一个字符都没有 → 占位**不删**，写明"模型没有返回内容"。
+  // 实机反馈"上传文件或图片后发出去没有回复"：删掉占位就表现为发出去就没了，
+  // 用户分不清"模型没答"和"附件根本没送达"。
+  it('带附件的空回答保留占位并写明原因', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('看这张图', [
+      { kind: 'image', name: 'shot.png', mediaType: 'image/png', size: 3, dataB64: 'AAA', inline: 'full' },
+    ])
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    const last = store.messages.at(-1)
+    expect(last?.role).toBe('assistant')
+    expect(last?.content).toBe('模型没有返回内容')
+    expect(last?.streaming).toBe(false)
+  })
+
   // 0.2.28：发送即有"正在思考"占位——慢中转/上游挂起时用户立刻有反馈
   //（实机：Send 在等响应头阶段永久挂起，界面毫无动静像死机）。占位由
   // onChunk 复用；零块 DONE 后移除空占位（不留空气泡）。

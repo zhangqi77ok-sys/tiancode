@@ -6,6 +6,7 @@ import { useEscClose } from '../composables/useEsc'
 import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
+import AttachmentDetail from './AttachmentDetail.vue'
 import AskCard from './AskCard.vue'
 import MarkdownBody from './MarkdownBody.vue'
 import ToolCard from './ToolCard.vue'
@@ -25,13 +26,19 @@ const emit = defineEmits<{
 const segments = computed<ChatMsg[]>(() => props.run ?? [props.m])
 const isUser = computed(() => props.m.role === 'user')
 
-// 文件附件（图片另走缩略图行）：这里算一次，模板不重复过滤
-const fileAtts = computed(() => (props.m.attachments ?? []).filter((a) => a.kind === 'file'))
+// 附件本机详情（0.0.25）：点附件名字打开（文件与图片一样都点得动）。
+// 只显示消息上已有的字段，不跳转、不用公网链接。
+const detail = ref<NonNullable<ChatMsg['attachments']>[number] | null>(null)
 
 // 附件的 hover 说明：内联与否决定"模型能不能看到内容"，不能只藏在版面之外
-function fileTitle(a: { name: string; path?: string; inline?: string }): string {
-  const how = a.inline === 'full' ? '已内联（内容随请求一起发给模型）' : '只附路径（模型需要自己读）'
-  return `${a.name} · ${how}${a.path ? ` · ${a.path}` : ''}`
+function attTitle(a: { name: string; path?: string; inline?: string }): string {
+  const how =
+    a.inline === 'full'
+      ? '已内联（内容随请求一起发给模型）'
+      : a.inline === 'none'
+        ? '未内联（模型没收到内容）'
+        : '只附路径（模型需要自己读）'
+  return `${a.name} · ${how}${a.path ? ` · ${a.path}` : ''} · 点击看本机详情`
 }
 // 图片放大（0.0.10）：点缩略图全屏看原图
 const lightbox = ref<string | null>(null)
@@ -145,37 +152,36 @@ function fmtTime(at?: number): string {
         <AppIcon name="refresh" :size="11" />重跑
       </button>
     </div>
-    <!-- 图片：缩略图行（dataUrl 来自发送时本地回显或重放时后端读取附件文件） -->
-    <div v-if="m.attachments?.some((a) => a.kind === 'image')" class="flex max-w-[75%] flex-wrap justify-end gap-1.5">
-      <img
-        v-for="(a, i) in m.attachments.filter((x) => x.kind === 'image' && x.dataUrl)"
-        :key="`img-${i}`"
-        :src="a.dataUrl"
-        class="h-24 cursor-zoom-in rounded-xl border border-[var(--c-border)] object-cover"
-        :alt="a.name"
-        :title="`${a.name} · 点击放大`"
-        @click="lightbox = a.dataUrl!"
-      />
-    </div>
-    <!-- 文件附件 + 正文（0.0.21 按用户给的样式）：附件收成内联小 chip（图标 + 文件名），
-         与正文同排——短消息时 chip 就在正文前面那一行，长消息时折到上一行；
-         内联与否与附件路径进 title（不占版面）。此前是每行一个方框，很难看也很难扫。 -->
-    <div v-if="fileAtts.length || m.content" class="flex max-w-[85%] flex-wrap items-center justify-end gap-1.5">
-      <span
-        v-for="(a, i) in fileAtts"
-        :key="`file-${i}`"
-        class="inline-flex max-w-[16rem] items-center gap-1.5 rounded-md border border-[var(--c-border)] bg-[var(--c-primary-soft)] px-2 py-1 text-xs text-[var(--c-primary)]"
-        :title="fileTitle(a)"
+    <!-- 附件（0.0.25）：每个附件都是**可点的名字**（文件与图片一样），点开本机详情。
+         图片有 dataUrl 时在名字旁留一枚缩略图（点缩略图仍是原来的放大预览）；
+         没有 dataUrl（附件已不在本机）也保留名字——此前整张图和名字一起消失，
+         用户以为消息没带附件。 -->
+    <div v-if="m.attachments?.length" class="flex max-w-[85%] flex-wrap items-center justify-end gap-1.5">
+      <button
+        v-for="(a, i) in m.attachments"
+        :key="`att-${i}`"
+        class="inline-flex max-w-[16rem] items-center gap-1.5 rounded-md border border-[var(--c-border)] bg-[var(--c-primary-soft)] px-2 py-1 text-xs text-[var(--c-primary)] transition-colors hover:border-[var(--c-primary)]"
+        :title="attTitle(a)"
+        @click="detail = a"
       >
-        <AppIcon name="file" :size="12" class="shrink-0" />
+        <img
+          v-if="a.kind === 'image' && a.dataUrl"
+          :src="a.dataUrl"
+          class="h-6 w-6 shrink-0 cursor-zoom-in rounded object-cover"
+          :alt="a.name"
+          title="点击放大预览"
+          @click.stop="lightbox = a.dataUrl!"
+        />
+        <AppIcon v-else :name="a.kind === 'image' ? 'image' : 'file'" :size="12" class="shrink-0" />
         <span class="min-w-0 truncate">{{ a.name }}</span>
-      </span>
-      <div
-        v-if="m.content"
-        class="max-w-full whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
-      >
-        {{ m.content }}
-      </div>
+      </button>
+    </div>
+    <!-- 正文：主色实心气泡，右对齐 -->
+    <div
+      v-if="m.content"
+      class="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
+    >
+      {{ m.content }}
     </div>
   </div>
 
@@ -276,4 +282,7 @@ function fmtTime(at?: number): string {
       <img :src="lightbox" class="max-h-full max-w-full rounded-lg" alt="放大图片" />
     </div>
   </Teleport>
+
+  <!-- 附件本机详情（0.0.25）：Esc / 点外面关闭，走现有浮层栈——不打断正在跑的回合 -->
+  <AttachmentDetail v-if="detail" :att="detail" @close="detail = null" />
 </template>

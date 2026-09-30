@@ -522,6 +522,17 @@ export const useChatStore = defineStore('chat', () => {
     return c.messages.find((m) => m.role === 'assistant' && m.streaming)
   }
 
+  // turnHadAttachments 判断"占位所在这一轮"是否带了附件：从占位往前找最近的一条
+  // 用户消息（工具卡、任务清单等会插在中间，跳过）。附件轮的空回答要留一条可见说明
+  // （0.0.25）——删掉占位就表现为"发出去就没了"，与"附件根本没送达"分不开。
+  function turnHadAttachments(c: Conversation, idx: number): boolean {
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = c.messages[i]
+      if (m.role === 'user') return !!m.attachments?.length
+    }
+    return false
+  }
+
   // 审批卡片：内核要"问"时插入一张带允许/拒绝按钮的卡片（ADR-0007）。
   // sessionID 必填：缺标识的卡片宁可丢弃并报错，也绝不插进当前视图（串会话）。
   function onApproval(p: {
@@ -875,9 +886,15 @@ export const useChatStore = defineStore('chat', () => {
         ast.content += (ast.content ? '\n\n' : '') + terminalLabel(p.endReason, p.error)
       } else if (!ast.content && !ast.thinking) {
         // 正常结束但占位段仍是"正在思考"空壳（模型只调了工具等）：
-        // 移除空占位——零块 DONE 不补空气泡的既有契约（此处连占位也不留）
+        // 默认移除空占位——零块 DONE 不补空气泡的既有契约（此处连占位也不留）。
+        // 例外（0.0.25）：本轮带了附件时**不删**，改写一句"模型没有返回内容"——
+        // 附件轮的空回答必须看得见，否则用户分不清"模型没答"和"附件没发出去"。
         const i = c.messages.indexOf(ast)
-        if (i >= 0) c.messages.splice(i, 1)
+        if (i >= 0 && turnHadAttachments(c, i)) {
+          ast.content = '模型没有返回内容'
+        } else if (i >= 0) {
+          c.messages.splice(i, 1)
+        }
       }
       // 本轮耗时（Cline 惯例）：send 置位、terminal 收算；无进行中轮次（测试直插）不计
       if (c.turnStartedAt > 0) {

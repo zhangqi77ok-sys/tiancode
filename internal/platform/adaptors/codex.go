@@ -82,6 +82,24 @@ func (Codex) SetupHeaders(rc RouteContext, hdr http.Header) error {
 }
 
 // ConvertRequest 把统一 Chat 请求转为 Responses 请求体。
+// userText 取用户消息的文字：优先 Parts 里的文字段（0.0.25 附件轮的正文在那里），
+// 没有 Parts 时回落 Content。
+func userText(m llm.Message) string {
+	if len(m.Parts) == 0 {
+		return m.Content
+	}
+	var b strings.Builder
+	for _, p := range m.Parts {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	if b.Len() == 0 {
+		return m.Content // Parts 全是图片等非文字片段时仍有正文可发
+	}
+	return b.String()
+}
+
 func (a Codex) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte, error) {
 	var sysParts []string
 	input := make([]map[string]any, 0, len(req.Messages))
@@ -93,9 +111,31 @@ func (a Codex) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte, err
 				sysParts = append(sysParts, s)
 			}
 		case "user":
+			// 文本（0.0.25）：先取 Parts 里的文字段——附件轮的正文、内联文件内容与图片
+			// 说明都在那里；没有 Parts 再回落 Content。此前只读 Content，附件轮里它是
+			// 空串，模型收到的是一条空 input_text（等于没发出去）。
+			text := userText(m)
+			// 图片：Responses 这条链路没有图片字段，**不发明** input_image——在文字里写明
+			// "本协议未发送图像"与文件名（Parts 的图片片段带 Name），模型至少知道有图。
+			var imgs []string
+			for _, part := range m.Parts {
+				if part.Type != "image_url" {
+					continue
+				}
+				name := part.Name
+				if name == "" {
+					name = "未命名图片"
+				}
+				imgs = append(imgs, fmt.Sprintf("\n[本协议未发送图像：%s]", name))
+			}
+			text += strings.Join(imgs, "")
+			if strings.TrimSpace(text) == "" {
+				// 上游不接受空串 input_text：宁可写一句事实，也不让这条消息成空壳
+				text = "[本轮没有可发送的文字内容]"
+			}
 			input = append(input, map[string]any{
 				"type": "message", "role": "user",
-				"content": []map[string]any{{"type": "input_text", "text": m.Content}},
+				"content": []map[string]any{{"type": "input_text", "text": text}},
 			})
 		case "assistant":
 			if strings.TrimSpace(m.Content) != "" {

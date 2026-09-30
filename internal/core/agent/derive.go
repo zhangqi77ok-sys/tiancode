@@ -202,8 +202,25 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 				msgs = append(msgs, llm.Message{Role: "user", Content: p.Text})
 				return nil
 			}
+			// 0.0.25 起 **Content 与 Parts 都写**（此前 Content 留空）：Anthropic 与 Codex
+			// 两个适配器只读 Content，附件轮于是等于没发出去（实机反馈：上传文件或图片后
+			// 发出去没有任何回复）。两者同源构造，不写两套文本：
+			//   Content —— 用户原文 + 内联文件正文 / 未内联的路径说明 + 每张图只写
+			//             「文件名：图像见多模态部分」；**base64 绝不进文字**（省 token，
+			//             也免得文字化协议把乱码当正文）；
+			//   Parts   —— 同一份文字按出现顺序切成 text 段 + 图片的 image_url data URL。
+			// 图片一律内联在请求体里，不转 http(s) 链接（本工具是本地开源工具；
+			// 某个中转只收 http(s) 时由适配器/上游明确报错，不空转）。
+			var content strings.Builder
+			content.WriteString(p.Text)
 			var parts []llm.ContentPart
-			text := p.Text
+			flushed := 0
+			flushText := func() {
+				if s := content.String(); len(s) > flushed {
+					parts = append(parts, llm.ContentPart{Type: "text", Text: s[flushed:]})
+					flushed = len(s)
+				}
+			}
 			var notes []string
 			hasImage := false
 			for _, att := range p.Attachments {
@@ -212,12 +229,14 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 					// 图片：data URL（上游按 image_url 读；不支持视觉的渠道展示上游错误）
 					b, err := os.ReadFile(full)
 					if err != nil {
-						text += fmt.Sprintf("\n[图片 %s 读取失败：%v]", att.Name, err)
+						content.WriteString(fmt.Sprintf("\n[图片 %s 读取失败：%v]", att.Name, err))
 						continue
 					}
-					parts = append(parts, llm.ContentPart{Type: "text", Text: text})
-					text = ""
-					parts = append(parts, llm.ContentPart{Type: "image_url", ImageURL: dataURL(att.MediaType, b)})
+					content.WriteString(fmt.Sprintf("\n[图片 %s：图像见多模态部分]", att.Name))
+					flushText() // 图在消息里的位置不变：先把到这里的文字收成一个 text 段
+					parts = append(parts, llm.ContentPart{
+						Type: "image_url", Name: att.Name, ImageURL: dataURL(att.MediaType, b),
+					})
 					hasImage = true
 					notes = append(notes, fmt.Sprintf("[图片 %s（%s）：旧轮次已省略图像数据，需要时请重新提供]", att.Name, att.Path))
 					continue
@@ -225,19 +244,23 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 				if att.Inline == "full" {
 					b, err := os.ReadFile(full)
 					if err == nil {
-						text += fmt.Sprintf("\n\n[附件文件 %s 内容如下]\n%s", att.Path, string(b))
+						content.WriteString(fmt.Sprintf("\n\n[附件文件 %s 内容如下]\n%s", att.Path, string(b)))
 						continue
 					}
-					text += fmt.Sprintf("\n[附件 %s 读取失败：%v]", att.Name, err)
+					content.WriteString(fmt.Sprintf("\n[附件 %s 读取失败：%v]", att.Name, err))
 					continue
 				}
 				// 只附路径
-				text += fmt.Sprintf("\n[附件文件 %s（未内联，需要时用 fs 读取）]", att.Path)
+				content.WriteString(fmt.Sprintf("\n[附件文件 %s（未内联，需要时用 fs 读取）]", att.Path))
 			}
-			if text != "" || len(parts) == 0 {
-				parts = append([]llm.ContentPart{{Type: "text", Text: text}}, parts...)
+			flushText()
+			text := content.String()
+			if len(parts) == 0 {
+				// 理论不可达（有附件就必有一行说明）；真出现时退回纯文本，不造空消息
+				msgs = append(msgs, llm.Message{Role: "user", Content: text})
+				return nil
 			}
-			msgs = append(msgs, llm.Message{Role: "user", Parts: parts})
+			msgs = append(msgs, llm.Message{Role: "user", Content: text, Parts: mergeAdjacentTextParts(parts)})
 			if hasImage {
 				imageRefs = append(imageRefs, imageRef{msgIdx: len(msgs) - 1, turn: turn, note: strings.Join(notes, "\n")})
 			}
@@ -363,6 +386,11 @@ func foldOldImages(msgs []llm.Message, refs []imageRef, minTurn int) int {
 				n++
 				continue
 			}
+			// 文字里的「图像见多模态部分」随图一起作废（0.0.25）：改成"已省略"，
+			// 免得留下一句"图在多模态部分"而那里已经没有图
+			if p.Type == "text" {
+				p.Text = strings.ReplaceAll(p.Text, "：图像见多模态部分]", "：图像数据已省略]")
+			}
 			kept = append(kept, p)
 		}
 		kept = append(kept, llm.ContentPart{Type: "text", Text: "\n" + ref.note})
@@ -438,7 +466,11 @@ func estimateMessagesTokens(msgs []llm.Message) int {
 	for i := range msgs {
 		m := &msgs[i]
 		total += 4 // 每条消息的 role/格式开销（保守常量）
-		total += estimateTextTokens(m.Content)
+		// 附件轮（0.0.25）：Content 与 Parts 装的是同一份文字（同源构造），只算一处——
+		// 否则内联文件正文被算两遍，油表虚高、可能误触发折叠
+		if len(m.Parts) == 0 {
+			total += estimateTextTokens(m.Content)
+		}
 		for _, p := range m.Parts {
 			if p.Type == "image_url" {
 				total += estimateImageTokens

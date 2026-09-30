@@ -3,6 +3,7 @@ import { createApp, defineComponent, h, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import MessageBubble from './MessageBubble.vue'
 import type { ChatMsg } from '../stores/chat'
+import { consumeEsc } from '../composables/useEsc'
 
 // 第 7 批：① 删掉「重试上一问」（它只把上一问原文再发一遍，失败回合仍留在流里）；
 // ② 用户气泡有「复制」；③ 「重跑」只把原文 + 附件交回输入框，绝不自己重发。
@@ -117,8 +118,71 @@ describe('MessageBubble（第 7 批）', () => {
     expect(chip?.textContent).toContain('#1065.txt')
     expect(chip?.getAttribute('title')).toContain('已内联')
     expect(chip?.getAttribute('title')).toContain('att/s/file-1-#1065.txt')
-    // 正文照旧渲染（chip 与正文同排，不再各自占一行）
+    // 正文照旧渲染（附件行与正文是相邻两块，都不少）
     expect(el.textContent ?? '').toContain('写的什么内容')
-    expect(chip?.parentElement?.textContent ?? '').toContain('写的什么内容')
+  })
+
+  // 0.0.25：每个附件都是**可点的名字**（此前文件是 span，点不了），点开本机详情
+  it('点附件名字打开本机详情（文件名/类型/内联方式/路径）', async () => {
+    const el = mount({
+      id: 'u10',
+      role: 'user',
+      content: '写的什么内容',
+      at: Date.now(),
+      attachments: [
+        { kind: 'file', name: '#1065.txt', mediaType: 'text/plain', path: 'att/s/file-1-#1065.txt', inline: 'full' },
+      ],
+    })
+    const chip = el.querySelector('[title*="#1065.txt"]') as HTMLButtonElement | null
+    expect(chip?.tagName, '附件名字必须是可点控件').toBe('BUTTON')
+    chip?.click()
+    await nextTick()
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('#1065.txt')
+    expect(text).toContain('文件 · text/plain')
+    expect(text).toContain('已内联（内容随请求一起发给模型）')
+    expect(text).toContain('att/s/file-1-#1065.txt')
+    // Esc 关详情：走浮层消费栈（不打断回合）
+    expect(consumeEsc()).toBe(true)
+    await nextTick()
+    expect(document.body.textContent ?? '').not.toContain('内联方式')
+  })
+
+  // 0.0.25：图片没有 dataUrl（附件已不在本机）时也要留名字——此前整张图和名字一起消失
+  it('图片附件无 dataUrl 仍留名字，图标替代缩略图', () => {
+    const el = mount({
+      id: 'u11',
+      role: 'user',
+      content: '看截图',
+      at: Date.now(),
+      attachments: [{ kind: 'image', name: 'shot.png', mediaType: 'image/png', path: 'att/s/shot.png', inline: 'full' }],
+    })
+    const chip = el.querySelector('[title*="shot.png"]') as HTMLElement | null
+    expect(chip, '图片附件也要有 chip').toBeTruthy()
+    expect(chip?.textContent).toContain('shot.png')
+    expect(el.querySelector('img'), '没有 dataUrl 就不出缩略图').toBeFalsy()
+  })
+
+  // 0.0.25：图片有 dataUrl 时名字与缩略图并存，点名字开详情（点缩略图仍是放大）
+  it('图片有 dataUrl：名字 + 缩略图并存', async () => {
+    const el = mount({
+      id: 'u12',
+      role: 'user',
+      content: '看截图',
+      at: Date.now(),
+      attachments: [
+        { kind: 'image', name: 'shot.png', mediaType: 'image/png', dataUrl: 'data:image/png;base64,AAA', path: 'att/s/shot.png', inline: 'full' },
+      ],
+    })
+    const thumb = el.querySelector('img') as HTMLImageElement | null
+    expect(thumb?.getAttribute('src')).toContain('data:image/png;base64,AAA')
+    const chip = thumb?.closest('button') as HTMLButtonElement | null
+    expect(chip?.textContent).toContain('shot.png')
+    chip?.click()
+    await nextTick()
+    // 详情里用现成的 dataUrl 显示原图
+    const imgs = document.body.querySelectorAll('img')
+    expect(imgs.length).toBeGreaterThanOrEqual(2)
+    expect(document.body.textContent ?? '').toContain('图片 · image/png')
   })
 })

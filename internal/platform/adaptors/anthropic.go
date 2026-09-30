@@ -59,11 +59,39 @@ func (a Anthropic) SetupHeaders(rc RouteContext, hdr http.Header) error {
 type antBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Source    *antSource      `json:"source,omitempty"`      // image
 	ID        string          `json:"id,omitempty"`          // tool_use
 	Name      string          `json:"name,omitempty"`        // tool_use
 	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result
 	Content   string          `json:"content,omitempty"`     // tool_result
+}
+
+// antSource 是 image 块的来源（0.0.25）：只支持 base64 内联。
+// 本工具是本地开源工具，图片不转 http(s) 链接——中转只收 URL 时明确报错，不空转。
+type antSource struct {
+	Type      string `json:"type"`       // 固定 "base64"
+	MediaType string `json:"media_type"` // image/png 等（嗅探结果）
+	Data      string `json:"data"`       // base64 正文（不含 data: 前缀）
+}
+
+// splitDataURL 拆开 data URL（data:<mediaType>;base64,<data>）。
+// 只认 base64 内联形态：非内联（含 http(s) 链接）返回 ok=false，由调用方写成明确的
+// 文字说明——绝不静默丢图。
+func splitDataURL(u string) (mediaType, data string, ok bool) {
+	rest, found := strings.CutPrefix(u, "data:")
+	if !found {
+		return "", "", false
+	}
+	meta, payload, found := strings.Cut(rest, ",")
+	if !found {
+		return "", "", false
+	}
+	mt, found := strings.CutSuffix(meta, ";base64")
+	if !found || mt == "" {
+		return "", "", false
+	}
+	return mt, payload, true
 }
 
 type antMessage struct {
@@ -103,7 +131,7 @@ func (a Anthropic) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte,
 	}
 	pendingRole := ""
 	pendingBlocks := []antBlock{}
-	for _, m := range req.Messages {
+	for i, m := range req.Messages {
 		switch m.Role {
 		case "system":
 			if system.Len() > 0 {
@@ -117,7 +145,32 @@ func (a Anthropic) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte,
 				pendingRole, pendingBlocks = "", nil
 			}
 			blocks := []antBlock{}
-			if m.Content != "" {
+			if m.Role == "user" && len(m.Parts) > 0 {
+				// 多模态（0.0.25）：文字段 → text block，图片 data URL → base64 image block。
+				// 此前只读 m.Content，而附件轮的正文、内联文件内容与图片都在 Parts 里
+				//（Content 留空）→ 这块一个 block 都不生成、随后被 flush 丢掉，
+				// 附件轮等于根本没发给模型（实机反馈：上传文件或图片后没有回复）。
+				for _, part := range m.Parts {
+					switch part.Type {
+					case "image_url":
+						mt, data, ok := splitDataURL(part.ImageURL)
+						if !ok {
+							blocks = append(blocks, antBlock{Type: "text", Text: fmt.Sprintf(
+								"[附件图片未以内联 base64 提供（本工具不使用 http(s) 图片链接），此图未发送：%s]",
+								part.ImageURL)})
+							continue
+						}
+						blocks = append(blocks, antBlock{Type: "image", Source: &antSource{
+							Type: "base64", MediaType: mt, Data: data,
+						}})
+					default:
+						if part.Text != "" {
+							blocks = append(blocks, antBlock{Type: "text", Text: part.Text})
+						}
+					}
+				}
+			} else if m.Content != "" {
+				// 没有 Parts（纯文本消息）时沿用旧路径：Content → text block
 				blocks = append(blocks, antBlock{Type: "text", Text: m.Content})
 			}
 			if m.Role == "assistant" {
@@ -128,6 +181,12 @@ func (a Anthropic) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte,
 					}
 					blocks = append(blocks, antBlock{Type: "tool_use", ID: tc.ID, Name: tc.Name, Input: input})
 				}
+			}
+			if m.Role == "user" && len(blocks) == 0 {
+				// 一个块都没有 = 这条用户消息整条消失（上游看到的是"用户什么都没说"）。
+				// 宁可报错，也不静默省略：附件轮发出去没回复正是这种静默造成的。
+				return nil, fmt.Errorf("anthropic 适配器：第 %d 条 %s 消息既没有内容也没有可转换的多模态片段",
+					i, m.Role)
 			}
 			if pendingRole == "" {
 				pendingRole = m.Role

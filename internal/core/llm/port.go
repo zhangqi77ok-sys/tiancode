@@ -180,6 +180,10 @@ type ContentPart struct {
 	Type     string `json:"type"` // "text" | "image_url"
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"-"` // data URL；序列化时包进 image_url 对象
+	// Name 是图片片段的原始文件名（0.0.25）：Codex 那条链路没有图片字段，只能在文字里
+	// 写"本协议未发送图像 + 文件名"，而 Parts 本身不带宽图信息。json:"-" 保证它绝不上线
+	//（OpenAI 兼容的 image_url 数组里没有这个名字，行为与 0.0.10 完全一致）。
+	Name string `json:"-"`
 }
 
 // ToolCall 是一条完整的工具调用请求（由增量分片拼接而成）。

@@ -21,6 +21,7 @@ type IconName =
   | 'star'
   | 'message'
   | 'file'
+  | 'image'
   | 'terminal'
   | 'search'
   | 'wrench'
@@ -63,6 +64,7 @@ const PATHS: Record<IconName, string[]> = {
   star: ['M12 3l2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9-5.5 2.9 1-6.1L3 9.5l6.3-.9z'],
   message: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
   file: ['M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z', 'M15 2v5h5'],
+  image: ['M4 4h16v16H4z', 'M8.5 10.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z', 'm20 15-4.5-4.5L7 19'],
   terminal: ['m4 17 6-6-6-6', 'M12 19h8'],
   search: ['M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16Z', 'm21 21-4.35-4.35'],
   wrench: [
