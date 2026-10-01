@@ -7,7 +7,6 @@ import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages, stabilizeItems, type RenderItem } from '../composables/messageGrouping'
 import { growFrom, initialFrom, shouldGrow, trimFrom } from '../composables/messageWindow'
 import { shortDir } from '../composables/workspaceLabel'
-import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import AskCard from './AskCard.vue'
 import MessageBubble from './MessageBubble.vue'
@@ -23,12 +22,6 @@ const emit = defineEmits<{
 const store = useChatStore()
 const channels = useChannelStore()
 const ws = useWorkspaceStore()
-
-// 空态里的"选择工作区"主行动：选择目录 → 切换 → 开新对话（与顶栏/侧栏同语义）
-async function pickWorkspace() {
-  const ok = await ws.pickAndSet()
-  if (ok) await store.newSession()
-}
 
 // 建议按"有没有工作区"分两组：无工作区时本地工具未注册（纯对话），
 // 给"读文件/跑测试"类提示词等于指引模型撞墙——文案必须与实际能力一致
@@ -64,6 +57,15 @@ async function onScrollWindow() {
     fromIndex.value = growFrom(fromIndex.value, allItems.value.length)
     await nextTick()
     node.scrollTop += node.scrollHeight - before
+    return
+  }
+  // 已挂载到窗口起点而投影还有更早的历史：向上补一页（0.3 尾屏优先加载）。
+  // 等高补偿与 grow 同理——更早的消息插在视口上方。
+  if (fromIndex.value === 0 && store.olderAvailable && !store.loadingOlder) {
+    const before = node.scrollHeight
+    await store.loadOlder()
+    await nextTick()
+    if (store.messages.length) node.scrollTop += node.scrollHeight - before
     return
   }
   await trimIfNeeded()
@@ -150,34 +152,31 @@ watch(
       <p class="text-sm text-[var(--c-text-dim)]">正在载入历史…</p>
     </div>
 
-    <!-- 空态（0.0.27 重排）：纯对话是**一等模式**，不是"缺工作区"的警告——
-         两种状态同一视觉权重、同一中性色；挂工作区是可选增强（次要按钮），
-         不再用警示色和主按钮逼人选。建议文案与实际能力一致。 -->
-    <div v-else-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-4 px-6">
-      <div class="w-full max-w-md rounded-[var(--r-card)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-3 text-center">
-        <p class="text-[13px] text-[var(--c-text)]">
-          模型
-          <span class="font-medium">{{ channels.activeModel || '未选择' }}</span>
-          <span v-if="channels.activeChannel" class="text-[var(--c-text-dim)]"> · {{ channels.activeChannel.name }}</span>
-        </p>
-        <p class="mt-1 text-xs text-[var(--c-text-dim)]" :title="ws.path">
-          {{
-            ws.path
-              ? `工作区 ${shortDir(ws.path)} · 可读写文件、跑命令、查 Git`
-              : '纯对话 · 直接提问即可；贴图与传文件照常可用'
-          }}
-        </p>
+    <!-- 向上补更早的历史（0.3 尾屏优先）：加载中给一句可见反馈 -->
+    <p v-else-if="store.loadingOlder" class="py-1 text-center text-[11px] text-[var(--c-text-faint)]" role="status">
+      正在载入更早的消息…
+    </p>
+
+    <!-- 空态（0.3 改版）：一件事——模型、工作区、三条建议。不再堆灰卡片与一排药丸：
+         开着就能读的三行字 + 三个安静的入口，视线上移即可开始。 -->
+    <div v-else-if="!store.messages.length" class="flex h-full flex-col items-center justify-center gap-5 px-6">
+      <p class="max-w-full truncate text-base font-medium text-[var(--c-text)]" title="当前模型（点击输入框左侧可切换）">
+        {{ channels.activeModel || '未选择模型' }}
+      </p>
+      <p class="max-w-full truncate text-xs text-[var(--c-text-dim)]" :title="ws.path">
+        {{
+          ws.path
+            ? `工作区 ${shortDir(ws.path)} · 可读写文件、跑命令、查 Git`
+            : '纯对话 · 直接提问即可；贴图与传文件照常可用'
+        }}
+      </p>
+      <div class="flex flex-col items-stretch gap-1 pt-1">
         <button
-          v-if="!ws.path"
-          class="mt-3 inline-flex items-center gap-1.5 rounded-[var(--r-pill)] border border-[var(--c-border)] px-3 py-1.5 text-xs text-[var(--c-text-dim)] transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"
-          title="可选：选定目录后新对话归属它，解锁读写文件、跑命令、查 Git（当前这场对话不受影响）"
-          @click="pickWorkspace"
+          v-for="s in suggestions"
+          :key="s"
+          class="rounded-lg px-4 py-1.5 text-center text-[13px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-primary)]"
+          @click="emit('suggest', s)"
         >
-          <AppIcon name="folder" :size="12" /> 挂上工作区（可选）
-        </button>
-      </div>
-      <div class="flex flex-wrap justify-center gap-2">
-        <button v-for="s in suggestions" :key="s" class="chip" @click="emit('suggest', s)">
           {{ s }}
         </button>
       </div>

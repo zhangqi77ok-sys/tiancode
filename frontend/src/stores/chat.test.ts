@@ -48,6 +48,19 @@ vi.mock('../wails', () => ({
         if (h.replayGate) await h.replayGate
         return h.replayById[id] ?? h.replay
       },
+      // 0.3 尾屏优先：分页投影按同一份数据切片——测试数据都小于一页，
+      // 行为与全量 Replay 一致（旧断言不动，契约不变）
+      ReplayTail: async (id: string, limit: number) => {
+        if (h.replayGate) await h.replayGate
+        const all = h.replayById[id] ?? h.replay
+        const from = Math.max(0, all.length - limit)
+        return { messages: all.slice(from), total: all.length, from }
+      },
+      ReplayOlder: async (id: string, from: number, limit: number) => {
+        const all = h.replayById[id] ?? h.replay
+        const start = Math.max(0, from - limit)
+        return { messages: all.slice(start, from), total: all.length, from: start }
+      },
       Send: async (sessionID: string, text: string) => {
         h.sendCalls.push({ sessionID, text })
         h.sends.push(text)

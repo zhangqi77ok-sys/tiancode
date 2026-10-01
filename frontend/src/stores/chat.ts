@@ -3,6 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import {
   bridge,
   openExternal,
+  type ChatMessageDTO,
   type ChatToolEventDTO,
   type RerunResultDTO,
   type RevertResultDTO,
@@ -328,10 +329,12 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // 从账本恢复一个会话的消息缓冲（仅在该会话本进程内还没有缓冲时调用——
-  // 已有缓冲说明本进程内发生过对话甚至正在后台跑，重放只会覆盖掉活数据）。
-  async function replayOf(id: string): Promise<ChatMsg[]> {
-    const history = (await bridge().app.Replay(id)) ?? []
+  // 尾屏加载（0.3 长会话减重）：切会话只取投影的最后一屏，向上滚动再补更早的
+  //（后端 ReplayTail / ReplayOlder 分页；投影总数 total 用来判断还有没有更早的）。
+  const REPLAY_TAIL_LIMIT = 40
+
+  // mapHistory 把后端投影映射为 UI 消息（尾屏与向上翻页共用一份映射）。
+  function mapHistory(history: ChatMessageDTO[]): ChatMsg[] {
     return history.map((m) => {
       // 任务卡：Content 为 items JSON（Replay 投影只保留最新快照）
       if (m.role === 'todo') {
@@ -428,11 +431,16 @@ export const useChatStore = defineStore('chat', () => {
     // 只在用户显式选择工作区、或在草稿上发送时确定。
     sessionId.value = id
     contextInfo.value = null // 上下文读数属于具体会话：切换后显示新会话的最近读数（无则不显示）
+    olderFrom.value = 0 // 新视图的翻页锚点复位：是否还有更早的历史由本次尾屏决定
     if (!convos.has(id)) {
       loadingSession.value = true
       const c = ensureConvo(id)
       try {
-        const hist = await replayOf(id)
+        // 尾屏优先（0.3）：只取最后一屏，长会话不再等全量投影传完才见首屏；
+        // 更早的历史等用户向上滚动时经 loadOlder 分页补齐（DOM 窗口照常工作）。
+        const page = await bridge().app.ReplayTail(id, REPLAY_TAIL_LIMIT)
+        const hist = mapHistory(page?.messages ?? [])
+        olderFrom.value = Math.max(0, (page?.total ?? hist.length) - hist.length)
         // Replay 窗口（IPC 往返）内用户可能已经发了消息（冷启动直接对话，0.2.30
         // 实机：打开软件就发，随后"什么都没显示"）。此前整体覆盖 `c.messages = hist`
         // 会把窗口内刚 push 的消息丢掉——改为历史前置、本地保留，重叠前缀去重。
@@ -448,6 +456,35 @@ export const useChatStore = defineStore('chat', () => {
       } finally {
         loadingSession.value = false
       }
+    }
+  }
+
+  // ---- 向上翻页（0.3 尾屏优先的另一半）----
+  // olderFrom 是"已载入的投影条数从末尾往前数的位置"（0 = 前面没有了）。
+  // 新事件只会追加在投影尾部，前缀下标稳定——翻页锚点不受后台轮次追加影响。
+  const olderFrom = ref(0)
+  const olderAvailable = computed(() => olderFrom.value > 0)
+  const loadingOlder = ref(false)
+
+  // loadOlder 取更早的一页并前置进缓冲（保持账本投影顺序；本地 live 消息只在尾部追加，
+  // 前插不会与本地消息交错）。
+  async function loadOlder() {
+    const id = sessionId.value
+    if (!id || loadingOlder.value || olderFrom.value <= 0) return
+    loadingOlder.value = true
+    try {
+      const page = await bridge().app.ReplayOlder(id, olderFrom.value, REPLAY_TAIL_LIMIT)
+      const older = mapHistory(page?.messages ?? [])
+      olderFrom.value = Math.max(0, page?.from ?? 0)
+      if (older.length) {
+        const c = ensureConvo(id)
+        c.messages = [...older, ...c.messages]
+      }
+    } catch (e) {
+      // 翻页失败必须可见（静默会让用户以为"前面没有了"）
+      error.value = `载入更早的消息失败：${errText(e)}`
+    } finally {
+      loadingOlder.value = false
     }
   }
 
@@ -809,14 +846,18 @@ export const useChatStore = defineStore('chat', () => {
     promptTokens.value = p.prompt
   }
 
-  // 上下文治理读数（第 2 批 + 阶段 5-2）：本轮预算（含"渠道未声明→默认值"的来源标记）
-  // 与本轮为压回预算执行的折叠。折叠绝不静默——有折叠时油表显式标注
-  //（dropped = 已无可再丢仍超预算）。
+  // 上下文治理读数（第 2 批 + 阶段 5-2 + 0.3 细分）：本轮预算（含"渠道未声明→默认值"
+  // 的来源标记）与本轮为压回预算执行的折叠，**按类别分开记**——油表要写清"折了什么"
+  //（旧工具输出 / 图片 / 重复读 / 旧回复），禁止静默丢历史。folded 为四类合计。
   const contextInfo = ref<{
     estimatedTokens: number
     budgetTokens: number
     budgetDefault: boolean
     folded: number
+    foldedImages: number
+    foldedTools: number
+    foldedReads: number
+    foldedBodies: number
     dropped: boolean
   } | null>(null)
   function onContext(p: {
@@ -827,14 +868,20 @@ export const useChatStore = defineStore('chat', () => {
     foldedImages: number
     foldedTools: number
     foldedReads: number
+    foldedBodies?: number
     dropped: boolean
   }) {
     if (p.sessionID !== sessionId.value) return
+    const foldedBodies = p.foldedBodies ?? 0
     contextInfo.value = {
       estimatedTokens: p.estimatedTokens,
       budgetTokens: p.budgetTokens,
       budgetDefault: p.budgetDefault === true,
-      folded: p.foldedImages + p.foldedTools + p.foldedReads,
+      folded: p.foldedImages + p.foldedTools + p.foldedReads + foldedBodies,
+      foldedImages: p.foldedImages,
+      foldedTools: p.foldedTools,
+      foldedReads: p.foldedReads,
+      foldedBodies,
       dropped: p.dropped,
     }
   }
@@ -1041,6 +1088,59 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // ---- 用户自己的命令行（0.3 最小能力）----
+  // 执行复用现有 shell 工具与审批闸门（后端 RunUserCommand：同一超时、同一审批卡），
+  // 结果落一张本地工具卡（与"点链接开浏览器"同款：这不是对话回合，不落账本）。
+  async function runUserCommand(command: string) {
+    const id = sessionId.value
+    error.value = ''
+    const cmd = command.trim()
+    if (!cmd) return
+    const c = ensureConvo(id)
+    const card = withId({
+      role: 'tool' as const,
+      content: '执行中…',
+      toolName: 'shell',
+      status: 'running',
+      title: cmd,
+      op: 'exec',
+      at: Date.now(),
+    })
+    c.messages.push(card)
+    try {
+      const res = await bridge().app.RunUserCommand(id, cmd)
+      card.status = res?.isError ? 'error' : 'success'
+      card.content = res?.output || '(无输出)'
+    } catch (e) {
+      card.status = 'error'
+      card.content = errText(e)
+    }
+  }
+
+  // ---- 提交说明（0.3 最小能力）----
+  // suggestCommitMessage：后端取工作区 diff，用当前模型生成一条提交说明（不落账本）。
+  async function suggestCommitMessage(): Promise<string> {
+    error.value = ''
+    try {
+      return (await bridge().app.SuggestCommitMessage(sessionId.value)) ?? ''
+    } catch (e) {
+      error.value = errText(e)
+      throw e
+    }
+  }
+
+  // gitStageAndCommit：git add -A + commit。前端必须先弹确认框（diff → 说明 → 人确认），
+  // 这里只负责把已确认的说明交给后端；push/reset/clean 之类的改写路径后端根本不存在。
+  async function gitStageAndCommit(message: string): Promise<string> {
+    error.value = ''
+    try {
+      return (await bridge().app.GitStageAndCommit(sessionId.value, message)) ?? ''
+    } catch (e) {
+      error.value = errText(e)
+      throw e
+    }
+  }
+
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     const c = ensureConvo(p.sessionID)
     // 中断语义必须在复位**前**快照：下面两行会把 stopping 清回 false，
@@ -1237,6 +1337,9 @@ export const useChatStore = defineStore('chat', () => {
     pinSession,
     loadSessions,
     selectSession,
+    loadOlder,
+    olderAvailable,
+    loadingOlder,
     newSession,
     send,
     onChunk,
@@ -1264,6 +1367,9 @@ export const useChatStore = defineStore('chat', () => {
     closeTasksPanel,
     browserVisual,
     proposeApplyCode,
+    runUserCommand,
+    suggestCommitMessage,
+    gitStageAndCommit,
     onTodo,
     onAsk,
     resolveAsk,

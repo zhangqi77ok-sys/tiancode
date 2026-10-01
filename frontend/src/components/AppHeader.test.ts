@@ -159,6 +159,10 @@ describe('AppHeader（阶段 1）', () => {
       budgetTokens: 100000,
       budgetDefault: false,
       folded: 2,
+      foldedImages: 0,
+      foldedTools: 2,
+      foldedReads: 0,
+      foldedBodies: 0,
       dropped: false,
     }
     await nextTick()
@@ -174,6 +178,10 @@ describe('AppHeader（阶段 1）', () => {
       budgetTokens: 32768,
       budgetDefault: true,
       folded: 0,
+      foldedImages: 0,
+      foldedTools: 0,
+      foldedReads: 0,
+      foldedBodies: 0,
       dropped: false,
     }
     await nextTick()
@@ -190,6 +198,10 @@ describe('AppHeader（阶段 1）', () => {
       budgetTokens: 32768,
       budgetDefault: true,
       folded: 3,
+      foldedImages: 0,
+      foldedTools: 2,
+      foldedReads: 1,
+      foldedBodies: 0,
       dropped: true,
     }
     await nextTick()
@@ -205,6 +217,10 @@ describe('AppHeader（阶段 1）', () => {
       budgetTokens: 100000,
       budgetDefault: false,
       folded: 3,
+      foldedImages: 1,
+      foldedTools: 1,
+      foldedReads: 1,
+      foldedBodies: 0,
       dropped: true,
     }
     await nextTick()

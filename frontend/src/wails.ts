@@ -271,6 +271,20 @@ export interface ChannelListDTO {
   activeId: string
 }
 
+// 分页投影（0.3 尾屏优先）：messages 为切片，total 是投影总条数，from 是切片
+// 起点的下标（0 = 前面没有更早的了）。
+export interface ReplayPageDTO {
+  messages: ChatMessageDTO[]
+  total: number
+  from: number
+}
+
+// 用户命令行（0.3）的执行回执：output 为（有界）输出；isError 对应非零退出/超时。
+export interface UserShellResultDTO {
+  output: string
+  isError: boolean
+}
+
 export interface PresetDTO {
   key: string
   name: string
@@ -440,6 +454,18 @@ interface WailsApp {
   PickImport(kind: string): Promise<string>
   PinSession(sessionID: string, pinned: boolean): Promise<void>
   Replay(sessionID: string): Promise<ChatMessageDTO[] | null>
+  // 分页投影（0.3 尾屏优先）：切会话先取最后一屏，向上滚动再补更早的。
+  // from 是"从末尾往前数已载入的位置"（ReplayOlder 取 [from-limit, from)）。
+  ReplayTail(sessionID: string, limit: number): Promise<ReplayPageDTO | null>
+  ReplayOlder(sessionID: string, from: number, limit: number): Promise<ReplayPageDTO | null>
+  // 用户命令行（0.3）：复用会话 shell 工具（同一超时）与审批闸门（闸门含 shell 时
+  // 同样弹审批卡）。拒绝时 isError=true、output 为拒绝说明。
+  RunUserCommand(sessionID: string, command: string): Promise<UserShellResultDTO | null>
+  // 提交说明（0.3）：读工作区 diff 让当前模型生成一条提交说明（不落账本、不写盘）。
+  SuggestCommitMessage(sessionID: string): Promise<string | null>
+  // git add -A + commit（0.3）：前端确认框放行后才调用；仅此两条 git 改写命令，
+  // push/reset/clean 等路径在实现里根本不存在。
+  GitStageAndCommit(sessionID: string, message: string): Promise<string | null>
   Send(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
   DeleteSession(sessionID: string): Promise<void>
@@ -568,6 +594,11 @@ export function bridge(): WailsBridge {
         PickImport: offlineWrite,
         PinSession: offlineWrite,
         Replay: async () => [],
+        ReplayTail: async () => ({ messages: [], total: 0, from: 0 }),
+        ReplayOlder: async () => ({ messages: [], total: 0, from: 0 }),
+        RunUserCommand: offlineWrite,
+        SuggestCommitMessage: offlineWrite,
+        GitStageAndCommit: offlineWrite,
         Send: async () => {},
         Stop: async () => {},
         DeleteSession: offlineWrite,

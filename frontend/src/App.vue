@@ -106,6 +106,13 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
   }
   return tabs
 })
+// 右栏全关时的竖标入口（0.3）：目录/任务两个"手动开栏" tab。
+// 文件/浏览器由对话动作自动带出，不在这里。
+const railTabs = [
+  { label: '目录', icon: 'folder' as const, open: () => store.openTreePanel() },
+  { label: '任务', icon: 'terminal' as const, open: () => store.openTasksPanel() },
+]
+
 // 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
 const anyModalOpen = computed(
   () => channelsOpen.value || mcpOpen.value || skillsOpen.value || tonesOpen.value || wsSettingsOpen.value,
@@ -310,15 +317,19 @@ onBeforeUnmount(() => {
         @open-workspace-settings="wsSettingsOpen = true"
       />
 
-      <main class="relative flex min-w-0 flex-1 bg-[var(--c-surface)]">
+      <!-- 对话列（0.3 工作台）：中列不再铺白底（body 渐变透出来），内容限宽居中——
+           侧栏/右栏用表面色与本列区分，不再靠 1px 硬分割线。 -->
+      <main class="relative flex min-w-0 flex-1">
         <!-- 左列：消息流 + 本轮变更 + 输入（与右侧面板并存，互不遮挡）。
              对话区保持可读最小宽度：右栏（文件/浏览器）打开时不把对话挤扁。 -->
         <div class="flex min-w-[320px] flex-1 flex-col">
-          <MessageList @suggest="draft = $event" @rerun="startRerun" />
-          <!-- 本轮变更审查带（0.0.09；第 2 批默认折叠、按文件聚合）：点文件行开右侧详情 -->
-          <TurnReview />
-          <CheckResults :result="checkResult" />
-          <Composer v-model="draft" :rerun="pendingRerun" @rerun-done="pendingRerun = null" />
+          <div class="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+            <MessageList @suggest="draft = $event" @rerun="startRerun" />
+            <!-- 本轮变更审查带（0.0.09；第 2 批默认折叠、按文件聚合）：点文件行开右侧详情 -->
+            <TurnReview />
+            <CheckResults :result="checkResult" />
+            <Composer v-model="draft" :rerun="pendingRerun" @rerun-done="pendingRerun = null" />
+          </div>
           <!-- 悬浮任务清单：挂在对话面板内（absolute 以 main 为参照系），位置/折叠态跨重启保留 -->
           <FloatingTodo />
         </div>
@@ -338,18 +349,23 @@ onBeforeUnmount(() => {
             <TasksPanel />
           </template>
         </RightPanel>
-        <!-- 右栏全关时的常驻开栏轨：目录/任务是"想要才打开"的 tab（文件/浏览器由
-             对话动作自动带出），没有入口这两个 tab 就永远到不了 tab 条上 -->
+        <!-- 右栏全关时的常驻开栏轨（0.3 改版）：目录/任务是"想要才打开"的 tab（文件/浏览器由
+             对话动作自动带出），没有入口这两个 tab 就永远到不了 tab 条上。
+             图标下带文字——只认图形记不住"这是哪扇门"（纯图标轨的可发现性太差）。 -->
         <aside
           v-else
-          class="flex w-10 shrink-0 flex-col items-center gap-2 border-l border-[var(--c-border)] py-2"
+          class="flex w-16 shrink-0 flex-col items-center gap-1.5 bg-[var(--c-surface)] py-2"
           aria-label="打开右栏面板"
         >
-          <button class="btn-icon" title="目录：浏览工作区文件树" aria-label="打开目录面板" @click="store.openTreePanel()">
-            <AppIcon name="folder" :size="15" />
-          </button>
-          <button class="btn-icon" title="任务：本会话的后台进程" aria-label="打开任务面板" @click="store.openTasksPanel()">
-            <AppIcon name="terminal" :size="15" />
+          <button
+            v-for="t in railTabs"
+            :key="t.label"
+            class="flex w-14 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[11px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-primary)]"
+            :aria-label="`打开${t.label}面板`"
+            @click="t.open()"
+          >
+            <AppIcon :name="t.icon" :size="16" />
+            {{ t.label }}
           </button>
         </aside>
       </main>

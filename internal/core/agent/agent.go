@@ -31,6 +31,10 @@ import (
 // 每步 = 一次模型调用（可能带工具调用）。步数耗尽以 EndError 收束且不写锚点。
 const MaxStepsPerTurn = 25
 
+// deltaMergeLimit 是流式增量的就地合并阈值（字节，0.3）：与账本攒批同量级——
+// 超过即合并成一行落账本，进程崩溃时未持久化的流式内容不超过这一块。
+const deltaMergeLimit = 64 << 10
+
 // terminalGrace 是终态块投递等待上限（与 provider 同值同理由）：
 // 给排空中的消费方一次阻塞投递机会；已离开时最多延迟 500ms 关闭，杜绝泄漏。
 const terminalGrace = 500 * time.Millisecond
@@ -160,6 +164,7 @@ func (l *Loop) contextEvent(info DeriveInfo) *llm.ContextEvent {
 		FoldedImages:    info.FoldedImages,
 		FoldedTools:     info.FoldedTools,
 		FoldedReads:     info.FoldedReads,
+		FoldedBodies:    info.FoldedBodies,
 		Dropped:         info.Dropped,
 	}
 }
@@ -370,11 +375,34 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 	defer l.phase.Store(int32(PhaseIdle))
 
 	var terminalSent bool
+	// 流式增量合并（0.3 长会话减重）：本段攒下的 delta 在段边界（锚点/终态）合并成
+	// **一条**账本事件，重放不再逐条扫几千行增量。缓冲上限与账本攒批同量级（64KB）
+	// ——超过即就地合并落一行，进程崩溃时未持久化的内容不超过这一块。
+	var deltaText, deltaThink strings.Builder
+	flushDeltas := func() error {
+		if deltaText.Len() == 0 && deltaThink.Len() == 0 {
+			return nil
+		}
+		if _, err := ledger.Append(session.EventAssistantDelta, map[string]any{
+			"text": deltaText.String(), "thinking": deltaThink.String(),
+		}); err != nil {
+			return err
+		}
+		deltaText.Reset()
+		deltaThink.Reset()
+		return nil
+	}
 	emitTerminal := func(c llm.StreamChunk) {
 		if terminalSent {
 			return
 		}
 		terminalSent = true
+		// 终态前先合并落账本段内攒的增量：取消/错误路径同样保留已产生内容（C-APP-2
+		// 的保证点从"逐 chunk 落账"移到"终态前合并落账"）。合并失败与刷盘失败同级：
+		// 覆盖为 EndError 上抛，本轮不算完成。
+		if err := flushDeltas(); err != nil {
+			c = llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)}
+		}
 		if c.EndReason == llm.EndCancelled {
 			l.phase.Store(int32(PhaseCancelled))
 		}
@@ -570,7 +598,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			return
 		}
 
-		text, calls, terminal, done := l.consumeStream(ctx, ledger, ch, out, &sb)
+		text, calls, terminal, done := l.consumeStream(ctx, ledger, ch, out, &sb, &deltaText, &deltaThink)
 		if done {
 			// 非 EndDone 终态（错误/取消/超时）或端口契约被破坏：透传终态并终止
 			//（不写锚点——轮次未完成，已产生 delta 留在账本）
@@ -593,7 +621,11 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			}
 		}
 		if len(calls) == 0 {
-			// 最终回答：锚点 write-ahead 后上抛 EndDone
+			// 最终回答：段内增量先合并落一行，再落锚点（write-ahead）后上抛 EndDone
+			if err := flushDeltas(); err != nil {
+				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)})
+				return
+			}
 			if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": text}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
 				return
@@ -611,6 +643,11 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		// EventAssistantMsg 锚点——下一轮 deriveMessages 把它并入
 		// assistant(text, tool_calls)，跨轮历史不再丢"为什么调工具"。
 		// EventAssistantDelta 半截内容仍然不投影（锚点 = 已确认完成的文本）。
+		// 段内增量在锚点前合并成一条（0.3）：thinking 的归属随锚点收口。
+		if err := flushDeltas(); err != nil {
+			emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)})
+			return
+		}
 		if text != "" {
 			if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": text}); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
@@ -764,13 +801,17 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("step limit reached (%d steps), summary call failed: %w", MaxStepsPerTurn, err)})
 		return
 	}
-	text, calls, terminal, done := l.consumeStream(ctx, ledger, ch, out, &sb)
+	text, calls, terminal, done := l.consumeStream(ctx, ledger, ch, out, &sb, &deltaText, &deltaThink)
 	if done {
 		// 非 EndDone 终态（错误/取消）或端口契约破坏：透传
 		emitTerminal(terminal)
 		return
 	}
 	_ = calls // 无工具定义下协议上不应有 calls；即便出现也按纯文本收束（不执行）
+	if err := flushDeltas(); err != nil {
+		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)})
+		return
+	}
 	if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": text}); err != nil {
 		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
 		return
@@ -808,12 +849,16 @@ func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *sess
 	return l.execToolWithApproval(ctx, call)
 }
 
-// consumeStream 消费一步的流：增量落账本并上抛，累计工具调用分片。
+// consumeStream 消费一步的流：增量累计进调用方缓冲（段边界由调用方合并落账本）
+// 并上抛，累计工具调用分片。
 // 返回：本步文本 / 累计完成的工具调用 / 终态块 / done。
 // done 语义：false = EndDone 正常完成（调用方按 calls 分派：0→锚点收尾，>0→工具续步）；
 // true = 非 EndDone 终态或端口契约破坏（调用方透传 terminal 后终止整轮）。
 // 为什么不用"abort"一个标志包打：正常完成与异常终止必须可区分，否则终态被丢弃。
-func (l *Loop) consumeStream(ctx context.Context, ledger *session.Ledger, ch <-chan llm.StreamChunk, out chan llm.StreamChunk, sb *strings.Builder) (string, []llm.ToolCall, llm.StreamChunk, bool) {
+// 增量不再逐 chunk 落账本（0.3）：那是"重放扫几千行增量"的来源；改为累计到
+// deltaText/deltaThink，调用方在锚点/终态边界合并成一条事件。缓冲超过
+// deltaMergeLimit 时由本函数就地刷一次——崩溃时未持久化的内容有界。
+func (l *Loop) consumeStream(ctx context.Context, ledger *session.Ledger, ch <-chan llm.StreamChunk, out chan llm.StreamChunk, sb, deltaText, deltaThink *strings.Builder) (string, []llm.ToolCall, llm.StreamChunk, bool) {
 	acc := newCallAccumulator()
 	for chunk := range ch {
 		if chunk.EndReason != llm.EndNone {
@@ -827,19 +872,24 @@ func (l *Loop) consumeStream(ctx context.Context, ledger *session.Ledger, ch <-c
 			continue // 工具调用分片是协议细节，不上抛 UI
 		}
 		if chunk.Delta != "" || chunk.Thinking != "" {
-			// 增量 write-ahead：先落账本再上抛——取消/崩溃时已产生内容不丢（C-APP-2）
-			if _, err := ledger.Append(session.EventAssistantDelta, map[string]any{
-				"text":     chunk.Delta,
-				"thinking": chunk.Thinking,
-			}); err != nil {
-				return "", nil, llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)}, true
-			}
+			deltaText.WriteString(chunk.Delta)
+			deltaThink.WriteString(chunk.Thinking)
 			sb.WriteString(chunk.Delta)
+			// 缓冲有界（与账本攒批同量级）：超限就地合并一行，崩溃丢不住这一块
+			if deltaText.Len()+deltaThink.Len() >= deltaMergeLimit {
+				if _, err := ledger.Append(session.EventAssistantDelta, map[string]any{
+					"text": deltaText.String(), "thinking": deltaThink.String(),
+				}); err != nil {
+					return "", nil, llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)}, true
+				}
+				deltaText.Reset()
+				deltaThink.Reset()
+			}
 		}
 		select {
 		case out <- chunk:
 		case <-ctx.Done():
-			// 消费方离开：已产生事件均已落账本（C-APP-2）
+			// 消费方离开：终态由调用方 emitTerminal 走 flushDeltas 后补落（C-APP-2）
 			return "", nil, llm.StreamChunk{EndReason: llm.EndCancelled, Err: ctx.Err()}, true
 		}
 	}

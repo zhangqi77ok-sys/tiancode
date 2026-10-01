@@ -110,6 +110,35 @@ async function revertRound() {
     reverting.value = false
   }
 }
+
+// 生成提交说明（0.3 最小能力）：本轮 diff → 模型生成说明 → 确认框里可改，
+// **确认才执行 git add -A + commit**（取消则什么都不发生）。
+const suggesting = ref(false)
+async function makeCommitMessage() {
+  if (suggesting.value || store.running) return
+  suggesting.value = true
+  let msg = ''
+  try {
+    msg = await store.suggestCommitMessage()
+  } catch (e) {
+    toast('error', errText(e))
+    return
+  } finally {
+    suggesting.value = false
+  }
+  const edited = await dialogs.prompt({
+    title: '生成提交说明',
+    message: '确认后将在本场对话的工作区执行 git add -A 并提交；说明可修改，取消则不提交：',
+    value: msg,
+  })
+  if (!edited || !edited.trim()) return // 取消/清空：不提交
+  try {
+    const out = await store.gitStageAndCommit(edited)
+    toast('info', `已提交：${out}`)
+  } catch (e) {
+    toast('error', errText(e))
+  }
+}
 </script>
 
 <template>
@@ -137,6 +166,14 @@ async function revertRound() {
         class="ml-auto shrink-0 transition-transform"
         :class="panelOpen ? '' : '-rotate-90'"
       />
+    </button>
+    <button
+      class="shrink-0 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-primary)]"
+      :disabled="suggesting || store.running"
+      title="根据本轮 diff 生成提交说明（确认后才会 git add / commit）"
+      @click="makeCommitMessage"
+    >
+      {{ suggesting ? '生成中…' : '提交说明' }}
     </button>
     <button
       class="shrink-0 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--c-text-faint)] transition-colors hover:text-[var(--c-err-text)]"

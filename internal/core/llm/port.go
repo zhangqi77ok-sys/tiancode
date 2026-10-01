@@ -108,7 +108,8 @@ type ContextEvent struct {
 	BudgetDefault bool `json:"budgetDefault"`
 	FoldedImages  int  `json:"foldedImages"` // 因超预算折叠的旧图片数（data URL → 路径说明）
 	FoldedTools   int  `json:"foldedTools"`  // 因超预算折叠的旧 shell/写入回执数（→ 一行摘要）
-	FoldedReads   int  `json:"foldedReads"`  // 因超预算额外折叠的只读结果数（收窄折叠窗口）
+	FoldedReads   int  `json:"foldedReads"`  // 因超预算额外折叠的只读结果数（收窄窗口 + 重复读去重）
+	FoldedBodies  int  `json:"foldedBodies"` // 因超预算折叠的旧轮次回复正文数（→ 一行说明；最后一级）
 	Dropped       bool `json:"dropped"`      // 已无可再丢仍超预算（界面须标明"已折叠"）
 }
 

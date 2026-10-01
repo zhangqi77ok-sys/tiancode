@@ -388,9 +388,37 @@ func (b *Bind) DeleteSession(sessionID string) error {
 	return b.chat.DeleteSession(sessionID)
 }
 
-// Replay 返回会话的已确认消息（历史恢复）。
+// Replay 返回会话的已确认消息（历史恢复，全量投影）。
 func (b *Bind) Replay(sessionID string) ([]app.ChatMessage, error) {
 	return b.chat.Replay(sessionID)
+}
+
+// ReplayTail 返回投影的最后一屏（0.3 尾屏优先：切会话先出首屏，向上滚动再翻页）。
+func (b *Bind) ReplayTail(sessionID string, limit int) (app.ReplayPage, error) {
+	return b.chat.ReplayTail(sessionID, limit)
+}
+
+// ReplayOlder 返回投影中更早的一页（0.3：向上滚动补历史）。
+func (b *Bind) ReplayOlder(sessionID string, from, limit int) (app.ReplayPage, error) {
+	return b.chat.ReplayOlder(sessionID, from, limit)
+}
+
+// RunUserCommand 执行用户命令行输入的命令（0.3）：复用会话 shell 工具（同一超时）
+// 与审批闸门（闸门含 shell 时弹同一张审批卡）。
+func (b *Bind) RunUserCommand(sessionID, command string) (app.UserShellResult, error) {
+	return b.chat.RunUserCommand(b.appCtx(), sessionID, command)
+}
+
+// SuggestCommitMessage 根据工作区未提交变更生成提交说明（0.3）：只读辅助动作，
+// 不落账本、不写盘。失败原因显式上抛。
+func (b *Bind) SuggestCommitMessage(sessionID string) (string, error) {
+	return b.chat.SuggestCommitMessage(b.appCtx(), sessionID)
+}
+
+// GitStageAndCommit 执行 git add -A + commit（0.3）：前端确认框放行后才到达这里；
+// 仅此两条改写命令，push/reset/clean 无实现路径。
+func (b *Bind) GitStageAndCommit(sessionID, message string) (string, error) {
+	return b.chat.GitStageAndCommit(sessionID, message)
 }
 
 // openTurn 注册本轮的取消函数（Send / SendWithAttachments 共用），返回本轮 ctx。
@@ -490,7 +518,7 @@ func drainTurn(
 			})
 		}
 		if c.Context != nil {
-			// 上下文治理读数（第 2 批）：油表显示预算/估算；折叠绝不静默
+			// 上下文治理读数（第 2 批；0.3 加折叠明细）：油表显示预算/估算与"折了什么"
 			emit("chat:context", map[string]any{
 				"sessionID":       sessionID,
 				"estimatedTokens": c.Context.EstimatedTokens,
@@ -499,6 +527,7 @@ func drainTurn(
 				"foldedImages":    c.Context.FoldedImages,
 				"foldedTools":     c.Context.FoldedTools,
 				"foldedReads":     c.Context.FoldedReads,
+				"foldedBodies":    c.Context.FoldedBodies,
 				"dropped":         c.Context.Dropped,
 			})
 		}

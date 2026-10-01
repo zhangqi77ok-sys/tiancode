@@ -103,6 +103,60 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	return tools.ToolResult{Content: truncate(out)}, nil
 }
 
+// ---- 0.3 最小能力：工作区提交路径（仅由壳层调用，不注册进模型工具） ----
+//
+// 边界（用户裁决，不可放宽）：本包对 git 的**改写能力只到 add -A 与 commit**。
+// push / reset --hard / clean / rebase 等任何"丢弃改动或离开本机"的子命令
+// 在这里没有实现路径——扩展时必须重新评审，而不是顺手加参数。
+
+// runGitCmd 在 root 下执行一条 git 命令（超时 + 输出有界 + 业务失败转 error）。
+// 与测试文件里的 runGit 助手同名不同用，故这里带 Cmd 后缀。
+func runGitCmd(root string, args ...string) (string, error) {
+	runCtx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, "git", args...)
+	hideConsole(cmd)
+	cmd.Dir = root
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if err := cmd.Run(); err != nil {
+		out := truncate(buf.String())
+		if runCtx.Err() == context.DeadlineExceeded {
+			return out, fmt.Errorf("git %s 超时（已终止）", args[0])
+		}
+		return out, fmt.Errorf("git %s 失败：%s", args[0], strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(buf.String()), nil
+}
+
+// StatusShort 返回 porcelain 状态（含 "## 分支" 头行）：提交说明生成用它判断
+// "有没有变更、在哪个分支"。
+func StatusShort(root string) (string, error) {
+	return runGitCmd(root, "status", "--porcelain", "-b")
+}
+
+// Diff 返回未提交差异（有界）：提交说明生成的原料。
+func Diff(root string) (string, error) {
+	out, err := runGitCmd(root, "diff")
+	if err != nil {
+		return "", err
+	}
+	return truncate(out), nil
+}
+
+// StageAllAndCommit 执行 git add -A + git commit -m message，返回可展示的输出。
+// message 经 argv 传入（不走 shell、无注入面）；两步中任一步失败即中止并上抛。
+func StageAllAndCommit(root, message string) (string, error) {
+	if _, err := runGitCmd(root, "add", "-A"); err != nil {
+		return "", fmt.Errorf("git add 失败：%w", err)
+	}
+	out, err := runGitCmd(root, "commit", "-m", message)
+	if err != nil {
+		return "", fmt.Errorf("git commit 失败：%w", err)
+	}
+	return out, nil
+}
+
 // buildArgs 将动作映射为只读 git 参数（白名单式，绝不拼接任意用户输入到 shell）。
 func buildArgs(action, path string, limit int) ([]string, error) {
 	switch action {

@@ -8,6 +8,7 @@ import { errText } from '../composables/errText'
 import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
 import { THEME_LABEL, currentTheme, cycleTheme, type ThemeMode } from '../composables/useTheme'
+import { useContextGauge } from '../composables/useContextGauge'
 import { workspaceLabel } from '../composables/workspaceLabel'
 import { bridge, winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -88,47 +89,11 @@ const statusTitle = computed(() => {
   return `${statusText.value} · ${chan} · ${model}`
 })
 
-// 油表（0.0.09；第 2 批扩展）：prompt token 来自上游 usage 的直接读数；
-// 渠道声明了上下文上限（contextLimit）时同时显示剩余比例；本轮发生过折叠时
-// 显式标注（折叠绝不静默）。没有上限时不编造百分比（沿用 0.0.09 纪律）。
-const usage = computed(() => {
-  const n = store.promptTokens
-  if (!n) return null
-  const tok = n >= 10000 ? `≈${(n / 1000).toFixed(1)}k tok` : `${n} tok`
-  const ctx = store.contextInfo
-  if (!ctx || ctx.budgetTokens <= 0) {
-    // 读数缺失（正常路径下不会出现：未声明上限时后端也会给默认预算），不编造百分比
-    return {
-      pct: 100,
-      bar: 'bg-[var(--c-text-faint)]',
-      short: `${tok} · 无预算读数`,
-      full: `上下文 ${n} tok · 本轮没有上下文预算读数（后端未上报）`,
-    }
-  }
-  const left = Math.max(0, ctx.budgetTokens - n)
-  const pct = Math.round((left / ctx.budgetTokens) * 100)
-  const budget = `${(ctx.budgetTokens / 1000).toFixed(0)}k tok`
-  // 折完了还是超：两种情况含义不同（阶段 5-2 修订）——渠道上限是硬限制（不发请求），
-  // 默认值只是折叠阈值（照发）。写成同一句会让用户以为默认预算也能拒掉他的回合。
-  const fold = ctx.dropped
-    ? ctx.budgetDefault
-      ? ' · 已尽量折叠'
-      : ' · 已达上限'
-    : ctx.folded > 0
-      ? ` · 已折叠 ${ctx.folded} 项`
-      : ''
-  // 预算来源（阶段 5-2）：渠道没声明上限时用的是保守默认值——必须写明"按默认预算"，
-  // 否则用户会以为渠道里填过这个数（折叠不是静默行为）
-  return {
-    pct,
-    bar: pct > 30 ? 'bg-[var(--c-primary)]' : pct > 10 ? 'bg-[var(--c-warn)]' : 'bg-[var(--c-err)]',
-    short: ctx.budgetDefault ? `余 ${pct}% · 按默认预算${fold}` : `余 ${pct}%${fold}`,
-    full: ctx.budgetDefault
-      ? `上下文 ${n} tok / 默认预算 ${budget}（余 ${pct}%）${fold}；渠道未声明上下文上限，这是保守默认值——在「渠道管理」里填 contextLimit 可覆盖` +
-        (ctx.dropped ? '（默认值只作折叠阈值、不是硬限制：本轮照发，若上游装不下会自己报错）' : '')
-      : `上下文 ${n} tok / 上限 ${budget}（余 ${pct}%）${fold}`,
-  }
-})
+// 油表（0.0.09；0.3 起读数与文案收敛到 useContextGauge，与 Composer 输入框同源）：
+// prompt token 来自上游 usage 的直接读数；渠道声明了上下文上限（contextLimit）时
+// 同时显示剩余比例；本轮发生过折叠时显式标注（折叠绝不静默）。没有上限时不编造
+// 百分比（沿用 0.0.09 纪律）。
+const { usage } = useContextGauge()
 
 // 状态灯点击：跳到等待处理的会话（优先"待确认"，其次其他运行中会话）
 function jumpToBusy() {
@@ -272,13 +237,14 @@ onBeforeUnmount(() => {
     class="flex h-10 shrink-0 flex-nowrap items-center gap-3 border-b border-[var(--c-border)] bg-[var(--c-surface)] px-3"
     style="--wails-draggable: drag"
   >
-    <!-- 左：品牌标记 + 产品名 -->
+    <!-- 左：产品标记（0.3：终端提示符字形代替裸字母 T——一眼读出"开发者工具"）+ 产品名 -->
     <div class="flex shrink-0 items-center gap-2">
       <span
-        class="grid h-6 w-6 shrink-0 select-none place-items-center rounded-[8px] bg-[var(--c-primary)] text-[13px] font-bold text-white"
+        class="grid h-6 w-6 shrink-0 select-none place-items-center rounded-[8px] bg-[var(--c-primary)] text-white"
         aria-hidden="true"
-        >T</span
       >
+        <AppIcon name="terminal" :size="13" />
+      </span>
       <h1 class="text-[15px] font-semibold tracking-tight">tiancode</h1>
     </div>
 

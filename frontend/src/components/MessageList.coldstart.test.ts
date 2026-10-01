@@ -25,9 +25,18 @@ vi.mock('../wails', () => ({
         if (h.summariesGate) await h.summariesGate
         return h.summaries
       },
-      Replay: async (id: string) => {
+      // 0.3 尾屏优先：store 切会话走 ReplayTail（分页投影）；测试数据小于一页，
+      // 行为与全量一致
+      ReplayTail: async (id: string, limit: number) => {
         if (h.replayGate) await h.replayGate
-        return h.replayById[id] ?? []
+        const all = h.replayById[id] ?? []
+        const from = Math.max(0, all.length - limit)
+        return { messages: all.slice(from), total: all.length, from }
+      },
+      ReplayOlder: async (id: string, from: number, limit: number) => {
+        const all = h.replayById[id] ?? []
+        const start = Math.max(0, from - limit)
+        return { messages: all.slice(start, from), total: all.length, from: start }
       },
       Send: async (sessionID: string, text: string) => {
         h.sends.push({ sessionID, text })
@@ -109,9 +118,10 @@ describe('冷启动直接对话（DOM 集成）', () => {
     expect(el.textContent).not.toContain('未选择工作区 · 纯对话')
   })
 
-  // 阶段 2：上百条消息的长会话只挂窗口内的回合——但"最新一条"必须始终在 DOM 里
-  // （贴底跟随、发送后到底、切换会话落最新都指着尾部这一条）。
-  it('长会话只挂尾部窗口，最新一条始终可见', async () => {
+  // 0.3 尾屏优先：切会话只载投影最后一屏（40 条），DOM 挂载的回合数以缓冲为准；
+  // "最新一条"必须始终在 DOM 里（贴底跟随、发送后到底、切换会话落最新都指着尾部）。
+  // 向上滚动 → loadOlder 分页补更早的历史。
+  it('长会话先载尾屏，向上滚动再补更早的', async () => {
     const many: { role: string; content: string }[] = []
     for (let i = 0; i < 200; i++) {
       many.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `第 ${i} 条` })
@@ -124,12 +134,35 @@ describe('冷启动直接对话（DOM 集成）', () => {
     await store.init()
     await flush()
 
-    expect(store.messages.length).toBe(200)
-    // 滚动容器的直接子元素就是当前挂着的回合（顺序与键与完整分组一致）
+    // 只载了最后一屏：缓冲 40 条（消息 160-199），更早的还没到前端
+    expect(store.messages.length).toBe(40)
+    expect(store.olderAvailable).toBe(true)
+    // 滚动容器的直接子元素就是当前挂着的回合（顺序与键与完整分组一致）；
+    // 交替的 user/assistant 每条自成一项，40 条 = 40 项，全挂（窗口起点=缓冲起点）
     const scroller = el.querySelector('[data-conversation]') as HTMLElement
-    expect(scroller.children.length).toBe(40) // WINDOW_INITIAL_TAIL：不是 200 个回合全挂
+    expect(scroller.children.length).toBe(40)
     expect(el.textContent).toContain('第 199 条') // 尾部挂着
-    expect(el.textContent).not.toContain('第 0 条') // 最老的一段没挂
+    expect(el.textContent).not.toContain('第 0 条') // 更早的未载入
+
+    // 向上补一页：更早的消息前置，锚点前移（messages 120-199）
+    await store.loadOlder()
+    await flush()
+    expect(store.messages.length).toBe(80)
+    expect(store.olderAvailable).toBe(true)
+    expect(el.textContent).toContain('第 120 条')
+    expect(el.textContent).not.toContain('第 119 条')
+
+    // 连续翻页直到见底：olderAvailable 归 false（翻到头不静默停）。
+    // 数据全量载入后，DOM 窗口照常把最老的一段裁出 DOM（WINDOW_MAX 上限，
+    // 贴底时的既有纪律）——数据在缓冲里，DOM 只挂尾部窗口。
+    for (let i = 0; i < 10 && store.olderAvailable; i++) {
+      await store.loadOlder()
+    }
+    await flush()
+    expect(store.messages.length).toBe(200)
+    expect(store.olderAvailable).toBe(false)
+    expect(el.textContent).not.toContain('第 0 条') // DOM 窗口已裁掉最老段
+    expect(el.textContent).toContain('第 199 条') // 尾部仍挂着
   })
 
   // 抢跑场景：用户快于 init（loadSessions 还挂着）就发送。核心契约：

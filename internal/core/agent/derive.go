@@ -48,13 +48,15 @@ type DeriveOptions struct {
 
 // DeriveInfo 是本轮派生的治理读数（经 llm.ContextEvent 透传 UI 油表）。
 // 计数只统计**因超预算而执行**的折叠——基础只读折叠（>keepFullToolTurns 轮，
-// 常态行为）不计入，否则界面每轮都显示"已折叠"形成噪声。
+// 常态行为）不计入，否则界面每轮都显示"已折叠"形成噪声。分类计数随事件下发，
+// 界面写清"折了什么"（旧工具输出 / 图片 / 重复读 / 旧回复）——折叠绝不静默。
 type DeriveInfo struct {
 	EstimatedTokens int
 	BudgetTokens    int
 	FoldedImages    int
 	FoldedTools     int
 	FoldedReads     int
+	FoldedBodies    int  // 因超预算折叠的旧轮次回复正文数（→ 一行说明）
 	Dropped         bool // 已无可再丢仍超预算（界面须标明"上下文已折叠"）
 }
 
@@ -63,6 +65,12 @@ type imageRef struct {
 	msgIdx int
 	turn   int
 	note   string // 折叠后的替代文本（含文件名与附件路径）
+}
+
+// bodyRef 指向一条助手正文锚点（超预算最后一级可收成一行说明）。
+type bodyRef struct {
+	msgIdx int
+	turn   int
 }
 
 // toolRef 指向一条工具结果消息（超限时可收成一行摘要）。
@@ -82,12 +90,15 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 	return msgs, err
 }
 
-// deriveMessagesWith 从账本派生发给模型的历史，并按预算分级折叠（第 2 批）。
-// 折叠顺序（估算超 watermarked 预算时逐级执行，每级后重估）：
+// deriveMessagesWith 从账本派生发给模型的历史，并按预算分级折叠（第 2 批；
+// 0.3 按用户裁决重排优先级）。折叠顺序（估算超 watermarked 预算时逐级执行，
+// 每级后重估）：
 //  1. 基础（0.0.09 常态，不计入 info）：>keepFullToolTurns 轮的成功只读结果收成单行；
-//  2. 旧图片（>keepFullImageTurns 轮）→ 路径说明（保留"当时给过图"的事实）；
-//  3. 两轮以前的 shell/写入回执 → 一行摘要（保留工具名、路径与成败结论）；
-//  4. 只读折叠窗口收紧到"最近一轮之外全部"。
+//  2. 旧工具输出（>keepFullToolTurns 轮的 shell/写入回执）→ 一行摘要；
+//  3. 旧图片（>keepFullImageTurns 轮）→ 路径说明（保留"当时给过图"的事实）；
+//  4. 重复读到的同一文件 → 只留最近一次全文，更早的收成单行；
+//  5. 只读折叠窗口收紧到"最近一轮之外全部"；
+//  6. **最后**才动对话正文：旧轮次回复 → 一行说明。
 //
 // 仍超预算时置 Dropped=true（界面标明已折叠）；**用户原话永不删减**，
 // 最近一轮全文始终保留（各级 minTurn 边界不含最近一轮）。
@@ -116,6 +127,7 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	resultRefs := []toolRef{}
 	var toolRefs []toolRef
 	var imageRefs []imageRef
+	var bodyRefs []bodyRef
 	// lastAssistant 指向最近一条纯文本 assistant 锚点（0.0.06）：工具调用前的
 	// 助手正文必须随 tool_calls 一起回传给模型——丢掉它，下一轮模型就看不到
 	// 自己"为什么"调了工具。锚点只来自 EventAssistantMsg（回合内已确认落盘
@@ -317,6 +329,7 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 			}
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: p.Text})
 			lastAssistant = len(msgs) - 1
+			bodyRefs = append(bodyRefs, bodyRef{msgIdx: len(msgs) - 1, turn: turn})
 		}
 		return nil
 	}
@@ -327,7 +340,7 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	// 一遍。重启必须从零重建投影（drops 只增不减，最终完整一遍与旧三次扫描等价）。
 	for {
 		restart := false
-		msgs, calls, toolRefs, imageRefs = nil, nil, nil, nil
+		msgs, calls, toolRefs, imageRefs, bodyRefs = nil, nil, nil, nil, nil
 		results, resultRefs = []*llm.Message{}, []toolRef{}
 		lastAssistant, turn = -1, -1
 		err := ledger.Replay(func(ev session.Event) error {
@@ -381,19 +394,33 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	}
 	threshold := opt.BudgetTokens * contextFoldWatermark / 100
 	est := estimateMessagesTokens(msgs)
+	// 折叠优先级（0.3 用户裁决）：旧的工具输出 → 旧图片 → 重复读到的同一文件 →
+	// 收紧只读窗口 → **最后才动对话正文**。用户原话与最近一轮始终保留。
 	if est > threshold {
-		// 一级：旧图片 → 路径说明（图像 token 成本最高，最先丢）
-		info.FoldedImages += foldOldImages(msgs, imageRefs, totalTurns-keepFullImageTurns)
-		est = estimateMessagesTokens(msgs)
-	}
-	if est > threshold {
-		// 二级：两轮以前的 shell/写入回执 → 一行摘要（保留工具名、路径与成败）
+		// 一级：旧工具输出（shell/写入回执）→ 一行摘要（保留工具名、路径与成败）
 		info.FoldedTools += foldOldTools(msgs, toolRefs, totalTurns-keepFullToolTurns)
 		est = estimateMessagesTokens(msgs)
 	}
 	if est > threshold {
-		// 三级：只读折叠窗口收紧到"最近一轮之外全部"（最近一轮全文始终保留）
+		// 二级：旧图片 → 路径说明（图像 token 成本最高，紧随工具输出之后丢）
+		info.FoldedImages += foldOldImages(msgs, imageRefs, totalTurns-keepFullImageTurns)
+		est = estimateMessagesTokens(msgs)
+	}
+	if est > threshold {
+		// 三级：重复读到的同一文件——同一路径只保留最近一次全文，更早的收成单行
+		//（确定性去重：模型需要的"我读过 X"保留一次即可）
+		info.FoldedReads += foldDuplicateReads(msgs, toolRefs, totalTurns-1)
+		est = estimateMessagesTokens(msgs)
+	}
+	if est > threshold {
+		// 四级：只读折叠窗口收紧到"最近一轮之外全部"（最近一轮全文始终保留）
 		info.FoldedReads += foldOldReads(msgs, toolRefs, totalTurns-1)
+		est = estimateMessagesTokens(msgs)
+	}
+	if est > threshold {
+		// 五级（最后）：旧轮次的回复正文 → 一行说明。历史叙事仍有骨架（用户原话、
+		// 工具摘要、回复说明），只是不再携带全文；最近一轮正文永远保留。
+		info.FoldedBodies += foldOldBodies(msgs, bodyRefs, totalTurns-1)
 		est = estimateMessagesTokens(msgs)
 	}
 	if est > threshold {
@@ -455,6 +482,60 @@ func foldOldTools(msgs []llm.Message, refs []toolRef, minTurn int) int {
 		n++
 	}
 	return n
+}
+
+// foldDuplicateReads 折叠"重复读到的同一文件"（0.3）：同一路径（按工具名+标题）
+// 的成功只读结果只保留**最近一次**全文，更早的收成单行。minTurn 之外的当前轮
+// 不参与（最近一轮永远保留全文）。已被折叠的跳过。
+func foldDuplicateReads(msgs []llm.Message, refs []toolRef, minTurn int) int {
+	n := 0
+	// lastFullOf 记录每个"工具+路径"最后一次全文出现的下标；先扫一遍定位保留者，
+	// 再回头折叠更早的（确定性：无论出现多少次，只有最近一份全文存活）。
+	lastFullOf := map[string]int{} // 组键 -> 该组最近一次全文的 refs 下标
+	keyOf := map[int]string{}
+	for i := range refs {
+		keyOf[i] = refs[i].name + "\x00" + refs[i].title
+	}
+	for i := range refs {
+		ref := &refs[i]
+		if !ref.isReadOnly || ref.isError || ref.turn >= minTurn {
+			continue
+		}
+		if prev, ok := lastFullOf[keyOf[i]]; !ok || refs[prev].folded {
+			lastFullOf[keyOf[i]] = i
+		} else {
+			// 之前那份全文出现得更早：折叠它，保留当前这份（更近）
+			msgs[refs[prev].msgIdx].Content = foldOldReadOnly(refs[prev].name, refs[prev].title)
+			refs[prev].folded = true
+			n++
+			lastFullOf[keyOf[i]] = i
+		}
+	}
+	return n
+}
+
+// foldOldBodies 把旧轮次（turn < minTurn）的回复正文收成一行说明（0.3，最后一级）：
+// 保留"这一轮有过回复、多长"的事实。空正文（纯工具轮的锚点）没有可折内容，跳过。
+func foldOldBodies(msgs []llm.Message, refs []bodyRef, minTurn int) int {
+	n := 0
+	for _, ref := range refs {
+		if ref.turn >= minTurn {
+			continue
+		}
+		m := &msgs[ref.msgIdx]
+		if strings.TrimSpace(m.Content) == "" {
+			continue
+		}
+		m.Content = foldOldBody(len(m.Content))
+		n++
+	}
+	return n
+}
+
+// foldOldBody 生成旧回复的替身说明：模型仍知道"此处有过一段回复、原文多少字"，
+// 需要细节时会明说"已折叠"，而不是对着被裁的尾巴猜。
+func foldOldBody(chars int) string {
+	return fmt.Sprintf("[旧回复已折叠，原文约 %d 字；用户原话与工具摘要仍在，如需细节可重述要点]", chars)
 }
 
 // foldOldReads 把旧轮次（turn < minTurn）的成功只读结果收成单行；已被折叠的跳过。

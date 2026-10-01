@@ -6,12 +6,17 @@ import { Marked, type Tokens } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
+import c from 'highlight.js/lib/languages/c'
+import css from 'highlight.js/lib/languages/css'
 import diff from 'highlight.js/lib/languages/diff'
 import go from 'highlight.js/lib/languages/go'
+import java from 'highlight.js/lib/languages/java'
 import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import markdown from 'highlight.js/lib/languages/markdown'
+import powershell from 'highlight.js/lib/languages/powershell'
 import python from 'highlight.js/lib/languages/python'
+import rust from 'highlight.js/lib/languages/rust'
 import sql from 'highlight.js/lib/languages/sql'
 import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
@@ -20,12 +25,17 @@ import yaml from 'highlight.js/lib/languages/yaml'
 // 按需注册 AI 编程工具最高频的语言（tree-shake 后只打包这些，不引全量 hljs）。
 // 语法高亮是 AI 编程工具的立身之本——纯文本代码块可读性不达标（用户 0.2.5 反馈）。
 hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('c', c)
+hljs.registerLanguage('css', css)
 hljs.registerLanguage('diff', diff)
 hljs.registerLanguage('go', go)
+hljs.registerLanguage('java', java)
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
 hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('powershell', powershell)
 hljs.registerLanguage('python', python)
+hljs.registerLanguage('rust', rust)
 hljs.registerLanguage('sql', sql)
 hljs.registerLanguage('typescript', typescript)
 hljs.registerLanguage('xml', xml)
@@ -33,9 +43,12 @@ hljs.registerLanguage('yaml', yaml)
 // 常见别名
 hljs.registerAliases(['ts'], { languageName: 'typescript' })
 hljs.registerAliases(['js'], { languageName: 'javascript' })
-hljs.registerAliases(['sh', 'shell', 'powershell'], { languageName: 'bash' })
+// powershell 有独立语法（变量/参数与 bash 差异大），不再别名成 bash（0.3）；
+// sh/shell 仍按 bash 高亮
+hljs.registerAliases(['sh', 'shell'], { languageName: 'bash' })
 hljs.registerAliases(['yml'], { languageName: 'yaml' })
-hljs.registerAliases(['html'], { languageName: 'xml' })
+// vue 单文件组件没有独立 hljs 语法：按 html/xml 着色（结构相同，可读性等价）
+hljs.registerAliases(['html', 'vue'], { languageName: 'xml' })
 
 function escapeHtml(s: string): string {
   return s

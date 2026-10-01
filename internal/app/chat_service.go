@@ -116,6 +116,11 @@ type ChatService struct {
 	// running 标记正在跑轮次的会话（0.2.27）：同一会话的并发 Send 会在一份账本上
 	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
 	running map[string]struct{}
+
+	// Replay 分页缓存（0.3 尾屏优先，实现见 replay_service.go）：全量投影按会话
+	// 缓存，键 = 账本序号水位（LastSeq 没动 = 投影没变）——向上翻页不再每页重扫。
+	replayMu    sync.Mutex
+	replayCache map[string]replayCacheEntry
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -168,6 +173,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 		pendingApprovals: make(map[string]chan agent.Decision),
 		pendingAsks:      make(map[string]chan string),
 		running:          make(map[string]struct{}),
+		replayCache:      make(map[string]replayCacheEntry),
 	}
 
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）

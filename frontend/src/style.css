@@ -26,7 +26,8 @@
   --c-surface: #ffffff; /* 卡片 */
   --c-surface-soft: #fafaff; /* 次级卡片/输入底 */
   --c-bubble: #f4f3fc; /* 助手气泡底：与白卡区分，重建对话层级 */
-  --c-code-bg: #eeedf7; /* 代码块底：略深于气泡（阶段 1）——代码与正文分层 */
+  --c-code-bg: #f3f4f6; /* 代码块底：中性浅灰（0.3 用户裁决）——与紫罗兰系气泡刻意分离，
+                           代码块是"机器产物"，配色不随品牌色走 */
   --c-border: #e9eaf2; /* 卡片描边 */
 
   /* 文字（对 #ffffff 实测：dim 5.13 / faint 4.85） */
@@ -82,7 +83,7 @@
   --c-surface: #1d1e2c;
   --c-surface-soft: #232433;
   --c-bubble: #20212f;
-  --c-code-bg: #1a1b28; /* 略深于气泡：深浅两色下代码块都要看得清 */
+  --c-code-bg: #181a20; /* 深色同理换中性色：代码块与紫罗兰系界面分离 */
   --c-border: #34354b;
 
   --c-text: #e8e8f2;

@@ -47,11 +47,41 @@ const total = computed(() =>
   ),
 )
 
-// 只读正文（第 8 批）：路径按**这场对话**的工作区解析（后端 ResolveSessionPath）。
-// 面板只读不写：没有编辑、没有保存。超限只给前半，照实写明被截断。
+// 正文（第 8 批只读浏览；0.3 起可编辑）：路径按**这场对话**的工作区解析。
+// 编辑保存走「应用到文件」既有写盘路径（proposeApplyCode → 写入卡 + 撤回），
+// 不另写一套写盘逻辑。超限只给前半，照实写明被截断——截断时禁止编辑
+//（拿半截正文整存会把文件尾部冲掉）。
 const body = ref('')
 const bodyNote = ref('')
 const bodyLoading = ref(false)
+const editing = ref(false)
+const editBody = ref('')
+
+function startEdit() {
+  if (!body.value || bodyNote.value) return
+  editBody.value = body.value
+  editing.value = true
+}
+function cancelEdit() {
+  editing.value = false
+  editBody.value = ''
+}
+const saving = ref(false)
+async function saveEdit() {
+  if (saving.value) return
+  saving.value = true
+  try {
+    const res = await store.proposeApplyCode(path.value, editBody.value)
+    toast('info', `已写入 ${res?.path ?? path.value}（可在对话区撤回这次写入）`)
+    editing.value = false
+    editBody.value = ''
+    await loadBody() // 磁盘已是新内容：重读正文，撤回后同样经这里复原
+  } catch (e) {
+    toast('error', errText(e))
+  } finally {
+    saving.value = false
+  }
+}
 // 竞态守卫：快速换文件/换会话时只认最新一次请求——慢的旧 ReadSessionFile 返回
 // 不得覆盖当前正文（面板标题已是 B，正文必须是 B 的；与 FileTreePanel 的 gen、
 // BrowserPanel 的 fetchSeq 同一纪律）。
@@ -76,8 +106,13 @@ async function loadBody() {
     if (seq === bodySeq) bodyLoading.value = false // 过期请求不碰最新一次的加载态
   }
 }
-// 换文件 / 换会话都要重取（会话不同 → 工作区不同 → 同一个相对路径可能是别的文件）
-watch([path, () => store.sessionId], () => void loadBody(), { immediate: true })
+// 换文件 / 换会话都要重取（会话不同 → 工作区不同 → 同一个相对路径可能是别的文件）；
+// 编辑态随之作废——编辑框里的内容属于刚才那个文件
+watch([path, () => store.sessionId], () => {
+  editing.value = false
+  editBody.value = ''
+  void loadBody()
+}, { immediate: true })
 
 const restoring = ref<string | null>(null)
 async function restore(m: ChatMsg) {
@@ -137,18 +172,44 @@ async function openDefault() {
     </div>
 
     <div class="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
-      <!-- 只读正文（第 8 批）：本会话是否改过都显示——先看文件现在长什么样，
-           再看本轮改了什么。只读，不提供编辑/保存 -->
+      <!-- 正文（第 8 批只读浏览；0.3 可编辑）：先看文件现在长什么样，再看本轮改了什么。
+           保存走「应用到文件」既有路径（写入卡 + diff + 撤回），不另写写盘逻辑；
+           截断的正文禁止编辑（半截整存会冲掉文件尾部）。 -->
       <div class="flex flex-col gap-1 pt-1">
         <div class="flex items-center gap-2 text-[11px] text-[var(--c-text-faint)]">
-          <span class="stat px-1.5 py-0.5">正文（只读）</span>
+          <span class="stat px-1.5 py-0.5">正文</span>
           <span v-if="bodyNote" class="min-w-0 truncate" :title="bodyNote">{{ bodyNote }}</span>
           <span v-else-if="bodyLoading" class="text-[var(--c-text-faint)]">读取中…</span>
-          <span v-else class="ml-auto tabular-nums">{{ body ? `${body.split('\n').length} 行` : '' }}</span>
+          <span v-else class="tabular-nums">{{ body ? `${body.split('\n').length} 行` : '' }}</span>
+          <span class="ml-auto flex items-center gap-1">
+            <template v-if="editing">
+              <button class="chip px-2 py-0.5 text-[10px]" :disabled="saving" title="写入文件（走「应用到文件」，可在对话区撤回）" @click="saveEdit">
+                {{ saving ? '正在保存…' : '保存' }}
+              </button>
+              <button class="chip px-2 py-0.5 text-[10px]" :disabled="saving" @click="cancelEdit">取消</button>
+            </template>
+            <button
+              v-else
+              class="chip px-2 py-0.5 text-[10px]"
+              :disabled="!body || !!bodyNote"
+              :title="bodyNote ? bodyNote : '编辑这个文件，保存走「应用到文件」'"
+              @click="startEdit"
+            >
+              编辑
+            </button>
+          </span>
         </div>
-        <!-- 有正文才渲染内容块：读不到时上面那行已写明原因，绝不用空白冒充已读 -->
+        <!-- 编辑态：textarea 保存前不落盘；非编辑态有正文才渲染内容块（读不到时
+             上面那行已写明原因，绝不用空白冒充已读） -->
+        <textarea
+          v-if="editing"
+          v-model="editBody"
+          class="max-h-[42vh] min-h-[8rem] overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--c-primary)] bg-[var(--c-surface)] px-2.5 py-1.5 font-mono text-xs leading-5 outline-none"
+          aria-label="文件编辑框"
+          spellcheck="false"
+        ></textarea>
         <div
-          v-if="body"
+          v-else-if="body"
           class="max-h-[42vh] overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-1.5 font-mono text-xs leading-5"
         >
           {{ body }}

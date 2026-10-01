@@ -10,6 +10,7 @@ import { useDialogs } from '../composables/useDialogs'
 import { useEscClose } from '../composables/useEsc'
 import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
+import { useContextGauge } from '../composables/useContextGauge'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 
@@ -387,9 +388,15 @@ defineExpose({ onPaste, onDrop })
 // ---- 模型选择器（0.2.28 用户反馈：这里的模型应该是已有的模型，可以支持选择）----
 // 数据源 = 全部可用渠道的模型列表；切换 = 激活对应渠道并指定模型（后端 SetActiveModel）。
 // 显示的模型即实际运行的模型（后端回传 defaultModel，不再各说各话）。
+// 0.3 驾驶位：选择器收进输入框左侧——当前模型就是驾驶位的第一读数；渠道/Key/代理
+// 仍只在「渠道管理」里维护，这里只负责"切模型"这一件事。
 const modelMenuOpen = ref(false)
 const modelMenuRef = ref<HTMLElement | null>(null)
 const modelOptions = computed(() => channels.modelOptions)
+
+// 上下文余量（0.3）：与顶栏油表同一份数据、同一套文案（useContextGauge）。
+// 顶栏油表在 1280 以下被响应式隐藏，输入框上的这份必须始终可见。
+const { usage } = useContextGauge()
 
 // Esc 关闭模型菜单（第 3 批）：经消费栈注册（原先只有点外部关闭）
 useEscClose(modelMenuOpen, () => {
@@ -581,52 +588,28 @@ function editQueued(id: number) {
   atts.value = [...q.atts, ...atts.value]
   box.value?.focus()
 }
+
+// ---- 用户自己的命令行（0.3 最小能力）----
+// 一条单行输入：回车/点「运行」即执行，复用现有 shell 工具的超时与审批闸门
+//（后端 RunUserCommand；闸门含 shell 时照常弹审批卡）。结果进对话区的工具卡。
+// 它不是消息草稿：发送与命令行互不干扰。
+const cmdDraft = ref('')
+const cmdRunning = ref(false)
+async function runCommand() {
+  const cmd = cmdDraft.value.trim()
+  if (!cmd || cmdRunning.value) return
+  cmdRunning.value = true
+  try {
+    await store.runUserCommand(cmd)
+    cmdDraft.value = '' // 执行已受理（结果在卡上）：清空允许下一条
+  } finally {
+    cmdRunning.value = false
+  }
+}
 </script>
 
 <template>
   <div data-composer class="border-t border-[var(--c-border)] p-4">
-    <!-- 模型选择器（0.2.28）：列出全部可用渠道的模型，点击切换；当前项标记"当前" -->
-    <div ref="modelMenuRef" class="relative mb-2">
-      <!-- 模型选择器（阶段 1）：从 11px 浅色次要字提升为看得清的控件（描边 + 正文色 + 13px），
-           当前模型名始终可见；位置仍在输入框上方。样式用工具类写——style.css 的 .chip
-           在 CSS 层之外，工具类覆盖不了它的字号与颜色。 -->
-      <button
-        class="inline-flex max-w-full items-center gap-2 rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface)] px-3 py-1.5 text-[13px] text-[var(--c-text)] transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"
-        aria-haspopup="menu"
-        :aria-expanded="modelMenuOpen"
-        :title="modelOptions.length ? '点击切换模型（来自已配置的渠道）' : '尚未配置模型：请在侧栏底部打开「渠道管理」'"
-        @click="modelMenuOpen = !modelMenuOpen"
-      >
-        <AppIcon name="message" :size="13" class="shrink-0 text-[var(--c-text-dim)]" />
-        <span class="min-w-0 truncate font-medium">{{ channels.activeModel || '未选择模型' }}</span>
-        <span v-if="channels.activeChannel" class="shrink-0 text-[var(--c-text-dim)]">
-          · {{ channels.activeChannel.name }}
-        </span>
-        <AppIcon name="chevron-down" :size="11" class="shrink-0 text-[var(--c-text-dim)]" />
-      </button>
-      <div
-        v-if="modelMenuOpen"
-        role="menu"
-        class="absolute bottom-full left-0 z-40 mb-1 max-h-72 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
-      >
-        <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">选择模型（来自已配置的渠道）</div>
-        <p v-if="!modelOptions.length" class="px-2 py-1.5 text-xs text-[var(--c-text-dim)]">
-          还没有可用模型——请在侧栏底部打开「渠道管理」添加渠道与模型
-        </p>
-        <button
-          v-for="opt in modelOptions"
-          :key="`${opt.channelId}::${opt.model}`"
-          role="menuitem"
-          class="menu-item"
-          @click="pickModel(opt)"
-        >
-          <AppIcon name="message" :size="12" class="shrink-0 text-[var(--c-text-faint)]" />
-          <span class="min-w-0 flex-1 truncate text-left">{{ opt.model }}</span>
-          <span class="max-w-[8rem] shrink-0 truncate text-[10px] text-[var(--c-text-faint)]">{{ opt.channelName }}</span>
-          <span v-if="isCurrent(opt)" class="shrink-0 text-[10px] text-[var(--c-primary)]">当前</span>
-        </button>
-      </div>
-    </div>
     <!-- 输入队列：进行中提交的待发消息；「提前」= 顶到队首，本轮结束最先发出。
          容器限高（4 行 + 滚动）：队列长了也不得把输入框顶出可视区域（0.0.06） -->
     <div
@@ -748,11 +731,48 @@ function editQueued(id: number) {
       <AppIcon name="plus" :size="11" /> 放进输入框
     </button>
 
-    <div class="relative flex items-end gap-3" :class="dragOver ? 'rounded-[var(--r-input)] ring-2 ring-[var(--c-primary)]' : ''"
+    <div class="relative flex items-end gap-2" :class="dragOver ? 'rounded-[var(--r-input)] ring-2 ring-[var(--c-primary)]' : ''"
       @dragover.prevent="dragOver = true"
       @dragleave.prevent="dragOver = false"
       @drop="onDrop"
     >
+      <!-- 模型选择器（0.3 驾驶位，从输入框上方收进输入行左侧）：当前模型是驾驶位
+           第一读数，点击只切换模型——渠道/Key/代理仍在「渠道管理」里，不搬进来 -->
+      <div ref="modelMenuRef" class="relative shrink-0">
+        <button
+          class="inline-flex max-w-[11rem] items-center gap-1.5 rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-2 text-xs text-[var(--c-text)] transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"
+          aria-haspopup="menu"
+          :aria-expanded="modelMenuOpen"
+          :title="modelOptions.length ? '当前模型，点击切换（来自已配置的渠道）' : '尚未配置模型：请在侧栏底部打开「渠道管理」'"
+          @click="modelMenuOpen = !modelMenuOpen"
+        >
+          <AppIcon name="message" :size="12" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 truncate font-medium">{{ channels.activeModel || '未选择模型' }}</span>
+          <AppIcon name="chevron-down" :size="10" class="shrink-0 text-[var(--c-text-dim)]" />
+        </button>
+        <div
+          v-if="modelMenuOpen"
+          role="menu"
+          class="absolute bottom-full left-0 z-40 mb-1 max-h-72 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        >
+          <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">选择模型（来自已配置的渠道）</div>
+          <p v-if="!modelOptions.length" class="px-2 py-1.5 text-xs text-[var(--c-text-dim)]">
+            还没有可用模型——请在侧栏底部打开「渠道管理」添加渠道与模型
+          </p>
+          <button
+            v-for="opt in modelOptions"
+            :key="`${opt.channelId}::${opt.model}`"
+            role="menuitem"
+            class="menu-item"
+            @click="pickModel(opt)"
+          >
+            <AppIcon name="message" :size="12" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="min-w-0 flex-1 truncate text-left">{{ opt.model }}</span>
+            <span class="max-w-[8rem] shrink-0 truncate text-[10px] text-[var(--c-text-faint)]">{{ opt.channelName }}</span>
+            <span v-if="isCurrent(opt)" class="shrink-0 text-[10px] text-[var(--c-primary)]">当前</span>
+          </button>
+        </div>
+      </div>
       <!-- @ 文件引用浮层（0.0.09） -->
       <div
         v-if="atFile && atHits.length"
@@ -855,6 +875,17 @@ function editQueued(id: number) {
         @keyup="onCaretChange"
         @paste="onPaste"
       ></textarea>
+      <!-- 上下文余量（0.3 驾驶位）：与顶栏油表同源；顶栏那份在 1280 以下被
+           sm:flex 隐藏，这一份始终可见。折叠明细在 hover title 里逐项写清。 -->
+      <span v-if="usage" class="mb-2 flex shrink-0 flex-col items-end gap-0.5" :title="usage.full">
+        <span class="flex items-center gap-1.5">
+          <span class="h-1.5 w-14 overflow-hidden rounded-full bg-[var(--c-surface-soft)]">
+            <span class="block h-full rounded-full" :class="usage.bar" :style="{ width: usage.pct + '%' }"></span>
+          </span>
+          <span class="text-[11px] tabular-nums text-[var(--c-text-faint)]">{{ usage.short }}</span>
+        </span>
+        <span v-if="usage.foldNote" class="text-[10px] text-[var(--c-warn-text)]">折叠：{{ usage.foldNote }}</span>
+      </span>
       <button class="chip h-10 shrink-0" title="上传图片或文件（可多选）" aria-label="上传附件" @click="fileInput?.click()">
         <AppIcon name="plus" :size="14" />
       </button>
@@ -877,6 +908,28 @@ function editQueued(id: number) {
         @click="submit"
       >
         <AppIcon name="send" :size="16" />
+      </button>
+    </div>
+
+    <!-- 用户自己的命令行（0.3 最小能力）：一条单行输入，执行复用现有 shell 的
+         超时与审批（闸门含 shell 时照常弹审批卡），结果进对话区工具卡。
+         它不是消息草稿，也不替代模型——只是把"我自己想跑一条命令"放在手边。 -->
+    <div class="mt-2 flex items-center gap-2">
+      <AppIcon name="terminal" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+      <input
+        v-model="cmdDraft"
+        class="min-w-0 flex-1 rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3.5 py-1.5 text-xs text-[var(--c-text)] outline-none transition-colors focus:border-[var(--c-primary)]"
+        placeholder="自己跑一条命令（回车执行；走与模型相同的超时与审批）…"
+        aria-label="命令行"
+        @keydown.enter.prevent="runCommand"
+      />
+      <button
+        class="chip shrink-0 text-[11px]"
+        :disabled="cmdRunning || !cmdDraft.trim()"
+        :title="cmdRunning ? '正在执行…' : '执行命令（结果进对话区）'"
+        @click="runCommand"
+      >
+        {{ cmdRunning ? '执行中…' : '运行' }}
       </button>
     </div>
   </div>

@@ -313,6 +313,14 @@ func (l *Ledger) NextSeq() int64 {
 	return l.lastSeq + 1
 }
 
+// LastSeq 返回当前序号水位（0.3：Replay 分页缓存的失效判据——水位没动，
+// 投影就没变）。只读，不推进水位。
+func (l *Ledger) LastSeq() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lastSeq
+}
+
 // Replay 按写入顺序重放账本中所有完整事件。
 // visit 返回错误则中止重放并原样上抛。
 // 返回值命名（err）：defer 里的句柄关闭错误要在无扫描错误时上抛，不静默吞掉。

@@ -42,8 +42,9 @@ onBeforeUnmount(() => offEsc?.())
 </script>
 
 <template>
+  <!-- 0.3：与对话列用表面色差区分，不再画 1px 硬分割线 -->
   <aside
-    class="flex w-[420px] shrink-0 flex-col border-l border-[var(--c-border)] xl:w-[480px]"
+    class="flex w-[420px] shrink-0 flex-col bg-[var(--c-surface)] xl:w-[480px]"
     :aria-label="active ? `${active.label}面板` : '右栏面板'"
   >
     <!-- tab 条：chip + aria-pressed 是全库统一的"选中态真相"（见 style.css） -->
