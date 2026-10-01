@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
 import { diffLineClass, diffStat } from '../composables/diffView'
@@ -133,6 +133,40 @@ const resultRows = computed<OutputRow[] | null>(() => {
     searchOK: props.m.status === 'success',
   })
 })
+
+// 截图内嵌（0.0.30 用户反馈）：browser 终态卡带 shot 时**直接展示图片本体**——
+// 此前消息流里只有"已截图 路径"一行字，图只在右侧驾驶舱，用户点开对话才看到
+// 一条路径。MIME 规则与 BrowserPanel 同源（后端只产 png/jpg 两态）。
+const shotCache = new Map<string, string>() // 模块级：同一路径跨卡片、跨重放只读一次盘
+const shotUrl = ref('')
+const shotErr = ref('')
+const lightbox = ref('') // 点击放大（与 MessageBubble 的附件放大同款全屏浮层）
+function shotMime(p: string): string {
+  return p.toLowerCase().endsWith('.jpg') || p.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/png'
+}
+watch(
+  () => props.m.shot,
+  async (p) => {
+    shotUrl.value = ''
+    shotErr.value = ''
+    if (props.m.toolName !== 'browser' || !p) return
+    const hit = shotCache.get(p)
+    if (hit) {
+      shotUrl.value = hit
+      return
+    }
+    try {
+      const b64 = await bridge().app.ReadBrowserShot(p)
+      if (!b64) throw new Error('截图内容为空')
+      const url = `data:${shotMime(p)};base64,${b64}`
+      shotCache.set(p, url)
+      if (props.m.shot === p) shotUrl.value = url // 途中 shot 已更新：过期结果丢弃
+    } catch (e) {
+      if (props.m.shot === p) shotErr.value = errText(e) // 失败可见，不静默吞图
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -187,6 +221,25 @@ const resultRows = computed<OutputRow[] | null>(() => {
         :class="effectiveOpen ? '' : '-rotate-90'"
       />
     </button>
+
+    <!-- 截图内嵌（0.0.30）：browser 卡的可视结果直接展示在消息流里——截图是动作
+         本体，不进折叠、不看开合状态；读取失败按错误态可见（绝不静默吞图） -->
+    <div v-if="shotUrl || shotErr" class="max-w-[92%]">
+      <img
+        v-if="shotUrl"
+        :src="shotUrl"
+        alt="浏览器截图"
+        class="w-full cursor-zoom-in rounded-xl border border-[var(--c-border)]"
+        title="点击放大预览"
+        @click.stop="lightbox = shotUrl"
+      />
+      <p
+        v-else
+        class="rounded-xl border border-[var(--c-err)] bg-[var(--c-err-soft)] px-3 py-2 text-[11px] text-[var(--c-err-text)]"
+      >
+        截图读取失败：{{ shotErr }}
+      </p>
+    </div>
 
     <!-- 有 diff：变更面板即展开主体（write/edit 默认展开，不再用矮容器把变更藏住）；
          无 diff：展开全文（命令卡看完整输出，只读信息不丢） -->
@@ -255,5 +308,16 @@ const resultRows = computed<OutputRow[] | null>(() => {
         <AppIcon name="copy" :size="11" /> 复制输出
       </button>
     </div>
+
+    <!-- 放大预览（与 MessageBubble 附件放大同款全屏浮层）：点外面或再点图片关闭 -->
+    <Teleport to="body">
+      <div
+        v-if="lightbox"
+        class="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/70 p-6"
+        @click="lightbox = ''"
+      >
+        <img :src="lightbox" class="max-h-full max-w-full rounded-lg" alt="放大截图" />
+      </div>
+    </Teleport>
   </div>
 </template>

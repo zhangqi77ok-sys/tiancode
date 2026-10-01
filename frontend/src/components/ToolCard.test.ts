@@ -7,11 +7,18 @@ import type { ChatMsg } from '../stores/chat'
 // 0.0.12：打开文件走 OpenInDefaultApp（记录调用做断言）
 // 注意：变量名不能叫 h——本文件从 vue 引入了 render 用的 h，遮蔽会直接炸渲染
 const openCalls = vi.hoisted(() => ({ opened: [] as { sid: string; path: string; line: number }[] }))
+// 截图内嵌（0.0.30）：ReadBrowserShot 按路径查表，缺路径=读取失败（错误态断言用）
+const shotCalls = vi.hoisted(() => ({ map: {} as Record<string, string> }))
 
 vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
       RevealInExplorer: async () => {},
+      ReadBrowserShot: async (p: string) => {
+        const v = shotCalls.map[p]
+        if (v === undefined) throw new Error(`missing shot: ${p}`)
+        return v
+      },
       // 第 8 批：可点路径走统一入口 OpenAtLine（后端决定用配置命令还是系统默认程序）
       OpenAtLine: async (sid: string, path: string, line: number) => {
         openCalls.opened.push({ sid, path, line })
@@ -275,5 +282,70 @@ describe('ToolCard（0.0.06 交互契约）', () => {
     })
     expect(el.textContent).toContain('这次无法恢复')
     expect(el.textContent).not.toContain('恢复写入前')
+  })
+})
+
+// 截图内嵌（0.0.30 用户反馈）：browser 卡的截图直接展示在消息流里，
+// 不再只有"已截图 路径"一行字；读取失败按错误态可见。
+describe('ToolCard · browser 截图内嵌', () => {
+  beforeEach(() => {
+    teardown()
+    openCalls.opened = []
+    shotCalls.map = {}
+  })
+
+  it('browser 终态卡带 shot 直接展示图片', async () => {
+    shotCalls.map['s-1/shot-0001.png'] = 'AAAA'
+    const el = mountCard({
+      role: 'tool',
+      content: '已打开 https://x.dev\n\n已截图 s-1/shot-0001.png',
+      toolName: 'browser',
+      status: 'success',
+      title: 'open https://x.dev',
+      shot: 's-1/shot-0001.png',
+    })
+    await vi.waitFor(() => expect(el.querySelector('img[alt="浏览器截图"]')).toBeTruthy())
+    expect(el.querySelector('img[alt="浏览器截图"]')?.getAttribute('src')).toBe('data:image/png;base64,AAAA')
+  })
+
+  it('jpg 截图按 image/jpeg 拼 data URL', async () => {
+    shotCalls.map['s-1/shot-0002.jpg'] = 'BBBB'
+    const el = mountCard({
+      role: 'tool',
+      content: '已截图 s-1/shot-0002.jpg',
+      toolName: 'browser',
+      status: 'success',
+      title: 'click [3]',
+      shot: 's-1/shot-0002.jpg',
+    })
+    await vi.waitFor(() => expect(el.querySelector('img[alt="浏览器截图"]')).toBeTruthy())
+    expect(el.querySelector('img[alt="浏览器截图"]')?.getAttribute('src')).toBe('data:image/jpeg;base64,BBBB')
+  })
+
+  it('读图失败：错误文本可见，不出坏图', async () => {
+    const el = mountCard({
+      role: 'tool',
+      content: '已截图 s-1/missing.png',
+      toolName: 'browser',
+      status: 'success',
+      title: 'open https://x.dev',
+      shot: 's-1/missing.png',
+    })
+    await vi.waitFor(() => expect(el.textContent).toContain('截图读取失败'))
+    expect(el.querySelector('img[alt="浏览器截图"]')).toBeNull()
+  })
+
+  it('非 browser 卡即使带 shot 字段也不渲染截图', async () => {
+    shotCalls.map['s-1/shot-0001.png'] = 'AAAA'
+    const el = mountCard({
+      role: 'tool',
+      content: '命令输出',
+      toolName: 'shell',
+      status: 'success',
+      title: 'go test ./...',
+      shot: 's-1/shot-0001.png',
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(el.querySelector('img[alt="浏览器截图"]')).toBeNull()
   })
 })
