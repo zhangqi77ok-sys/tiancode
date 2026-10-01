@@ -12,6 +12,9 @@ const h = vi.hoisted(() => ({
   saved: [] as string[],
   markdown: '# 会话',
   branch: 'main',
+  // 审批策略（0.2.36+）：SetApprovalPolicy 可控失败（测开关失败回滚）
+  policyCalls: [] as string[][],
+  setPolicyFails: false,
 }))
 
 vi.mock('../wails', () => ({
@@ -21,6 +24,10 @@ vi.mock('../wails', () => ({
       ListChannels: async () => ({ channels: [], activeId: '' }),
       ApprovalPolicy: async () => [],
       GetWorkspace: async () => '',
+      SetApprovalPolicy: async (tools: string[]) => {
+        if (h.setPolicyFails) throw new Error('策略保存失败')
+        h.policyCalls.push(tools)
+      },
       ExportSessionMarkdown: async () => h.markdown,
       SaveTextFile: async (name: string, content: string) => {
         h.saved.push(`${name}::${content}`)
@@ -66,6 +73,8 @@ beforeEach(() => {
   document.body.innerHTML = ''
   h.saved = []
   h.branch = 'main'
+  h.policyCalls = []
+  h.setPolicyFails = false
 })
 
 afterEach(() => {
@@ -200,5 +209,38 @@ describe('AppHeader（阶段 1）', () => {
     }
     await nextTick()
     expect(text()).toContain('已达上限')
+  })
+
+  // 审批闸门开关：乐观翻转 + 失败回滚——SetApprovalPolicy 失败时若开关停在
+  // 翻转态，显示就与实际策略相反（用户以为开着的确认闸实际是关的）
+  it('命令确认开关：成功时保持新状态并下发策略', async () => {
+    mountHeader()
+    await new Promise((r) => setTimeout(r, 0)) // 等挂载初始化链跑完（初值读取在前）
+    await nextTick()
+    await openMenu()
+    const item = menuItems().find((b) => (b.textContent ?? '').includes('命令确认')) as HTMLButtonElement
+    expect(item.getAttribute('aria-pressed')).toBe('false')
+    item.click()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    expect(item.getAttribute('aria-pressed')).toBe('true')
+    expect(item.textContent).toContain('开')
+    expect(h.policyCalls).toEqual([['shell', 'ext_manage']])
+  })
+
+  it('命令确认开关：下发失败回滚到原状态（不假装开成功）', async () => {
+    h.setPolicyFails = true
+    mountHeader()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await openMenu()
+    const item = menuItems().find((b) => (b.textContent ?? '').includes('命令确认')) as HTMLButtonElement
+    item.click()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    expect(item.getAttribute('aria-pressed')).toBe('false') // 回滚
+    expect(item.textContent).toContain('关')
+    expect(h.policyCalls).toEqual([])
+    expect(useChatStore().error).toContain('策略保存失败') // 失败可见
   })
 })

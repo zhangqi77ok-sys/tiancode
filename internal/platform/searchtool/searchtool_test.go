@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -378,5 +379,126 @@ func TestSearch_TimeoutPartial(t *testing.T) {
 	hasTimeout := strings.Contains(res.Content, "TIMEOUT")
 	if !hasHit && !hasTimeout {
 		t.Fatalf("want path:line: partial or TIMEOUT, got %q", res.Content)
+	}
+}
+
+// 并行扫描的确定性：多目录夹具、大小文件混排（worker 完成顺序与路径序必然错开），
+// 多次执行输出逐字节一致，且命中按工作区相对路径升序产出。大文件放在路径序最前
+// 但扫描最慢：若产出跟着完成顺序走，首个命中就会现形。
+func TestSearch_ParallelDeterministicOutput(t *testing.T) {
+	root := t.TempDir()
+	// 6 个目录 × 5 个小文件（各 1 命中）
+	for _, d := range []string{"a", "b", "c", "a/sub", "b/deep/inner", "m/n/o/p"} {
+		for i := 0; i < 5; i++ {
+			rel := filepath.ToSlash(filepath.Join(d, fmt.Sprintf("f%d.txt", i)))
+			write(t, root, filepath.FromSlash(rel), "NEEDLE "+rel+"\nfiller\n")
+		}
+	}
+	// 路径序最小、扫描最慢的文件：20 个间隔命中的大文件（命中拉开才成块，
+	// 连片命中会并成一个超配额的整块）
+	var big strings.Builder
+	for i := 0; i < 20; i++ {
+		big.WriteString("NEEDLE big\n")
+		for j := 0; j < 5; j++ {
+			big.WriteString("filler\n")
+		}
+	}
+	write(t, root, filepath.FromSlash("a/0big.txt"), big.String())
+
+	tool := New(root)
+	var first string
+	for run := 0; run < 6; run++ {
+		// 配额 30 < 总命中 50：截断点落在夹具内部，产出集合 = 路径序前 30 条
+		res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "NEEDLE", "max_matches": 30}))
+		if err != nil || res.IsError {
+			t.Fatalf("run %d: %v %s", run, err, res.Content)
+		}
+		if run == 0 {
+			first = res.Content
+			continue
+		}
+		if res.Content != first {
+			t.Fatalf("第 %d 次执行输出与第 1 次不一致——并行产出不确定", run+1)
+		}
+	}
+	var hitPaths []string
+	for _, ln := range strings.Split(first, "\n") {
+		if !strings.Contains(ln, "NEEDLE") {
+			continue // 上下文行/标注行不算命中
+		}
+		if i := strings.Index(ln, ":"); i > 0 {
+			hitPaths = append(hitPaths, ln[:i])
+		}
+	}
+	if len(hitPaths) != 30 {
+		t.Fatalf("命中行应为 30（配额上限），实为 %d", len(hitPaths))
+	}
+	if !sort.SliceIsSorted(hitPaths, func(i, j int) bool { return hitPaths[i] < hitPaths[j] }) {
+		t.Fatalf("命中未按路径升序产出：%v", headOf(hitPaths, 10))
+	}
+	if hitPaths[0] != "a/0big.txt" {
+		t.Fatalf("首个命中应为 a/0big.txt（路径序最小且最慢），实为 %q", hitPaths[0])
+	}
+}
+
+// 并行扫描的正确性基线：多目录下每文件恰一命中——全部命中、无遗漏、无重复。
+func TestSearch_ParallelMultiDirCorrectness(t *testing.T) {
+	root := t.TempDir()
+	want := map[string]bool{}
+	for _, d := range []string{"x", "y", "x/deep", "y/z/w"} {
+		for i := 0; i < 8; i++ {
+			rel := filepath.ToSlash(filepath.Join(d, fmt.Sprintf("g%d.go", i)))
+			want[rel] = true
+			write(t, root, filepath.FromSlash(rel), "package p\nMARK-"+rel+"\n")
+		}
+	}
+	tool := New(root)
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": `MARK-\S+`}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	got := map[string]bool{}
+	for _, ln := range strings.Split(res.Content, "\n") {
+		if i := strings.Index(ln, ":"); i > 0 {
+			got[ln[:i]] = true
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("命中文件数 = %d, want %d：%v", len(got), len(want), res.Content)
+	}
+	for rel := range want {
+		if !got[rel] {
+			t.Fatalf("漏掉 %s：\n%s", rel, res.Content)
+		}
+	}
+}
+
+// 统一忽略清单（单一来源 internal/platform/workspace）：search 与壳层 @ 引用共用
+// 同一份定稿——build/obj/.idea/.vscode 这些壳层原有而 search 漏掉的目录不再扫进
+// 结果；显式 path 进忽略目录仍可搜（与 vendor 同规则，C-SEARCH-4）。
+func TestSearch_SkipsUnifiedIgnoreList(t *testing.T) {
+	tool := newWS(t)
+	for _, d := range []string{"build", "obj", ".idea", ".vscode", ".GIT"} {
+		write(t, tool.root, filepath.Join(d, "a.txt"), "HIT-"+strings.TrimPrefix(d, "."))
+	}
+	write(t, tool.root, filepath.Join("src", "a.txt"), "HIT-src")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"pattern": "HIT-"}))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "HIT-src") {
+		t.Fatalf("普通目录应命中：\n%s", res.Content)
+	}
+	for _, d := range []string{"build", "obj", ".idea", ".vscode", ".GIT"} {
+		if strings.Contains(res.Content, "HIT-"+strings.TrimPrefix(d, ".")) {
+			t.Fatalf("统一忽略目录 %s 泄漏进结果：\n%s", d, res.Content)
+		}
+	}
+	res, err = tool.Execute(context.Background(), args(t, map[string]any{"pattern": "HIT-", "path": "build"}))
+	if err != nil || res.IsError {
+		t.Fatalf("explicit build: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "HIT-build") {
+		t.Fatalf("显式指定忽略目录应仍可搜：\n%s", res.Content)
 	}
 }

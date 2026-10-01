@@ -3,11 +3,13 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"tiancode/internal/core/agent"
@@ -17,7 +19,15 @@ import (
 	"tiancode/internal/platform/gittool"
 	"tiancode/internal/platform/searchtool"
 	"tiancode/internal/platform/shelltool"
+	"tiancode/internal/platform/workspace"
 )
+
+// WorkspaceIgnoredDir 报告 name 是否工作区默认忽略目录（定稿清单单一来源在
+// internal/platform/workspace）：search 工具与壳层 @ 引用（SearchWorkspaceFiles）
+// 共用同一份，壳层不直接 import platform（依赖规则），由编排层转出。
+func WorkspaceIgnoredDir(name string) bool {
+	return workspace.IgnoredDir(name)
+}
 
 // normalizeWorkspace 规范化工作区路径（0.2.36 审计 R5：启动与切换共用一套）：
 // Abs + Clean + 符号链接解析（能解析就用真实路径，失败就用 Clean 后原路径——
@@ -172,17 +182,26 @@ func firstWorkspaceOfLedger(l *session.Ledger) (string, bool) {
 // MCP/技能/扩展管理是进程共享的清单与连接，不随会话克隆（否则两套 MCP
 // 进程抢端口、一个会话添加的技能另一个会话看不到）。
 type sessionTools struct {
-	root   string       // 归属根（空 = 纯对话：只保留共享工具）
-	fs     *fstool.Tool // 以下四个仅在 root 非空时构造（fs 需要具体类型：「应用到文件」走 ProposeWrite）
-	shell  tools.ToolPort
-	git    tools.ToolPort
-	search tools.ToolPort
+	root string // 归属根（空 = 纯对话：只保留共享工具）
+	// ctx/cancel 是会话级生命周期（第二轮体检 R2）：浏览器等长动作派生自它，
+	// 会话删除/工具集收旧时先 cancel——在途动作立即中断，不再占着 tab 锁卡 UI。
+	ctx     context.Context
+	cancel  context.CancelFunc
+	fs      *fstool.Tool // 以下四个仅在 root 非空时构造（fs 需要具体类型：「应用到文件」走 ProposeWrite）
+	shell   tools.ToolPort
+	git     tools.ToolPort
+	search  tools.ToolPort
+	browser tools.ToolPort // 会话级浏览器 tab（不依赖工作区根，纯对话也构造）；收成端口便于契约测试注入假 tab
 }
 
 // closeToolIfCloser 收掉工具实例的可关闭资源（shell 的后台任务表）。
-// 非可关闭工具是 no-op。
+// 非可关闭工具是 no-op。typed-nil 守卫：接口变量装着 nil 指针（半构造的
+// sessionTools）时调用方法会在 nil 接收者上 panic——按"无可收资源"处理。
 func closeToolIfCloser(t tools.ToolPort) error {
 	if t == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(t); v.Kind() == reflect.Ptr && v.IsNil() {
 		return nil
 	}
 	if closer, ok := t.(interface{ Close() error }); ok {
@@ -191,20 +210,50 @@ func closeToolIfCloser(t tools.ToolPort) error {
 	return nil
 }
 
+// sessionLedgerOnDisk 报告会话账本文件是否还在盘上（会话存活的权威判据）：
+// DeleteSession 收尾即删文件；s.ledgers 句柄表只覆盖"开过句柄"的会话，
+// 重启后首聊的会话只剩盘上文件。路径拼法与 session.OpenLedger 一致。
+// 不校验 sessionID 合法性：怪 ID 只会 stat 落空返回 false，由调用方显式报错。
+func (s *ChatService) sessionLedgerOnDisk(sessionID string) bool {
+	_, err := os.Stat(filepath.Join(s.cfg.DataDir, sessionID+".jsonl"))
+	return err == nil
+}
+
 // ensureSessionTools 取/建会话级工具集。根一旦确定不再变化（归属由账本首个
 // workspace 事件固定）；同会话复用同一份 shell 实例（后台任务表跨轮存活，
 // bg_status/bg_kill 始终可达）。root 变化只可能来自防御路径（会话删除后再建），
 // 此时收掉旧实例避免孤儿进程；收旧失败显式返回（不静默丢进程）。
+//
+// 锁纪律（第二轮体检 R2）：sessTools 读写走专用锁 sessMu——Send 持 s.mu 期间
+// 会进到这里，复用 s.mu 会自锁（互斥锁不可重入）。本函数内绝不取 s.mu /
+// ledgerFor / sessionWorkspace：持 sessMu 再拿 s.mu 会与 DeleteSession
+// （s.mu → sessMu）反序死锁，root 一律由调用方先算好传入。
+// 所有调用方都必须已开过账本（文件在盘上）：文件没了 = 会话已删除，
+// 显式报错绝不重建——否则点旧会话的链接会"复活"无主工具集挂到应用退出。
 func (s *ChatService) ensureSessionTools(sessionID, root string) (*sessionTools, error) {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	if st, ok := s.sessTools[sessionID]; ok && st.root == root {
 		return st, nil
 	}
+	if !s.sessionLedgerOnDisk(sessionID) {
+		return nil, fmt.Errorf("会话不存在或已删除：%s", sessionID)
+	}
 	if old, ok := s.sessTools[sessionID]; ok {
+		if old.cancel != nil {
+			old.cancel() // 收旧先断在途动作（浏览器导航等），再关工具实例
+		}
 		if err := closeToolIfCloser(old.shell); err != nil {
 			return nil, fmt.Errorf("终止该会话旧后台任务失败：%w", err)
 		}
+		_ = closeToolIfCloser(old.browser) // 旧 tab 一并关掉（关 tab 无失败路径，恒 nil）
 	}
 	st := &sessionTools{root: root}
+	st.ctx, st.cancel = context.WithCancel(context.Background())
+	// browser 不依赖工作区根：纯对话也构造——看本地页面/读报错是对话刚需，
+	// 不该被"没选工作区"挡住；浏览器进程由 ChatService 持有的 Pool 共享。
+	// sessionID 作截图子目录（按会话隔离，驾驶舱互不串图）。
+	st.browser = s.browser.NewTab(sessionID)
 	if root != "" {
 		st.fs = fstool.New(root)
 		st.shell = shelltool.New(shelltool.Options{Root: root})
@@ -227,8 +276,13 @@ func (s *ChatService) assembleRegistry(st *sessionTools) (*tools.Registry, error
 	if err := registry.Register(agent.NewAskUserTool()); err != nil {
 		return nil, fmt.Errorf("register tool: %w", err)
 	}
+	// webfetch：共享工具（与 skill/mcp 同类，不依赖工作区根）——读网页正文，
+	// 查文档/查报错方案是硬伤能力，纯对话也必须在场。
+	if err := registry.Register(s.webFetch); err != nil {
+		return nil, fmt.Errorf("register tool: %w", err)
+	}
 	if st != nil {
-		for _, t := range []tools.ToolPort{st.fs, st.shell, st.git, st.search} {
+		for _, t := range []tools.ToolPort{st.fs, st.shell, st.git, st.search, st.browser} {
 			if t == nil {
 				continue
 			}

@@ -68,9 +68,9 @@ func TestBind_AppCtxFallback(t *testing.T) {
 // 少一个会让 UI 静默失效，多一个说明有未接线方法。
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
-		"AddChannel", "ApprovalPolicy", "BindCodexOAuth", "ChannelPresets", "CheckProxy", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
+		"AddChannel", "ApprovalPolicy", "BgTasksSnapshot", "BindCodexOAuth", "BrowserNavigate", "ChannelPresets", "CheckProxy", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
 		"ExportSessionMarkdown", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
-		"ListSessions", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProbeMcpServer", "ProposeFileWrite", "ReadSessionFile", "RenameSession", "Replay", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
+		"ListSessions", "ListWorkspaceDir", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProbeMcpServer", "ProposeFileWrite", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
 		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "TestChannel", "UpdateChannel", "WorkspaceSettings",
 	}
 	bindType := reflect.TypeOf(&Bind{})

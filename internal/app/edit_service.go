@@ -25,6 +25,12 @@ type ProposeWriteResult struct {
 // 第 6 批：写入成功落账本（EventUserEdit，含写入前内容与超限说明）——
 // 重启/切回会话后卡片仍在（Replay 投影），派生历史时模型收到一句"已应用过"。
 func (s *ChatService) ProposeFileWrite(sessionID, path, content string) (ProposeWriteResult, error) {
+	// 存活校验必须在 sessionWorkspace（会经 ledgerFor 重开账本、给已删除会话
+	// 重建空文件）之前：权威判据是账本文件还在盘上（第二轮体检 R3——绝不给
+	// 已删除会话重建无主工具集）。
+	if !s.sessionLedgerOnDisk(sessionID) {
+		return ProposeWriteResult{}, fmt.Errorf("会话不存在或已删除：%s", sessionID)
+	}
 	root := s.sessionWorkspace(sessionID)
 	if root == "" {
 		return ProposeWriteResult{}, fmt.Errorf("这场对话没有工作区，无法写入文件")

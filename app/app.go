@@ -295,8 +295,8 @@ func (b *Bind) RerunFrom(sessionID string, userSeq int64) (app.RerunResult, erro
 }
 
 // SearchWorkspaceFiles 为输入框的 @ 引用列出工作区文件（0.0.09）：把路径直接
-// 递给模型，省掉"模型先花一步找文件"。只读遍历、有界（跳过依赖/构建目录、
-// 命中上限 20），query 为空返回常用文件前 20 个。
+// 递给模型，省掉"模型先花一步找文件"。只读遍历、有界（跳过忽略目录——与 search
+// 工具同一份定稿清单，经编排层转出；命中上限 20），query 为空返回常用文件前 20 个。
 // 0.0.10：根 = **这场对话自己的工作区**（账本归属）；
 // 0.0.11：草稿（还没发过消息的会话）用顶栏当前工作区——用户在草稿里 @ 的
 // 文件，发送后这场对话就归属该工作区，搜索与发送看到的是同一个根。
@@ -313,10 +313,6 @@ func (b *Bind) SearchWorkspaceFiles(sessionID, query string) ([]string, error) {
 		return nil, fmt.Errorf("工作区目录不可用：%s", root)
 	}
 	q := strings.ToLower(strings.TrimSpace(query))
-	skipped := map[string]bool{
-		".git": true, "node_modules": true, "vendor": true, "dist": true,
-		"build": true, "bin": true, "obj": true, ".idea": true, ".vscode": true,
-	}
 	var hits []string
 	visited := 0
 	maxVisited, maxHits := 5000, 20
@@ -330,7 +326,7 @@ func (b *Bind) SearchWorkspaceFiles(sessionID, query string) ([]string, error) {
 		visited++
 		name := d.Name()
 		if d.IsDir() {
-			if skipped[name] && p != root {
+			if p != root && app.WorkspaceIgnoredDir(name) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -475,6 +471,11 @@ func drainTurn(
 				"hasUndo":  c.ToolEvent.HasUndo,
 				"undoPath": c.ToolEvent.UndoPath,
 				"undoNote": c.ToolEvent.UndoNote,
+				// 驾驶舱数据（0.0.28，browser 工具）：截图相对路径（前端经
+				// ReadBrowserShot 读图）+ 页面 URL + 控制台尾部；非浏览器工具为空值
+				"shot":    c.ToolEvent.Shot,
+				"url":     c.ToolEvent.PageURL,
+				"console": c.ToolEvent.Console,
 			})
 		}
 		if c.Todo != nil {

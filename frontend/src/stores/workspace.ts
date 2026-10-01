@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { bridge } from '../wails'
+import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
 
 // 工作区状态（共享单一事实源）：AppHeader 展示当前路径、SessionList 的
@@ -11,8 +12,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const path = ref('')
   const { push: toast } = useToast()
 
+  // 读取当前工作区根。失败不再上抛：此前 AppHeader 挂载时裸 await，GetWorkspace
+  // 一失败就成了未处理 rejection，还把后面的审批策略读取一起打断——改为 toast
+  // 可见 + path 保持原值，调用链继续。
   async function refresh() {
-    path.value = (await bridge().app.GetWorkspace()) ?? ''
+    try {
+      path.value = (await bridge().app.GetWorkspace()) ?? ''
+    } catch (e) {
+      toast('error', `读取工作区失败：${errText(e)}`)
+    }
   }
 
   // 弹系统目录选择框 → 切换工作区；取消/未变化返回 false；失败 toast 可见，不静默
@@ -24,7 +32,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       await refresh()
       return true
     } catch (e) {
-      toast('error', String(e instanceof Error ? e.message : e))
+      toast('error', errText(e))
       return false
     }
   }
@@ -37,7 +45,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       await refresh()
       return true
     } catch (e) {
-      toast('error', String(e instanceof Error ? e.message : e))
+      toast('error', errText(e))
       return false
     }
   }
@@ -50,7 +58,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       await refresh()
       return true
     } catch (e) {
-      toast('error', String(e instanceof Error ? e.message : e))
+      toast('error', errText(e))
       return false
     }
   }

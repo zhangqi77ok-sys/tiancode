@@ -23,8 +23,35 @@ export interface ChatMessageDTO {
   // 问答卡（role='ask'）：问题与选项来自 tool_call 参数，Content 为用户答复
   question?: string
   options?: string[]
+  // 驾驶舱数据（0.0.28，browser 工具，历史恢复与实时事件同构）：截图相对路径
+  // （browser-shots 根下正斜杠，经壳层 ReadBrowserShot 读图）+ 落地 URL + 控制台尾部。
+  // 旧账本缺省为空/不带字段；非 browser 工具不带这些字段。
+  shot?: string
+  url?: string
+  console?: string[]
   // 账本事件序号（第 6 批）：用户消息带它——「从这条消息重跑」的分叉锚点
   seq?: number
+}
+
+// chat:tool 事件载荷（实时流与 store.onTool 共用一份类型，避免两处手写漂移）。
+// 字段语义与 ChatMessageDTO 同名对齐；running 卡不带驾驶舱字段。
+export interface ChatToolEventDTO {
+  sessionID: string
+  name: string
+  status: string
+  summary: string
+  content?: string
+  diff?: string
+  title?: string
+  op?: string
+  callID?: string
+  hasUndo?: boolean
+  undoPath?: string
+  undoNote?: string
+  // 驾驶舱数据（0.0.28）：仅 browser 工具的终态卡携带；shot 相对 browser-shots 根
+  shot?: string
+  url?: string
+  console?: string[]
 }
 
 // 审批请求载荷：内核要"问"时推送（UI 渲染确认卡片，答复经 ResolveApproval 回流）。
@@ -202,6 +229,36 @@ export interface FileBodyDTO {
   limit: number
 }
 
+// 目录树一层条目（右栏「目录」tab）：modTime 为 Unix 毫秒（后端不掺展示格式）。
+export interface DirEntryDTO {
+  name: string
+  isDir: boolean
+  modTime: number
+}
+
+// 本会话后台任务快照（右栏「任务」tab）：log 为头尾保留的有界输出（已解码 UTF-8）。
+// startedAt 为 Unix 毫秒；exitCode 运行中为 -1。
+export interface BgTaskDTO {
+  id: string
+  command: string
+  pid: number
+  running: boolean
+  exitCode: number
+  startedAt: number
+  log: string
+}
+
+// 用户点链接 → 会话浏览器打开（0.0.29 驾驶舱）的返回载荷：与 chat:tool 的驾驶舱
+// 字段同源同义（shot 为 browser-shots 相对路径）；output/title 供前端合成与模型
+// 工具卡同构的本地卡（面板数据源唯一：会话缓冲派生）。
+export interface BrowserViewDTO {
+  shot: string
+  url: string
+  console: string[]
+  output: string
+  title: string
+}
+
 // 从这条用户消息重跑的结果（第 6 批）：text = 原消息原文（前端据此重发）。
 export interface RerunResultDTO {
   text: string
@@ -338,6 +395,20 @@ interface WailsApp {
   // 读取这场对话工作区内某文件的正文（第 8 批：文件详情面板只读浏览）。
   // 超限只给前半（truncated + limit 说明上限）；越界/缺失/二进制显式报错。
   ReadSessionFile(sessionID: string, path: string): Promise<FileBodyDTO>
+  // 读取 browser 工具的会话截图（0.0.28 驾驶舱）：relPath 传 chat:tool 的 shot 字段
+  // 原样（browser-shots 根下正斜杠相对路径）；返回图片字节 base64（前端拼 data URL）。
+  // 越界/缺失显式报错（服务端 Clean+前缀校验防穿越）。
+  ReadBrowserShot(relPath: string): Promise<string>
+  // 用户点对话里的网址 → 会话浏览器打开（0.0.29）：与模型共用同一 tab（所见即所控），
+  // 返回驾驶舱载荷（见 BrowserViewDTO）。仅 http/https；失败显式报错——调用方
+  // 据此回退系统浏览器（openExternal），绝不让对话窗口本身导航走。
+  BrowserNavigate(sessionID: string, url: string): Promise<BrowserViewDTO>
+  // 目录树一层列表（右栏「目录」tab）：relPath 相对这场对话的工作区（空串 = 根），
+  // 目录在前、名称次序；越界/缺失/无工作区显式报错（fstool 同款校验，含符号链接解析）。
+  ListWorkspaceDir(sessionID: string, relPath: string): Promise<DirEntryDTO[] | null>
+  // 本会话 shell bg_start 后台任务快照（右栏「任务」tab 轮询拉取）。
+  // 会话没有 shell 工具集 = 空表（不报错）；任务真相在后端内存，不落账本。
+  BgTasksSnapshot(sessionID: string): Promise<BgTaskDTO[] | null>
   // 语气设置（第 8 批）：读取当前设置与内置 50 条（侧栏底部「语气」入口用）。
   GetTones(): Promise<TonesViewDTO>
   // 保存语气设置。非法值（如停用默认语气）报错并原样显示；下一轮对话生效。
@@ -509,6 +580,10 @@ export function bridge(): WailsBridge {
         SetActiveModel: offlineWrite,
         CurrentBranch: async () => '',
         ReadSessionFile: async () => ({ path: '', content: '', truncated: false, limit: 0 }),
+        ReadBrowserShot: async () => '',
+        BrowserNavigate: offlineWrite,
+        ListWorkspaceDir: async () => [],
+        BgTasksSnapshot: async () => [],
         OpenAtLine: offlineWrite,
         WorkspaceSettings: async () => ({ openAtLine: '', checkCommand: '' }),
         SaveWorkspaceSettings: offlineWrite,

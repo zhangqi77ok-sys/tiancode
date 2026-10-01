@@ -418,6 +418,13 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		if result.UndoNote != "" {
 			payload["undo_note"] = result.UndoNote
 		}
+		if result.Visual != nil {
+			// 驾驶舱数据（0.0.28）：截图路径/URL/控制台尾部同为 UI 专用，随卡
+			// 落账——重启后 Replay 才能复原"当时的画面"（与 title/op/diff 同纪律）。
+			payload["shot"] = result.Visual.Shot
+			payload["url"] = result.Visual.URL
+			payload["console"] = result.Visual.Console
+		}
 		if _, err := ledger.Append(session.EventToolResult, payload); err != nil {
 			return err
 		}
@@ -442,11 +449,16 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		if result.Undo != nil {
 			undoPath, undoExists = result.Undo.Path, result.Undo.OldExists
 		}
-		if forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+		ev := &llm.ToolEvent{
 			Name: call.Name, Status: status, Summary: summary, Content: content, Diff: result.Diff,
 			Title: result.Title, Op: result.Op, CallID: call.ID,
 			HasUndo: result.Undo != nil, UndoPath: undoPath, UndoExists: undoExists, UndoNote: result.UndoNote,
-		}}) {
+		}
+		if result.Visual != nil {
+			// 驾驶舱数据逐字段透传（仅供 UI，不进模型上下文——与 Diff 同纪律）
+			ev.Shot, ev.PageURL, ev.Console = result.Visual.Shot, result.Visual.URL, result.Visual.Console
+		}
+		if forward(llm.StreamChunk{ToolEvent: ev}) {
 			return errConsumerGone
 		}
 		return nil

@@ -21,7 +21,7 @@ import (
 	"tiancode/internal/platform/configfile"
 )
 
-// fileFormat 是 channels.json v2 的结构。Version=0 视为旧格式并自动迁移；
+// fileFormat 是 channels.json 的结构（当前 v3）。Version=0 视为旧格式并自动迁移；
 // ApprovalTools（审批策略）是用户设置，随渠道文件同源持久化。
 //
 // ApprovalTools **不带 omitempty**（0.0.05）：空列表必须落盘为 "approvalTools": []。
@@ -42,9 +42,36 @@ type fileFormat struct {
 // DefaultPath 返回渠道配置路径（沿用旧路径，升级即原地迁移）。
 func DefaultPath() string { return filepath.Join(configfile.Dir(), "channels.json") }
 
-// defaultApprovalTools 是新装默认的审批清单（0.2.36 审计 R3）：
-// shell（命令执行）与 ext_manage（扩展增删）——两个"不确认就执行即危险"的口子。
-var defaultApprovalTools = func() []string { return []string{"shell", "ext_manage"} }
+// fileVersion 是 channels.json 的当前结构版本。v3（0.0.28 驾驶舱）：审批清单
+// 一次性补入 mcp/browser 两个新口子（见 Load 内迁移说明）。
+const fileVersion = 3
+
+// defaultApprovalTools 是新装默认的审批清单：四个"不确认就执行即危险"的口子——
+// shell（任意命令）、ext_manage（扩展增删，能把持久化提示写进后续每轮）、
+// mcp（可调宿主挂载的任意工具）、browser（可提交表单）（0.2.36 审计 R3 起
+// 前两项，0.0.28 驾驶舱补后两项）。默认零干扰只应是"用户显式关掉"的选择。
+var defaultApprovalTools = func() []string {
+	return []string{"shell", "ext_manage", "mcp", "browser"}
+}
+
+// withApprovalTools 把新增工具追加进既有审批清单：保留用户已有项与顺序、去重。
+func withApprovalTools(list []string, add ...string) []string {
+	seen := make(map[string]bool, len(list)+len(add))
+	out := make([]string, 0, len(list)+len(add))
+	for _, t := range list {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, t := range add {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 // NewID 生成渠道标识（时间戳前缀，便于排障时判断创建顺序）。
 func NewID() string { return fmt.Sprintf("ch-%d", time.Now().UnixNano()) }
@@ -116,6 +143,17 @@ func (p *Pool) Load() error {
 		p.rebuildAbilityLocked()
 		return p.persistLocked()
 	}
+	// v2 → v3 一次性迁移（0.0.28 驾驶舱）：mcp（可调宿主任意工具）与 browser
+	// （可提交表单）是新增的"不确认就执行即危险"口子，追加进既有**非空**清单
+	// （保留用户已有项、去重）。显式空清单不受影响：那是用户关掉整个审批的
+	// 独立形态（0.0.05 起），悄悄重新打开等于推翻其明确选择。升版本号保证迁移
+	// 只做一次——此后用户把 mcp/browser 移出清单，重启也不会被补回。
+	if ff.Version < fileVersion {
+		if len(p.approvalTools) > 0 {
+			p.approvalTools = withApprovalTools(p.approvalTools, "mcp", "browser")
+		}
+		return p.persistLocked()
+	}
 	return nil
 }
 
@@ -158,7 +196,7 @@ func (p *Pool) setLocked(ff fileFormat) {
 
 // persistLocked 原子写入当前状态（C-CH-5：temp + fsync + rename，崩溃不留半文件）。
 func (p *Pool) persistLocked() error {
-	ff := fileFormat{Version: 2, ActiveID: p.activeID, ApprovalTools: p.approvalTools, Proxy: p.proxy}
+	ff := fileFormat{Version: fileVersion, ActiveID: p.activeID, ApprovalTools: p.approvalTools, Proxy: p.proxy}
 	ff.Channels = make([]Channel, 0, len(p.channels))
 	for _, c := range p.channels {
 		ff.Channels = append(ff.Channels, *c)

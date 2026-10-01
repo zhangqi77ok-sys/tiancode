@@ -98,6 +98,30 @@ func TestManage_McpAddRejectsDuplicateAndMissing(t *testing.T) {
 	}
 }
 
+// 内置 MCP 锁死：模型侧 mcp_remove 必须拒绝，清单原样保留。
+func TestManage_McpRemoveRejectsBuiltin(t *testing.T) {
+	p, store, saves := newManageTest(t)
+	if err := store.Update(func(f *catalog.File) error {
+		f.MCP = append(f.MCP, catalog.Server{ID: "b1", Name: "context7", Transport: "stdio", Command: "npx", Args: "-y @upstash/context7-mcp", Enabled: true, Builtin: true})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	*saves = 0
+
+	res := callManage(t, p, map[string]any{"action": "mcp_remove", "name": "CONTEXT7"}) // 大小写不敏感
+	if !res.IsError || !strings.Contains(res.Content, "内置") {
+		t.Fatalf("删除内置项应被拒绝：%s", res.Content)
+	}
+	f, _ := store.Load()
+	if len(f.MCP) != 1 || !f.MCP[0].Builtin {
+		t.Fatalf("内置项必须原样保留：%+v", f.MCP)
+	}
+	if *saves != 0 {
+		t.Fatalf("拒绝路径不得触发落盘：%d", *saves)
+	}
+}
+
 func TestManage_McpRemoveAndUnknown(t *testing.T) {
 	p, store, saves := newManageTest(t)
 	callManage(t, p, map[string]any{"action": "mcp_add", "name": "fs", "command": "npx"})

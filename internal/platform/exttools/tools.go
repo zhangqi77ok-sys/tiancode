@@ -117,6 +117,27 @@ type MCPTool struct {
 	hubMu sync.Mutex // 仅保护复合序列（dropClient 的读-比-删、Close 的 Range+Delete）；单次写入不拿它——原子原语自身互斥，锁内 Load→Store 两步反而制造竞窗
 }
 
+// mcpNotFoundContent 组装"找不到 MCP 服务器"的可继续推理报错：列出已启用清单，
+// 并把"打开/查看网页"指回内置 browser 工具。实证教训（2026-10-01）：模型在需要
+// "给用户看网页"时会按训练习惯去找 cursor-ide-browser 之类的 MCP 浏览器，拿到
+// 一句干巴巴的"没有"就误判"内置浏览器用不了"，绕道 shell 打开——用户什么都看不到。
+func mcpNotFoundContent(load func() catalog.File, serverName string) string {
+	var names []string
+	if load != nil {
+		for _, s := range load().MCP {
+			if s.Enabled {
+				names = append(names, s.Name)
+			}
+		}
+	}
+	list := "无"
+	if len(names) > 0 {
+		list = strings.Join(names, "、")
+	}
+	return "没有名为 " + serverName + " 的已启用 MCP（已启用：" + list + "）。" +
+		"打开/查看网页不要走 mcp——直接用内置 browser 工具，它是本环境唯一的浏览器。"
+}
+
 // NewMCP 构造 MCP 工具。
 func NewMCP(load func() catalog.File) *MCPTool { return &MCPTool{Load: load} }
 
@@ -153,7 +174,7 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (tools.Tool
 		}
 	}
 	if !found {
-		return tools.ToolResult{Content: "没有名为 " + serverName + " 的已启用 MCP", IsError: true, Title: serverName, Op: "mcp"}, nil
+		return tools.ToolResult{Content: mcpNotFoundContent(t.Load, serverName), IsError: true, Title: serverName, Op: "mcp"}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

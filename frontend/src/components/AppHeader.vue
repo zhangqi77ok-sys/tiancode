@@ -4,6 +4,8 @@ import { useChatStore } from '../stores/chat'
 import { useChannelStore } from '../stores/channels'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useEscClose } from '../composables/useEsc'
+import { errText } from '../composables/errText'
+import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
 import { THEME_LABEL, currentTheme, cycleTheme, type ThemeMode } from '../composables/useTheme'
 import { workspaceLabel } from '../composables/workspaceLabel'
@@ -19,6 +21,7 @@ const store = useChatStore()
 const channels = useChannelStore()
 const ws = useWorkspaceStore()
 const { push: toast } = useToast()
+const { copy } = useClipboard()
 
 const approvalOn = ref(false)
 
@@ -203,12 +206,7 @@ async function exportCopy() {
   menuOpen.value = false
   const md = await currentMarkdown()
   if (!md) return
-  try {
-    await navigator.clipboard.writeText(md)
-    toast('info', '已复制为 Markdown')
-  } catch {
-    toast('error', '剪贴板不可用——可改用「另存为文件」')
-  }
+  await copy(md, { success: '已复制为 Markdown', fail: '剪贴板不可用——可改用「另存为文件」' })
 }
 
 // 另存为文件：系统保存对话框走后端（WebView 内下载行为不可控）；剪贴板失败也有出路
@@ -220,16 +218,19 @@ async function exportSave() {
     await bridge().app.SaveTextFile('会话导出.md', md)
     toast('info', '已保存为 Markdown 文件')
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
   }
 }
 
 // 审批闸门开关（ADR-0007 默认关）：开启后 shell 命令执行前需你确认。
 // 0.2.27 起同时覆盖 ext_manage（MCP/Skill 增删会让本机执行新命令——它与 shell
-// 是同一类"执行面"，不纳入审批等于留了一条绕过确认的路径）
+// 是同一类"执行面"，不纳入审批等于留了一条绕过确认的路径）。
+// 乐观翻转 + 失败回滚：SetApprovalPolicy 失败时开关若停在翻转态，显示与实际策略相反
 async function toggleApproval() {
-  approvalOn.value = !approvalOn.value
-  await store.setApprovalPolicy(approvalOn.value ? ['shell', 'ext_manage'] : [])
+  const next = !approvalOn.value
+  approvalOn.value = next
+  const ok = await store.setApprovalPolicy(next ? ['shell', 'ext_manage'] : [])
+  if (!ok) approvalOn.value = !next
 }
 
 // ---- 主题切换（0.0.06）：跟随系统 → 浅色 → 深色 循环；偏好持久化 ----
@@ -239,8 +240,19 @@ function toggleTheme() {
 }
 
 onMounted(async () => {
-  await channels.load()
-  await ws.refresh()
+  // 三步各自隔离：启动自检任一步失败都不该打断后面的初始化（尤其审批开关初值
+  // 依赖 loadApprovalPolicy）。channels.load / ws.refresh / loadApprovalPolicy
+  // 内部均已吞错，这里再兜一层防未处理 rejection。
+  try {
+    await channels.load()
+  } catch {
+    /* 渠道读取失败：模型名留空，错误由渠道 store 呈现 */
+  }
+  try {
+    await ws.refresh()
+  } catch {
+    /* workspace.refresh 已自吞错误，这里只兜意外 */
+  }
   approvalOn.value = (await store.loadApprovalPolicy()).length > 0
   document.addEventListener('mousedown', onDocMousedown)
 })

@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { parseSkillMarkdown, type SkillDraft } from '../catalogImport'
 import { useDialogs } from '../composables/useDialogs'
+import { errText } from '../composables/errText'
 import { useCatalogStore, type SkillItem } from '../stores/catalog'
 import { bridge } from '../wails'
 import BaseModal from './BaseModal.vue'
@@ -88,7 +89,7 @@ async function pickFile() {
     await takeMarkdown(text, base)
     if (!error.value) mode.value = 'list'
   } catch (e) {
-    error.value = String(e instanceof Error ? e.message : e)
+    error.value = errText(e)
   }
 }
 
@@ -106,7 +107,7 @@ async function importFrom(source: 'skill-home' | 'skill-dir') {
       source === 'skill-home' ? '本机技能目录里没有可用的 SKILL.md' : '目录里的 SKILL.md 没有可用内容'
     if (await importDrafts(drafts, emptyMsg)) mode.value = 'list'
   } catch (e) {
-    error.value = String(e instanceof Error ? e.message : e)
+    error.value = errText(e)
   }
 }
 

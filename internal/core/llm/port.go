@@ -77,6 +77,12 @@ type ToolEvent struct {
 	UndoPath   string
 	UndoExists bool
 	UndoNote   string
+	// 驾驶舱数据（browser 工具，tools.ToolResult.Visual 逐字段透传）：当前视口
+	// 截图相对路径、落地 URL 与控制台尾部。旧事件缺省为空，UI 忽略即可；前端拿
+	// Shot 经壳层 ReadBrowserShot 读图。
+	Shot    string
+	PageURL string
+	Console []string
 }
 
 // TodoItem 是任务清单的单项。

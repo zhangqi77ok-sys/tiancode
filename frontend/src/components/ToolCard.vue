@@ -3,8 +3,10 @@ import { computed, ref } from 'vue'
 import type { ChatMsg } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
 import { diffLineClass, diffStat } from '../composables/diffView'
+import { errText } from '../composables/errText'
 import { openPathAt } from '../composables/openPath'
 import { parseOutputRows, type OutputRow } from '../composables/outputRows'
+import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -16,6 +18,7 @@ import AppIcon from './AppIcon.vue'
 const props = defineProps<{ m: ChatMsg }>()
 
 const { push: toast } = useToast()
+const { copy } = useClipboard()
 
 // 折叠态语义（0.0.06）：
 //   - 执行中：**强制展开**且不允许折叠——输出正在生长；
@@ -87,7 +90,7 @@ async function reveal() {
     // 0.0.11：路径按这场对话的工作区解析（传当前会话 ID）
     await bridge().app.RevealInExplorer(store.sessionId, props.m.title?.trim() || '')
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
   }
 }
 
@@ -111,12 +114,7 @@ const copyPayload = computed(() => (props.m.diff ? props.m.diff : (props.m.conte
 async function copyOutput() {
   const text = copyPayload.value
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    toast('info', '已复制输出')
-  } catch {
-    toast('error', '复制失败：剪贴板不可用')
-  }
+  await copy(text, { success: '已复制输出' })
 }
 
 // 打开文件（0.0.12；第 8 批加行号）：走统一入口 openPathAt——配了「在这一行打开」

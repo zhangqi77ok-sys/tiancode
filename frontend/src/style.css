@@ -11,6 +11,14 @@
   --c-primary: #5f43e0;
   --c-primary-hover: #5138c6;
   --c-primary-soft: #efeaff; /* 主色浅底：选中态/标签底 */
+  /* 用户气泡底（与 --c-primary 同值）：浅色下主色对白字 6.24:1 已达 AA，
+     深色下主色被提亮、对白字只剩 ~3.5:1——气泡底必须单独成令牌好让深色换深一档 */
+  --c-primary-bubble: #5f43e0;
+
+  /* 遮罩（此前散落 4 处 bg-black/xx 硬编码的收敛）：按用途分三档 */
+  --c-overlay: rgba(0, 0, 0, 0.3); /* 模态/浮层背衬 */
+  --c-overlay-deep: rgba(0, 0, 0, 0.6); /* 图片上的文字衬底：保住白字可读 */
+  --c-overlay-max: rgba(0, 0, 0, 0.8); /* 灯箱：全屏看图要几乎不透 */
 
   /* 背景与表面 */
   --c-bg: #f4f4fb; /* 页面底（浅薰衣草白） */
@@ -52,14 +60,22 @@
 
 /* ============================================================
    深色主题（0.0.06）：同一套令牌名，只换值——组件零改动。
-   三态策略：html[data-theme="dark"] 强制深色；html[data-theme="light"]
-   强制浅色；无属性时跟随系统 prefers-color-scheme。
+   三态由 composables/useTheme.ts 统一解析：auto 也由 JS 按系统偏好解析成
+   实际主题写进 html[data-theme]，属性始终存在——这里只留一份深色块，改主题
+   值不再要同步媒体查询兜底（此前整段值重复两份，改一处漏一处是常态隐患）。
    深色值同按 AA 校准（文字对深底 ≥4.5:1）：text 12.4 / dim 7.1 / faint 4.9。
    ============================================================ */
 :root[data-theme='dark'] {
   --c-primary: #8b74f5;
   --c-primary-hover: #9c88f7;
   --c-primary-soft: rgba(139, 116, 245, 0.18);
+  /* 深色下主色被提亮，#8b74f5 对白字仅 ~3.55:1，正文 AA 需 4.5:1——
+     用户气泡底换深一档的 #6d55d9（对白字 5.32:1），文字保持白色不变 */
+  --c-primary-bubble: #6d55d9;
+
+  --c-overlay: rgba(0, 0, 0, 0.5); /* 深色底本身已暗，遮罩加重才压得住内容 */
+  --c-overlay-deep: rgba(0, 0, 0, 0.65);
+  --c-overlay-max: rgba(0, 0, 0, 0.85);
 
   --c-bg: #14141f;
   --c-bg-tint: #101019;
@@ -88,54 +104,13 @@
   --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --c-primary: #8b74f5;
-    --c-primary-hover: #9c88f7;
-    --c-primary-soft: rgba(139, 116, 245, 0.18);
-
-    --c-bg: #14141f;
-    --c-bg-tint: #101019;
-    --c-surface: #1d1e2c;
-    --c-surface-soft: #232433;
-    --c-bubble: #20212f;
-    --c-code-bg: #1a1b28; /* 略深于气泡：深浅两色下代码块都要看得清 */
-    --c-border: #34354b;
-
-    --c-text: #e8e8f2;
-    --c-text-dim: #aeb0c4;
-    --c-text-faint: #9a9bb0;
-
-    --c-ok: #34d399;
-    --c-ok-soft: rgba(52, 211, 153, 0.14);
-    --c-ok-text: #6ee7b7;
-    --c-err: #f87171;
-    --c-err-soft: rgba(248, 113, 113, 0.14);
-    --c-err-text: #fca5a5;
-    --c-err-text-hover: #f87171;
-    --c-warn: #fbbf24;
-    --c-warn-soft: rgba(251, 191, 36, 0.14);
-    --c-warn-text: #fcd34d;
-
-    --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
-    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
-  }
-}
-
-/* 深色下的柔和渐变底：同样的两层径向光，颜色换成深色（随令牌走） */
+/* 深色下的柔和渐变底：同样的两层径向光，颜色换成深色（随令牌走）。
+   跟随系统已由 useTheme 解析成 data-theme="dark"，无需媒体查询兜底。 */
 :root[data-theme='dark'] body {
   background:
     radial-gradient(1200px 600px at 12% -10%, #1d1e2c 0%, rgba(29, 30, 44, 0) 60%),
     radial-gradient(900px 500px at 100% 0%, var(--c-primary-soft) 0%, rgba(20, 20, 31, 0) 55%),
     linear-gradient(160deg, var(--c-bg) 0%, var(--c-bg-tint) 100%);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) body {
-    background:
-      radial-gradient(1200px 600px at 12% -10%, #1d1e2c 0%, rgba(29, 30, 44, 0) 60%),
-      radial-gradient(900px 500px at 100% 0%, var(--c-primary-soft) 0%, rgba(20, 20, 31, 0) 55%),
-      linear-gradient(160deg, var(--c-bg) 0%, var(--c-bg-tint) 100%);
-  }
 }
 
 body {

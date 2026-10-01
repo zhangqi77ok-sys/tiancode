@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { ToneEntryDTO } from '../wails'
 import { bridge } from '../wails'
+import { errText } from '../composables/errText'
 
 // 语气设置（第 8 批）：固定还是自动、默认哪一条、停用了哪几条。
 //
@@ -37,7 +38,7 @@ export const useTonesStore = defineStore('tones', () => {
       loaded.value = true
       return ''
     } catch (e) {
-      return String(e instanceof Error ? e.message : e)
+      return errText(e)
     } finally {
       busy.value = false
     }
@@ -53,7 +54,7 @@ export const useTonesStore = defineStore('tones', () => {
       disabled.value = [...next.disabled]
       return ''
     } catch (e) {
-      return String(e instanceof Error ? e.message : e)
+      return errText(e)
     } finally {
       busy.value = false
     }

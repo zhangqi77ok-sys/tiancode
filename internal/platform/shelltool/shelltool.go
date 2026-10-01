@@ -77,6 +77,10 @@ func (t *Tool) SetProgress(cb func(string)) {
 	t.pmu.Unlock()
 }
 
+// BgTasksSnapshot 返回本工具全部后台任务的只读快照（编排层「任务」面板用）。
+// bg_status 一次只能问一个任务，界面要的是整表快照——从这里出。
+func (t *Tool) BgTasksSnapshot() []BgTaskInfo { return t.bg.snapshot() }
+
 // pushProgress 把过程快照推给界面（无回调或空输出时静默）。
 func (t *Tool) pushProgress(partial string) {
 	t.pmu.Lock()

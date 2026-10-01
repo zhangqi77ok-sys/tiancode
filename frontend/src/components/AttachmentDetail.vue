@@ -55,7 +55,7 @@ onBeforeUnmount(() => offEsc?.())
 <template>
   <Teleport to="body">
     <div
-      class="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-black/30 p-6"
+      class="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-[var(--c-overlay)] p-6"
       @click.self="emit('close')"
     >
       <div

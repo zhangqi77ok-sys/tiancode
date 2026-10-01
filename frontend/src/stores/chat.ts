@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
-import { bridge, type RerunResultDTO, type RevertResultDTO, type SessionSummaryDTO } from '../wails'
+import {
+  bridge,
+  openExternal,
+  type ChatToolEventDTO,
+  type RerunResultDTO,
+  type RevertResultDTO,
+  type SessionSummaryDTO,
+} from '../wails'
+import { errText } from '../composables/errText'
 import { useWorkspaceStore } from './workspace'
 
 // 任务清单单项（todo 工具的全量快照）
@@ -36,6 +44,13 @@ export interface ChatMsg {
   approvalId?: string
   args?: string
   sessionTitle?: string
+  // 驾驶舱数据（0.0.28，仅 browser 工具的终态卡携带）：截图相对路径（browser-shots
+  // 根下正斜杠，面板经壳层 ReadBrowserShot 读图）+ 落地 URL + 控制台尾部。
+  // undefined = 本卡不带该数据（running 卡/旧账本）；空串/空数组 = 明确携带的空值
+  //（如"本次截图失败"）——面板按"取最新携带者"的规则派生驾驶舱视图。
+  shot?: string
+  url?: string
+  console?: string[]
   // 工具调用配对 ID（0.0.06）：running 与终态事件同 ID——终态原地更新"执行中"卡
   callId?: string
   // 撤销元数据（0.0.07）：hasUndo 时卡片显示"恢复写入前"；旧全文不进前端，
@@ -61,6 +76,25 @@ export interface ChatMsg {
 let msgSeq = 0
 function withId<T extends Omit<ChatMsg, 'id'>>(m: T): ChatMsg {
   return { ...m, id: `m-${++msgSeq}` }
+}
+
+// 浏览器驾驶舱视图（0.0.28）：面板展示的"模型正在看的页面"，由当前会话缓冲派生。
+export interface BrowserVisual {
+  shot: string // 最新截图相对路径（'' = 从未截到，或最近一次明确截图失败）
+  url: string // 最近一次落地的页面 URL
+  console: string[] // 最近一次随卡携带的控制台尾部（≤8 条）
+  snapshot: string // 最近一次 open/snapshot/scroll 的元素快照正文（'' = 无）
+  running: boolean // 最新 browser 卡是否执行中（面板显示"模型正在操作"）
+}
+
+// browserSnapshotText 取 browser 卡的元素快照正文（open/snapshot/scroll 的输出含
+// [ref] 元素列表；click/fill/back/console/screenshot 不带）。动作判据：内核给
+// browser 卡的 Title 以动作名开头（internal/platform/browsertool 的 Title 方案）。
+const SNAPSHOT_ACTIONS = /^(open|snapshot|scroll)(\s|$)/
+export function browserSnapshotText(m: ChatMsg): string {
+  if (m.role !== 'tool' || m.toolName !== 'browser' || m.status === 'running') return ''
+  if (!SNAPSHOT_ACTIONS.test((m.title || '').trim())) return ''
+  return m.content || ''
 }
 
 // 待发送附件（0.0.10）：Composer 待发送区的单项。
@@ -96,14 +130,14 @@ function humanizeNetError(raw: string): string {
 }
 
 // 终态的人类可读标签：UI 围绕"可区分的三终态"设计（docs/CONTRACTS.md）。
-function terminalLabel(reason: number, errText: string): string {
+function terminalLabel(reason: number, raw: string): string {
   switch (reason) {
     case END_REASON.CANCELLED:
       return '⚠ 已取消'
     case END_REASON.IDLE_TIMEOUT:
       return '⚠ 响应超时：上游长时间无响应，可重试'
     default:
-      return `⚠ 出错了：${errText ? humanizeNetError(errText) : '未知错误'}`
+      return `⚠ 出错了：${raw ? humanizeNetError(raw) : '未知错误'}`
   }
 }
 
@@ -276,7 +310,7 @@ export const useChatStore = defineStore('chat', () => {
       sessions.value = summaries.value.map((s) => s.id)
     } catch (e) {
       // 列表读取失败必须可见（静默会让侧栏停在旧数据上，用户以为会话丢了）
-      error.value = `读取会话列表失败：${String(e instanceof Error ? e.message : e)}`
+      error.value = `读取会话列表失败：${errText(e)}`
     }
   }
 
@@ -290,7 +324,7 @@ export const useChatStore = defineStore('chat', () => {
       await bridge().app.RenameSession(id, title)
       await loadSessions()
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
     }
   }
 
@@ -332,6 +366,10 @@ export const useChatStore = defineStore('chat', () => {
         hasUndo: m.hasUndo,
         undoPath: m.undoPath,
         undoNote: m.undoNote,
+        // 驾驶舱数据同构投影（0.0.28）：重启后驾驶舱仍显示"当时的画面"
+        shot: m.shot,
+        url: m.url,
+        console: m.console,
         attachments: m.attachments,
         seq: m.seq,
       })
@@ -357,7 +395,7 @@ export const useChatStore = defineStore('chat', () => {
         }),
       )
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
     }
   }
 
@@ -406,7 +444,7 @@ export const useChatStore = defineStore('chat', () => {
         }
       } catch (e) {
         // 历史载入失败必须可见（此前是静默空白：用户以为会话内容丢了）
-        error.value = `载入会话历史失败：${String(e instanceof Error ? e.message : e)}`
+        error.value = `载入会话历史失败：${errText(e)}`
       } finally {
         loadingSession.value = false
       }
@@ -574,7 +612,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await bridge().app.ResolveApproval(id, approved, reason)
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       return
     }
     const card = findCard((m) => m.approvalId === id)
@@ -588,16 +626,20 @@ export const useChatStore = defineStore('chat', () => {
       await bridge().app.PinSession(id, pinned)
       await loadSessions()
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
     }
   }
 
-  async function setApprovalPolicy(tools: string[]) {
+  // 返回是否成功：失败时错误落 error 位（可见），调用方（顶栏开关）据此回滚
+  // 乐观状态——不回滚的话开关显示与实际策略相反。
+  async function setApprovalPolicy(tools: string[]): Promise<boolean> {
     error.value = ''
     try {
       await bridge().app.SetApprovalPolicy(tools)
+      return true
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
+      return false
     }
   }
 
@@ -605,7 +647,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       return (await bridge().app.ApprovalPolicy()) ?? []
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       return []
     }
   }
@@ -624,20 +666,7 @@ export const useChatStore = defineStore('chat', () => {
     if (p.thinking) ast.thinking = (ast.thinking || '') + p.thinking
   }
 
-  function onTool(p: {
-    sessionID: string
-    name: string
-    status: string
-    summary: string
-    content?: string
-    diff?: string
-    title?: string
-    op?: string
-    callID?: string
-    hasUndo?: boolean
-    undoPath?: string
-    undoNote?: string
-  }) {
+  function onTool(p: ChatToolEventDTO) {
     const c = ensureConvo(p.sessionID)
     if (p.name === 'todo') return // 任务清单由 onTodo/FloatingTodo 承载，不重复出工具卡
     if (p.name === 'ask_user') return // 问答卡由 onAsk/AskCard 承载，答案已在卡上
@@ -668,6 +697,7 @@ export const useChatStore = defineStore('chat', () => {
       })
       const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
       c.messages.splice(i, 0, card)
+      autoOpenPanelsFor(p)
       return
     }
     // 终态事件：优先更新同 callId 的"执行中"卡（原地生长），没有则新建
@@ -682,10 +712,16 @@ export const useChatStore = defineStore('chat', () => {
       if (p.diff !== undefined) target.diff = p.diff
       if (p.title) target.title = p.title
       if (p.op) target.op = p.op
+      // 驾驶舱字段（0.0.28）：undefined = 本卡不带（running 卡/非 browser），保留原值；
+      // 空串/空数组 = 明确携带的空值，照实覆盖
+      if (p.shot !== undefined) target.shot = p.shot
+      if (p.url !== undefined) target.url = p.url
+      if (p.console) target.console = p.console
       target.hasUndo = !!p.hasUndo
       if (p.undoPath) target.undoPath = p.undoPath
       if (p.undoNote) target.undoNote = p.undoNote
       target.streaming = false
+      autoOpenPanelsFor(p)
       return
     }
     // 封存当前段：ReAct 叙事顺序 = 本轮思考/文本 → 工具卡 → 下一段（onChunk 再开新段）
@@ -703,10 +739,14 @@ export const useChatStore = defineStore('chat', () => {
       hasUndo: !!p.hasUndo,
       undoPath: p.undoPath,
       undoNote: p.undoNote,
+      shot: p.shot,
+      url: p.url,
+      console: p.console,
       at: Date.now(),
     })
     const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
     c.messages.splice(i, 0, card)
+    autoOpenPanelsFor(p)
   }
 
   // 任务清单：单卡原地更新（同会话只保留一张，位置保留首次出现处）
@@ -751,7 +791,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await bridge().app.ResolveAsk(id, answer)
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       return
     }
     const card = findCard((m) => m.askId === id)
@@ -807,7 +847,7 @@ export const useChatStore = defineStore('chat', () => {
       const res = await bridge().app.RevertRound(sessionId.value)
       return res ?? { round: 0, restored: [], skipped: [] }
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       throw e
     }
   }
@@ -824,7 +864,7 @@ export const useChatStore = defineStore('chat', () => {
       if (idx >= 0) c.messages.splice(idx)
       return res
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       throw e
     }
   }
@@ -837,10 +877,139 @@ export const useChatStore = defineStore('chat', () => {
     const p = path.trim()
     if (!p) return
     fileDetailPath.value = p
+    rightPanelTab.value = 'file' // 打开哪个 tab 就激活哪个（与 openBrowserPanel 同一不变式）
   }
   function closeFileDetail() {
     fileDetailPath.value = ''
   }
+
+  // ---- 浏览器驾驶舱（0.0.28）----
+  // 面板数据 = 当前会话缓冲的派生（browserVisual）：不加第二份状态——browser 工具卡
+  // 本身就是驾驶舱数据，切会话自动跟随、Replay 自动恢复、running 卡原地生长都免费拿到。
+  // 面板开关与激活 tab 是应用级视图状态（不属于任何会话）；文件 tab 的开态即 fileDetailPath。
+
+  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks'>('file')
+  const browserOpen = ref(false)
+  function openBrowserPanel() {
+    browserOpen.value = true
+    rightPanelTab.value = 'browser'
+  }
+  function closeBrowserPanel() {
+    browserOpen.value = false
+  }
+
+  // 点链接 → 右侧驾驶舱打开（0.0.29）：对话输出里的网址绝不允许把应用窗口本身
+  // 导航走（WebView 没有地址栏和后退，用户会被困在那个页面里出不来）。
+  // 与模型共用会话浏览器 tab（所见即所控）；结果合成一张与模型工具卡同构的本地卡
+  // 入会话缓冲——面板数据源保持唯一（browserVisual 派生），不为用户浏览单开状态。
+  // 本地卡不落账本：浏览行为不是对话回合，切走再回来退回模型最近一张卡，是自觉取舍。
+  async function openLinkInBrowser(url: string) {
+    const sid = sessionId.value
+    try {
+      const view = await bridge().app.BrowserNavigate(sid, url)
+      const c = ensureConvo(sid)
+      c.messages.push(
+        withId({
+          role: 'tool' as const,
+          content: view.output,
+          toolName: 'browser',
+          status: 'success' as const,
+          title: view.title || 'open',
+          op: 'exec',
+          shot: view.shot,
+          url: view.url,
+          console: view.console,
+          at: Date.now(),
+        }),
+      )
+      openBrowserPanel()
+    } catch {
+      // 会话浏览器不可用（后端过旧/构造失败）：退回系统浏览器——链接必须到达，
+      // 但宁可交给系统浏览器也不占用对话窗口
+      openExternal(url)
+    }
+  }
+
+  // ---- 目录树（右栏「目录」tab）----
+  // 开态自持的应用级视图状态（不属于任何会话，与 browserOpen 同款）；树数据由
+  // FileTreePanel 经 ListWorkspaceDir 逐层拉取，store 只管开合与激活。
+  const treeOpen = ref(false)
+  function openTreePanel() {
+    treeOpen.value = true
+    rightPanelTab.value = 'tree' // 打开哪个 tab 就激活哪个（与 openBrowserPanel 同一不变式）
+  }
+  function closeTreePanel() {
+    treeOpen.value = false // 只关自己：注册表缩回后由容器回退第一项激活
+  }
+
+  // ---- 后台任务（右栏「任务」tab）----
+  // 数据源 = shell 工具内存任务表（后端 BgTasksSnapshot 按会话快照），面板轮询拉取；
+  // bg_start 卡到达时自动打开（openTasksFor），让"模型启动了后台进程"被看见。
+  const tasksOpen = ref(false)
+  function openTasksPanel() {
+    tasksOpen.value = true
+    rightPanelTab.value = 'tasks'
+  }
+  function closeTasksPanel() {
+    tasksOpen.value = false
+  }
+
+  // openCockpitFor：browser 工具卡到达（当前会话）→ 自动打开驾驶舱并切到浏览器 tab。
+  // 后台会话的浏览器事件照常入它自己的缓冲，但绝不抢当前视图（与审批/问答同纪律）。
+  function openCockpitFor(p: ChatToolEventDTO) {
+    if (p.name !== 'browser' || p.sessionID !== sessionId.value) return
+    openBrowserPanel()
+  }
+
+  // openTasksFor：shell bg_start 卡（内核输出 JSON 带 task_id+pid，见 shelltool
+  // bg.start 的返回契约）到达（当前会话）→ 自动打开任务面板。后台会话的卡不抢
+  // 当前视图；running 过程推送与 run 的普通文本输出（非 JSON / 不带 pid）都不算。
+  function openTasksFor(p: ChatToolEventDTO) {
+    if (p.name !== 'shell' || p.status === 'running') return
+    try {
+      const payload = JSON.parse(p.content || '{}') as { task_id?: unknown; pid?: unknown }
+      if (typeof payload.task_id === 'string' && typeof payload.pid === 'number' && p.sessionID === sessionId.value) {
+        openTasksPanel()
+      }
+    } catch {
+      // 非 JSON 输出：普通 run 卡，不打扰
+    }
+  }
+
+  // autoOpenPanelsFor：每张工具卡的落卡路径只调一次的面板联动入口（驾驶舱 + 任务）。
+  function autoOpenPanelsFor(p: ChatToolEventDTO) {
+    openCockpitFor(p)
+    openTasksFor(p)
+  }
+
+  // 驾驶舱各字段取"最新携带者"的值（从新往旧扫）：undefined = 本卡不带该数据
+  //（running 卡 / error 路径 / 旧账本），回退更早的卡；空串/空数组 = 卡明确携带的
+  // 空值（如"本次截图失败"），照实显示、不回退旧图——面板绝不拿旧画面冒充当前。
+  const browserVisual = computed<BrowserVisual>(() => {
+    const ms = messages.value
+    let shot: string | undefined
+    let url: string | undefined
+    let cons: string[] | undefined
+    let snapshot = ''
+    let running = false
+    let seenNewest = false
+    for (let i = ms.length - 1; i >= 0; i--) {
+      const m = ms[i]
+      if (m.role !== 'tool' || m.toolName !== 'browser') continue
+      if (!seenNewest) {
+        seenNewest = true
+        // 同一会话的浏览器动作天然串行：最新一张 browser 卡决定"执行中"
+        running = m.status === 'running'
+      }
+      if (m.status === 'running') continue // running 卡不带驾驶舱字段（后端契约）
+      if (shot === undefined && m.shot !== undefined) shot = m.shot
+      if (url === undefined && m.url !== undefined) url = m.url
+      if (cons === undefined && m.console != null) cons = m.console
+      if (!snapshot) snapshot = browserSnapshotText(m)
+      if (shot !== undefined && url !== undefined && cons !== undefined && snapshot) break
+    }
+    return { shot: shot ?? '', url: url ?? '', console: cons ?? [], snapshot, running }
+  })
 
   // 代码块「应用到文件」：直接写入（改了就是改了，无确认步骤），成功后本地补一张
   // 写入卡（路径 + diff）——写入不进账本（非模型轮次），卡片是本进程内的即时回执
@@ -867,13 +1036,17 @@ export const useChatStore = defineStore('chat', () => {
       }
       return res
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       throw e
     }
   }
 
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     const c = ensureConvo(p.sessionID)
+    // 中断语义必须在复位**前**快照：下面两行会把 stopping 清回 false，
+    // 之后再判 !c.stopping 恒真——守卫形同虚设（此前"点了中断不续发队列"
+    // 全靠 stop() 顺手清队列兜着）。endReason=CANCELLED 同属用户中断。
+    const interrupted = c.stopping || p.endReason === END_REASON.CANCELLED
     c.running = false
     c.stopping = false
     clearStopTimer(p.sessionID) // 终态到达：撤销中断超时兜底
@@ -927,8 +1100,8 @@ export const useChatStore = defineStore('chat', () => {
       void loadSessions() // 新会话首聊后进入列表
     }
     // 队列：本轮结束自动发出下一条（发给"刚结束的这个会话"，即使它已不是当前视图）。
-    // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去
-    if (p.endReason !== END_REASON.CANCELLED && !c.stopping) {
+    // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去（重新入队的留给用户手动发）
+    if (!interrupted) {
       const next = c.queue.shift()
       // 附件与强制工具随队列续发（0.0.11 / 第 7 批）：sendTo 内部按需分派
       if (next) sendTo(p.sessionID, next.text, next.atts, { forced: next.forced }).catch(() => {}) // 队列续发失败：错误气泡已可见
@@ -948,7 +1121,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await bridge().app.DeleteSession(id)
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       return
     }
     convos.delete(id) // 缓冲一并丢弃：会话已不存在，留着只会"复活"出幽灵消息
@@ -962,7 +1135,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       return (await bridge().app.ExportSessionMarkdown(id)) ?? ''
     } catch (e) {
-      error.value = String(e instanceof Error ? e.message : e)
+      error.value = errText(e)
       return ''
     }
   }
@@ -1078,6 +1251,18 @@ export const useChatStore = defineStore('chat', () => {
     fileDetailPath,
     openFileDetail,
     closeFileDetail,
+    rightPanelTab,
+    browserOpen,
+    openBrowserPanel,
+    openLinkInBrowser,
+    closeBrowserPanel,
+    treeOpen,
+    openTreePanel,
+    closeTreePanel,
+    tasksOpen,
+    openTasksPanel,
+    closeTasksPanel,
+    browserVisual,
     proposeApplyCode,
     onTodo,
     onAsk,

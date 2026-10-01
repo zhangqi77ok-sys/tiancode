@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { closeUnbalancedFences, renderMarkdown, unclosedCodeFrom } from '../markdown'
+import { openExternal } from '../wails'
 import { defaultFileName } from '../composables/codeExt'
 import { useDialogs } from '../composables/useDialogs'
+import { errText } from '../composables/errText'
+import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
 import { useChatStore } from '../stores/chat'
 
@@ -28,13 +31,52 @@ const html = ref(renderFor(props.content, !!props.streaming))
 let timer: ReturnType<typeof setTimeout> | null = null
 
 const { push: toast } = useToast()
+const { copy } = useClipboard()
 const dialogs = useDialogs()
 const store = useChatStore()
+
+// 链接分类处置（此前一律塞给 BrowserNavigate：#锚点/相对链接/mailto 会被后端
+// 拒掉再 fallback 进系统浏览器，开出一堆垃圾 URL）：
+//   · #fragment → 页内锚点：滚到对应元素（不进任何浏览器）；
+//   · http/https → 右侧驾驶舱（与模型同一浏览器，所见即所控）；
+//   · 其他安全 scheme（mailto/tel 等）→ 直接交系统浏览器，不走驾驶舱绕路；
+//   · 无 scheme 的相对链接 → 就地忽略：前端没有可靠的解析基准（工作区根≠文档基址），
+//     开到哪都是错的，宁可不动也不开垃圾 URL。
+// scheme 白名单取 DOMPurify 默认放行的安全集合，杜绝 javascript: 之类注入面。
+const SAFE_EXTERNAL_SCHEMES = /^(mailto|tel|callto|sms|xmpp):/i
+
+function handleLinkClick(anchor: HTMLAnchorElement) {
+  const href = anchor.getAttribute('href') ?? ''
+  if (href.startsWith('#')) {
+    // 页内锚点：jsdom/真实 WebView 都可能没有目标元素（渲染器不产 heading id），
+    // 找不到就静默不动——绝不能让它落到系统浏览器
+    const id = decodeURIComponent(href.slice(1))
+    document.getElementById(id)?.scrollIntoView()
+    return
+  }
+  if (/^https?:\/\//i.test(href)) {
+    void store.openLinkInBrowser(href)
+    return
+  }
+  if (SAFE_EXTERNAL_SCHEMES.test(href)) {
+    openExternal(href)
+    return
+  }
+  // 相对链接 / 未知 scheme：忽略（不导航、不开浏览器）
+}
 
 // 事件委托：marked 渲染出的复制/应用按钮统一在此处理——
 // v-html 内的元素无法直接绑 Vue 事件，委托到容器是标准做法
 async function onContentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
+  // 链接必须最先拦（bug 实证：放任默认行为会把整个应用窗口导航走——WebView
+  // 没有地址栏和后退按钮，用户被困在目标页面里只能重启）。
+  const anchor = target.closest<HTMLAnchorElement>('a[href]')
+  if (anchor) {
+    e.preventDefault()
+    handleLinkClick(anchor)
+    return
+  }
   const applyBtn = target.closest('[data-apply]')
   if (applyBtn) {
     const code = applyBtn.closest('.code-block')?.querySelector('pre code')?.textContent ?? ''
@@ -51,19 +93,14 @@ async function onContentClick(e: MouseEvent) {
       const res = await store.proposeApplyCode(path, code)
       toast('info', `已写入 ${res?.path ?? path}`)
     } catch (err) {
-      toast('error', String(err instanceof Error ? err.message : err))
+      toast('error', errText(err))
     }
     return
   }
   const btn = target.closest('[data-copy]')
   if (!btn) return
   const code = btn.closest('.code-block')?.querySelector('pre code')?.textContent ?? ''
-  try {
-    await navigator.clipboard.writeText(code)
-    toast('info', '代码已复制')
-  } catch {
-    toast('error', '复制失败：剪贴板不可用')
-  }
+  await copy(code, { success: '代码已复制' })
 }
 
 function renderNow(src: string) {

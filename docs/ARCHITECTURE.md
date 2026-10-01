@@ -14,7 +14,7 @@ flowchart TB
     RT --> LLM["内核 internal/core/llm.ProviderPort（流式纪律）"]
     LOOP --> TOOLS["内核 internal/core/tools（ToolPort+执行契约）"]
     LLM -.实现端口.-> PROV["适配器 internal/platform/openaiprovider"]
-    TOOLS -.实现端口.-> FS["适配器 fs/shell/git/search（原子写+可配超时）"]
+    TOOLS -.实现端口.-> FS["适配器 fs/shell/git/search/webfetch/browser（原子写+可配超时）"]
 ```
 
 ## 依赖规则
@@ -60,6 +60,9 @@ tiancode/
 | `core/agent` | 无状态 ReAct 循环，步数上限 25 | 只编排端口，自身零 IO |
 | `internal/app` | 用例编排；错误上抛 UI | 禁止 `_ =` 吞错（守卫 R2） |
 | `platform/openaiprovider` | OpenAI 兼容流式适配器 | 实现流式纪律（M2） |
+| `platform/browsertool` | 会话级浏览器 tab + 进程共享池（无头/有头各至多一个进程，惰性拉起）；截图落盘与压缩 | 驾驶舱数据随卡（C-BR-*） |
+| `platform/webfetch` | 网页正文读取：HTML 剥噪（stdlib 手写）/ 字符集解码 / 代理同源接线 | 有界 + 超时语义（C-WF-*） |
+| `platform/workspace` | 工作区默认忽略目录单一来源（search 与壳层 @ 引用共用同一份） | 大小写不敏感；用户级自定义忽略为后续项 |
 | `platform/*` 其余 | 原子写 / 进程执行 / 工具适配（fs/shell/git/search） | 原子性 + 可配超时（M1/M3/M4/M6） |
 
 ## 内置工具
@@ -69,7 +72,9 @@ tiancode/
 | `fs` | `platform/fstool` | read / write / replace / list（非递归、有界） | C-FS-1~7 |
 | `shell` | `platform/shelltool` | 命令执行（超时/部分输出/后台有界） | C-TOOL-1~5 |
 | `git` | `platform/gittool` | 只读 status / diff / log | — |
-| `search` | `platform/searchtool` | 工作区搜索：内容（每命中 ±2 行上下文）/ 按路径找文件（`files_only`）；有界、跳过内置忽略目录 | C-SEARCH-1~8 |
+| `search` | `platform/searchtool` | 工作区搜索：内容（每命中 ±2 行上下文）/ 按路径找文件（`files_only`）；两段式并行扫描，产出按路径排序（确定性）；有界、跳过工作区默认忽略目录（单一来源 `platform/workspace`） | C-SEARCH-1~10 |
+| `browser` | `platform/browsertool` | CDP 驱动本机 Edge/Chrome：open / snapshot / scroll / click / fill / back / console / screenshot；改变页面状态的动作自动附当前视口截图（驾驶舱：shot/url/console 随卡，落盘 `browser-shots/<会话>/`） | C-BR-1~8 |
+| `webfetch` | `platform/webfetch` | 读网页正文：GET、HTML 剥噪提取标题+正文、GBK 兜底解码；共享工具（不依赖工作区根，纯对话在场），出网走全局代理 | C-WF-1~8 |
 
 ## 对话主线数据流（M2 完成后；M6 加粗跨轮回放）
 
@@ -80,7 +85,7 @@ tiancode/
   → agent.Loop（Phase 状态机 Idle/Running/Cancelled）
       → llm.ChatRuntime（流前重试，流中不换渠道）→ ProviderPort.StreamChat（空闲看门狗/发送逃生）
       ├─ Delta → 账本 AssistantDelta → 前端流式渲染（markdown / thinking）
-      ├─ ToolCall → tools.ToolPort.Execute（超时契约）→ 账本 ToolCall/ToolResult（含 id）→ 前端可展开工具卡片
+      ├─ ToolCall → tools.ToolPort.Execute（超时契约）→ 账本 ToolCall/ToolResult（含 id；browser 动作附 shot/url/console 驾驶舱数据，重启后 Replay 复原）→ 前端可展开工具卡片
       └─ 终态 EndReason → 账本 AssistantMsg/TurnEnd → 前端终态标签
 取消 → ctx.Done → EndCancelled 终态，账本保留已产生事件
 切换会话 → ChatService.Replay（投影含 tool 卡与 thinking，C-APP-3）
@@ -99,6 +104,7 @@ tiancode/
 - 对话区语义：用户=紫罗兰实心气泡（右）、助手=白卡+AGENT 标签（左）、工具=药丸 chip+状态点、取消/超时=警告色底、错误=错误色底
 - 文件审查（第 2/3 批）：本轮变更带默认折叠、按文件聚合成一行（改 N 次 + 累计 ±，主标签为工作区相对路径）；点文件行或工具卡文件名 → 右侧 `FileDetailPanel`（逐次 diff + 恢复写入前）；Esc 由浮层优先消费（`frontend/src/composables/useEsc.ts`），关浮层绝不中断正在跑的回合
 - 回合检查点（第 6 批）：轮次内首次修改某文件前的快照随轮次收尾落账本（`round_checkpoint`）；「撤回本轮」按检查点整批恢复（哈希不符即跳过，绝不覆盖用户改动）；「从这条用户消息重跑」= 撤回其后文件改动 + 追加 `fork{from_seq}`（派生/投影丢弃 `[from_seq, fork]` 区间，账本只追加、旧行永不改写）；代码块「应用到文件」落 `user_edit`（Replay 可见 + 模型上下文有一句"已应用过"）
+- 右栏（0.0.28）：`RightPanel` 是对内容零知识的 tab 容器（aside + tab 条 + Esc 消费）——新增 tab = App.vue 注册表加一项 + 同名插槽，容器零改动；现有 文件 / 浏览器 / 目录 / 任务 四个 tab，全关时右栏退场只留开栏轨
 - 浏览器预览：`cd frontend && npm run dev`（无 wails 注入时 bridge() 返回空数据桩，便于视觉迭代）
 
 ## 参照来源

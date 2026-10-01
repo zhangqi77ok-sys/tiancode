@@ -241,6 +241,15 @@ func (t *ManageTool) addMCP(ctx context.Context, f *catalog.File, a manageArgs) 
 
 func (t *ManageTool) removeMCP(f *catalog.File, a manageArgs) (tools.ToolResult, error) {
 	name := strings.TrimSpace(a.Name)
+	for _, s := range f.MCP {
+		if strings.EqualFold(s.Name, name) && s.Builtin {
+			// 内置 MCP 是产品默认能力：模型侧同样锁死（与前端 UI/store 同层保护）
+			return tools.ToolResult{
+				Content: fmt.Sprintf("%s 是内置 MCP，不可删除（永远是默认能力；如不需要可在设置面板查看，但无法移除）", name),
+				IsError: true, Op: "ext", Title: "mcp_remove " + name,
+			}, nil
+		}
+	}
 	kept := f.MCP[:0:0]
 	removed := false
 	for _, s := range f.MCP {

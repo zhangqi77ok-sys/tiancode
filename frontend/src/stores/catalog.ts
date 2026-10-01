@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { McpDraft, SkillDraft } from '../catalogImport'
+import { errText } from '../composables/errText'
 import { bridge } from '../wails'
 
 // MCP 服务器与 Skill 的本机清单。存在浏览器存储里，和会话账本分开。
@@ -20,6 +21,7 @@ export interface McpServer {
   url: string
   headers: string
   enabled: boolean
+  builtin?: boolean
 }
 
 export interface SkillItem {
@@ -65,11 +67,8 @@ function normalizeMcp(row: McpServer): McpServer {
     url: row.url ?? '',
     headers: row.headers ?? '',
     enabled: row.enabled !== false,
+    builtin: row.builtin === true,
   }
-}
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
 }
 
 export const useCatalogStore = defineStore('catalog', () => {
@@ -135,6 +134,9 @@ export const useCatalogStore = defineStore('catalog', () => {
     if (!name) return '名称不能空'
     if (transport === 'stdio' && !item.command.trim()) return 'stdio 需要启动命令'
     if (transport === 'http' && !item.url.trim()) return '远程 MCP 需要 URL'
+    // 内置项锁死：不允许通过编辑/同名导入覆盖（否则改个命令就绕开了「内置」）
+    const target = mcp.value.find((x) => (item.id && x.id === item.id) || x.name === name)
+    if (target?.builtin) return '内置 MCP 不可修改或覆盖'
     const next: McpServer = {
       id: item.id || nid(),
       name,
@@ -171,6 +173,8 @@ export const useCatalogStore = defineStore('catalog', () => {
   }
 
   async function removeMcp(id: string): Promise<string> {
+    // 内置项锁死：不可删除（重启 seed 会补回，这里先拦住避免误导性成功）
+    if (mcp.value.find((x) => x.id === id)?.builtin) return '内置 MCP 不可删除'
     const before = [...mcp.value]
     return guarded(
       () => {
@@ -186,6 +190,7 @@ export const useCatalogStore = defineStore('catalog', () => {
   async function toggleMcp(id: string): Promise<string> {
     const row = mcp.value.find((x) => x.id === id)
     if (!row) return ''
+    if (row.builtin) return '内置 MCP 不可停用'
     const prev = row.enabled
     return guarded(
       () => {

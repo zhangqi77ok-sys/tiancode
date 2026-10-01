@@ -91,6 +91,18 @@ describe('MessageBubble（第 7 批）', () => {
     expect(writeText).toHaveBeenCalledWith('把 agent.go 的这个函数改一下')
   })
 
+  // 深色对比度回归守卫：用户气泡底必须用专用令牌（--c-primary-bubble）而不是
+  // --c-primary——深色下主色 #8b74f5 对白字仅 ~3.55:1，正文 AA 需 4.5:1（换深一档
+  // #6d55d9 = 5.32:1，数值校验在 style.css 注释里；jsdom 算不了真对比度，这里锁
+  // "令牌引用不回退"，防止样式改回直连主色）。
+  it('用户气泡底色走专用对比度令牌（深色 AA 守卫）', () => {
+    const el = mount(userMsg)
+    const bubble = el.querySelector('div.whitespace-pre-wrap') as HTMLElement | null
+    expect(bubble, '用户正文气泡要渲染').toBeTruthy()
+    expect(bubble?.className).toContain('bg-[var(--c-primary-bubble)]')
+    expect(bubble?.className).not.toContain('bg-[var(--c-primary)]')
+  })
+
   it('出错的助手回合不再有「重试上一问」', () => {
     const el = mount({
       id: 'a1',

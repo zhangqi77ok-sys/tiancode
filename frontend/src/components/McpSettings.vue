@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { parseMcpConfig } from '../catalogImport'
 import { useDialogs } from '../composables/useDialogs'
+import { errText } from '../composables/errText'
 import { useCatalogStore, type McpServer } from '../stores/catalog'
 import { bridge } from '../wails'
 import BaseModal from './BaseModal.vue'
@@ -79,7 +80,7 @@ async function pickFile() {
     if (!text) return
     await applyParsed(text)
   } catch (e) {
-    error.value = String(e instanceof Error ? e.message : e)
+    error.value = errText(e)
   }
 }
 
@@ -194,18 +195,28 @@ async function removeRow(row: McpServer) {
         <button
           class="chip shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
           :aria-pressed="row.enabled"
-          :disabled="catalog.busy"
-          :title="row.enabled ? '点击停用' : '点击启用'"
+          :disabled="catalog.busy || row.builtin"
+          :title="row.builtin ? '内置 MCP 不可停用' : row.enabled ? '点击停用' : '点击启用'"
           @click="toggle(row)"
         >
           {{ row.enabled ? '已启用' : '已停用' }}
         </button>
         <div class="min-w-0 flex-1">
-          <div class="truncate text-sm font-medium">{{ row.name }}</div>
+          <div class="truncate text-sm font-medium">
+            {{ row.name }}
+            <span v-if="row.builtin" class="ml-1 rounded border border-[var(--c-border)] px-1 text-[10px] text-[var(--c-text-faint)]">内置</span>
+          </div>
           <div class="truncate text-[11px] text-[var(--c-text-faint)]">{{ row.transport }} · {{ line(row) }}</div>
         </div>
-        <button class="chip" @click="startManual(row)">编辑</button>
-        <button class="chip text-[var(--c-err-text)]" @click="removeRow(row)">删除</button>
+        <button class="chip disabled:cursor-not-allowed disabled:opacity-40" :disabled="!!row.builtin" :title="row.builtin ? '内置 MCP 不可修改' : ''" @click="startManual(row)">编辑</button>
+        <button
+          class="chip text-[var(--c-err-text)] disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!!row.builtin"
+          :title="row.builtin ? '内置 MCP 不可删除' : ''"
+          @click="removeRow(row)"
+        >
+          删除
+        </button>
       </div>
       <div class="flex gap-2">
         <button class="btn-primary flex-1 py-2 text-sm" @click="mode = 'paste'; error = ''">粘贴 mcp.json</button>

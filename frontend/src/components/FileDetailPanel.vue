@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useChatStore, type ChatMsg } from '../stores/chat'
 import { useToast } from '../composables/useToast'
-import { registerEsc } from '../composables/useEsc'
+import { errText } from '../composables/errText'
 import { diffLineClass, diffStat } from '../composables/diffView'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
 
 // 文件详情面板（第 3 批）：右侧专区看一个文件的全部改动——逐次 diff + 累计统计 +
 // 恢复写入前 / 资源管理器。打开来源：本轮变更的文件行、工具卡文件名。
-// Esc 关闭（经 Esc 消费栈，绝不顺手中断生成——see composables/useEsc.ts）。
+// 0.0.28：外壳（宽度/边框/Esc）上交 RightPanel 容器（tab 化右栏），本组件只管内容。
+
 
 const store = useChatStore()
 const { push: toast } = useToast()
@@ -46,33 +47,33 @@ const total = computed(() =>
   ),
 )
 
-// Esc：面板挂载 = 打开（v-if 控制），mounted 注册即"打开时注册"
-let offEsc: (() => void) | null = null
-onMounted(() => {
-  offEsc = registerEsc(() => store.closeFileDetail())
-})
-onBeforeUnmount(() => offEsc?.())
-
 // 只读正文（第 8 批）：路径按**这场对话**的工作区解析（后端 ResolveSessionPath）。
 // 面板只读不写：没有编辑、没有保存。超限只给前半，照实写明被截断。
 const body = ref('')
 const bodyNote = ref('')
 const bodyLoading = ref(false)
+// 竞态守卫：快速换文件/换会话时只认最新一次请求——慢的旧 ReadSessionFile 返回
+// 不得覆盖当前正文（面板标题已是 B，正文必须是 B 的；与 FileTreePanel 的 gen、
+// BrowserPanel 的 fetchSeq 同一纪律）。
+let bodySeq = 0
 async function loadBody() {
+  const seq = ++bodySeq
   bodyLoading.value = true
   body.value = ''
   bodyNote.value = ''
   try {
     const res = await bridge().app.ReadSessionFile(store.sessionId, path.value)
+    if (seq !== bodySeq) return // 已有更新的读取在途：过期响应丢弃
     body.value = res?.content ?? ''
     if (res?.truncated) {
       const mb = Math.round((res.limit / (1024 * 1024)) * 10) / 10
       bodyNote.value = `正文超过单次读取上限（${mb} MB），只显示前 ${mb} MB`
     }
   } catch (e) {
-    bodyNote.value = String(e instanceof Error ? e.message : e)
+    if (seq !== bodySeq) return
+    bodyNote.value = errText(e)
   } finally {
-    bodyLoading.value = false
+    if (seq === bodySeq) bodyLoading.value = false // 过期请求不碰最新一次的加载态
   }
 }
 // 换文件 / 换会话都要重取（会话不同 → 工作区不同 → 同一个相对路径可能是别的文件）
@@ -91,7 +92,7 @@ async function reveal() {
   try {
     await bridge().app.RevealInExplorer(store.sessionId, path.value)
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
   }
 }
 
@@ -100,16 +101,14 @@ async function openDefault() {
   try {
     await bridge().app.OpenInDefaultApp(store.sessionId, path.value)
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
   }
 }
 </script>
 
 <template>
-  <aside
-    class="flex w-[420px] shrink-0 flex-col border-l border-[var(--c-border)] xl:w-[480px]"
-    aria-label="文件详情"
-  >
+  <!-- 只管内容：宽度/边框/tab 条/Esc 由 RightPanel 容器提供 -->
+  <section class="flex min-h-0 flex-1 flex-col" aria-label="文件详情">
     <!-- 头部：路径两段式 + 资源管理器 + 关闭（Esc） -->
     <div class="flex items-center gap-2 border-b border-[var(--c-border)] px-3 py-2.5">
       <AppIcon name="file" :size="14" class="shrink-0 text-[var(--c-text-faint)]" />
@@ -186,5 +185,5 @@ async function openDefault() {
         </div>
       </div>
     </div>
-  </aside>
+  </section>
 </template>

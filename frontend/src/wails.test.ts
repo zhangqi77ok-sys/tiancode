@@ -37,6 +37,7 @@ describe('wails bridge 绑定解析', () => {
 
   it('无 go 注入（浏览器调试）→ 读操作空数据、写操作显式报错', async () => {
     await expect(bridge().app.ListSessions()).resolves.toEqual([])
+    await expect(bridge().app.ReadBrowserShot('s-1/shot-0001.png')).resolves.toBe('') // 读操作空数据
     await expect(
       bridge().app.AddChannel({ id: '', name: '', protocol: '', baseUrl: '', model: '', apiKey: '' }),
     ).rejects.toThrow('浏览器调试模式')

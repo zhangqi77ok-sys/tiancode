@@ -8,6 +8,7 @@ import { parseAtToken, applyPick, type AtToken } from '../composables/atFile'
 import { applySlashPick, parseSlashToken, type SlashToken } from '../composables/slashCmd'
 import { useDialogs } from '../composables/useDialogs'
 import { useEscClose } from '../composables/useEsc'
+import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import AppIcon from './AppIcon.vue'
@@ -42,6 +43,10 @@ const atHits = ref<string[]>([])
 const atIndex = ref(0)
 const atNotice = ref('') // 纯对话等场景的提示（不报错弹窗）
 let atTimer: ReturnType<typeof setTimeout> | null = null
+// 搜索代际：每次光标变化作废上一代——防抖回调里的慢响应返回时，若期间用户
+// 已改关键词/关掉 @，结果必须丢弃，否则旧关键词的命中会覆盖新菜单（FileTreePanel
+// 的 gen 纪律同款）；卸载时也要清掉挂起的防抖定时器
+let atSeq = 0
 
 function onCaretChange() {
   const t = box.value
@@ -49,6 +54,7 @@ function onCaretChange() {
   refreshSlash() // / 技能与 MCP 菜单（纯本地解析，无 IPC）
   const token = parseAtToken(draft.value, t.selectionStart ?? 0)
   atFile.value = token
+  const seq = ++atSeq // 本代开始：旧代在途响应作废
   if (!token) {
     atHits.value = []
     atNotice.value = ''
@@ -56,14 +62,18 @@ function onCaretChange() {
   }
   if (atTimer) clearTimeout(atTimer)
   atTimer = setTimeout(async () => {
+    atTimer = null
     try {
-      atHits.value = (await bridge().app.SearchWorkspaceFiles(store.sessionId, token.query)) ?? []
+      const hits = (await bridge().app.SearchWorkspaceFiles(store.sessionId, token.query)) ?? []
+      if (seq !== atSeq) return // 关键词已变：过期结果丢弃
+      atHits.value = hits
       atIndex.value = 0
       atNotice.value = atHits.value.length ? '' : '没有匹配的文件'
     } catch (e) {
+      if (seq !== atSeq) return
       // 纯对话没有工作区：提示而非报错，也不去用顶栏里下一场新对话的根
       atHits.value = []
-      atNotice.value = String(e instanceof Error ? e.message : e)
+      atNotice.value = errText(e)
     }
   }, 150)
 }
@@ -169,7 +179,7 @@ async function probeServerTools(name: string) {
     probeTools.value = (await bridge().app.ProbeMcpServer(name)) ?? []
     if (!probeTools.value.length) probeMsg.value = '该服务器没有公布工具，请手打工具名'
   } catch (e) {
-    probeMsg.value = String(e instanceof Error ? e.message : e)
+    probeMsg.value = errText(e)
   } finally {
     probing.value = false
   }
@@ -438,6 +448,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocMousedown)
   document.removeEventListener('selectionchange', refreshSelection)
+  if (atTimer) {
+    clearTimeout(atTimer) // 卸载不再触发挂起的 @ 搜索：回调会写已脱离视图的菜单状态
+    atTimer = null
+  }
 })
 
 // 自动增高且不超过半屏；发送后复位到默认高度。输入同时刷新 @ 引用状态。
@@ -472,7 +486,7 @@ async function submit() {
   try {
     forced = buildForcedPayload()
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
     return // 参数不合法：不发送，也不清空（让用户改）
   }
   if (props.rerun) {
@@ -551,7 +565,7 @@ async function submitRerun(text: string, curAtts: PendingAttachment[], forced?: 
     await store.send(text, curAtts, { throwOnError: true, forced })
     forcedTool.value = null
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
     // 失败：文字与附件放回输入区允许重试（与普通发送失败同款）
     draft.value = text
     atts.value = curAtts
@@ -687,7 +701,7 @@ function editQueued(id: number) {
             class="h-14 w-14 rounded-lg border border-[var(--c-border)] object-cover"
             :alt="a.name"
           />
-          <span class="absolute bottom-0 left-0 right-0 rounded-b-lg bg-black/60 px-1 text-center text-[9px] text-white">
+          <span class="absolute bottom-0 left-0 right-0 rounded-b-lg bg-[var(--c-overlay-deep)] px-1 text-center text-[9px] text-white">
             {{ fmtSize(a.size) }}
           </span>
           <button

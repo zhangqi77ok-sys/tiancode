@@ -64,7 +64,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
   <Teleport to="body">
     <div
       v-if="open"
-      class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/25 p-6"
+      class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-[var(--c-overlay)] p-6"
       @click.self="emit('close')"
     >
       <div

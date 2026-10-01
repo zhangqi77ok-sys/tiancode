@@ -1,6 +1,8 @@
 package session
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,7 +218,176 @@ func TestLedger_CloseFlushesPendingDeltas(t *testing.T) {
 	}
 }
 
-// C-SES-6：轮内崩溃 → 重放恢复到最后一条完整事件（assistant_message 锚点）。
+// 大单行回归保护：AssistantDelta 合批块 64KB、事件行上探 MB 级——重放逐行
+// 扫描不得截断超长行（bufio.Scanner 默认 64KB token 上限正是要避开的坑），
+// 打开修复的 Seq 水位与重放内容都必须完整恢复。
+func TestLedger_ReplayOversizedLine(t *testing.T) {
+	l, dir := newTestLedger(t)
+	big := strings.Repeat("X", 2<<20) // 2MB：远超 bufio.Scanner 默认 token 上限
+	if _, err := l.Append(EventUserMessage, map[string]string{"text": "q"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(EventAssistantDelta, map[string]string{"text": big}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(EventTurnEnd, map[string]string{"reason": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 重新打开：走一遍打开修复（对 2MB 单行求 Seq 水位）
+	l2, err := OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatalf("reopen with oversized line: %v", err)
+	}
+	defer l2.Close()
+
+	var kinds []EventKind
+	err = l2.Replay(func(ev Event) error {
+		kinds = append(kinds, ev.Kind())
+		if ev.Kind() == EventAssistantDelta {
+			var p struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			if p.Text != big {
+				t.Fatalf("超大单行被截断：text len = %d, want %d", len(p.Text), len(big))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if len(kinds) != 3 {
+		t.Fatalf("replayed %d events, want 3", len(kinds))
+	}
+	// 水位接续：修复/重放不得吞掉大行声明的 Seq
+	ev, err := l2.Append(EventUserMessage, map[string]string{"text": "next"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Seq() != 4 {
+		t.Fatalf("seq after oversized line = %d, want 4", ev.Seq())
+	}
+}
+
+// 大断尾回归保护：1MB 级半行（写入中断）必须在打开时截断到最后一个完整行，
+// 后续追加从完整区水位接续——逐行扫描不得把半行误当完整行。
+func TestLedger_RepairOversizedTornTail(t *testing.T) {
+	l, dir := newTestLedger(t)
+	if _, err := l.Append(EventUserMessage, map[string]string{"text": "q"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟崩溃：1MB 半行（无换行符）
+	f, err := os.OpenFile(ledgerPath(dir), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"seq":2,"kind":"assistant_delta","data":{"text":"` + strings.Repeat("Y", 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	torn, err := os.Stat(ledgerPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l2, err := OpenLedger(dir, "s1")
+	if err != nil {
+		t.Fatalf("reopen with oversized torn tail: %v", err)
+	}
+	defer l2.Close()
+
+	n := 0
+	if err := l2.Replay(func(Event) error { n++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("replayed %d events after repair, want 1", n)
+	}
+	ev, err := l2.Append(EventUserMessage, map[string]string{"text": "next"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Seq() != 2 {
+		t.Fatalf("seq after repair = %d, want 2", ev.Seq())
+	}
+	// 截断必须真实发生：文件不再包含半行
+	repaired, err := os.Stat(ledgerPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Size() >= torn.Size() {
+		t.Fatalf("半行未被截断：size %d → %d", torn.Size(), repaired.Size())
+	}
+}
+
+// 契约锁定：Replay 遇到末尾半行（打开修复后外部又追加了不完整行）与旧实现
+// 一致——按行解析、JSON 损坏显式失败，不静默跳过（修复只保证"打开时点"干净）。
+func TestLedger_ReplayTornLineFailsExplicitly(t *testing.T) {
+	l, dir := newTestLedger(t)
+	defer l.Close()
+	if _, err := l.Append(EventUserMessage, map[string]string{"text": "q"}); err != nil {
+		t.Fatal(err)
+	}
+	// 外部（模拟另一写方/崩溃残留）追加半行
+	f, err := os.OpenFile(ledgerPath(dir), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"seq":2,"kind":`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Replay(func(Event) error { return nil }); err == nil {
+		t.Fatal("replay over torn line must fail explicitly")
+	}
+}
+
+// 大账本重放基准：2 万行合成账本（约 4MB，量级对齐实测最大账本 3.36MB/30,351 行），
+// 观测重放单次全量扫描的成本（整文件读入 vs 逐行流式）。
+func BenchmarkLedger_Replay20kLines(b *testing.B) {
+	dir := b.TempDir()
+	var sb strings.Builder
+	for seq := 1; seq <= 20000; seq++ {
+		kind, data := EventAssistantDelta, fmt.Sprintf(`{"text":%q}`, strings.Repeat("x", 150))
+		if seq%100 == 0 {
+			kind, data = EventUserMessage, `{"text":"用户消息"}`
+		}
+		fmt.Fprintf(&sb, `{"seq":%d,"kind":%q,"data":%s}`+"\n", seq, kind, data)
+	}
+	if err := os.WriteFile(ledgerPath(dir), []byte(sb.String()), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	l, err := OpenLedger(dir, "s1")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer l.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n := 0
+		if err := l.Replay(func(Event) error { n++; return nil }); err != nil {
+			b.Fatal(err)
+		}
+		if n != 20000 {
+			b.Fatalf("replayed %d events, want 20000", n)
+		}
+	}
+}
 func TestLedger_CrashReplayRecovery(t *testing.T) {
 	l, dir := newTestLedger(t)
 	defer l.Close() // "崩溃"语义由 fsync 保证；关闭仅为释放 Windows 文件句柄

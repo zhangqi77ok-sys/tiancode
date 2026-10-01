@@ -42,6 +42,23 @@ type ToolResult struct {
 	// UndoNote 撤销不可用时的卡片说明（如"旧内容超过上限，这次无法恢复"）。
 	// 仅 UI 可见；空串 = 无说明。
 	UndoNote string
+	// Visual 是浏览器类工具随结果附带的"驾驶舱"数据（截图/URL/控制台尾部）。
+	// 仅供 UI 展示与壳层读图（agent 透传到 llm.ToolEvent，不进模型上下文——
+	// 与 Diff 同纪律：模型需要的同源信息已在 Content 里）；nil = 本次无视觉数据。
+	Visual *VisualInfo
+}
+
+// VisualInfo 是浏览器工具结果里的"看见"数据：当前视口截图、落地 URL 与控制台
+// 尾部，随工具结果流到前端（chat:tool 载荷），截图正文由壳层 ReadBrowserShot
+// 按相对路径读取。
+type VisualInfo struct {
+	// Shot 是截图相对路径（相对 browser-shots 根目录，正斜杠分隔，前端与 IPC
+	// 传输都用 /）；空串 = 本次没有截图（主动作失败或截图本身失败）。
+	Shot string `json:"shot"`
+	// URL 是结果落地时的页面地址。
+	URL string `json:"url"`
+	// Console 是控制台尾部若干条（时间序）；nil = 暂无输出。
+	Console []string `json:"console"`
 }
 
 // UndoData 是一次文件写入的撤销快照。

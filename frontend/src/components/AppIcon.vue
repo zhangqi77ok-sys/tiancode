@@ -1,7 +1,6 @@
-<script setup lang="ts">
-// 内联 SVG 图标集：stroke 跟随 currentColor，颜色由使用处的 text-* 类决定。
-// 为什么不用图标库：仓库依赖纪律（最少依赖、离线可构建），所需图标少且形态简单。
-type IconName =
+<script lang="ts">
+// 图标名单独成块导出：右栏 tab 注册表等处需要按名字引用（script setup 不支持 export）
+export type IconName =
   | 'plus'
   | 'x'
   | 'check'
@@ -29,7 +28,11 @@ type IconName =
   | 'plug'
   | 'book'
   | 'external'
+</script>
 
+<script setup lang="ts">
+// 内联 SVG 图标集：stroke 跟随 currentColor，颜色由使用处的 text-* 类决定。
+// 为什么不用图标库：仓库依赖纪律（最少依赖、离线可构建），所需图标少且形态简单。
 withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 16 })
 
 // 每个图标由一条或多条 path 组成（viewBox 24，线性风格）

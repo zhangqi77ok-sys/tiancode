@@ -1,9 +1,12 @@
 // Package searchtool 实现工作区受控内容搜索。
 //
 // 做什么：按正则扫描工作区文本文件，返回 path:line:text 且每条命中带 ±2 行上下文
-// （0.0.12）；files_only=true 时只按路径找文件、只返回路径列表；跳过内置忽略目录与二进制。
+// （0.0.12）；files_only=true 时只按路径找文件、只返回路径列表。扫描两段式并行：
+// 遍历收集候选（廉价判定），固定 worker pool 并行读内容，命中按路径排序后产出
+// （输出确定性——与完成顺序无关）。跳过工作区默认忽略目录（单一来源
+// internal/platform/workspace）与二进制。
 // 被谁依赖：internal/app（装配进工具注册表）。
-// 依赖谁：core/tools 端口、stdlib。
+// 依赖谁：core/tools 端口、internal/platform/workspace、stdlib。
 package searchtool
 
 import (
@@ -18,11 +21,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/workspace"
 )
 
 const (
@@ -36,6 +42,9 @@ const (
 	// 模型要改一个函数还得再 read 一次，每次定位多一轮往返。上下文计入 64KiB 输出
 	// 预算——超了在块边界少给几条，绝不把整个函数贴进上下文。
 	contextLines = 2
+	// maxScanWorkers 是并行内容扫描的 worker 上限（runtime.NumCPU 封顶）：
+	// 扫描是 IO+CPU 混合负载，超过核数收益递减，还要给前台留余量。
+	maxScanWorkers = 8
 )
 
 // Tool 是工作区内容搜索工具。
@@ -70,7 +79,8 @@ func (t *Tool) Description() string {
 	return "在工作区搜索。默认搜内容（正则）：返回 path:line:text，每条命中带前后各 " +
 		"2 行上下文（上下文行是 path-line-text，命中行是 path:line:text）。" +
 		"files_only=true 时只按文件路径匹配、只返回路径列表（找 handler.go 这类「按名字找文件」用这个，" +
-		"不要用 tree 逐层翻）。默认跳过 .git/node_modules/vendor/dist/bin。不要用 shell 做全库 rg。"
+		"不要用 tree 逐层翻）。默认跳过 .git/.idea/.vscode/bin/build/dist/node_modules/obj/vendor。" +
+		"不要用 shell 做全库 rg。"
 }
 
 // Schema 实现工具端口。
@@ -88,13 +98,76 @@ func (t *Tool) Schema() json.RawMessage {
 }`)
 }
 
-func skipDirName(name string) bool {
-	switch strings.ToLower(name) {
-	case ".git", "node_modules", "vendor", "dist", "bin":
-		return true
-	default:
-		return false
+// candidate 是遍历收集到的候选文件：abs 供 worker 打开读取，rel 是产出与排序
+// 的统一键——喂给 worker 的顺序与最终产出顺序用同一把尺子，输出才与完成顺序无关。
+type candidate struct {
+	abs string
+	rel string
+}
+
+// walkCandidates 单 goroutine 遍历收集候选文件（不读内容）：忽略目录整棵跳过
+// （清单单一来源 internal/platform/workspace，与壳层 @ 引用同一份）、真实位置
+// 在区外的 junction 整棵跳过、文件级符号链接逐个校验（0.2.36 审计 R4，跳过/
+// 未解析都记入汇总）；contentMode 时套 1MiB 体积闸门（files_only 不读内容，
+// 几 MB 的源文件也该按名字找到）。返回按工作区相对路径排序的候选。
+func (t *Tool) walkCandidates(ctx context.Context, start, glob string, contentMode bool) (cands []candidate, skippedOutside, unresolvedLinks []string, err error) {
+	walkErr := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单个不可读条目不阻断遍历（尽力而为）
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() {
+			if p != start && workspace.IgnoredDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			// junction 目录：WalkDir 会走进去，但真实位置在区外时整棵跳过
+			//（0.2.36 审计 R4；解析失败时保守继续——逐文件校验仍会兜底）
+			if p != start {
+				if inside, resolved := t.insideRealRoot(p); resolved && !inside {
+					skippedOutside = append(skippedOutside, t.relSlash(p)+"/")
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if glob != "" {
+			if ok, _ := filepath.Match(glob, d.Name()); !ok {
+				return nil
+			}
+		}
+		if contentMode {
+			info, err := d.Info()
+			if err != nil || info.Size() > maxFileBytes {
+				return nil
+			}
+		}
+		// 逐文件真实路径校验（0.2.36 审计 R4）：起点检查挡不住文件级符号链接；
+		// 区外跳过并记入汇总；解析失败按词法保留但标注（不因一个链接整次失败）。
+		if inside, resolved := t.insideRealRoot(p); !resolved {
+			unresolvedLinks = append(unresolvedLinks, t.relSlash(p))
+		} else if !inside {
+			skippedOutside = append(skippedOutside, t.relSlash(p))
+			return nil
+		}
+		cands = append(cands, candidate{abs: p, rel: t.relSlash(p)})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, skippedOutside, unresolvedLinks, walkErr
 	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].rel < cands[j].rel })
+	return cands, skippedOutside, unresolvedLinks, nil
+}
+
+// relSlash 把绝对路径转成工作区相对的斜杠路径（产出串与排序键）；失败时原样返回。
+func (t *Tool) relSlash(p string) string {
+	rel, err := filepath.Rel(t.root, p)
+	if err != nil {
+		return p
+	}
+	return filepath.ToSlash(rel)
 }
 
 func (t *Tool) resolve(path string) (string, error) {
@@ -201,133 +274,21 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	// 计数。为什么保尾：搜索命中流的后段（更深的目录/更晚的文件）与末行一样
 	// 是真实结果，只留头部会谎报"后面的文件里没有"。
 	acc := tools.NewHeadTailWriter(maxOutputBytes)
-	outputTruncated := false
-	matches := 0
-	hitMax := false
-	truncatedMatches := false
-	// R4 汇总：确认落在区外的路径（跳过）与解析失败按词法保留的路径（标注）
-	var skippedOutside, unresolvedLinks []string
-	relSlash := func(p string) string {
-		rel, err := filepath.Rel(t.root, p)
-		if err != nil {
-			return p
-		}
-		return filepath.ToSlash(rel)
-	}
-	walkErr := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if d.IsDir() {
-			if p != start && skipDirName(d.Name()) {
-				return filepath.SkipDir
-			}
-			// junction 目录：WalkDir 会走进去，但真实位置在区外时整棵跳过
-			//（0.2.36 审计 R4；解析失败时保守继续——逐文件校验仍会兜底）
-			if p != start {
-				if inside, resolved := t.insideRealRoot(p); resolved && !inside {
-					skippedOutside = append(skippedOutside, relSlash(p)+"/")
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if a.Glob != "" {
-			ok, _ := filepath.Match(a.Glob, d.Name())
-			if !ok {
-				return nil
-			}
-		}
-		if !a.FilesOnly {
-			// 体积闸门只约束内容搜索：按名字找文件不读内容，几 MB 的源文件也该找得到
-			info, err := d.Info()
-			if err != nil || info.Size() > maxFileBytes {
-				return nil
-			}
-		}
-		// 逐文件真实路径校验（0.2.36 审计 R4）：起点检查挡不住文件级符号链接；
-		// 区外跳过并记入汇总；解析失败按词法保留但标注（不因一个链接整次失败）。
-		if inside, resolved := t.insideRealRoot(p); !resolved {
-			unresolvedLinks = append(unresolvedLinks, relSlash(p))
-		} else if !inside {
-			skippedOutside = append(skippedOutside, relSlash(p))
-			return nil
-		}
-		if hitMax {
-			truncatedMatches = true
-			return errStop
-		}
-		rel := relSlash(p)
+	var (
+		matches          int
+		truncatedMatches bool
+		outputTruncated  bool
+	)
+	// 两段式：遍历只做廉价判定（忽略目录/越界/体积），读内容交给 worker pool。
+	// R4 汇总在遍历期记好（skippedOutside/unresolvedLinks）。
+	cands, skippedOutside, unresolvedLinks, walkErr := t.walkCandidates(ctx, start, a.Glob, !a.FilesOnly)
+	if walkErr == nil {
 		if a.FilesOnly {
-			// 按名字找文件（0.0.12）：正则匹配工作区相对路径，命中只给一行路径——
-			// 找 handler.go 不必再 tree 一层层翻，也不把任何文件内容拉进上下文。
-			if !re.MatchString(rel) {
-				return nil
-			}
-			if acc.Full() {
-				outputTruncated = true
-				return errStop
-			}
-			if matches+1 > max {
-				truncatedMatches = true
-				return errStop
-			}
-			acc.Write([]byte(rel + "\n"))
-			matches++
-			if matches >= max {
-				hitMax = true
-			}
-			return nil
+			matches, truncatedMatches, outputTruncated = emitPathMatches(acc, cands, re, max)
+		} else {
+			matches, truncatedMatches, outputTruncated = emitContents(acc, t.scanContents(ctx, cands, re), max)
 		}
-		hunks, err := searchFile(ctx, p, re)
-		if err != nil && ctx.Err() == nil {
-			return nil
-		}
-		// 按块输出（0.0.12）：块 = 一段「命中 ± 上下文」的连续行（相邻命中自动合并）；
-		// 配额放不下整块就整块不给——宁可少给几条，也不给半截上下文。
-		for i := 0; i < len(hunks); {
-			end := i + 1
-			for end < len(hunks) && !hunks[end].newHunk {
-				end++
-			}
-			block := hunks[i:end]
-			n := countHits(block)
-			if matches+n > max {
-				truncatedMatches = true
-				return errStop
-			}
-			if acc.Full() {
-				// 预算耗尽：尾环已滚过一遍，此刻停下（尾部保留的是最后的命中）
-				outputTruncated = true
-				return errStop
-			}
-			for _, l := range block {
-				if l.match {
-					// 命中行：path:line:text（与旧格式一致，: 分隔即"这行是命中"）
-					acc.Write([]byte(fmt.Sprintf("%s:%d:%s\n", rel, l.line, l.text)))
-				} else {
-					// 上下文行：path-line-text（rg 的 :/- 约定，一眼分辨）
-					acc.Write([]byte(fmt.Sprintf("%s-%d-%s\n", rel, l.line, l.text)))
-				}
-			}
-			matches += n
-			i = end
-			if acc.Full() {
-				outputTruncated = true
-				return errStop
-			}
-		}
-		if matches >= max {
-			hitMax = true
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return nil
-	})
+	}
 
 	content := strings.TrimRight(acc.String(), "\n")
 	if outputTruncated {
@@ -337,7 +298,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		content += "(truncated, output limit 64KiB)"
 	}
 	timedOut := ctx.Err() != nil
-	if walkErr != nil && walkErr != errStop && walkErr != context.DeadlineExceeded && walkErr != context.Canceled {
+	if walkErr != nil && walkErr != context.DeadlineExceeded && walkErr != context.Canceled {
 		return tools.ToolResult{Content: fmt.Sprintf("search failed: %v", walkErr), IsError: true}, nil
 	}
 	if timedOut {
@@ -382,7 +343,126 @@ func headOf(items []string, n int) []string {
 	return items[:n]
 }
 
-var errStop = fmt.Errorf("search stop")
+// scanContent 是一个文件的扫描产出（worker 与收集器之间的传递单元）。
+type scanContent struct {
+	rel   string
+	hunks []outLine
+}
+
+// scanContents 固定 worker pool 并行扫内容（regexp.Regexp 并发安全）：候选已按
+// 路径序投喂，worker 完成顺序天然乱序，收集后按路径排序——产出只由文件集合决定，
+// 与调度无关。为什么不按命中配额早停：「前 N 条按路径排序」要求命中集合扫全，
+// 半路收手会让产出集合依赖调度顺序；扫描总量由超时与取消兜底，结果只留有命中的
+// 文件，常驻内存以「max+1 份单文件体积」为界。
+func (t *Tool) scanContents(ctx context.Context, cands []candidate, re *regexp.Regexp) []scanContent {
+	workers := runtime.NumCPU()
+	if workers > maxScanWorkers {
+		workers = maxScanWorkers
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan candidate)
+	results := make(chan scanContent)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for c := range jobs {
+				if ctx.Err() != nil {
+					continue // 已取消：不再开新文件（在手的直接放弃，与超时收敛一致）
+				}
+				hunks, err := searchFile(ctx, c.abs, re)
+				if err != nil || len(hunks) == 0 {
+					continue // 读失败/二进制/无命中：逐文件跳过，与串行版一致
+				}
+				results <- scanContent{rel: c.rel, hunks: hunks}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, c := range cands {
+			select {
+			case jobs <- c:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	var out []scanContent
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	for r := range results {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
+	return out
+}
+
+// emitPathMatches 产出 files_only 的路径列表：候选已按路径序，命中即一行路径
+// （0.0.12：找 handler.go 不把任何文件内容拉进上下文）。
+func emitPathMatches(acc *tools.HeadTailWriter, cands []candidate, re *regexp.Regexp, max int) (matches int, truncatedMatches, outputTruncated bool) {
+	for _, c := range cands {
+		if !re.MatchString(c.rel) {
+			continue
+		}
+		if matches+1 > max {
+			truncatedMatches = true
+			return
+		}
+		if acc.Full() {
+			outputTruncated = true
+			return
+		}
+		acc.Write([]byte(c.rel + "\n"))
+		matches++
+	}
+	return
+}
+
+// emitContents 把扫描结果按路径序产出：块 = 一段「命中 ± 上下文」的连续行
+// （相邻命中自动合并）；配额放不下整块就整块不给——宁可少给几条，也不给半截
+// 上下文。命中行 path:line:text（: 分隔即"这行是命中"），上下文行 path-line-text
+// （rg 的 :/- 约定，一眼分辨）。
+func emitContents(acc *tools.HeadTailWriter, results []scanContent, max int) (matches int, truncatedMatches, outputTruncated bool) {
+	for _, r := range results {
+		for i := 0; i < len(r.hunks); {
+			end := i + 1
+			for end < len(r.hunks) && !r.hunks[end].newHunk {
+				end++
+			}
+			block := r.hunks[i:end]
+			n := countHits(block)
+			if matches+n > max {
+				truncatedMatches = true
+				return
+			}
+			if acc.Full() {
+				// 预算耗尽：尾环已滚过一遍，此刻停下（尾部保留的是最后的命中）
+				outputTruncated = true
+				return
+			}
+			for _, l := range block {
+				if l.match {
+					acc.Write([]byte(fmt.Sprintf("%s:%d:%s\n", r.rel, l.line, l.text)))
+				} else {
+					acc.Write([]byte(fmt.Sprintf("%s-%d-%s\n", r.rel, l.line, l.text)))
+				}
+			}
+			matches += n
+			i = end
+			if acc.Full() {
+				outputTruncated = true
+				return
+			}
+		}
+	}
+	return
+}
 
 // outLine 是一行输出：命中行（match）写成 path:line:text，上下文行写成
 // path-line-text；newHunk 标记"新上下文块的开始"（块与块之间隔着被跳过的行），

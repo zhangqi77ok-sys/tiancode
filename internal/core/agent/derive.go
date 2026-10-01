@@ -92,26 +92,22 @@ func deriveMessages(ledger *session.Ledger) ([]llm.Message, error) {
 // 仍超预算时置 Dropped=true（界面标明已折叠）；**用户原话永不删减**，
 // 最近一轮全文始终保留（各级 minTurn 边界不含最近一轮）。
 func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Message, DeriveInfo, error) {
-	// 分叉区间（第 6 批）：「从这条用户消息重跑」标记的区间内事件不参与派生
-	//（账本只追加，旧行不动）。
-	drops, err := ledger.ForkDrops()
-	if err != nil {
-		return nil, DeriveInfo{}, err
-	}
-	// 先数 user 轮次总数：折叠判定需要"最近 N 轮"的边界（账本是单向流，
-	// 投影前不知道后面还有没有新 turn）。
-	totalTurns := 0
-	if err := ledger.Replay(func(ev session.Event) error {
-		if session.ForkDropped(drops, ev.Seq()) {
-			return nil
-		}
-		if ev.Kind() == session.EventUserMessage {
-			totalTurns++
-		}
-		return nil
-	}); err != nil {
-		return nil, DeriveInfo{}, err
-	}
+	// 分叉区间（第 6 批）与主投影合并为单次遍历（性能改造）：
+	// 旧实现是三次全量重放——ForkDrops 一趟、轮次计数一趟、主投影一趟，每趟
+	// 都把整本账本的 JSON 完整解析一遍（实测 2 万行约 400ms/次派生），派生又
+	// 在一回合内触发多次，纯重放开销线性恶化。合并方式：
+	//   - 轮次计数并入主扫描：旧一趟数的正是"未丢弃的 user 消息条数"，与主扫描
+	//     里 turn 的自增条件完全相同（turn 从 -1 起每条 +1，终值 + 1 即该数）；
+	//   - 分叉区间随扫描发现：fork 事件极少（仅「从这条用户消息重跑」时追加），
+	//     发现新区间就重启扫描——重启后该 fork 已入 drops 不会再触发，总扫描数
+	//     = 分叉数 + 1，无分叉（常态）恰好一遍；
+	//   - 等价性：最终完整一遍持有全量 drops，投影代码一行未动；fork 事件即使
+	//     自身落在更早的丢弃区间里，它声明的区间也照旧收录（union 语义，与旧
+	//     ForkDrops 全量扫描一致，否则嵌套分叉的区间头部会泄漏）。
+	var drops []session.ForkDrop
+	// forkSeen 记录已收录的 fork 事件 seq：嵌套分叉时避免同一 fork 在重启扫描里
+	// 被反复触发重启（fork 数量极少，线性查足够）。
+	var forkSeen []int64
 
 	var msgs []llm.Message
 	var calls []llm.ToolCall
@@ -164,10 +160,9 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 		lastAssistant = -1
 	}
 
-	err = ledger.Replay(func(ev session.Event) error {
-		if session.ForkDropped(drops, ev.Seq()) {
-			return nil
-		}
+	// projectEvent 是主投影的单事件处理（与旧实现逐行相同；分叉跳过与轮次
+	// 计数见下方唯一一次全量重放）。
+	projectEvent := func(ev session.Event) error {
 		switch ev.Kind() {
 		case session.EventUserEdit:
 			// 用户手动写入（代码块「应用到文件」，第 6 批）：给模型一句"已应用过"——
@@ -324,11 +319,57 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 			lastAssistant = len(msgs) - 1
 		}
 		return nil
-	})
-	if err != nil {
-		return nil, DeriveInfo{}, err
+	}
+
+	// 唯一一次全量重放（性能改造）：轮次计数与分叉区间并入主扫描。fork 事件
+	// 极少（仅「从这条用户消息重跑」时追加）；扫描中发现新区间则重启——重启后
+	// 该 fork 已入 drops 不会再触发，总扫描数 = 分叉数 + 1，无分叉（常态）恰好
+	// 一遍。重启必须从零重建投影（drops 只增不减，最终完整一遍与旧三次扫描等价）。
+	for {
+		restart := false
+		msgs, calls, toolRefs, imageRefs = nil, nil, nil, nil
+		results, resultRefs = []*llm.Message{}, []toolRef{}
+		lastAssistant, turn = -1, -1
+		err := ledger.Replay(func(ev session.Event) error {
+			if ev.Kind() == session.EventFork {
+				// forkSeen 记录已收录的 fork 事件 seq：嵌套分叉时（fork 自身落在
+				// 更早的丢弃区间里）区间也要照旧收录（union 语义，与旧 ForkDrops
+				// 全量扫描一致），且不得在重启扫描里反复触发重启。
+				for _, s := range forkSeen {
+					if s == ev.Seq() {
+						return nil
+					}
+				}
+				forkSeen = append(forkSeen, ev.Seq())
+				var p struct {
+					FromSeq int64 `json:"from_seq"`
+				}
+				if err := json.Unmarshal(ev.Data(), &p); err != nil {
+					return err
+				}
+				if p.FromSeq > 0 && p.FromSeq <= ev.Seq() {
+					drops = append(drops, session.ForkDrop{From: p.FromSeq, To: ev.Seq()})
+					restart = true
+				}
+				return nil
+			}
+			if session.ForkDropped(drops, ev.Seq()) {
+				return nil
+			}
+			return projectEvent(ev)
+		})
+		if err != nil {
+			return nil, DeriveInfo{}, err
+		}
+		if !restart {
+			break
+		}
 	}
 	flush()
+
+	// 轮次总数 = 未丢弃的 user 消息条数：与主扫描里 turn 的自增条件完全相同
+	//（turn 从 -1 起每条 +1），终值 + 1 即旧"单独一趟计数"的结果。
+	totalTurns := turn + 1
 
 	info := DeriveInfo{BudgetTokens: opt.BudgetTokens}
 	// 基础折叠（0.0.09 常态行为，不计入 info）：>keepFullToolTurns 轮的成功只读结果收成单行

@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useDialogs } from '../composables/useDialogs'
+import { errText } from '../composables/errText'
+import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
 import { bridge, openExternal } from '../wails'
 import type { AuthDTO, ChannelDTO, CredentialDTO } from '../wails'
@@ -19,6 +21,7 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useChannelStore()
 const dialogs = useDialogs()
 const { push: toast } = useToast()
+const { copy } = useClipboard()
 
 const view = ref<'list' | 'form' | 'keys' | 'codex'>('list')
 const editingID = ref('')
@@ -390,7 +393,7 @@ async function startCodexAuth() {
     stopCodexPoll()
     codexTimer = window.setInterval(() => void pollCodex(), 1200)
   } catch (e) {
-    codex.value.error = String(e instanceof Error ? e.message : e)
+    codex.value.error = errText(e)
   } finally {
     codex.value.busy = false
   }
@@ -437,7 +440,7 @@ async function bindCodex(codeOrURL: string) {
     await store.load()
   } catch (e) {
     stopCodexPoll()
-    codex.value.error = String(e instanceof Error ? e.message : e)
+    codex.value.error = errText(e)
   } finally {
     codex.value.busy = false
   }
@@ -471,18 +474,15 @@ async function importCodex() {
     boundAccount.value = res.display
     await store.load()
   } catch (e) {
-    codex.value.error = String(e instanceof Error ? e.message : e)
+    codex.value.error = errText(e)
   } finally {
     codex.value.busy = false
   }
 }
 
 async function copyAuthUrl() {
-  try {
-    await navigator.clipboard.writeText(codex.value.desktopUrl)
-  } catch {
-    codex.value.error = '复制失败：当前环境剪贴板不可用'
-  }
+  // 授权页复制失败走表单错误位（codex 视图没有 toast 位）——onFail 接管默认提示
+  await copy(codex.value.desktopUrl, { onFail: () => (codex.value.error = '复制失败：当前环境剪贴板不可用') })
 }
 
 function backToForm() {
@@ -513,7 +513,7 @@ async function saveProxy() {
     await bridge().app.SetProxy(proxyText.value.trim())
     proxyMsg.value = proxyText.value.trim() ? '已保存：授权与对话都将经该代理' : '已保存：恢复直连'
   } catch (e) {
-    proxyMsg.value = String(e instanceof Error ? e.message : e)
+    proxyMsg.value = errText(e)
   } finally {
     proxyBusy.value = false
   }
@@ -528,7 +528,7 @@ async function checkProxy() {
     const info = await bridge().app.CheckProxy(proxyText.value.trim())
     if (info) proxyInfo.value = info
   } catch (e) {
-    proxyMsg.value = String(e instanceof Error ? e.message : e)
+    proxyMsg.value = errText(e)
   } finally {
     proxyBusy.value = false
   }
@@ -539,7 +539,7 @@ async function openLogDir() {
   try {
     await bridge().app.OpenLogDir()
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
   }
 }
 

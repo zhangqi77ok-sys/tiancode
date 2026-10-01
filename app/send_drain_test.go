@@ -41,7 +41,8 @@ func TestDrainTurnConsumesEveryChunkKind(t *testing.T) {
 	ch <- llm.StreamChunk{Delta: "你"}
 	ch <- llm.StreamChunk{Thinking: "想一下"}
 	ch <- llm.StreamChunk{Usage: &llm.Usage{PromptTokens: 11, CompletionTokens: 22, TotalTokens: 33}}
-	ch <- llm.StreamChunk{ToolEvent: &llm.ToolEvent{Name: "fs", Status: "success", CallID: "c1", Title: "a.go"}}
+	ch <- llm.StreamChunk{ToolEvent: &llm.ToolEvent{Name: "browser", Status: "success", CallID: "c1", Title: "open",
+		Shot: "s-1/shot-0001.png", PageURL: "http://127.0.0.1:5173/", Console: []string{"12:00:01 [log] ready"}}}
 	ch <- llm.StreamChunk{Todo: &llm.TodoEvent{Items: []llm.TodoItem{{Text: "干活", Status: "pending"}}}}
 	ch <- llm.StreamChunk{Context: &llm.ContextEvent{EstimatedTokens: 10, BudgetTokens: 20}}
 	ch <- llm.StreamChunk{EndReason: llm.EndDone}
@@ -62,6 +63,15 @@ func TestDrainTurnConsumesEveryChunkKind(t *testing.T) {
 	term, _ := payloads[6].(map[string]any)
 	if term["sessionID"] != "s1" || term["endReason"] != int(llm.EndDone) {
 		t.Fatalf("终态载荷不对：%v", term)
+	}
+	// 驾驶舱数据（浏览器工具）：截图路径/URL/控制台尾部必须随 chat:tool 流到前端
+	tool, _ := payloads[3].(map[string]any)
+	if tool["shot"] != "s-1/shot-0001.png" || tool["url"] != "http://127.0.0.1:5173/" {
+		t.Fatalf("chat:tool 缺驾驶舱字段：%v", tool)
+	}
+	console, ok := tool["console"].([]string)
+	if !ok || len(console) != 1 || !strings.Contains(console[0], "ready") {
+		t.Fatalf("chat:tool 的 console 必须是尾部原样数组：%v", tool["console"])
 	}
 }
 

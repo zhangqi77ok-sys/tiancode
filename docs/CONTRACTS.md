@@ -69,6 +69,8 @@
 | C-SEARCH-6 | 超时预算内返回；有部分命中则带已捕获输出 | `TestSearch_TimeoutPartial` |
 | C-SEARCH-7 | 每条命中带前后各 2 行上下文（命中行 `path:line:text`、上下文行 `path-line-text`）；相邻命中并块不重复；上下文计入 64KiB 预算，超限在**块边界**少给（不给半截块） | `TestSearch_ContextLines` / `TestSearch_ContextMerged` / `TestSearch_ContextCountsTowardByteBudget` |
 | C-SEARCH-8 | `files_only=true` 只按工作区相对路径匹配、只返回路径（不读内容、不带行号、不受 1MiB 内容闸门约束）；忽略目录 / 越界检查 / 配额与内容搜索同一套 | `TestSearch_FilesOnlyByPath` / `TestSearch_FilesOnlyMaxMatches` |
+| C-SEARCH-9 | 并行扫描产出**确定性**（0.0.28）：两段式——遍历只做廉价判定收集候选，固定 worker pool（NumCPU 封顶 8）并行扫内容，产出按工作区相对路径排序——结果只由文件集合决定、与调度顺序无关；刻意不按命中配额早停（半路收手会让产出集合依赖调度顺序），扫描总量由超时/取消兜底 | `TestSearch_ParallelDeterministicOutput` / `TestSearch_ParallelMultiDirCorrectness` |
+| C-SEARCH-10 | 忽略目录**单一来源**（0.0.28）：`internal/platform/workspace` 定稿 9 项（.git .idea .vscode bin build dist node_modules obj vendor），大小写不敏感、只认单级目录名；search 与壳层 @ 引用（经编排层转出）共用同一份，不再各留一份硬编码 | `TestSearch_SkipsUnifiedIgnoreList` / `TestIgnoredDir_FinalList` / `TestIgnoredDir_CaseInsensitive` / `TestIgnoredDir_NoPrefixMatch` / `TestWorkspaceIgnoredDir_SingleSource` |
 
 ## C-APP：编排纪律（M2 起持续生效）
 
@@ -173,6 +175,64 @@
 | C-APR-5 | 清单外工具直接放行且**不发事件**（不许泛化拦截，更不做内容分析） | `TestChatService_ApprovalBridge` |
 | C-APR-6 | 未知或已处理的请求 ID 一律报错（不静默放行）；策略查询返回副本 | `TestChatService_ApprovalBridge` |
 | C-APR-7 | 审批策略**持久化**：重装/重启后仍生效（开关关闭同样落盘，不得"关了又自己开"）；无渠道时也必须恢复（不许被提前返回跳过） | `TestChatService_ApprovalPolicyPersists` |
+| C-APR-8 | 新装默认清单 = `shell, ext_manage, mcp, browser`——四个"不确认就执行即危险"的口子（0.0.28 起）。版本迁移只做**一次性追加**：既有非空清单保留用户项与顺序、去重补入新口子；显式 `[]`（用户关掉整个审批，0.0.05 独立形态）不受影响、绝不复活；升版本号保证迁移只做一次——此后用户把某项移出清单，重启也不会被补回 | `TestChatService_ApprovalBridge` / `TestPool_ApprovalToolsMissingFieldMigratesToDefault` / `TestPool_ApprovalToolsExplicitEmptyRespected` / `TestPool_ApprovalToolsV2ListAppendsMcpBrowser` / `TestPool_ApprovalToolsV2ExplicitEmptyNotResurrected` |
+
+## C-WF：网页正文读取（0.0.28）
+
+> 新工具 `webfetch`。为什么补：模型此前没有任何读网页的能力（browser.snapshot 只给可交互元素、
+> 每个元素文本截 60 字符），查报错方案、查库文档是硬伤。HTML 剥噪刻意 stdlib 手写
+> （`readable.go` 单向状态机）——只做"剥噪声取正文"，为它引一个 HTML 解析器得不偿失。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-WF-1 | 仅接受 http/https（含本地 dev server，不拦 localhost）；其它 scheme 与缺 host 显式拒绝 | `TestWebFetch_RejectsNonHTTPScheme` |
+| C-WF-2 | HTML 按 Content-Type 优先判定（类型缺失时按 doctype/`<html` 特征兜底）：返回文档标题 + 剥除 script/style/noscript/template/svg/iframe/nav/header/footer/aside/form 后的正文文本；json/text/plain 原样透传不提取 | `TestWebFetch_ExtractsTitleAndBody` / `TestWebFetch_StripsHTMLNoise` / `TestWebFetch_PlainTextPassthrough` / `TestIsHTML_ContentTypeFirstSniffFallback` |
+| C-WF-3 | 输出有界：正文超 64KB 头尾保留（与 search/fs 同配比）；响应体默认 2MB 读取上限（`max_bytes` 可配），被上限切过时附截断标注 | `TestWebFetch_DefaultBodyCapTruncates` / `TestWebFetch_MaxBytesParamTruncates` |
+| C-WF-4 | 超时语义（C-TOOL-2 的 webfetch 特化）：响应未到 → `TIMEOUT` + `IsError` + `TimedOut`；读到一半超时 → 已读部分照常返回 + `\nTIMEOUT`，绝不静默丢弃已捕获内容 | `TestWebFetch_TimeoutBeforeResponse` / `TestWebFetch_TimeoutKeepsPartialBody` |
+| C-WF-5 | HTTP 非 2xx → `IsError=true` 且 Content 以 `HTTP <code>` 开头并附错误页正文——报错原因常就在里面，模型可见、可推理 | `TestWebFetch_Non2xxReportsStatusAndBody` |
+| C-WF-6 | 字符集策略（对齐 shelltool 解码纪律）：Content-Type 显式声明的 GBK 家族优先按 GBK 解码；未声明/声明不可处理时 UTF-8 合法原样通过，否则 GBK 兜底；仍解不开原样返回（宁可乱码可见） | `TestWebFetch_GBKDeclaredCharset` / `TestWebFetch_GBKFallbackWithoutCharset` |
+| C-WF-7 | 出网走**全局 http(s) 代理**：代理来源与 gateway 同源（每次执行实时取，改配置即生效）；代理无效显式报错，绝不静默直连 | `TestWebFetch_UsesGlobalProxy` |
+| C-WF-8 | 装配为**共享工具**：不依赖工作区根，纯对话也在注册表；能力边界由 `webfetch.Preface()` 常量注入系统说明（内容恒定，不破坏 prompt cache 幂等） | `TestChatService_WebFetchSharedToolAndPreface` |
+
+## C-BR：内置浏览器与驾驶舱（0.0.28）
+
+> browser 工具从"盲盒"升级成"驾驶舱"：改变页面状态的动作（open/scroll/click/fill/back）完成后
+> 自动补一张当前视口截图，连同页面 URL 与控制台尾部随工具结果流到前端——用户实时"看见"模型
+> 正在看的页面，不再只靠文字想象。截图按会话落盘到数据目录 `browser-shots/` 下，前端经壳层
+> `ReadBrowserShot` 读图（防穿越）。审批：browser 可提交表单，默认**在**审批清单（C-APR-8）。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-BR-1 | 一个会话一个 tab（独立导航历史/控制台/页面状态，并行会话互不串）；无头与有头是进程级形态、各自惰性拉起至多一个进程，open 换形态（`headless=false` 调试用）就地重建 | `TestBrowser_EndToEnd` / `TestSchema_OpenHeadlessParam` |
+| C-BR-2 | open/scroll/click/fill/back 成功后自动附驾驶舱数据（`Visual` = 当前视口截图 + 落地 URL + 控制台尾部）；截图失败不毁主动作——视觉是增强不是本体，失败原因进 Content 尾注；显式 `screenshot` 动作单独要图 | `TestBrowser_EndToEnd` |
+| C-BR-3 | 截图落盘 `browser-shots/<会话>/shot-NNNN`（文件名可预测、会话内单调递增不覆盖）；超约 1.5MB 等比缩到宽 ≤1280 转 JPEG；压缩失败原图保存并注明降级原因 | `TestBrowser_EndToEnd` / `TestShrinkShot` / `TestScaleImage_Dimensions` |
+| C-BR-4 | 截图子目录名经 safeDirName 清洗（只留字母数字与 `-_`，分隔符与点号一律替换）——异常会话 ID 引不出截图根 | `TestSafeDirName` |
+| C-BR-5 | `ReadBrowserShot` 只允许 browser-shots 内的相对路径（Clean + 前缀校验防穿越），命中返回 base64；越界/缺失显式报错，绝不用空串或占位图冒充 | `TestReadBrowserShot_RejectsTraversal` / `TestReadBrowserShot_ReturnsBase64` / `TestReadBrowserShot_MissingFileErrors` |
+| C-BR-6 | 驾驶舱数据与 diff 同纪律：UI 专用、**不进模型上下文**，但随卡落账本——chat:tool 载荷带 shot/url/console，Replay 投影同构（重启后卡片不丢驾驶舱数据） | `TestDrainTurnConsumesEveryChunkKind` |
+| C-BR-7 | 用户点停止 → 等待中的动作立刻被打断，返回「动作已被用户取消」（非业务失败：模型无须也无机会补救），绝不把 context canceled 伪装成"页面不存在" | `TestBrowser_EndToEnd` |
+| C-BR-8 | ref 必须是**完整**非负十进制整数（要作数字下标注入 JS，严格解析是注入面的最后防线）；fill 文本经 JSON 转义嵌入页面脚本 | `TestParseRef` / `TestClickFillJS_EscapesText` |
+
+## C-FT：右栏目录树（0.0.28）
+
+> 右栏「目录」tab 的数据源 `ListWorkspaceDir`。壳层签名是 `(sessionID, relPath)` 而非按顶栏工作区
+> 取根——树里点开的文件要走 `openFileDetail → ReadSessionFile`（会话根），两个视图必须共享同一
+> 基准；树若用顶栏根，切换工作区后查看旧会话会出现"树上点开、详情 404"（0.0.11 修过的事故类别）。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-FT-1 | 根语义与 SearchWorkspaceFiles/ReadSessionFile 同源：已落账会话用归属根，草稿回退顶栏根——树上点开的文件必须能被文件详情面板读出 | `TestBind_ListWorkspaceDir` |
+| C-FT-2 | 路径校验与 fstool 同强度：绝对路径与 `../` 穿越一律拒绝；Clean 后对已存在的最深前缀做 EvalSymlinks，用真实路径做前缀判定（工作区内符号链接指向区外照样拦住——词法前缀拦不住的那一半）；只列下一层，目录在前、名称次序 | `TestBind_ListWorkspaceDir` |
+| C-FT-3 | 无工作区 / 越界 / 缺失 / 非目录**显式报错**，绝不静默返回空列表装作空目录（"存在但为空"与"读不到"必须可区分） | `TestBind_ListWorkspaceDir_NoWorkspace` |
+
+## C-BG：后台任务快照（0.0.28）
+
+> 右栏「任务」tab 的数据源：把 shell 工具内存里的后台任务表投影给前端。任务真相只在工具实例
+> 内存里、不落账本——面板是观察窗，不是事实源。数据通道是 2s 轮询而非事件推送：后台任务本无
+> 推送事件（bg_status 是模型侧工具），轮询仅在面板挂载期间进行，关 tab 即停。
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-BG-1 | 快照按会话隔离（按 sessionID 取该会话 shell 工具的任务表）、按任务号升序稳定产出（界面列表不跳动）；会话没有工具集时返回**空表而非错误**——面板轮询不该被"没有任务"打断 | `TestChatService_BgTasksSnapshot` / `TestBind_BgTasksSnapshot` |
 
 ## C-INS：安装与卸载（M5）
 
@@ -214,3 +274,4 @@
 | 2026-09-30 | **改写上下文预算的适用范围（C-AGT-5 修订）**：默认预算只作折叠阈值，不阻断回合 | 0.0.23 实机回归（用户截图）：超长会话（估算 58k/79k tok）在 32k **默认预算**下被判"折叠旧内容后仍装不下"→ 直接失败，用户没法继续这场对话。**修订后的规则**：① 折叠阈值来源分两种——渠道/用户**声明**的 `contextLimit`（取启用渠道最小值）与**我们兜底的默认值**（未声明时 32k）；② **声明上限**折完仍超 → 沿用 0.0.11：不发请求，给明确终态（发出去必被上游按长度拒，还会把本地预算问题伪装成上游错误）；③ **默认值**折完仍超 → **照发**：默认值不是用户定的限制，拿它阻断回合等于惩罚"没填 contextLimit"；折叠照做（体量已压到最小），油表标"已尽量折叠"而不是"已达上限"，上游真装不下会自己报错（可见、可归因——超时文案带本轮附件体量）。④ 油表在默认预算下继续写明"按默认预算"，不得让人以为渠道里填过这个数 | 用户实机反馈："这个功能有问题，应该是限制一次对话上传的文件数量，而不是限制大小吧？你也没必要管上下文上传了多少图片或者文件"（截图：`估算约 58048 tok 超过默认预算（32768 tok）`） |
  ① 每条命中带前后各 2 行上下文（`contextLines=2`）：命中行仍是 `path:line:text`、上下文行 `path-line-text`（rg 的 :/- 约定，一眼分辨哪行是命中），上下文计入 64KiB 预算、超限按块边界少给——此前只有命中那一行，模型定位后常要再 `read` 一次，每次定位多一轮往返。② `files_only=true` 按工作区相对路径匹配、只返回路径列表（不读内容、不受 1MiB 内容闸门约束）——此前"按名字找文件"只能靠 `glob`（内容搜索的过滤器）或 `tree` 逐层翻。③ 前端：搜索结果行与 `read` 卡片的路径可点，走既有 `OpenInDefaultApp`（**只打开文件**；行号不跳转，也不假装能跳）。**刻意未动**：read-后-才允许写、replace 多处匹配拒绝（防覆盖未读内容）、`tree` 深度、diff 的 `@@` 行号 | 用户反馈："搜索只有命中那一行，没有上下文"、"没有按文件名找"、"搜索结果点不了" |
 | 2026-09-30 | **新增回合检查点：撤回本轮 / 从这条用户消息重跑 / 账本合批 / 上下文治理 / 超时分层 / 步数分段 / 建流退避 / preface 幂等** | ① 账本合批刷盘：AssistantDelta 满 64KB 或 100ms 才 fsync，其余事件（用户消息/工具调用与结果/todo/助手锚点/终态）一律立即 fsync（先冲攒批）；新增 `Ledger.Flush`，agent 的 `emitTerminal` 兜底刷盘——**修掉取消路径丢 delta 的回归**（`TestAgent_CancelKeepsEvents` 抓到）；`Replay`/`Close` 前先刷（read-your-writes）。② 上下文治理：渠道 `contextLimit`（token，池取已启用渠道最小值），估算口径 4 ASCII 字符≈1 token、1 非 ASCII 字符≈1 token，图片 1500 token/张；达预算 85% 起分级折叠（旧图片→路径说明、两轮以前 shell/写回执→一行摘要、只读窗口收窄），用户原话不删、最近一轮全文保留，超限置 `dropped` 并经 `chat:context` 上报（油表显示剩余比例与折叠项）。③ 超时分层：`TimeoutBudget{FirstByte 3min, Total 30min}`，首字节独立看门狗；终态文案写明"本地预算用尽/等待首个数据超过 X"（绝不伪装上游错误）。④ 步数分段：25 步用尽**先询问**（可取消），同意续跑、拒绝/取消正常收尾（TurnEnd 落账）。⑤ 建流重试退避 200/500ms（换凭证走 gateway 既有 Select 轮询）。⑥ preface 与上一手相同不替换 system（prompt cache 幂等）。⑦ **回合检查点**：轮次内首次修改某文件前的快照（`tools.RoundCheckpoint`，fstool 收集，32MB 上限、超限记 Note）随轮次收尾落账本（`round_checkpoint`）；「撤回本轮」按检查点整批恢复（当前内容哈希不符则跳过，绝不覆盖用户改动），撤回动作落 `round_revert`；「从这条用户消息重跑」撤回其后文件改动 + 追加 `fork{from_seq}`（派生/投影丢弃 [from_seq, fork] 区间，**旧行永不改写**），目标消息本身也在丢弃范围内（重跑重新落一条同文本消息，避免模型看到两条重复输入）；`ProposeFileWrite`（代码块应用到文件）写入成功落 `user_edit` 账本事件——Replay 投影为工具卡（重启后仍在）、派生历史注入一句"用户已手动应用过"；用户消息投影携带 `seq` 作为重跑锚点 | 用户六块需求（性能与上下文治理批次）+ 上一条"应用到文件不进账本"缺口的收口 |
+| 2026-10-01 | **新增 C-WF-1~8 / C-BR-1~8 / C-FT-1~3 / C-BG-1；C-SEARCH 增补 9~10；C-APR 增补 8（审批默认清单变更）** | 0.0.28 驾驶舱批次登记：① 新工具 `webfetch`（读网页正文：HTML 剥噪 stdlib 手写、GBK 兜底解码、共享工具不依赖工作区根、出网与 gateway 同源走全局代理）——模型此前没有读网页能力，查文档/查报错是硬伤。② browser 工具驾驶舱化：改变页面状态的动作自动附当前视口截图 + URL + 控制台尾部（与 diff 同纪律：UI 专用不进模型上下文、随卡落账、Replay 同构）；新增 screenshot 动作与 open 的 headless 参数；壳层 `ReadBrowserShot` 防穿越读图。③ search 两段式并行扫描（产出确定性：按路径排序、刻意不按配额早停）；`truncated, max_matches` 标注从"配额满后还有文件"收紧为"还有命中被挡"（原先对零命中文件也会误标注）。④ 忽略目录单一来源 `internal/platform/workspace`（9 项定稿，search 与壳层 @ 引用共用；归 platform 不归 core/app 的理由见包注释）。⑤ 右栏「目录」「任务」tab：`ListWorkspaceDir` 壳层签名含 sessionID（树与文件详情面板必须同一根，防"树上点开、详情 404"）；`BgTasksSnapshot` 轮询快照（无工具集返回空表而非错误）。⑥ **审批默认清单变更：`shell, ext_manage` → 追加 `mcp, browser`**——四个"不确认就执行即危险"的口子（mcp 可调宿主任意工具、browser 可提交表单）。迁移语义：channels.json v2→v3 一次性追加进既有**非空**清单（保留用户项与顺序、去重）；显式 `[]`（用户关掉整个审批的独立形态）不受影响、绝不复活；升版本号保证此后用户移出 mcp/browser 也不会被重启补回 | 0.0.28 驾驶舱批次（webfetch / browser / search / panels 四个工作流）；迁移语义锁定于 `TestPool_ApprovalToolsV2ListAppendsMcpBrowser` / `TestPool_ApprovalToolsV2ExplicitEmptyNotResurrected` |

@@ -83,6 +83,11 @@ func (s *ChatService) lastRevertableRound(ledger *session.Ledger) (*roundCPRecor
 // 纪律：文件在本轮之后被改过（哈希不符）或检查点超限时**跳过并明确报告**——
 // 绝不覆盖用户改动、绝不假装能撤。撤回动作落账本（EventRoundRevert）。
 func (s *ChatService) RevertRound(sessionID string) (RevertResult, error) {
+	// 存活校验必须在 ledgerFor（会给已删除会话重建空文件）之前：权威判据是
+	// 账本文件还在盘上（第二轮体检 R3——绝不给已删除会话重建无主工具集）。
+	if !s.sessionLedgerOnDisk(sessionID) {
+		return RevertResult{}, fmt.Errorf("会话不存在或已删除：%s", sessionID)
+	}
 	ledger, err := s.ledgerFor(sessionID)
 	if err != nil {
 		return RevertResult{}, err

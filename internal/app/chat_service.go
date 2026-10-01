@@ -31,6 +31,7 @@ import (
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/adaptors"
 	"tiancode/internal/platform/applog"
+	"tiancode/internal/platform/browsertool"
 	"tiancode/internal/platform/catalog"
 	"tiancode/internal/platform/channels"
 	"tiancode/internal/platform/codexauth"
@@ -38,6 +39,7 @@ import (
 	"tiancode/internal/platform/exttools"
 	"tiancode/internal/platform/gateway"
 	"tiancode/internal/platform/tones"
+	"tiancode/internal/platform/webfetch"
 )
 
 // Config 是对话服务的装配配置。
@@ -68,10 +70,19 @@ type ChatService struct {
 	mu           sync.Mutex
 	defaultModel string // 当前轮次使用的模型名（激活渠道的首个模型）
 	ledgers      map[string]*session.Ledger
-	// sessTools 是会话级受控工具集（0.2.36 审计 R1）：fs/shell/git/search 按
-	// 会话持有、根由账本归属固定——不再用"全局单例 + 发送前切根"（并行竞态
-	// 与误杀另一路 shell）。MCP/技能/扩展是共享单例，不随会话克隆。
+	// sessMu 是 sessTools 的专用锁（第二轮体检 R2：三个入口曾不持锁直呼
+	// ensureSessionTools，与 Send/DeleteSession 的 map 读写构成并发读写竞争）。
+	// 为什么不复用 mu：Send 持 mu 期间会调 ensureSessionTools，Go 互斥锁不可
+	// 重入，复用即自锁。锁序纪律：恒为 mu → sessMu，任何持 sessMu 的路径
+	// （ensureSessionTools/BgTasksSnapshot）不得再取 mu。
+	sessMu    sync.Mutex
 	sessTools map[string]*sessionTools
+	// browser 是进程级共享无头浏览器（惰性启动）：每个会话从它拿独立 tab，
+	// 并行会话互不串页面状态；进程与临时目录在 Close 统一收。
+	browser *browsertool.Pool
+	// webFetch 是共享读网页工具（不依赖工作区根，纯对话也可用）：
+	// 代理配置每次执行从渠道池实时取，与 gateway 同源（改设置即生效）。
+	webFetch *webfetch.Tool
 	// revived 是本次启动从"自动禁用"恢复的渠道展示名（壳层写日志；空 = 无）。
 	// 为什么留痕：恢复动作改变了用户上次看到的渠道状态，静默改变用户配置观感不可接受。
 	revived []string
@@ -180,6 +191,11 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	// 不再在启动时构建全局工具集（0.2.36 审计 R1）：受控工具按会话在首轮
 	// 组装（根取账本归属 / 新会话取用户当前选择），启动只需要校验渠道池。
 	s.sessTools = make(map[string]*sessionTools)
+	// 浏览器进程惰性：首个会话首次 open 才拉起。截图根 = 数据目录下的
+	// browser-shots（与 ReadBrowserShot 同一取法，相对路径才有同一基准）。
+	s.browser = browsertool.NewPoolAt(browsertool.ShotRootUnder(cfg.DataDir))
+	// 读网页走与网关同源的全局代理（传函数不传值：代理设置改动无需重建服务）
+	s.webFetch = webfetch.New(s.pool.Proxy)
 
 	if err := s.bootstrapChannels(); err != nil {
 		return nil, err
@@ -189,6 +205,17 @@ func NewChatService(cfg Config) (*ChatService, error) {
 
 // bootstrapChannels 加载渠道池；首次运行从 Config 迁移（C-CH-1）。
 // 为什么要迁移：老用户升级不该被迫二次配置（config.json 里已有网关信息）。
+// EnsureBuiltinMCP 幂等补齐内置 MCP（缺才补，同名用户配置不劫持）。
+// 为什么由入口显式调用而不放构造里：构造是热路径（测试大量构造且未必隔离
+// ExtensionsPath），写盘副作用会污染真机数据；失败上抛——清单写不进去属于
+// 启动期持久化故障，静默继续会变成"内置能力看起来有其实没有"。
+func (s *ChatService) EnsureBuiltinMCP() error {
+	if s.extensions == nil {
+		return errors.New("扩展存储未初始化")
+	}
+	return s.extensions.EnsureBuiltin()
+}
+
 func (s *ChatService) bootstrapChannels() error {
 	// 审批策略（用户设置）与渠道无关，必须**在任一提前返回之前**恢复：
 	// 曾放在 active 检查之后，导致"没有渠道时策略丢失"（测试当场抓到）。
@@ -256,6 +283,10 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 		return nil
 	}
 	facts := sessionFacts(root)
+	// 内置网页读取进系统说明：读网页正文是模型此前缺失的能力（查文档/查报错是
+	// 硬伤），能力边界与参数由 webfetch 包自己写（Preface）。拼进 facts 的头部，
+	// 下面所有组合点自然都带上；内容是常量，不破坏 prompt cache 幂等。
+	facts = webfetch.Preface() + "\n\n" + facts
 	// 语气段每轮读一次并快照进本轮提示：回合内改设置不影响这一轮（逐字相同是
 	// prompt cache 与"文本未变不替换"的前提，改动下一轮生效）。读不出来显式阻断——
 	// 静默当成"没有语气"，用户会以为自己是照设置回答的。
@@ -387,6 +418,8 @@ func (s *ChatService) newAgentWith(model string, registry *tools.Registry, appro
 
 // DeleteSession 删除会话及其账本文件。
 // 打开中的账本必须先关闭：Windows 上句柄未释放时删除会失败（与旧实现 rename 失败同源）。
+// 工具集收尾在 sessMu 内完成到账本文件删除：与 ensureSessionTools 的存活校验互斥，
+// 杜绝"校验通过 → 文件被删 → 重建孤儿工具集"的竞态窗口。
 func (s *ChatService) DeleteSession(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -402,10 +435,18 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 	}
 	// 会话级工具集一并清掉（0.2.36 审计 R1）：后台任务表随会话消失后
 	// bg_status/bg_kill 已不可达，进程必须在这里收干净。
+	// 先 cancel 会话级 ctx 再关工具（第二轮体检 R2）：在途浏览器操作立即中断、
+	// 释放 tab 锁——否则 Close 会阻塞在同一把锁上，同步 IPC 卡死 UI 最长 60 秒。
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	if st, ok := s.sessTools[sessionID]; ok {
+		if st.cancel != nil {
+			st.cancel()
+		}
 		if err := closeToolIfCloser(st.shell); err != nil {
 			return fmt.Errorf("终止会话后台任务失败：%w", err)
 		}
+		_ = closeToolIfCloser(st.browser) // 会话的浏览器 tab 随会话关掉（无失败路径）
 		delete(s.sessTools, sessionID)
 	}
 	return session.DeleteSession(s.cfg.DataDir, sessionID)
@@ -704,6 +745,12 @@ type ChatMessage struct {
 	HasUndo  bool   `json:"hasUndo,omitempty"`
 	UndoPath string `json:"undoPath,omitempty"`
 	UndoNote string `json:"undoNote,omitempty"`
+	// 驾驶舱数据（0.0.28，browser 工具，历史恢复与实时事件同构）：截图相对路径
+	// + 页面 URL + 控制台尾部。旧账本事件缺省为空；前端拿 Shot 经壳层
+	// ReadBrowserShot 读图。
+	Shot    string   `json:"shot,omitempty"`
+	PageURL string   `json:"url,omitempty"`
+	Console []string `json:"console,omitempty"`
 	// 附件（0.0.10）：用户消息的图片/文件（重放后仍能显示；图片带 DataURL）
 	Attachments []ChatAttachment `json:"attachments,omitempty"`
 	// 问答卡（role="ask"）：问题与选项来自 tool_call 参数，答案在 Content
@@ -860,7 +907,10 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 					OldExists bool   `json:"old_exists"`
 					NewSHA256 string `json:"new_sha256"`
 				} `json:"undo"`
-				UndoNote string `json:"undo_note"`
+				UndoNote string   `json:"undo_note"`
+				Shot     string   `json:"shot"`
+				URL      string   `json:"url"`
+				Console  []string `json:"console"`
 			}
 			if err := json.Unmarshal(ev.Data(), &p); err != nil {
 				return err
@@ -888,6 +938,7 @@ func (s *ChatService) Replay(sessionID string) ([]ChatMessage, error) {
 				Role: "tool", Content: p.Content, ToolName: p.Name, Status: st,
 				Title: p.Title, Op: p.Op, Diff: p.Diff,
 				CallID: p.ID, HasUndo: p.Undo != nil,
+				Shot: p.Shot, PageURL: p.URL, Console: p.Console,
 			})
 			if p.Undo != nil {
 				out[len(out)-1].UndoPath = p.Undo.Path
@@ -985,13 +1036,26 @@ func (s *ChatService) Close() error {
 	}
 	// 各会话的 shell 后台任务随应用一起收（0.2.36 审计 R1：按会话持有后逐个收）：
 	// 此前只关 MCP/Codex/账本，后台命令成为孤儿进程——与"退出后残留 node.exe"同类。
+	// 各会话的浏览器 tab 一并关掉，再收共享的浏览器进程与临时目录。
+	// 退出同样先 cancel 会话级 ctx（与 DeleteSession 同纪律：在途浏览器动作先断）。
 	s.mu.Lock()
+	s.sessMu.Lock()
 	for _, st := range s.sessTools {
+		if st.cancel != nil {
+			st.cancel()
+		}
 		if err := closeToolIfCloser(st.shell); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		_ = closeToolIfCloser(st.browser)
 	}
+	s.sessMu.Unlock()
 	s.mu.Unlock()
+	if s.browser != nil {
+		if err := s.browser.Close(); err != nil && firstErr == nil {
+			firstErr = err // 浏览器进程收不掉必须可见（与 MCP 同款纪律）
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, l := range s.ledgers {

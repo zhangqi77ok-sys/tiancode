@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useChatStore, type ChatMsg } from '../stores/chat'
 import { diffStat } from '../composables/diffView'
 import { useDialogs } from '../composables/useDialogs'
+import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
 import AppIcon from './AppIcon.vue'
 
@@ -104,7 +105,7 @@ async function revertRound() {
     else if (res.restored.length === 0) parts.push('（最近一轮没有文件改动，或已撤回）')
     toast(res.skipped.length ? 'error' : 'info', parts.join('；'))
   } catch (e) {
-    toast('error', String(e instanceof Error ? e.message : e))
+    toast('error', errText(e))
   } finally {
     reverting.value = false
   }

@@ -2,6 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -238,5 +241,44 @@ func TestDerive_FoldDoesNotMutateLedger(t *testing.T) {
 	}
 	if !sawBig {
 		t.Fatal("账本原文必须完整保留（折叠只在投影层）")
+	}
+}
+
+// 大账本派生基准：2 万行合成账本（100 轮 × 每轮 1 问 + 99 对只读工具调用，
+// 约 7MB，量级对齐实测最大账本 3.36MB/30,351 行），观测派生单次全量扫描
+// 的成本（三次全量重放 vs 合并后的单遍扫描）。
+func BenchmarkDerive_20kLineLedger(b *testing.B) {
+	dir := b.TempDir()
+	var sb strings.Builder
+	seq := 0
+	emit := func(kind session.EventKind, data string) {
+		seq++
+		fmt.Fprintf(&sb, `{"seq":%d,"kind":%q,"data":%s}`+"\n", seq, kind, data)
+	}
+	for turn := 0; turn < 100; turn++ {
+		emit(session.EventUserMessage, `{"text":"继续干活"}`)
+		for i := 0; i < 99; i++ {
+			emit(session.EventToolCall, fmt.Sprintf(
+				`{"id":"call-%d","name":"fs","arguments":"{\"action\":\"read\",\"path\":\"src/a.go\"}"}`, seq+1))
+			emit(session.EventToolResult, fmt.Sprintf(
+				`{"id":"call-%d","name":"fs","content":%q,"is_error":false,"title":"src/a.go"}`,
+				seq, strings.Repeat("line of tool output\n", 15)))
+		}
+	}
+	path := filepath.Join(dir, "bench.jsonl")
+	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	l, err := session.OpenLedger(dir, "bench")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer l.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := deriveMessagesWith(l, DeriveOptions{}); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

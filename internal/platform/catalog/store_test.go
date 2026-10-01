@@ -76,6 +76,83 @@ func TestStore_UpdateConcurrent(t *testing.T) {
 	}
 }
 
+// 内置 MCP 幂等补齐：空清单补全三件套；用户已有的同名项不劫持；重复调用不重复添加。
+func TestStore_EnsureBuiltin(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "extensions.json"))
+
+	// 空清单 → 补齐三件套，全部 builtin 且启用
+	if err := s.EnsureBuiltin(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.MCP) != len(BuiltinMCPs()) {
+		t.Fatalf("空清单应补齐 %d 个内置项，实际 %d", len(BuiltinMCPs()), len(got.MCP))
+	}
+	for _, srv := range got.MCP {
+		if !srv.Builtin || !srv.Enabled {
+			t.Fatalf("内置项必须 builtin+enabled：%+v", srv)
+		}
+	}
+
+	// 用户已有同名项（自己配置的 context7）→ 不劫持，只补缺失的
+	if err := s.Update(func(f *File) error {
+		f.MCP = []Server{{ID: "u1", Name: "CONTEXT7", Transport: "stdio", Command: "npx", Args: "-y @upstash/context7-mcp@9.9", Enabled: false}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureBuiltin(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.MCP) != len(BuiltinMCPs()) {
+		t.Fatalf("补齐后应仍为 %d 项，实际 %d", len(BuiltinMCPs()), len(got.MCP))
+	}
+	var userCtx *Server
+	for i := range got.MCP {
+		if got.MCP[i].Name == "CONTEXT7" {
+			userCtx = &got.MCP[i]
+		}
+	}
+	if userCtx == nil || userCtx.Builtin || userCtx.Enabled || userCtx.ID != "u1" {
+		t.Fatalf("用户同名项不得被内置项劫持：%+v", userCtx)
+	}
+
+	// 幂等：再来一次不多不少
+	if err := s.EnsureBuiltin(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.Load(); len(got.MCP) != len(BuiltinMCPs()) {
+		t.Fatalf("重复 EnsureBuiltin 应幂等：%d", len(got.MCP))
+	}
+
+	// 自愈：手改 JSON 删掉内置项后，再 seed 补回
+	if err := s.Update(func(f *File) error {
+		kept := f.MCP[:0:0]
+		for _, srv := range f.MCP {
+			if !srv.Builtin {
+				kept = append(kept, srv)
+			}
+		}
+		f.MCP = kept
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureBuiltin(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.Load(); len(got.MCP) != len(BuiltinMCPs()) {
+		t.Fatalf("删除内置后应被补回：%d", len(got.MCP))
+	}
+}
+
 // 损坏文件：Load/Update 必须报错（不能静默当空清单——"我的技能全没了"）。
 func TestStore_CorruptFileReportsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "extensions.json")

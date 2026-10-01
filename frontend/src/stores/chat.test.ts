@@ -31,9 +31,16 @@ const h = vi.hoisted(() => ({
   resolvedAsks: [] as { id: string; answer: string }[],
   // 工作区调用记录（0.2.37：切换会话绝不动工作区根）
   setWorkspaceCalls: [] as string[],
+  // 点链接 → 会话浏览器打开（0.0.29）
+  navigations: [] as { sessionID: string; url: string }[],
+  failNavigate: false,
+  externalOpens: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
+  openExternal: (url: string) => {
+    h.externalOpens.push(url)
+  },
   bridge: () => ({
     app: {
       ListSessionSummaries: async () => h.summaries,
@@ -67,6 +74,17 @@ vi.mock('../wails', () => ({
       GetWorkspace: async () => '',
       SetWorkspace: async (dir: string) => {
         h.setWorkspaceCalls.push(dir)
+      },
+      BrowserNavigate: async (sessionID: string, url: string) => {
+        if (h.failNavigate) throw new Error('仅支持 http/https 链接')
+        h.navigations.push({ sessionID, url })
+        return {
+          shot: 's-1/shot-0001.png',
+          url: 'https://example.com/',
+          console: ['[log] hi'],
+          output: '[ref=e1] 链接',
+          title: 'open example.com',
+        }
       },
     },
     runtime: { EventsOn: () => {} },
@@ -623,6 +641,23 @@ describe('chat store', () => {
     expect(store.running).toBe(false)
   })
 
+  // 中断语义：onTerminal 复位 stopping 之前必须快照——此前判 !c.stopping 恒真，
+  // "点了中断不续发队列"全靠 stop() 清队列兜着；中断期间重新入队的消息也绝不自动续发
+  it('中断确认到达后不自动续发队列（含中断期间重新入队的消息）', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('第一条')
+    store.stop() // 用户点中断：置 stopping 并清队列
+    expect(store.stopping).toBe(true)
+    store.enqueue('中断后重新入队') // stop 之后用户又排了一条
+    store.onTerminal({ sessionID: store.sessionId, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sends).toEqual(['第一条']) // 中断后的终态不自动续发
+    expect(store.queue.map((q) => q.text)).toEqual(['中断后重新入队']) // 留给用户手动发
+    expect(store.stopping).toBe(false) // 运行态照常复位
+    expect(store.running).toBe(false)
+  })
+
   it('队列置顶/取回编辑/删除', async () => {
     const store = useChatStore()
     store.enqueue('一')
@@ -790,3 +825,261 @@ describe('chat store', () => {
   })
 })
 
+// 浏览器驾驶舱（0.0.28）：browser 工具的 shot/url/console 随工具卡进会话缓冲，
+// 面板数据源 = 当前会话缓冲的派生（切会话跟随、后台事件不串台、Replay 同构恢复）。
+describe('chat store · 浏览器驾驶舱', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    h.summaries = []
+    h.failRename = false
+    h.deleted = []
+    h.renamed = []
+    h.replay = []
+    h.replayById = {}
+    h.replayGate = null
+    h.resolved = []
+    h.sends = []
+    h.sendCalls = []
+    h.attachCalls = []
+    h.resolvedAsks = []
+    h.setWorkspaceCalls = []
+    h.navigations = []
+    h.failNavigate = false
+    h.externalOpens = []
+  })
+
+  function browserTool(over: Record<string, unknown>) {
+    return { sessionID: '', name: 'browser', status: 'success', summary: 'x', ...over }
+  }
+
+  it('browser 终态卡携带 shot/url/console 进会话缓冲', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('打开页面看看')
+    store.onTool(
+      browserTool({
+        sessionID: store.sessionId,
+        callID: 'b1',
+        title: 'open http://localhost:5173',
+        shot: 's-1/shot-0001.png',
+        url: 'http://localhost:5173/',
+        console: ['10:00:00 [log] ready'],
+      }),
+    )
+    const card = store.messages[store.messages.length - 1]
+    expect(card.toolName).toBe('browser')
+    expect(card.shot).toBe('s-1/shot-0001.png')
+    expect(card.url).toBe('http://localhost:5173/')
+    expect(card.console).toEqual(['10:00:00 [log] ready'])
+    expect(store.browserVisual).toMatchObject({
+      shot: 's-1/shot-0001.png',
+      url: 'http://localhost:5173/',
+      console: ['10:00:00 [log] ready'],
+      running: false,
+    })
+  })
+
+  it('running 卡原地更新为终态后补上驾驶舱字段（running 卡不带字段）', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('点一下')
+    store.onTool(browserTool({ sessionID: store.sessionId, status: 'running', callID: 'b2', summary: '执行中…' }))
+    expect(store.messages[store.messages.length - 1].shot).toBeUndefined()
+    expect(store.browserVisual.running).toBe(true)
+    store.onTool(
+      browserTool({
+        sessionID: store.sessionId,
+        callID: 'b2',
+        title: 'click [3]',
+        shot: 's-1/shot-0002.png',
+        url: 'http://localhost:5173/',
+        console: [],
+      }),
+    )
+    // 同 callID 原地生长：不插第二张卡
+    const cards = store.messages.filter((m) => m.role === 'tool')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].status).toBe('success')
+    expect(cards[0].shot).toBe('s-1/shot-0002.png')
+    expect(store.browserVisual.running).toBe(false)
+  })
+
+  it('browserVisual 各字段取最新携带者的值；截图失败（shot 为空串）不回退旧图', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('连续动作')
+    store.onTool(
+      browserTool({
+        sessionID: store.sessionId,
+        callID: 'b1',
+        title: 'open http://a.dev',
+        content: '已打开 http://a.dev/\n\n[0] button 登录',
+        shot: 's-1/shot-0001.png',
+        url: 'http://a.dev/',
+        console: ['10:00:00 [log] a'],
+      }),
+    )
+    // 第二次动作截图失败：shot=""（明确携带的空值，照实显示）、console 无输出（[]）
+    store.onTool(
+      browserTool({ sessionID: store.sessionId, callID: 'b2', title: 'click [1]', shot: '', url: 'http://a.dev/#x' }),
+    )
+    expect(store.browserVisual.shot).toBe('')
+    expect(store.browserVisual.url).toBe('http://a.dev/#x')
+    expect(store.browserVisual.console).toEqual(['10:00:00 [log] a'])
+    // 元素快照取最近一次 open/snapshot/scroll 卡的正文，click 卡不算
+    expect(store.browserVisual.snapshot).toContain('已打开')
+  })
+
+  it('当前会话的 browser 卡到达：自动打开右栏并切到浏览器 tab', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('开浏览器')
+    expect(store.browserOpen).toBe(false)
+    store.onTool(browserTool({ sessionID: store.sessionId, status: 'running', callID: 'b1', summary: '执行中…' }))
+    expect(store.browserOpen).toBe(true)
+    expect(store.rightPanelTab).toBe('browser')
+  })
+
+  it('后台会话的 browser 事件入自己的缓冲，不抢当前视图的浏览器 tab', async () => {
+    h.summaries = [{ id: 's-a', title: 'A' }, { id: 's-b', title: 'B' }]
+    const store = useChatStore()
+    await store.selectSession('s-a')
+    store.onTool(
+      browserTool({
+        sessionID: 's-b',
+        callID: 'b1',
+        title: 'open http://b.dev',
+        shot: 's-b/shot-0001.png',
+        url: 'http://b.dev/',
+      }),
+    )
+    expect(store.browserOpen).toBe(false) // 不抢当前视图
+    await store.selectSession('s-b')
+    // 切过去面板跟随当前会话：派生数据来自 s-b 自己的缓冲
+    expect(store.browserVisual).toMatchObject({ shot: 's-b/shot-0001.png', url: 'http://b.dev/' })
+  })
+
+  it('Replay 同构恢复 shot/url/console（重启后卡片不丢）', async () => {
+    h.summaries = [{ id: 's-1', title: '历史' }]
+    h.replayById['s-1'] = [
+      { role: 'user', content: '看看页面' },
+      {
+        role: 'tool',
+        content: '已打开 http://localhost:5173',
+        toolName: 'browser',
+        status: 'success',
+        title: 'open http://localhost:5173',
+        shot: 's-1/shot-0001.png',
+        url: 'http://localhost:5173/',
+        console: ['10:00:00 [error] boom'],
+      } as never,
+    ]
+    const store = useChatStore()
+    await store.selectSession('s-1')
+    expect(store.browserVisual).toMatchObject({
+      shot: 's-1/shot-0001.png',
+      url: 'http://localhost:5173/',
+      console: ['10:00:00 [error] boom'],
+    })
+    expect(store.browserVisual.snapshot).toContain('已打开')
+  })
+
+  it('非 browser 工具不携带驾驶舱字段，browserVisual 保持空态', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('列个目录')
+    store.onTool({ sessionID: store.sessionId, name: 'fs', status: 'success', summary: 'ls', callID: 'f1' })
+    expect(store.messages[store.messages.length - 1].shot).toBeUndefined()
+    expect(store.browserVisual).toEqual({ shot: '', url: '', console: [], snapshot: '', running: false })
+  })
+
+  // 点链接 → 右侧驾驶舱（0.0.29）：链接绝不许把应用窗口本身导航走（WebView 无
+  // 地址栏无后退，进去就被困住）。成功 = 会话浏览器打开 + 合成与模型工具卡同构
+  // 的本地卡（面板数据源唯一：会话缓冲派生）；失败 = 回退系统浏览器。
+  it('openLinkInBrowser 成功：合成 browser 本地卡并打开浏览器 tab', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    await store.openLinkInBrowser('https://example.com')
+    expect(h.navigations).toEqual([{ sessionID: store.sessionId, url: 'https://example.com' }])
+    const card = store.messages.find((m) => m.role === 'tool' && m.toolName === 'browser')
+    expect(card).toMatchObject({
+      shot: 's-1/shot-0001.png',
+      url: 'https://example.com/',
+      title: 'open example.com',
+      status: 'success',
+    })
+    // title 以动作名开头（与模型工具卡同构）→ 面板元素快照可见
+    expect(store.browserVisual).toMatchObject({ url: 'https://example.com/' })
+    expect(store.browserVisual.snapshot).toContain('[ref=e1]')
+    expect(store.browserOpen).toBe(true)
+    expect(store.rightPanelTab).toBe('browser')
+  })
+
+  it('openLinkInBrowser 失败：回退系统浏览器，不占对话窗口也不留半截卡', async () => {
+    h.failNavigate = true
+    const store = useChatStore()
+    await store.newSession()
+    await store.openLinkInBrowser('https://example.com')
+    expect(h.externalOpens).toEqual(['https://example.com'])
+    expect(h.navigations).toEqual([])
+    expect(store.messages.some((m) => m.role === 'tool')).toBe(false)
+    expect(store.browserOpen).toBe(false)
+  })
+})
+
+
+// 右栏新 tab（目录/任务）：开态自持 + open 内置激活切换（与 openBrowserPanel 同一不变式），
+// 任务面板在当前会话的 bg_start 卡到达时自动打开（驾驶舱同一联动纪律）。
+describe('chat store · 右栏「目录」「任务」tab', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    h.summaries = []
+    h.replay = []
+  })
+
+  it('开态自持：open 置开态并切激活 tab，close 只关自己（激活 tab 不动，容器自动回退）', () => {
+    const store = useChatStore()
+    store.openTreePanel()
+    expect(store.treeOpen).toBe(true)
+    expect(store.rightPanelTab).toBe('tree')
+    store.closeTreePanel()
+    expect(store.treeOpen).toBe(false)
+    expect(store.rightPanelTab).toBe('tree') // 收起不动激活：注册表缩回后由容器回退第一项
+
+    store.openTasksPanel()
+    expect(store.tasksOpen).toBe(true)
+    expect(store.rightPanelTab).toBe('tasks')
+    store.closeTasksPanel()
+    expect(store.tasksOpen).toBe(false)
+  })
+
+  it('当前会话的 bg_start 卡（内容 JSON 带 task_id+pid）自动打开任务面板并切激活', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    expect(store.tasksOpen).toBe(false)
+    store.onTool({
+      sessionID: store.sessionId,
+      name: 'shell',
+      status: 'success',
+      summary: 'x',
+      callID: 'bg-card-1',
+      content: '{"task_id":"bg-1","pid":42,"status":"running"}',
+    })
+    expect(store.tasksOpen).toBe(true)
+    expect(store.rightPanelTab).toBe('tasks')
+  })
+
+  it('普通 shell 输出、后台会话的 bg_start 卡不打开面板（不抢当前视图）', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    // run 的普通文本输出不是后台任务卡
+    store.onTool({ sessionID: store.sessionId, name: 'shell', status: 'success', summary: 'x', callID: 'r1', content: 'build ok (exit 0)' })
+    expect(store.tasksOpen).toBe(false)
+    // 后台会话的 bg_start 卡只进它自己的缓冲，不抢当前视图
+    store.onTool({ sessionID: 's-other', name: 'shell', status: 'success', summary: 'x', callID: 'b2', content: '{"task_id":"bg-1","pid":42,"status":"running"}' })
+    expect(store.tasksOpen).toBe(false)
+    // running 卡（过程推送）也不触发
+    store.onTool({ sessionID: store.sessionId, name: 'shell', status: 'running', summary: '执行中…', callID: 'r2' })
+    expect(store.tasksOpen).toBe(false)
+  })
+})

@@ -45,6 +45,12 @@ func main() {
 	}
 	defer chat.Close()
 
+	// 内置 MCP 幂等补齐（启动期任务，显式编排：构造无写盘副作用，测试不碰真机数据）
+	if err := chat.EnsureBuiltinMCP(); err != nil {
+		shell.NotifyError("tiancode 启动失败", err.Error())
+		os.Exit(1)
+	}
+
 	bind := shell.New(chat)
 	err = wails.Run(&options.App{
 		Title: "tiancode",

@@ -12,10 +12,12 @@
 package session
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -121,40 +123,124 @@ func OpenLedger(dir, sessionID string) (*Ledger, error) {
 // repairLedger 截断尾部半行并返回账本中的最大 Seq。
 // 为什么在打开时修复：恢复语义统一收口在"打开"这一个入口，Replay 无需处理半行分支。
 func repairLedger(path string) (int64, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	var complete []byte
-	if lastNL := bytes.LastIndexByte(data, '\n'); lastNL >= 0 {
-		complete = data[:lastNL+1]
+	lastSeq, complete, scanErr := repairScan(f)
+	// 关闭错误不吞：scanErr 为空时上抛（只读句柄关闭失败通常无害，但不可静默）
+	if cerr := f.Close(); scanErr == nil {
+		scanErr = cerr
 	}
-	if len(complete) != len(data) {
-		// 尾部半行：截断到最后一个完整行（空账本则截为 0）
-		if err := os.Truncate(path, int64(len(complete))); err != nil {
+	if scanErr != nil {
+		return 0, scanErr
+	}
+	if complete < fileSizeOf(path) {
+		// 尾部半行：截断到最后一个完整行（空账本则截为 0）。
+		// 关闭读句柄后再按路径截断：Windows 上同进程句柄不阻塞 size 变更，但顺序收口更稳。
+		if err := os.Truncate(path, complete); err != nil {
 			return 0, err
 		}
 	}
+	return lastSeq, nil
+}
+
+// repairScan 流式扫描账本，返回最大 Seq 与"最后一个完整行末尾"的字节偏移。
+func repairScan(f *os.File) (int64, int64, error) {
 	var lastSeq int64
-	for _, line := range bytes.Split(bytes.TrimSuffix(complete, []byte("\n")), []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
+	var complete, total int64
+	err := forEachLine(f, func(line []byte, isComplete bool) error {
+		total += int64(len(line))
+		if !isComplete {
+			return nil // 半行不计入完整区，由调用方截断
 		}
-		var rec struct {
-			Seq int64 `json:"seq"`
+		complete += int64(len(line))
+		seq, err := decodeSeq(bytes.TrimSuffix(line, []byte("\n")))
+		if err != nil {
+			return err
 		}
-		if err := json.Unmarshal(line, &rec); err != nil {
-			// 完整行损坏不是"断尾"，是数据损坏——显式失败而非静默跳过
-			return 0, fmt.Errorf("corrupt complete line: %w", err)
+		if seq > lastSeq {
+			lastSeq = seq
 		}
-		if rec.Seq > lastSeq {
-			lastSeq = rec.Seq
+		return nil
+	})
+	return lastSeq, complete, err
+}
+
+// decodeSeq 解析一行事件 JSON 的 Seq。完整行损坏不是"断尾"，是数据损坏——
+// 显式失败而非静默跳过（行为契约与旧实现逐字一致）。
+func decodeSeq(line []byte) (int64, error) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return 0, nil
+	}
+	var rec struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.Unmarshal(line, &rec); err != nil {
+		return 0, fmt.Errorf("corrupt complete line: %w", err)
+	}
+	return rec.Seq, nil
+}
+
+// fileSizeOf 返回文件大小；失败（含不存在）返回 0——此时无内容可截断。
+func fileSizeOf(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// forEachLine 流式逐行扫描账本文件。
+// 为什么不用 os.ReadFile：账本可达数 MB（实测 3.36MB / 30,351 行），repair 与
+// Replay 又会多次触发，整文件读入内存既费内存也费拷贝；逐行扫描把内存占用
+// 从 O(整文件) 降为 O(单行)。
+// 为什么不用 bufio.Scanner：AssistantDelta 合批块 64KB、事件行上探 MB 级，
+// Scanner 默认 64KB token 上限会截断超长行；这里以 ReadSlice 手工攒行，
+// 短行零拷贝（直接交付内部缓冲的分片），超长行落入跨行复用的 scratch，
+// 单行长度没有上限。
+// 行语义与旧的 TrimSuffix+Split 完全一致：以 \n 分界；末尾没有换行符的字节
+// 作为半行交付一次（complete=false，repair 截断它、Replay 照常解析）。
+func forEachLine(f *os.File, handle func(line []byte, isComplete bool) error) error {
+	r := bufio.NewReaderSize(f, 64<<10)
+	var scratch []byte
+	for {
+		frag, err := r.ReadSlice('\n')
+		switch {
+		case err == nil:
+			if herr := handle(frag, true); herr != nil {
+				return herr
+			}
+		case err == bufio.ErrBufferFull:
+			// 行比读缓冲长：攒进 scratch 直到行尾（scratch 跨行复用，避免每行一次堆分配）
+			scratch = append(scratch[:0], frag...)
+			for {
+				frag, err = r.ReadSlice('\n')
+				scratch = append(scratch, frag...)
+				if err != bufio.ErrBufferFull {
+					break
+				}
+			}
+			if err != nil && err != io.EOF {
+				return err
+			}
+			if herr := handle(scratch, err == nil); herr != nil {
+				return herr
+			}
+		case err == io.EOF:
+			if len(frag) == 0 {
+				return nil
+			}
+			if herr := handle(frag, false); herr != nil {
+				return herr
+			}
+		default:
+			return err
 		}
 	}
-	return lastSeq, nil
 }
 
 // Append 追加一个事件。
@@ -229,7 +315,8 @@ func (l *Ledger) NextSeq() int64 {
 
 // Replay 按写入顺序重放账本中所有完整事件。
 // visit 返回错误则中止重放并原样上抛。
-func (l *Ledger) Replay(visit func(Event) error) error {
+// 返回值命名（err）：defer 里的句柄关闭错误要在无扫描错误时上抛，不静默吞掉。
+func (l *Ledger) Replay(visit func(Event) error) (err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// 读事实源前先冲掉攒批：Append 已成功返回的增量必须能被 Replay 看到
@@ -237,16 +324,25 @@ func (l *Ledger) Replay(visit func(Event) error) error {
 	if err := l.flushLocked(); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(l.path)
+	// 错误可见：打开/关闭都不吞（defer 关闭无法上抛，这里用命名收口）
+	f, err := os.Open(l.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	for _, line := range bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n")) {
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	// 行语义与旧实现逐字一致：末尾半行（打开修复后外部又追加的不完整行）
+	// 照常按行解析——JSON 损坏显式失败，不静默跳过。
+	return forEachLine(f, func(line []byte, _ bool) error {
+		line = bytes.TrimSuffix(line, []byte("\n"))
 		if len(bytes.TrimSpace(line)) == 0 {
-			continue
+			return nil
 		}
 		var rec struct {
 			Seq  int64           `json:"seq"`
@@ -256,11 +352,8 @@ func (l *Ledger) Replay(visit func(Event) error) error {
 		if err := json.Unmarshal(line, &rec); err != nil {
 			return fmt.Errorf("replay corrupt line: %w", err)
 		}
-		if err := visit(&event{seqN: rec.Seq, kindV: rec.Kind, data: rec.Data}); err != nil {
-			return err
-		}
-	}
-	return nil
+		return visit(&event{seqN: rec.Seq, kindV: rec.Kind, data: rec.Data})
+	})
 }
 
 // Close 关闭追加句柄（先刷掉攒批）。Close 后 Append 返回 ErrClosed。

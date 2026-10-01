@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +173,53 @@ func (m *bgManager) kill(id string) (tools.ToolResult, error) {
 	task.cancel() // 触发 exec.Cmd.Cancel → 终止进程树
 	content, _ := json.Marshal(map[string]any{"task_id": id, "status": "killed"})
 	return tools.ToolResult{Content: string(content)}, nil
+}
+
+// BgTaskInfo 是后台任务的对外只读快照（界面「任务」面板经编排层拉取）。
+type BgTaskInfo struct {
+	ID        string    // 任务号（bg-N）
+	Command   string    // 启动命令原文
+	PID       int       // 进程号
+	Running   bool      // 是否仍在运行
+	ExitCode  int       // 退出码（运行中为启动时的 -1；被强杀时也是负值）
+	StartedAt time.Time // 启动时刻
+	Log       string    // 头尾保留的有界输出（已解码；与 bg_status 看到的同一份）
+}
+
+// snapshot 返回任务表快照（按任务号升序）。只读：不动任务表、不碰进程。
+// log 在 task 锁外取：buf 自带锁，避免嵌套持锁。
+func (m *bgManager) snapshot() []BgTaskInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, 0, len(m.tasks))
+	for id := range m.tasks {
+		ids = append(ids, id)
+	}
+	// 任务号序：map 无序，快照顺序要稳定，界面列表才不跳动
+	sort.Slice(ids, func(i, j int) bool { return bgSeq(ids[i]) < bgSeq(ids[j]) })
+	out := make([]BgTaskInfo, 0, len(ids))
+	for _, id := range ids {
+		t := m.tasks[id]
+		t.mu.Lock()
+		info := BgTaskInfo{
+			ID: t.id, Command: t.command, PID: t.pid,
+			Running: !t.done, ExitCode: t.exitCode, StartedAt: t.started,
+		}
+		t.mu.Unlock()
+		info.Log = t.buf.String()
+		out = append(out, info)
+	}
+	return out
+}
+
+// bgSeq 提取 bg-N 的 N（解析失败排最后：防御性兜底，ID 由本包生成、正常恒可解析）。
+func bgSeq(id string) int64 {
+	const failSeq = int64(1) << 62
+	n, err := strconv.ParseInt(strings.TrimPrefix(id, "bg-"), 10, 64)
+	if err != nil {
+		return failSeq
+	}
+	return n
 }
 
 // asExitError 提取退出错误（std 封装，避免调用处裸 import errors）。

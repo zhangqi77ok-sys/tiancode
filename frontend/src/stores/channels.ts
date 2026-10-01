@@ -8,6 +8,7 @@ import {
   type PresetDTO,
   type TestResultDTO,
 } from '../wails'
+import { errText } from '../composables/errText'
 
 // 渠道管理状态。设计要点：
 // - 错误只保留一条 message（单面板场景，堆栈式提示反而干扰）；
@@ -32,7 +33,7 @@ export const useChannelStore = defineStore('channels', () => {
   const credentials = ref<CredentialDTO[]>([])
 
   function fail(e: unknown) {
-    error.value = String(e instanceof Error ? e.message : e)
+    error.value = errText(e)
   }
 
   async function load() {

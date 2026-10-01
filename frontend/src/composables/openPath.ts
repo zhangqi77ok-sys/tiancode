@@ -1,3 +1,4 @@
+import { errText } from './errText'
 import { bridge } from '../wails'
 
 // 打开文件的统一入口（第 8 批）：搜索结果行、shell 报错行、文件详情面板全走这里，
@@ -19,6 +20,6 @@ export async function openPathAt(
     // OpenInDefaultApp 逐字一致。前端不做判断，避免两处规则漂移。
     await bridge().app.OpenAtLine(sessionID, p, line)
   } catch (e) {
-    onError?.(String(e instanceof Error ? e.message : e))
+    onError?.(errText(e))
   }
 }

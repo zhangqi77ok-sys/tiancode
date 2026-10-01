@@ -1,23 +1,28 @@
 <script setup lang="ts">
 import { computed, provide, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type PendingAttachment, type TodoItem } from './stores/chat'
-import type { CheckResultDTO } from './wails'
+import type { ChatToolEventDTO, CheckResultDTO } from './wails'
 import { useCatalogStore } from './stores/catalog'
 import { loadSidebarCollapsed, matchShortcut, saveSidebarCollapsed } from './composables/shortcuts'
 import { consumeEsc } from './composables/useEsc'
 import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
+import AppIcon from './components/AppIcon.vue'
+import BrowserPanel from './components/BrowserPanel.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
 import CheckResults from './components/CheckResults.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
 import FileDetailPanel from './components/FileDetailPanel.vue'
+import FileTreePanel from './components/FileTreePanel.vue'
 import FloatingTodo from './components/FloatingTodo.vue'
 import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
+import RightPanel, { type RightPanelTabDef } from './components/RightPanel.vue'
 import SessionList from './components/SessionList.vue'
 import SkillSettings from './components/SkillSettings.vue'
+import TasksPanel from './components/TasksPanel.vue'
 import ToastHost from './components/ToastHost.vue'
 import ToneSettings from './components/ToneSettings.vue'
 import TurnReview from './components/TurnReview.vue'
@@ -45,6 +50,62 @@ const tonesOpen = ref(false) // 语气设置（第 8 批）：侧栏底部入口
 const wsSettingsOpen = ref(false) // 工作区设置（第 8 批）：在这一行打开 / 检查命令
 // 工作区检查结果（第 8 批）：最近一次自动检查的位置列表（只读展示）
 const checkResult = ref<CheckResultDTO | null>(null)
+
+// 右栏 tab 注册表（0.0.28）：开着的 tab 才进注册表，全关时面板整体退场。
+// 扩展方式（契约详注见 RightPanel.vue）：这里加一项 + 模板加同名插槽 `#tab-<id>`，
+// 容器零改动——「目录」「任务」照此办理。
+const rightTabs = computed<RightPanelTabDef[]>(() => {
+  const tabs: RightPanelTabDef[] = []
+  if (store.fileDetailPath) {
+    tabs.push({
+      id: 'file',
+      label: '文件',
+      icon: 'file',
+      active: store.rightPanelTab === 'file',
+      activate: () => {
+        store.rightPanelTab = 'file'
+      },
+      close: () => store.closeFileDetail(),
+    })
+  }
+  if (store.browserOpen) {
+    tabs.push({
+      id: 'browser',
+      label: '浏览器',
+      icon: 'image',
+      active: store.rightPanelTab === 'browser',
+      activate: () => {
+        store.rightPanelTab = 'browser'
+      },
+      close: () => store.closeBrowserPanel(),
+    })
+  }
+  if (store.treeOpen) {
+    tabs.push({
+      id: 'tree',
+      label: '目录',
+      icon: 'folder',
+      active: store.rightPanelTab === 'tree',
+      activate: () => {
+        store.rightPanelTab = 'tree'
+      },
+      close: () => store.closeTreePanel(),
+    })
+  }
+  if (store.tasksOpen) {
+    tabs.push({
+      id: 'tasks',
+      label: '任务',
+      icon: 'terminal',
+      active: store.rightPanelTab === 'tasks',
+      activate: () => {
+        store.rightPanelTab = 'tasks'
+      },
+      close: () => store.closeTasksPanel(),
+    })
+  }
+  return tabs
+})
 // 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
 const anyModalOpen = computed(
   () => channelsOpen.value || mcpOpen.value || skillsOpen.value || tonesOpen.value || wsSettingsOpen.value,
@@ -182,25 +243,9 @@ onMounted(() => {
       store.onUsage(p)
     },
   )
-  bridge().runtime.EventsOn(
-    'chat:tool',
-    (p: {
-      sessionID: string
-      name: string
-      status: string
-      summary: string
-      content?: string
-      diff?: string
-      title?: string
-      op?: string
-      callID?: string
-      hasUndo?: boolean
-      undoPath?: string
-      undoNote?: string
-    }) => {
-      store.onTool(p)
-    },
-  )
+  bridge().runtime.EventsOn('chat:tool', (p: ChatToolEventDTO) => {
+    store.onTool(p)
+  })
   // 审批卡片：sessionID 必填（后端必推）——缺标识的卡片宁可丢弃并报错，
   // 也绝不插进当前视图（那正是"数据串会话"）
   bridge().runtime.EventsOn(
@@ -266,8 +311,9 @@ onBeforeUnmount(() => {
       />
 
       <main class="relative flex min-w-0 flex-1 bg-[var(--c-surface)]">
-        <!-- 左列：消息流 + 本轮变更 + 输入（与右侧文件详情并存，互不遮挡） -->
-        <div class="flex min-w-0 flex-1 flex-col">
+        <!-- 左列：消息流 + 本轮变更 + 输入（与右侧面板并存，互不遮挡）。
+             对话区保持可读最小宽度：右栏（文件/浏览器）打开时不把对话挤扁。 -->
+        <div class="flex min-w-[320px] flex-1 flex-col">
           <MessageList @suggest="draft = $event" @rerun="startRerun" />
           <!-- 本轮变更审查带（0.0.09；第 2 批默认折叠、按文件聚合）：点文件行开右侧详情 -->
           <TurnReview />
@@ -276,8 +322,36 @@ onBeforeUnmount(() => {
           <!-- 悬浮任务清单：挂在对话面板内（absolute 以 main 为参照系），位置/折叠态跨重启保留 -->
           <FloatingTodo />
         </div>
-        <!-- 文件详情面板（第 3 批）：点文件行/工具卡文件名 → 右侧专看该文件的全部改动 -->
-        <FileDetailPanel v-if="store.fileDetailPath" />
+        <!-- 右栏容器（0.0.28 tab 化）：文件详情 / 浏览器驾驶舱 / 目录树 / 后台任务，
+             Esc 经容器统一消费 -->
+        <RightPanel v-if="rightTabs.length" :tabs="rightTabs">
+          <template #tab-file>
+            <FileDetailPanel />
+          </template>
+          <template #tab-browser>
+            <BrowserPanel />
+          </template>
+          <template #tab-tree>
+            <FileTreePanel />
+          </template>
+          <template #tab-tasks>
+            <TasksPanel />
+          </template>
+        </RightPanel>
+        <!-- 右栏全关时的常驻开栏轨：目录/任务是"想要才打开"的 tab（文件/浏览器由
+             对话动作自动带出），没有入口这两个 tab 就永远到不了 tab 条上 -->
+        <aside
+          v-else
+          class="flex w-10 shrink-0 flex-col items-center gap-2 border-l border-[var(--c-border)] py-2"
+          aria-label="打开右栏面板"
+        >
+          <button class="btn-icon" title="目录：浏览工作区文件树" aria-label="打开目录面板" @click="store.openTreePanel()">
+            <AppIcon name="folder" :size="15" />
+          </button>
+          <button class="btn-icon" title="任务：本会话的后台进程" aria-label="打开任务面板" @click="store.openTasksPanel()">
+            <AppIcon name="terminal" :size="15" />
+          </button>
+        </aside>
       </main>
     </div>
 

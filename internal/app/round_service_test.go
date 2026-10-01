@@ -166,3 +166,30 @@ func TestRevertRound_SkipsUserEditedFile(t *testing.T) {
 		t.Fatalf("不得覆盖用户改动：%q", b)
 	}
 }
+
+// 已删除的会话：「撤回本轮」必须显式报错，且绝不重建工具集（第二轮体检 R3）。
+func TestRevertRound_DeletedSessionRejected(t *testing.T) {
+	ws := t.TempDir()
+	s := newChannelService(t, Config{WorkDir: ws})
+	defer s.Close()
+
+	l, err := s.ledgerFor("s-rev-gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": ws}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession("s-rev-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevertRound("s-rev-gone"); err == nil || !strings.Contains(err.Error(), "已删除") {
+		t.Fatalf("已删除会话必须显式报错：%v", err)
+	}
+	s.sessMu.Lock()
+	_, alive := s.sessTools["s-rev-gone"]
+	s.sessMu.Unlock()
+	if alive {
+		t.Fatal("不得为已删除会话重建工具集")
+	}
+}

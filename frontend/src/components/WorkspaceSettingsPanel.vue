@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useEscClose } from '../composables/useEsc'
+import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
 import { bridge } from '../wails'
 import BaseModal from './BaseModal.vue'
@@ -26,7 +27,7 @@ onMounted(async () => {
     openAtLine.value = s?.openAtLine ?? ''
     checkCommand.value = s?.checkCommand ?? ''
   } catch (e) {
-    error.value = String(e instanceof Error ? e.message : e)
+    error.value = errText(e)
   } finally {
     loaded.value = true
   }
@@ -44,7 +45,7 @@ async function save() {
     toast('info', '已保存到本工作区')
     emit('close')
   } catch (e) {
-    error.value = String(e instanceof Error ? e.message : e)
+    error.value = errText(e)
   } finally {
     saving.value = false
   }

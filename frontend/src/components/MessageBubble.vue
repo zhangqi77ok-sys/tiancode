@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import type { ChatMsg, PendingAttachment } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
 import { useEscClose } from '../composables/useEsc'
-import { useToast } from '../composables/useToast'
+import { useClipboard } from '../composables/useClipboard'
 import AppIcon from './AppIcon.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import AttachmentDetail from './AttachmentDetail.vue'
@@ -51,7 +51,7 @@ useEscClose(
   },
 )
 
-const { push: toast } = useToast()
+const { copy } = useClipboard()
 const store = useChatStore()
 
 // 附件回填（第 7 批）：账本/重放里的附件是 {dataUrl, path} 形态，待发送区要
@@ -98,12 +98,7 @@ const durationMs = computed(() => segments.value.reduce((a, s) => a + (s.duratio
 
 // 复制这条用户消息的正文（第 7 批）：剪贴板失败必须说清，不假装成功
 async function copyUser() {
-  try {
-    await navigator.clipboard.writeText(props.m.content ?? '')
-    toast('info', '已复制消息')
-  } catch {
-    toast('error', '复制失败：剪贴板不可用')
-  }
+  await copy(props.m.content ?? '', { success: '已复制消息' })
 }
 
 async function copyMessage() {
@@ -112,12 +107,7 @@ async function copyMessage() {
     .map((s) => s.content)
     .filter(Boolean)
     .join('\n\n')
-  try {
-    await navigator.clipboard.writeText(text)
-    toast('info', '已复制回复')
-  } catch {
-    toast('error', '复制失败：剪贴板不可用')
-  }
+  await copy(text, { success: '已复制回复' })
 }
 
 function fmtTime(at?: number): string {
@@ -176,10 +166,12 @@ function fmtTime(at?: number): string {
         <span class="min-w-0 truncate">{{ a.name }}</span>
       </button>
     </div>
-    <!-- 正文：主色实心气泡，右对齐 -->
+    <!-- 正文：主色实心气泡，右对齐。底色用 --c-primary-bubble 而非 --c-primary：
+         浅色两者同值（行为不变）；深色下 --c-primary 被提亮到对白字仅 ~3.55:1，
+         达不到正文 AA（4.5:1）——气泡底单独换深一档 #6d55d9（对白字 5.32:1） -->
     <div
       v-if="m.content"
-      class="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary)] px-4 py-2.5 text-sm leading-6 text-white"
+      class="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-[var(--c-primary-bubble)] px-4 py-2.5 text-sm leading-6 text-white"
     >
       {{ m.content }}
     </div>
@@ -276,7 +268,7 @@ function fmtTime(at?: number): string {
   <Teleport to="body">
     <div
       v-if="lightbox"
-      class="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-black/80 p-8"
+      class="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-[var(--c-overlay-max)] p-8"
       @click="lightbox = null"
     >
       <img :src="lightbox" class="max-h-full max-w-full rounded-lg" alt="放大图片" />

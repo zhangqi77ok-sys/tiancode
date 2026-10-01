@@ -14,6 +14,10 @@ const h2 = vi.hoisted(() => ({
   attach: [] as { text: string; attachments: string; forceTool: string }[],
   rerunCalls: [] as { seq: number }[],
   probes: [] as string[],
+  // @ 文件引用搜索（seq 守卫测试）：记录查询词 + 可控延迟/结果
+  atSearches: [] as string[],
+  atGate: null as Promise<void> | null,
+  atResult: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
@@ -36,6 +40,12 @@ vi.mock('../wails', () => ({
           throw new Error('远程服务器不支持自动列工具（http://127.0.0.1:8/mcp），请直接指定 tool 调用')
         }
         return ['create_issue', 'list_issues']
+      },
+      // @ 文件引用搜索：gate 挂起（模拟慢响应），atResult 控制返回
+      SearchWorkspaceFiles: async (_sid: string, query: string) => {
+        h2.atSearches.push(query)
+        if (h2.atGate) await h2.atGate
+        return h2.atResult
       },
       Stop: async () => {},
     },
@@ -125,6 +135,9 @@ describe('Composer（第 7 批：重跑走输入框）', () => {
     h2.attach = []
     h2.rerunCalls = []
     h2.probes = []
+    h2.atSearches = []
+    h2.atGate = null
+    h2.atResult = []
   })
 
   it('确认后发送输入框里改过的文字（不是原文）', async () => {
@@ -320,5 +333,71 @@ describe('Composer（第 7 批：重跑走输入框）', () => {
     expect(h2.attach[0].text).toBe('原文')
     expect(h2.attach[0].attachments).toContain('shot.png')
     expect(h2.sends).toEqual([])
+  })
+
+  // @ 文件引用 seq 守卫：旧关键词的慢响应返回时必须丢弃——否则用户已改词，
+  // 弹出的却是上一个关键词的命中（菜单内容与输入不符）
+  it('@ 搜索：旧关键词的慢响应不覆盖新菜单', async () => {
+    vi.useFakeTimers()
+    try {
+      mountComposer('', null)
+      const ta = document.querySelector('textarea') as HTMLTextAreaElement
+      expect(ta).toBeTruthy()
+
+      async function type(text: string) {
+        draftRef.value = text
+        await nextTick()
+        ta.selectionStart = text.length
+        ta.dispatchEvent(new Event('input'))
+        await nextTick()
+      }
+      const popupText = () =>
+        (document.querySelector('[aria-label="引用工作区文件"]')?.textContent ?? '')
+
+      // 第一代：@ma 的搜索被 gate 挂起（慢响应）
+      let release!: () => void
+      h2.atGate = new Promise<void>((r) => (release = r))
+      await type('@ma')
+      await vi.advanceTimersByTimeAsync(150)
+      expect(h2.atSearches).toEqual(['ma'])
+
+      // 用户改词：@app 的搜索立即返回新命中
+      h2.atGate = null
+      h2.atResult = ['app/main.go']
+      await type('@app')
+      await vi.advanceTimersByTimeAsync(150)
+      expect(h2.atSearches).toEqual(['ma', 'app'])
+      expect(popupText()).toContain('app/main.go')
+
+      // 旧关键词的响应此刻才返回：必须被丢弃
+      h2.atResult = ['old/ma.go']
+      release()
+      await vi.advanceTimersByTimeAsync(0)
+      await nextTick()
+      expect(popupText()).toContain('app/main.go')
+      expect(popupText()).not.toContain('old/ma.go')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 卸载清理：挂起的 @ 防抖定时器必须随组件销毁清掉——回调会写已脱离视图的菜单状态
+  it('@ 防抖：卸载后挂起的搜索不再触发', async () => {
+    vi.useFakeTimers()
+    try {
+      mountComposer('', null)
+      const ta = document.querySelector('textarea') as HTMLTextAreaElement
+      draftRef.value = '@ma'
+      await nextTick()
+      ta.selectionStart = 3
+      ta.dispatchEvent(new Event('input'))
+      await nextTick()
+      await vi.advanceTimersByTimeAsync(100) // 未到 150ms：搜索还没发出
+      teardown()
+      await vi.advanceTimersByTimeAsync(200) // 越过防抖窗口
+      expect(h2.atSearches).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

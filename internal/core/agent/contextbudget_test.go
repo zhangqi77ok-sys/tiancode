@@ -254,3 +254,53 @@ func TestDerive_NoBudgetKeepsEverything(t *testing.T) {
 		}
 	}
 }
+
+// 嵌套分叉区间回归保护：fork2 落在 fork1 的丢弃区间之前（seq 更小）且自身
+// 也可能被更大区间覆盖——无论扫描顺序如何，全部合法 fork 区间都必须收录
+// （union 语义）。否则 [fork2.from, fork2] 里未被 fork1 覆盖的头部会泄漏
+// 进模型历史（OLD-A 本应被 fork2 丢弃）。
+func TestDerive_NestedForkIntervalsAllDropped(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	// seq1：用户 A（fork2 的 from）
+	uA, err := ledger.Append(session.EventUserMessage, map[string]string{"text": "问题A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendToolPair(t, ledger, "c-a", "shell", `{"command":"go build"}`, "OLD-A-MARKER ok", "go build")
+	// 用户 B（fork1 的 from）
+	uB, err := ledger.Append(session.EventUserMessage, map[string]string{"text": "问题B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendToolPair(t, ledger, "c-b", "shell", `{"command":"go test"}`, "OLD-B-MARKER ok", "go test")
+	// fork2 先落（from=A），fork1 后落（from=B）：fork1 的区间 [uB, fork1]
+	// 会覆盖 fork2 事件自身——fork2 声明的区间仍必须生效。
+	if _, err := ledger.Append(session.EventFork, map[string]any{"from_seq": uA.Seq()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Append(session.EventFork, map[string]any{"from_seq": uB.Seq()}); err != nil {
+		t.Fatal(err)
+	}
+	// 重跑后的最终历史
+	appendToolPair(t, ledger, "c-new", "shell", `{"command":"go vet"}`, "NEW-MARKER ok", "go vet")
+
+	msgs, _, err := deriveMessagesWith(ledger, DeriveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, m := range msgs {
+		joined += m.Content
+	}
+	if strings.Contains(joined, "OLD-A-MARKER") || strings.Contains(joined, "OLD-B-MARKER") {
+		t.Fatalf("嵌套分叉的区间头部不得泄漏进历史：%s", joined)
+	}
+	if !strings.Contains(joined, "NEW-MARKER") {
+		t.Fatalf("重跑后的新结果必须在历史里：%s", joined)
+	}
+	if n := strings.Count(joined, "问题A") + strings.Count(joined, "问题B"); n != 0 {
+		t.Fatalf("两问的旧用户消息都应被丢弃，实际出现 %d 次", n)
+	}
+}
