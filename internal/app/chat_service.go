@@ -38,6 +38,7 @@ import (
 	"tiancode/internal/platform/configfile"
 	"tiancode/internal/platform/exttools"
 	"tiancode/internal/platform/gateway"
+	"tiancode/internal/platform/memory"
 	"tiancode/internal/platform/tones"
 	"tiancode/internal/platform/webfetch"
 )
@@ -59,6 +60,9 @@ type Config struct {
 	ExtensionsPath string
 	// TonesPath 是语气设置；缺省 %APPDATA%\tiancode\tones.json（第 8 批）。
 	TonesPath string
+	// MemoryPath 是两级长期记忆目录；缺省 %APPDATA%\tiancode\memory（0.0.19）。
+	// 可注入是为测试隔离（同进程多实例不互相污染，绝不读写用户真实记忆）。
+	MemoryPath string
 }
 
 // ChatService 编排对话用例。
@@ -111,7 +115,8 @@ type ChatService struct {
 	skillTool  *exttools.SkillTool
 	mcpTool    *exttools.MCPTool
 	extManage  *exttools.ManageTool
-	tones      *tones.Store // 语气设置（第 8 批）：每轮拼系统提示时读一次
+	tones      *tones.Store  // 语气设置（第 8 批）：每轮拼系统提示时读一次
+	memory     *memory.Store // 两级长期记忆（0.0.19）：memory 工具读写 + 每轮系统提示注入
 
 	// running 标记正在跑轮次的会话（0.2.27）：同一会话的并发 Send 会在一份账本上
 	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
@@ -179,6 +184,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	// 工具装配：fs（读写/替换）、shell（命令，默认 120s 超时）、git（只读查看）
 	s.extensions = catalog.New(cfg.ExtensionsPath)
 	s.tones = tones.New(cfg.TonesPath)
+	s.memory = memory.NewStore(cfg.MemoryPath)
 	s.skillTool = exttools.NewSkill(func() catalog.File {
 		f, err := s.extensions.Load()
 		if err != nil {
@@ -299,6 +305,21 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 	tone, err := s.toneSection()
 	if err != nil {
 		return err
+	}
+	// 记忆段（0.0.19）：两级长期记忆每轮读一次并快照进本轮提示（与语气同一纪律——
+	// 回合内模型经 memory 工具改记忆，不改变这一轮已注入的内容，下一轮生效）。
+	// 没有任何记忆 = 空串（整段不出现，不占上下文）。读取失败显式阻断：
+	// 静默当成"没有记忆"，用户以为模型记得的事它其实忘了，比没有记忆更糟。
+	mem, err := s.memorySection(root)
+	if err != nil {
+		return err
+	}
+	if mem != "" {
+		if tone != "" {
+			tone = tone + "\n\n" + mem
+		} else {
+			tone = mem
+		}
 	}
 	if s.extensions == nil {
 		ag.SetPreface(facts + "\n\n" + tone)

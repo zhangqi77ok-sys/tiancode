@@ -88,3 +88,6 @@ cmd/installer/payload/*
 # 生成输入（tools/genicon.ps1 的输出），随仓库入库保证新克隆可重建 exe 图标。
 # 父目录 /build/ 被锚定排除，取反规则必须在此（后匹配者优先）。
 !/build/windows/icon.ico
+
+# Windows 保留名残留（重定向 > nul 误产物，永远不可入库）
+nul

@@ -90,10 +90,57 @@ function openFile(node: DirNode) {
   store.openFileDetail(node.path) // 内部同时把激活 tab 切到「文件」
 }
 
-// 会话切换（含草稿 ↔ 会话）：根随会话归属变化，树整体重载
+// 重载前收集"已展开目录"的路径集合，重建后原样恢复——模型写完文件自动刷新
+// 树时，用户展开到一半的层级不能被拍平（否则"自动跟手"反而添乱）。
+function snapshotExpanded(): Set<string> {
+  const out = new Set<string>()
+  const walk = (nodes: DirNode[]) => {
+    for (const n of nodes) {
+      if (n.isDir && n.expanded) {
+        out.add(n.path)
+        walk(n.children)
+      }
+    }
+  }
+  walk(root.value)
+  return out
+}
+
+function restoreExpanded(saved: Set<string>) {
+  const walk = (nodes: DirNode[]) => {
+    for (const n of nodes) {
+      if (n.isDir && saved.has(n.path)) {
+        n.expanded = true
+        void loadDir(n, gen)
+        walk(n.children)
+      }
+    }
+  }
+  walk(root.value)
+}
+
+// 会话切换（含草稿 ↔ 会话）：根随会话归属变化，树整体重载；
+// 模型写了文件（store.treeRev，0.0.19）：根目录自动重载（展开态保留）。
+// 初值跟当前键对齐：否则首次 treeRev 变化会因 prevKey 为空走"整体重载"分支，
+// 把用户展开到一半的层级拍平（正是这个特性要避免的）。
+const lastKeyInit = `${store.sessionId}:${store.treeRev}`
+let lastKey = lastKeyInit
 watch(
-  () => store.sessionId,
-  () => void loadRoot(),
+  () => `${store.sessionId}:${store.treeRev}`,
+  async (key) => {
+    const prevKey = lastKey
+    lastKey = key
+    const prevSid = prevKey.slice(0, prevKey.lastIndexOf(':'))
+    const sid = key.slice(0, key.lastIndexOf(':'))
+    if (prevKey && prevSid === sid) {
+      // 同一会话内的自动刷新（模型写盘）：展开态保留
+      const saved = snapshotExpanded()
+      await loadRoot()
+      restoreExpanded(saved)
+    } else {
+      await loadRoot() // 会话切换 / 首次挂载：整体重载
+    }
+  },
 )
 onMounted(() => void loadRoot())
 

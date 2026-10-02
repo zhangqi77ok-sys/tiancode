@@ -35,6 +35,10 @@ const h = vi.hoisted(() => ({
   workspace: '',
   // 可控延迟：指定会话的 ReplayTail 慢半拍（连点切换的竞态测试用）
   slowReplayIds: new Set<string>(),
+  // 会话迁移调用记录（0.0.19）
+  moveCalls: [] as { id: string; dir: string }[],
+  // 任务栏闪烁次数（0.0.19：后台会话终态提示）
+  flashCalls: 0,
   // 点链接 → 会话浏览器打开（0.0.29）
   navigations: [] as { sessionID: string; url: string }[],
   failNavigate: false,
@@ -74,6 +78,12 @@ vi.mock('../wails', () => ({
         h.attachCalls.push({ sessionID, text, attachments })
       },
       Stop: async () => {},
+      FlashWindow: async () => {
+        h.flashCalls++
+      },
+      MoveSession: async (id: string, dir: string) => {
+        h.moveCalls.push({ id, dir })
+      },
       RenameSession: async (id: string, title: string) => {
         if (h.failRename) throw new Error('会话标题过长（最多 60 字）')
         h.renamed.push({ id, title })
@@ -129,6 +139,8 @@ describe('chat store', () => {
     h.attachCalls = []
     h.resolvedAsks = []
     h.setWorkspaceCalls = []
+    h.moveCalls = []
+    h.flashCalls = 0
     h.workspace = ''
     h.slowReplayIds = new Set()
   })
@@ -222,6 +234,55 @@ describe('chat store', () => {
     expect(store.olderAvailable).toBe(false) // B 只有 10 条；被 A 的 20 污染会误报"有更早的"
     await store.selectSession('s-a')
     expect(store.olderAvailable).toBe(true) // A 自己的锚点（60 - 40）仍在
+  })
+
+  // 0.0.19：后台会话终态主动提示（toast + 任务栏闪烁）；当前视图不打扰
+  it('后台会话终态：toast 提示 + 任务栏闪烁，当前视图不闪', async () => {
+    const { useToast } = await import('../composables/useToast')
+    const { toasts } = useToast()
+    h.summaries = [{ id: 's-bg', title: '后台活' }]
+    const store = useChatStore()
+    await store.loadSessions()
+    const before = toasts.value.length
+    // 后台会话（当前视图是草稿）：完成 → info toast + 闪烁
+    store.sessionId = ''
+    store.onTerminal({ sessionID: 's-bg', endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(toasts.value.length).toBe(before + 1)
+    expect(toasts.value[toasts.value.length - 1].text).toContain('后台活')
+    expect(toasts.value[toasts.value.length - 1].text).toContain('已完成')
+    expect(h.flashCalls).toBe(1)
+    // 当前视图的终态：不打扰（无新 toast、不闪烁）
+    store.sessionId = 's-bg'
+    store.onTerminal({ sessionID: 's-bg', endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(toasts.value.length).toBe(before + 1)
+    expect(h.flashCalls).toBe(1)
+  })
+
+  // 0.0.19：文件树自动跟手——当前会话的 fs 写/改卡落定 → treeRev +1；后台会话/running 卡不跟
+  it('fs 写改卡落定推文件树刷新信号（当前会话限定）', async () => {
+    const store = useChatStore()
+    store.sessionId = 's-cur'
+    const rev0 = store.treeRev
+    store.onTool({ sessionID: 's-cur', name: 'fs', status: 'running', summary: 'x', op: 'write' })
+    expect(store.treeRev).toBe(rev0) // running 不算落定
+    store.onTool({ sessionID: 's-cur', name: 'fs', status: 'success', summary: 'written a.go', op: 'write' })
+    expect(store.treeRev).toBe(rev0 + 1)
+    store.onTool({ sessionID: 's-bg', name: 'fs', status: 'success', summary: 'written b.go', op: 'edit' })
+    expect(store.treeRev).toBe(rev0 + 1) // 后台会话写它自己的工作区，当前树不跟
+    store.onTool({ sessionID: 's-cur', name: 'shell', status: 'success', summary: 'ok' })
+    expect(store.treeRev).toBe(rev0 + 1) // 非 fs 不跟
+  })
+
+  // 0.0.19：迁移会话走后端并刷新摘要
+  it('moveSession 走后端并刷新摘要', async () => {
+    h.summaries = [{ id: 's-1', title: 'A', workspace: 'D:/old' }]
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.moveSession('s-1', 'D:/new')
+    expect(h.moveCalls).toEqual([{ id: 's-1', dir: 'D:/new' }])
+    expect(store.summaries[0].workspace).toBe('D:/old') // mock 不改归属；loadSessions 已重跑（调用可见即可）
   })
 
   // 0.0.18：载入态按会话各记一份——A 先返回的 finally 不熄掉 B 正在转的"载入中"

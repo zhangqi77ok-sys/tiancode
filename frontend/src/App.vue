@@ -11,6 +11,8 @@ import AppHeader from './components/AppHeader.vue'
 import AppIcon from './components/AppIcon.vue'
 import BrowserPanel from './components/BrowserPanel.vue'
 import ChannelSettings from './components/ChannelSettings.vue'
+import CommandPalette from './components/CommandPalette.vue'
+import ShortcutsOverlay from './components/ShortcutsOverlay.vue'
 import CheckResults from './components/CheckResults.vue'
 import Composer from './components/Composer.vue'
 import DialogHost from './components/DialogHost.vue'
@@ -21,6 +23,7 @@ import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
 import RightPanel, { type RightPanelTabDef } from './components/RightPanel.vue'
 import SessionList from './components/SessionList.vue'
+import StatsPanel from './components/StatsPanel.vue'
 import SkillSettings from './components/SkillSettings.vue'
 import TasksPanel from './components/TasksPanel.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -43,6 +46,8 @@ watch(
   },
 )
 
+const paletteOpen = ref(false) // 命令面板（Ctrl+K，0.0.19）
+const shortcutsOpen = ref(false) // 快捷键速查（?，0.0.19）
 const channelsOpen = ref(false)
 const mcpOpen = ref(false)
 const skillsOpen = ref(false)
@@ -104,6 +109,18 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
       close: () => store.closeTasksPanel(),
     })
   }
+  if (store.statsOpen) {
+    tabs.push({
+      id: 'stats',
+      label: '统计',
+      icon: 'stats',
+      active: store.rightPanelTab === 'stats',
+      activate: () => {
+        store.rightPanelTab = 'stats'
+      },
+      close: () => store.closeStatsPanel(),
+    })
+  }
   return tabs
 })
 // 右栏全关时的竖标入口（0.3）：目录/任务两个"手动开栏" tab。
@@ -111,16 +128,48 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
 const railTabs = [
   { label: '目录', icon: 'folder' as const, open: () => store.openTreePanel() },
   { label: '任务', icon: 'terminal' as const, open: () => store.openTasksPanel() },
+  { label: '统计', icon: 'stats' as const, open: () => void store.openStatsPanel() },
 ]
 
 // 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
 const anyModalOpen = computed(
-  () => channelsOpen.value || mcpOpen.value || skillsOpen.value || tonesOpen.value || wsSettingsOpen.value,
+  () =>
+    paletteOpen.value ||
+    shortcutsOpen.value ||
+    channelsOpen.value ||
+    mcpOpen.value ||
+    skillsOpen.value ||
+    tonesOpen.value ||
+    wsSettingsOpen.value,
 )
 
 // 输入草稿**按会话各存一份**：此前是全局单例——在 A 里敲的半句话切到 B
 // 回车就发进了 B（串会话），A 的草稿也随之丢失。切换/新建时草稿各归各位。
-const drafts = ref<Record<string, string>>({})
+// 0.0.19：持久化到 localStorage（重启不丢半句话）；最多留 50 个会话的草稿防膨胀。
+const DRAFTS_KEY = 'tiancode-drafts-v1'
+function loadDrafts(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DRAFTS_KEY)
+    if (!raw) return {}
+    const all = JSON.parse(raw) as Record<string, string>
+    const keys = Object.keys(all)
+    return keys.length <= 50 ? all : Object.fromEntries(keys.slice(-50).map((k) => [k, all[k]]))
+  } catch {
+    return {} // 坏数据当没有：草稿丢了可以重打，启动被它卡住不行
+  }
+}
+const drafts = ref<Record<string, string>>(loadDrafts())
+watch(
+  drafts,
+  (v) => {
+    try {
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(v))
+    } catch {
+      // 存不进去（隐私模式/配额）就静默：草稿的兜底本来就是内存态
+    }
+  },
+  { deep: true },
+)
 const draft = computed({
   get: () => drafts.value[store.sessionId] ?? '',
   set: (v: string) => {
@@ -206,6 +255,17 @@ function onGlobalKeydown(e: KeyboardEvent) {
       e.preventDefault()
       store.stop()
     }
+    return
+  }
+  // 命令面板（Ctrl+K）与速查（?）：模态守卫已在函数头兜住
+  if (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+    e.preventDefault()
+    paletteOpen.value = true
+    return
+  }
+  if (e.key === '?') {
+    e.preventDefault()
+    shortcutsOpen.value = true
     return
   }
   switch (matchShortcut(e)) {
@@ -348,6 +408,9 @@ onBeforeUnmount(() => {
           <template #tab-tasks>
             <TasksPanel />
           </template>
+          <template #tab-stats>
+            <StatsPanel />
+          </template>
         </RightPanel>
         <!-- 右栏全关时的常驻开栏轨（0.3 改版）：目录/任务是"想要才打开"的 tab（文件/浏览器由
              对话动作自动带出），没有入口这两个 tab 就永远到不了 tab 条上。
@@ -377,6 +440,16 @@ onBeforeUnmount(() => {
     <SkillSettings v-if="skillsOpen" @close="skillsOpen = false" />
     <ToneSettings v-if="tonesOpen" @close="tonesOpen = false" />
     <WorkspaceSettingsPanel v-if="wsSettingsOpen" @close="wsSettingsOpen = false" />
+    <CommandPalette
+      v-if="paletteOpen"
+      @close="paletteOpen = false"
+      @open-channels="paletteOpen = false; openChannels()"
+      @open-mcp="paletteOpen = false; openMcp()"
+      @open-skills="paletteOpen = false; openSkills()"
+      @open-tones="paletteOpen = false; openTones()"
+      @open-workspace-settings="paletteOpen = false; wsSettingsOpen = true"
+    />
+    <ShortcutsOverlay v-if="shortcutsOpen" @close="shortcutsOpen = false" />
     <DialogHost />
     <ToastHost />
   </div>

@@ -19,6 +19,7 @@ const emit = defineEmits<{
   (e: 'pin', pinned: boolean): void
   (e: 'rename'): void
   (e: 'remove'): void
+  (e: 'move'): void
 }>()
 
 const store = useChatStore()
@@ -90,6 +91,15 @@ const store = useChatStore()
         @click="emit('rename')"
       >
         <AppIcon name="pencil" :size="14" />
+      </button>
+      <button
+        class="btn-ghost shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
+        :disabled="props.running"
+        title="移动到空间"
+        aria-label="移动到空间"
+        @click="emit('move')"
+      >
+        <AppIcon name="folder" :size="14" />
       </button>
       <button
         class="btn-ghost shrink-0 hover:text-[var(--c-err-text)] disabled:cursor-not-allowed disabled:opacity-40"

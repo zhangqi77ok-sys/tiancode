@@ -52,6 +52,17 @@ const (
 	// EventFork 标记分叉：派生/投影时丢弃 (from_seq, 本事件 Seq] 区间内的事件
 	//（「从这条用户消息重跑」），其后追加的新事件照常参与。
 	EventFork EventKind = "fork"
+
+	// 0.0.19（会话迁移 / 用量沉淀）——同样只追加，旧行永不改写。
+	//
+	// EventWorkspaceMove 记录一次「移动到空间」：覆盖归属（侧栏分组、顶栏标签、
+	// 工具根同源——首次 workspace 事件仍是初始归属，最后一次 move 说了算）。
+	// path 为空串 = 移出空间（会话变为纯对话归属；本地工具在下一轮下线）。
+	EventWorkspaceMove EventKind = "workspace_move"
+	// EventUsage 记录一轮里上游上报的 token 用量（每收到一次 usage 块追加一行，
+	// 一轮可能多行——ReAct 每次模型调用各报一次）。只做统计投影（Meta 聚合），
+	// 不参与对话重放，投影时整体跳过。
+	EventUsage EventKind = "usage"
 )
 
 // Event 是账本中的最小事件单元。

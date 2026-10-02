@@ -10,10 +10,16 @@ import (
 // Meta 是账本的元数据投影（列表/导出用，不加载消息体）。
 type Meta struct {
 	Title     string // 最后一次 session_renamed
-	Workspace string // 首个 workspace 事件（会话归属）
+	Workspace string // 归属工作区：首个 workspace 事件，被最后一次 workspace_move 覆盖（0.0.19 迁移）
 	Pinned    bool   // 最后一次 session_pinned
 	Events    int    // 完整事件数（诊断用）
 	Skipped   int    // 跳过的不完整/损坏行数（>0 说明账本尾部有未完成写入或坏行）
+
+	// 0.0.19 用量沉淀：所有 usage 事件累计（一轮可能多行——ReAct 每次模型调用
+	// 各报一次）。只做统计展示，不参与对话重放。
+	UsagePrompt     int64
+	UsageCompletion int64
+	UsageTotal      int64
 }
 
 // ReadMeta 只读扫描账本聚合元数据（0.2.36 审计 R2）。
@@ -72,7 +78,7 @@ func ReadMeta(dir, sessionID string) (Meta, error) {
 				m.Pinned = p.Pinned
 			}
 		case EventWorkspace:
-			if !wsSeen { // 归属取首个（与侧栏分组、firstWorkspaceOfLedger 一致）
+			if !wsSeen { // 初始归属取首个（与侧栏分组、firstWorkspaceOfLedger 一致）
 				var p struct {
 					Path string `json:"path"`
 				}
@@ -80,6 +86,27 @@ func ReadMeta(dir, sessionID string) (Meta, error) {
 					m.Workspace = p.Path
 					wsSeen = true
 				}
+			}
+		case EventWorkspaceMove:
+			// 迁移（0.0.19）：最后一次 move 覆盖归属——含显式空串（移出空间 = 纯对话）。
+			// 与"首个快照固定"不冲突：快照是发送时的事实，move 是用户事后的显式决定。
+			var p struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(rec.Data, &p) == nil {
+				m.Workspace = p.Path
+				wsSeen = true
+			}
+		case EventUsage:
+			var p struct {
+				Prompt     int64 `json:"prompt"`
+				Completion int64 `json:"completion"`
+				Total      int64 `json:"total"`
+			}
+			if json.Unmarshal(rec.Data, &p) == nil {
+				m.UsagePrompt += p.Prompt
+				m.UsageCompletion += p.Completion
+				m.UsageTotal += p.Total
 			}
 		}
 		m.Events++

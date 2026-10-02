@@ -91,8 +91,15 @@ func (b *Bind) ExportSessionMarkdown(sessionID string) (string, error) {
 // GetWorkspace 返回当前工作区路径（工具受控根）。
 func (b *Bind) GetWorkspace() string { return b.chat.Workspace() }
 
+// FlashWindow 闪一下任务栏图标（0.0.19）：后台会话结束时前端调用——用户可能
+// 正看着别的会话甚至别的应用，"跑完了/停了"要能穿透当前焦点被看见。
+func (b *Bind) FlashWindow() { FlashWindow() }
+
 // SetWorkspace 切换工作区；非法路径（不存在/非目录/空白）返回错误供 UI 展示。
 func (b *Bind) SetWorkspace(dir string) error { return b.chat.SetWorkspace(dir) }
+
+// MoveSession 把会话迁移到另一个空间（0.0.19）；空 dir = 移出空间（纯对话归属）。
+func (b *Bind) MoveSession(sessionID, dir string) error { return b.chat.MoveSession(sessionID, dir) }
 
 // PinSession 置顶/取消置顶会话（侧栏置顶分区）。
 func (b *Bind) PinSession(sessionID string, pinned bool) error {
@@ -267,7 +274,7 @@ func (b *Bind) SendWithAttachments(sessionID, text, attachments, forceTool strin
 		}
 		return sendErr
 	}
-	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) })
+	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) }, func(p, c, t int64) { b.chat.RecordUsage(sessionID, p, c, t) })
 	return nil
 }
 
@@ -451,6 +458,7 @@ func drainTurn(
 	sessionID string,
 	ch <-chan llm.StreamChunk,
 	emit func(name string, payload any),
+	recordUsage func(prompt, completion, total int64),
 ) {
 	// 为什么兜底合成终态：极端时序下（取消恰逢发送受阻）上游通道可能无终态关闭，
 	// 前端必须始终收到 chat:terminal 才能解锁输入框（C-APP-2 的 UI 侧保证）。
@@ -480,6 +488,11 @@ func drainTurn(
 				"completion": c.Usage.CompletionTokens,
 				"total":      c.Usage.TotalTokens,
 			})
+			// 用量沉淀（0.0.19）：同一份读数落账本，会话列表按会话聚合
+			//（此前只透传给进程内油表，重启即清零）。nil = 测试注入省略。
+			if recordUsage != nil {
+				recordUsage(c.Usage.PromptTokens, c.Usage.CompletionTokens, c.Usage.TotalTokens)
+			}
 		}
 		if c.ToolEvent != nil {
 			// 工具卡片数据（M3）：执行动态实时推送，前端渲染独立卡片
@@ -579,7 +592,7 @@ func (b *Bind) Send(sessionID, text string) error {
 		}
 		return err
 	}
-	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) })
+	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) }, func(p, c, t int64) { b.chat.RecordUsage(sessionID, p, c, t) })
 	return nil
 }
 

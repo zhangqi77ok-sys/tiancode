@@ -145,4 +145,28 @@ describe('FileTreePanel（右栏「目录」tab）', () => {
     expect(calls.dirs.length).toBe(2)
     expect(calls.dirs[1].sessionID).toBe('s-next')
   })
+
+  // 0.0.19 自动跟手：模型写盘（treeRev+1）→ 根目录自动重载，已展开的目录保留
+  it('treeRev 变化自动重载且保留展开态', async () => {
+    calls.entries[''] = [{ name: 'internal', isDir: true, modTime: 1 }, { name: 'a.txt', isDir: false, modTime: 1 }]
+    calls.entries['internal'] = [{ name: 'old.go', isDir: false, modTime: 1 }]
+    const store = await seedSession()
+    const el = await mountPanel()
+    // 展开 internal（点它的折叠按钮）
+    const dirBtn = Array.from(el.querySelectorAll('button')).find((b) => b.textContent?.includes('internal'))
+    ;(dirBtn as HTMLButtonElement).click()
+    await nextTick()
+    await nextTick()
+    expect(calls.dirs.some((c) => c.rel === 'internal')).toBe(true)
+    expect(el.textContent).toContain('old.go')
+    // 模型写盘：根重载（internal 下出现新文件），展开态保留（old.go 仍可见）
+    calls.entries['internal'] = [{ name: 'old.go', isDir: false, modTime: 1 }, { name: 'new.go', isDir: false, modTime: 2 }]
+    store.treeRev++
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await nextTick()
+    await nextTick()
+    expect(el.textContent).toContain('new.go')
+    expect(el.textContent).toContain('old.go') // 展开态没被拍平
+  })
 })

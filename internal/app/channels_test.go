@@ -29,6 +29,10 @@ func newChannelService(t *testing.T, cfg Config) *ChatService {
 	if cfg.TonesPath == "" {
 		cfg.TonesPath = filepath.Join(t.TempDir(), "tones.json")
 	}
+	// 记忆目录（0.0.19）：同纪律——绝不读写用户真实的记忆文件
+	if cfg.MemoryPath == "" {
+		cfg.MemoryPath = filepath.Join(t.TempDir(), "memory")
+	}
 	s, err := NewChatService(cfg)
 	if err != nil {
 		t.Fatalf("NewChatService: %v", err)

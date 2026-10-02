@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChannelStore } from '../stores/channels'
 import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages, stabilizeItems, type RenderItem } from '../composables/messageGrouping'
 import { growFrom, initialFrom, shouldGrow, trimFrom } from '../composables/messageWindow'
+import { registerEsc } from '../composables/useEsc'
 import { shortDir } from '../composables/workspaceLabel'
 import ApprovalCard from './ApprovalCard.vue'
 import AskCard from './AskCard.vue'
 import MessageBubble from './MessageBubble.vue'
 import ToolCard from './ToolCard.vue'
+import AppIcon from './AppIcon.vue'
 
 // 建议提示：点击回填输入框（由 App 把草稿传给 Composer）；
 // 重跑（第 7 批）：用户气泡点「重跑」→ 原文与附件交回输入框（撤回与分叉在发送时确认）
@@ -132,10 +134,107 @@ watch(
   },
 )
 
+// ---- 会话内搜索（Ctrl+F，0.0.19）----
+// 在当前缓冲的消息正文里找（用户/助手正文与问答卡；工具卡正文太碎不搜）。
+// 命中项可跳转：目标不在窗口内时先扩窗（fromIndex 前移）再滚动 + 高亮闪烁。
+const searchOpen = ref(false)
+const query = ref('')
+const searchInput = ref<HTMLInputElement | null>(null)
+const hitIndex = ref(0)
+let offEsc: (() => void) | null = null
+
+function itemText(it: RenderItem): string {
+  if (it.kind === 'turn') return it.run.map((m) => m.content).join('\n')
+  if (it.kind === 'single' || it.kind === 'tool' || it.kind === 'approval' || it.kind === 'ask') {
+    return [it.m.content, it.m.question].filter(Boolean).join('\n')
+  }
+  return ''
+}
+
+const hits = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return [] as RenderItem[]
+  return allItems.value.filter((it) => {
+    const t = itemText(it)
+    return t.length > 0 && t.toLowerCase().includes(q)
+  })
+})
+
+function openSearch() {
+  searchOpen.value = true
+  hitIndex.value = 0
+  void nextTick(() => searchInput.value?.focus())
+}
+function closeSearch() {
+  searchOpen.value = false
+  query.value = ''
+}
+function moveHit(delta: number) {
+  const n = hits.value.length
+  if (!n) return
+  hitIndex.value = (hitIndex.value + delta + n) % n
+  void jumpToHit(hits.value[hitIndex.value])
+}
+
+async function jumpToHit(it: RenderItem | undefined) {
+  if (!it || !scroller.value) return
+  const absIdx = allItems.value.indexOf(it)
+  if (absIdx < 0) return
+  // 目标在窗口外（上方被裁）：前移窗口起点再渲染
+  if (absIdx < fromIndex.value) fromIndex.value = Math.max(0, absIdx - 5)
+  await nextTick()
+  const el = scroller.value.querySelector<HTMLElement>(`[data-skey="${cssEscape(it.key)}"]`)
+  if (!el) return
+  el.scrollIntoView({ block: 'center' })
+  el.classList.remove('search-flash')
+  // 强制重排让动画可重复触发
+  void el.offsetWidth
+  el.classList.add('search-flash')
+}
+
+function cssEscape(v: string): string {
+  return v.replace(/[^a-zA-Z0-9_-]/g, (c) => `\${c}`)
+}
+
+function onListKeydown(e: KeyboardEvent) {
+  // 模态打开时不下手（渠道管理等面板盖在上面，搜索条是背后的事）
+  if (document.querySelector('[role="dialog"]')) return
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+    e.preventDefault()
+    openSearch()
+  }
+}
+onMounted(() => {
+  window.addEventListener('keydown', onListKeydown)
+  offEsc = registerEsc(() => {
+    if (searchOpen.value) {
+      closeSearch()
+      return true
+    }
+    return false
+  })
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onListKeydown)
+  offEsc?.()
+})
+
 // 渲染分组：纯函数（composables/messageGrouping.ts，有单测）——
 // 工具卡并入助手回合块（思考 → 执行 → 回复），绝不冒充消息气泡、绝不双重渲染。
 // 分组结果与窗口切片的组合见上面的 allItems / items（阶段 2）。
 </script>
+
+<style scoped>
+/* 命中高亮闪烁：短促两下，不常驻（常驻底色会跟选中/气泡样式打架） */
+.search-flash {
+  animation: search-flash-anim 1.2s ease-out 1;
+  border-radius: 12px;
+}
+@keyframes search-flash-anim {
+  0%, 60% { box-shadow: 0 0 0 3px var(--c-primary-soft); background: var(--c-primary-soft); }
+  100% { box-shadow: none; background: transparent; }
+}
+</style>
 
 <template>
   <div class="relative flex min-h-0 flex-1 flex-col">
@@ -187,6 +286,10 @@ watch(
          为什么不给每个回合打 data-item-key：MessageBubble 是多根组件（气泡 + 灯箱），
          Vue 无法把透传属性落到某个根上，会出现"属性丢失"的假象。 -->
     <template v-for="item in items" :key="item.key">
+      <!-- 搜索跳转锚点（0.0.19）：data-skey 供命中项 scrollIntoView + 闪烁。
+           包一层普通 div（不能用 display:contents——无盒模型的元素滚不进去），
+           space-y 仍按直接子元素计数，窗口测试不受影响。 -->
+      <div :data-skey="item.key" class="min-w-0">
       <!-- 空卡守卫（0.0.06）：无标题/内容/diff 且非执行中的工具事件不出卡 -->
       <ToolCard
         v-if="item.kind === 'tool' && (item.m.title || item.m.content || item.m.diff || item.m.status === 'running')"
@@ -203,7 +306,38 @@ watch(
         @rerun="emit('rerun', $event)"
       />
       <MessageBubble v-else-if="item.kind === 'single'" :m="item.m" @rerun="emit('rerun', $event)" />
+      </div>
     </template>
+  </div>
+
+  <!-- 会话内搜索条（Ctrl+F，0.0.19）：浮在消息区顶部，不挤压布局 -->
+  <div
+    v-if="searchOpen"
+    class="absolute left-1/2 top-2 z-20 flex w-[420px] max-w-[90%] -translate-x-1/2 items-center gap-2 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] px-3 py-1.5 shadow-[var(--shadow-float)]"
+    role="search"
+  >
+    <AppIcon name="search" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+    <input
+      ref="searchInput"
+      v-model="query"
+      type="text"
+      placeholder="在当前会话中搜索…"
+      aria-label="会话内搜索"
+      class="min-w-0 flex-1 bg-transparent text-xs text-[var(--c-text)] outline-none"
+      @keydown.enter.prevent="moveHit($event.shiftKey ? -1 : 1)"
+    />
+    <span class="shrink-0 tabular-nums text-[10px] text-[var(--c-text-faint)]">
+      {{ query.trim() ? (hits.length ? `${hitIndex + 1}/${hits.length}` : '无命中') : '' }}
+    </span>
+    <button class="btn-ghost shrink-0" :disabled="!hits.length" aria-label="上一个命中" @click="moveHit(-1)">
+      <AppIcon name="chevron-down" :size="13" class="rotate-180" />
+    </button>
+    <button class="btn-ghost shrink-0" :disabled="!hits.length" aria-label="下一个命中" @click="moveHit(1)">
+      <AppIcon name="chevron-down" :size="13" />
+    </button>
+    <button class="btn-ghost shrink-0" aria-label="关闭搜索" @click="closeSearch">
+      <AppIcon name="x" :size="13" />
+    </button>
   </div>
 
   <!-- 锚定丢失时的"回到底部"：位置在消息区内、不压输入框 -->

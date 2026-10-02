@@ -69,8 +69,8 @@ func TestBind_AppCtxFallback(t *testing.T) {
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
 		"AddChannel", "ApprovalPolicy", "BgTasksSnapshot", "BindCodexOAuth", "BrowserNavigate", "ChannelPresets", "CheckProxy", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
-		"ExportSessionMarkdown", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "GitStageAndCommit", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
-		"ListSessions", "ListWorkspaceDir", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProbeMcpServer", "ProposeFileWrite", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "ReplayOlder", "ReplayTail", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "RunUserCommand", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
+		"ExportSessionMarkdown", "FlashWindow", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "GitStageAndCommit", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
+		"ListSessions", "ListWorkspaceDir", "MoveSession", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProbeMcpServer", "ProposeFileWrite", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "ReplayOlder", "ReplayTail", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "RunUserCommand", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
 		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "SuggestCommitMessage", "TestChannel", "UpdateChannel", "WorkspaceSettings",
 	}
 	bindType := reflect.TypeOf(&Bind{})

@@ -7,9 +7,9 @@ import { useEscClose } from '../composables/useEsc'
 import { errText } from '../composables/errText'
 import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
-import { THEME_LABEL, currentTheme, cycleTheme, type ThemeMode } from '../composables/useTheme'
+import { THEME_LABEL, currentTheme, setTheme, type ThemeMode } from '../composables/useTheme'
 import { useContextGauge } from '../composables/useContextGauge'
-import { workspaceLabel } from '../composables/workspaceLabel'
+import { shortDir, workspaceLabel } from '../composables/workspaceLabel'
 import { bridge, winClose, winMinimize, winToggleMaximize } from '../wails'
 import AppIcon from './AppIcon.vue'
 
@@ -62,6 +62,40 @@ async function loadBranch() {
 }
 // 切会话（归属换了）或换工作区（草稿的根换了）都要重取
 watch([() => store.sessionId, () => ws.path], () => void loadBranch(), { immediate: true })
+
+// ---- 顶栏工作区中段可点（0.0.19）----
+// 路径末段是最天然的工作区入口（此前是纯展示文本，入口藏在图标菜单第二层）。
+// 点击弹小菜单：复制完整路径 / 进入最近工作区 / 选择其他目录 / 退出（纯对话）。
+const wsMenuOpen = ref(false)
+const wsMenuRef = ref<HTMLElement | null>(null)
+useEscClose(wsMenuOpen, () => {
+  wsMenuOpen.value = false
+})
+function onWsMenuMousedown(e: MouseEvent) {
+  if (!wsMenuOpen.value) return
+  const el = wsMenuRef.value
+  if (el && !el.contains(e.target as Node)) wsMenuOpen.value = false
+}
+function copyWsPath() {
+  wsMenuOpen.value = false
+  if (wsFullPath.value) void copy(wsFullPath.value, { success: '已复制工作区路径' })
+}
+async function enterRecentWs(dir: string) {
+  wsMenuOpen.value = false
+  if (dir === ws.path) return
+  const ok = await ws.setPath(dir)
+  if (ok) await store.newSession() // 与图标菜单同一语义：切空间 = 回到草稿开新对话
+}
+async function pickOtherWs() {
+  wsMenuOpen.value = false
+  const ok = await ws.pickAndSet()
+  if (ok) await store.newSession()
+}
+async function exitToPureChat() {
+  wsMenuOpen.value = false
+  await ws.clear()
+  await store.newSession()
+}
 
 // 状态灯文案：后台运行 / 待答复都要与"空闲"区分（切走后顶栏不能装作没事）。
 // 0.0.06：带上会话标题——多个会话并行时"后台运行中"说不清是谁在跑。
@@ -201,11 +235,13 @@ async function toggleApproval() {
   if (!ok) approvalOn.value = !next
 }
 
-// ---- 主题切换（0.0.06）：跟随系统 → 浅色 → 深色 循环；偏好持久化 ----
+// ---- 主题切换（0.0.06 循环 → 0.0.19 三选一）：固定深色不该踩三下循环 ----
 const themeMode = ref<ThemeMode>(currentTheme())
-function toggleTheme() {
-  themeMode.value = cycleTheme()
+function pickTheme(mode: ThemeMode) {
+  setTheme(mode)
+  themeMode.value = mode
 }
+const THEME_ORDER: ThemeMode[] = ['auto', 'light', 'dark']
 
 onMounted(async () => {
   // 三步各自隔离：启动自检任一步失败都不该打断后面的初始化（尤其审批开关初值
@@ -223,9 +259,11 @@ onMounted(async () => {
   }
   approvalOn.value = (await store.loadApprovalPolicy()).length > 0
   document.addEventListener('mousedown', onDocMousedown)
+  document.addEventListener('mousedown', onWsMenuMousedown)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onWsMenuMousedown)
   document.removeEventListener('mousedown', onDocMousedown)
 })
 </script>
@@ -251,10 +289,55 @@ onBeforeUnmount(() => {
       <h1 class="text-[15px] font-semibold tracking-tight">tiancode</h1>
     </div>
 
-    <!-- 中：本场对话的工作区（路径末段，完整路径进 title）+ Git 分支；两者都没有就不占位 -->
+    <!-- 中：本场对话的工作区（路径末段，完整路径进 title）+ Git 分支。
+         0.0.19：工作区部分可点——弹小菜单（复制路径 / 进入最近 / 选择其他 / 退出纯对话），
+         此前这个最天然的工作区入口只是纯展示文本，真正的入口藏在图标菜单第二层。 -->
     <div class="flex min-w-0 flex-1 items-center justify-center gap-2 text-xs">
+      <div ref="wsMenuRef" class="relative min-w-0">
+        <button
+          v-if="wsBase"
+          class="flex min-w-0 max-w-[240px] items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-text)]"
+          :title="`${wsFullPath}（点击管理工作区）`"
+          aria-haspopup="menu"
+          :aria-expanded="wsMenuOpen"
+          @click="wsMenuOpen = !wsMenuOpen"
+        >
+          <span class="min-w-0 truncate">{{ wsBase }}</span>
+        </button>
+        <div
+          v-if="wsMenuOpen"
+          role="menu"
+          class="absolute left-1/2 top-full z-40 mt-1 w-72 -translate-x-1/2 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-[var(--shadow-float)]"
+        >
+          <button role="menuitem" class="menu-item" :disabled="!wsFullPath" @click="copyWsPath">
+            <AppIcon name="copy" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="min-w-0 flex-1 truncate text-left" :title="wsFullPath">复制完整路径</span>
+          </button>
+          <div class="my-1 h-px bg-[var(--c-border)]"></div>
+          <p class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">进入工作区（新对话将归属它）</p>
+          <button
+            v-for="w in recentWorkspaces"
+            :key="w"
+            role="menuitem"
+            class="menu-item"
+            @click="enterRecentWs(w)"
+          >
+            <AppIcon name="folder" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="min-w-0 flex-1 truncate text-left" :title="w">{{ shortDir(w) }}</span>
+            <span v-if="w === ws.path" class="shrink-0 text-[10px] text-[var(--c-primary)]">当前</span>
+          </button>
+          <div class="my-1 h-px bg-[var(--c-border)]"></div>
+          <button role="menuitem" class="menu-item" @click="pickOtherWs">
+            <AppIcon name="folder" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="flex-1 text-left">选择其他目录…</span>
+          </button>
+          <button v-if="ws.path" role="menuitem" class="menu-item" @click="exitToPureChat">
+            <AppIcon name="message" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="flex-1 text-left">退出工作区（纯对话）</span>
+          </button>
+        </div>
+      </div>
       <template v-if="wsBase || branch">
-        <span v-if="wsBase" class="min-w-0 truncate text-[var(--c-text-dim)]" :title="wsFullPath">{{ wsBase }}</span>
         <span v-if="wsBase && branch" class="shrink-0 text-[var(--c-text-faint)]" aria-hidden="true">·</span>
         <span
           v-if="branch"
@@ -351,12 +434,26 @@ onBeforeUnmount(() => {
               {{ approvalOn ? '开' : '关' }}
             </span>
           </button>
-          <!-- 主题三态（0.0.06）：跟随系统 / 浅色 / 深色循环；不关菜单，方便连点循环回来 -->
-          <button role="menuitem" class="menu-item" @click="toggleTheme">
-            <AppIcon name="refresh" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
-            <span class="flex-1 text-left">主题</span>
-            <span class="shrink-0 text-[11px] text-[var(--c-text-faint)]">{{ THEME_LABEL[themeMode] }}</span>
-          </button>
+          <!-- 主题三选一（0.0.19，原循环切换）：固定深色不该踩三下；选中态用色点标明 -->
+          <div role="group" aria-label="主题" class="flex items-center gap-1 px-2 py-1">
+            <span class="flex flex-1 items-center gap-1.5 text-xs text-[var(--c-text-dim)]">
+              <AppIcon name="refresh" :size="13" class="shrink-0 text-[var(--c-text-faint)]" /> 主题
+            </span>
+            <button
+              v-for="m in THEME_ORDER"
+              :key="m"
+              class="rounded-lg px-2 py-1 text-[11px] transition-colors"
+              :class="
+                themeMode === m
+                  ? 'bg-[var(--c-primary-soft)] font-medium text-[var(--c-primary)]'
+                  : 'text-[var(--c-text-dim)] hover:bg-[var(--c-surface-soft)]'
+              "
+              :aria-pressed="themeMode === m"
+              @click="pickTheme(m)"
+            >
+              {{ THEME_LABEL[m] }}
+            </button>
+          </div>
           <div class="my-1 h-px bg-[var(--c-border)]"></div>
           <!-- 工作区（0.0.07 语义不变）：主信息在顶栏中段（路径末段），这里做进入/切换/退出 -->
           <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">

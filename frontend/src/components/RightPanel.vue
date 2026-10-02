@@ -14,7 +14,7 @@ export interface RightPanelTabDef {
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { registerEsc } from '../composables/useEsc'
 import AppIcon from './AppIcon.vue'
 
@@ -27,6 +27,39 @@ import AppIcon from './AppIcon.vue'
 //      activate 置激活态（含内容侧打开动作），close 关内容侧开态——关掉激活 tab 后
 //      注册表自然缩回，激活态不在列表时容器回退到第一项。
 const props = defineProps<{ tabs: RightPanelTabDef[] }>()
+
+// ---- 宽度可拖拽（0.0.19）----
+// 固定 420/480 对大 diff 和驾驶舱截图太局促、1280 屏又嫌挤。拖左缘调宽，
+// localStorage 记忆；对话列有 min-w-[320px]（App.vue），这里同样设下限防挤压。
+const WIDTH_KEY = 'tiancode-rightpanel-w'
+const MIN_W = 300
+function loadWidth(): number {
+  const v = Number(localStorage.getItem(WIDTH_KEY))
+  return Number.isFinite(v) && v >= MIN_W ? v : 440
+}
+const width = ref(loadWidth())
+let dragStartX = 0
+let dragStartW = 0
+function onDragMove(e: MouseEvent) {
+  const w = Math.min(dragStartW + (dragStartX - e.clientX), window.innerWidth - 360)
+  width.value = Math.max(MIN_W, Math.round(w))
+}
+function onDragEnd() {
+  window.removeEventListener('mousemove', onDragMove)
+  window.removeEventListener('mouseup', onDragEnd)
+  localStorage.setItem(WIDTH_KEY, String(width.value))
+}
+function startResize(e: MouseEvent) {
+  e.preventDefault()
+  dragStartX = e.clientX
+  dragStartW = width.value
+  window.addEventListener('mousemove', onDragMove)
+  window.addEventListener('mouseup', onDragEnd)
+}
+onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', onDragMove)
+  window.removeEventListener('mouseup', onDragEnd)
+})
 
 // 激活 tab：store 标注优先，缺失（激活 tab 已被关掉）回退第一项
 const active = computed(() => props.tabs.find((t) => t.active) ?? props.tabs[0])
@@ -44,9 +77,18 @@ onBeforeUnmount(() => offEsc?.())
 <template>
   <!-- 0.3：与对话列用表面色差区分，不再画 1px 硬分割线 -->
   <aside
-    class="flex w-[420px] shrink-0 flex-col bg-[var(--c-surface)] xl:w-[480px]"
+    class="relative flex shrink-0 flex-col bg-[var(--c-surface)]"
+    :style="{ width: width + 'px' }"
     :aria-label="active ? `${active.label}面板` : '右栏面板'"
   >
+    <!-- 拖拽把手（0.0.19）：左缘 4px 热区，hover 提示可拖 -->
+    <div
+      class="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize transition-colors hover:bg-[var(--c-primary)]"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="拖拽调整面板宽度"
+      @mousedown="startResize"
+    ></div>
     <!-- tab 条：chip + aria-pressed 是全库统一的"选中态真相"（见 style.css） -->
     <div class="flex items-center gap-1.5 border-b border-[var(--c-border)] px-2.5 py-2" role="group" aria-label="右栏视图">
       <button

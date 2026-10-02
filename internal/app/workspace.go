@@ -17,6 +17,7 @@ import (
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/fstool"
 	"tiancode/internal/platform/gittool"
+	"tiancode/internal/platform/memory"
 	"tiancode/internal/platform/searchtool"
 	"tiancode/internal/platform/shelltool"
 	"tiancode/internal/platform/workspace"
@@ -71,12 +72,19 @@ func (s *ChatService) ResolveSessionPath(sessionID, path string) (abs string, is
 		abs = filepath.Join(root, clean)
 	}
 	abs = filepath.Clean(abs)
-	if !withinDir(root, abs) {
-		return "", false, fmt.Errorf("路径不在该对话的工作区内：%s", clean)
-	}
 	info, statErr := os.Stat(abs)
 	if statErr != nil {
 		return "", false, fmt.Errorf("文件不存在：%s", abs)
+	}
+	// 符号链接解析后再做越界判定（0.0.19 底层债修复）：root 已规范化（含符号链接
+	// 解析），abs 不解析的话，指向根外的链接（root\link -> D:\elsewhere）会被
+	// 字面前缀比较误判为"在根内"。解析失败保留原路径（文件系统不支持时退回
+	// 字面判定——Stat 已确认存在，宁可保守也不能放行）。
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = filepath.Clean(resolved)
+	}
+	if !withinDir(root, abs) {
+		return "", false, fmt.Errorf("路径不在该对话的工作区内：%s", clean)
 	}
 	return abs, info.IsDir(), nil
 }
@@ -149,24 +157,39 @@ func withinDir(root, abs string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// firstWorkspaceOfLedger 返回账本里**第一个** workspace 事件记录的路径
-// （0.2.36 审计 R1）。归属以首个为准（与侧栏分组、TestSessionSummaries_CarryWorkspace
-// 一致）：旧账本里后来若又写了别的路径也不改归属——否则侧栏分组与真实
-// 写入目录会再次分叉。own=true 表示该会话已有归属（含显式空串 = 纯对话）。
+// firstWorkspaceOfLedger 返回账本里记录的会话归属路径（own=true 表示已有归属，
+// 含显式空串 = 纯对话）。归属规则（0.0.19 迁移语义）：首个 workspace 事件是
+// 初始归属（与侧栏分组、TestSessionSummaries_CarryWorkspace 一致）；**最后一次**
+// workspace_move 事件若存在则覆盖——迁移是用户事后的显式决定，展示（Meta）与
+// 工具根（这里）必须同一规则，否则侧栏分组和真实写入目录会分叉。
 // 尽力而为语义：读取失败按"无归属"处理（不阻断发送）。
 func firstWorkspaceOfLedger(l *session.Ledger) (string, bool) {
 	root := ""
 	own := false
+	moved := false
 	if err := l.Replay(func(ev session.Event) error {
-		if own || ev.Kind() != session.EventWorkspace {
-			return nil
-		}
-		var p struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(ev.Data(), &p); err == nil {
-			root = p.Path
-			own = true
+		switch ev.Kind() {
+		case session.EventWorkspace:
+			if own || moved {
+				return nil
+			}
+			var p struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err == nil {
+				root = p.Path
+				own = true
+			}
+		case session.EventWorkspaceMove:
+			// 最后一次 move 说了算（继续扫，后面的 move 再覆盖）
+			var p struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err == nil {
+				root = p.Path
+				own = true
+				moved = true
+			}
 		}
 		return nil
 	}); err != nil {
@@ -280,6 +303,18 @@ func (s *ChatService) assembleRegistry(st *sessionTools) (*tools.Registry, error
 	// 查文档/查报错方案是硬伤能力，纯对话也必须在场。
 	if err := registry.Register(s.webFetch); err != nil {
 		return nil, fmt.Errorf("register tool: %w", err)
+	}
+	// memory：共享长期记忆工具（0.0.19）。root 只决定 workspace scope 的存储键
+	//（纯对话时该 scope 显式报错，global 照常可用）；写的是应用数据目录下的
+	// 记忆文件，不碰工作区，故不进审批闸门清单。
+	if s.memory != nil {
+		root := ""
+		if st != nil {
+			root = st.root
+		}
+		if err := registry.Register(memory.NewTool(s.memory, root)); err != nil {
+			return nil, fmt.Errorf("register tool: %w", err)
+		}
 	}
 	if st != nil {
 		for _, t := range []tools.ToolPort{st.fs, st.shell, st.git, st.search, st.browser} {

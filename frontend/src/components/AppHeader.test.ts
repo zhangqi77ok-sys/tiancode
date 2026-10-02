@@ -109,9 +109,10 @@ describe('AppHeader（阶段 1）', () => {
     store.summaries = [{ id: 's1', title: '', workspace: 'D:\\work\\proj\\app' }]
     await new Promise((r) => setTimeout(r, 0))
     await nextTick()
-    const cell = Array.from(headerEl().querySelectorAll('span')).find((s) => s.textContent?.trim() === 'app')
+    // 0.0.19：中段工作区是可点按钮（弹工作区菜单），完整路径仍在 title
+    const cell = Array.from(headerEl().querySelectorAll('button')).find((b) => b.textContent?.trim() === 'app')
     expect(cell, '中段显示路径末段').toBeTruthy()
-    expect(cell?.getAttribute('title')).toBe('D:\\work\\proj\\app')
+    expect(cell?.getAttribute('title')).toContain('D:\\work\\proj\\app')
     expect(text()).toContain('main') // 分支与工作区并列
   })
 
@@ -138,8 +139,14 @@ describe('AppHeader（阶段 1）', () => {
     useChatStore().sessionId = 's1'
     await openMenu()
     const labels = menuItems().map((b) => b.textContent ?? '')
-    for (const want of ['复制 Markdown', '另存为文件', '命令确认', '主题']) {
+    for (const want of ['复制 Markdown', '另存为文件', '命令确认']) {
       expect(labels.some((t) => t.includes(want)), `菜单缺 ${want}`).toBe(true)
+    }
+    // 主题 0.0.19 起是三选一按钮组（不再是循环切换的 menuitem）
+    const themeGroup = headerEl().querySelector('[role="group"][aria-label="主题"]')
+    expect(themeGroup, '菜单缺主题三选一').toBeTruthy()
+    for (const want of ['跟随系统', '浅色', '深色']) {
+      expect(themeGroup?.textContent ?? '').toContain(want)
     }
     // 工作区一组在菜单里（标题行是文字，不是条目）
     expect(menuEl()?.textContent ?? '').toContain('工作区')

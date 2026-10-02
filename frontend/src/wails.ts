@@ -67,6 +67,10 @@ export interface SessionSummaryDTO {
   workspace?: string
   pinned?: boolean
   lastActiveMs?: number
+  // 0.0.19 用量沉淀（账本 usage 事件累计；旧账本/未发生轮次缺省 0）
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
 }
 
 // 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）
@@ -389,6 +393,11 @@ interface WailsApp {
   GetExtensions(): Promise<{ mcp: McpServerDTO[]; skills: SkillItemDTO[] } | null>
   SaveExtensions(file: { mcp: McpServerDTO[]; skills: SkillItemDTO[] }): Promise<void>
   SetWorkspace(dir: string): Promise<void>
+  // 会话迁移（0.0.19）：把会话归属迁到另一个空间；空 dir = 移出空间（纯对话归属）。
+  // 展示（侧栏分组/顶栏标签）与工具根同一规则，下一轮起文件操作落新目录。
+  MoveSession(sessionID: string, dir: string): Promise<void>
+  // 任务栏闪烁（0.0.19）：后台会话结束时调用，让"跑完了"穿透当前焦点被看见。
+  FlashWindow(): Promise<void>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
   // 顶栏分支（0.0.11）：已落账会话取该会话自己的工作区，草稿取"下一场新对话"的根；
@@ -593,6 +602,8 @@ export function bridge(): WailsBridge {
         PickWorkspace: offlineWrite,
         PickImport: offlineWrite,
         PinSession: offlineWrite,
+        MoveSession: offlineWrite,
+        FlashWindow: async () => {},
         Replay: async () => [],
         ReplayTail: async () => ({ messages: [], total: 0, from: 0 }),
         ReplayOlder: async () => ({ messages: [], total: 0, from: 0 }),

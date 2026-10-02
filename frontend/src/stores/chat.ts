@@ -10,6 +10,7 @@ import {
   type SessionSummaryDTO,
 } from '../wails'
 import { errText } from '../composables/errText'
+import { useToast } from '../composables/useToast'
 import { useWorkspaceStore } from './workspace'
 
 // 任务清单单项（todo 工具的全量快照）
@@ -193,6 +194,11 @@ export const useChatStore = defineStore('chat', () => {
   const sessionId = ref('')
   const sessions = ref<string[]>([])
   const error = ref('')
+  const { push: toast } = useToast()
+
+  // 文件树刷新信号（0.0.19 自动跟手）：fs 写/改卡落定（当前会话）+1——
+  // FileTreePanel watch 它整体重载根目录（展开态由面板自己保留）。
+  const treeRev = ref(0)
 
   // 会话摘要（ID + 标题）：标题为空时侧栏回退显示 ID
   const summaries = ref<SessionSummaryDTO[]>([])
@@ -400,6 +406,7 @@ export const useChatStore = defineStore('chat', () => {
           at: Date.now(),
         }),
       )
+      treeRev.value++ // 恢复写入前 = 磁盘变了：文件树跟手（0.0.19）
     } catch (e) {
       error.value = errText(e)
     }
@@ -695,6 +702,18 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 迁移会话到另一个空间（0.0.19）：归属是账本事实（workspace_move 事件），
+  // 成功后刷新摘要（侧栏分组与顶栏标签随之变化）；失败可见不静默。
+  async function moveSession(id: string, dir: string) {
+    error.value = ''
+    try {
+      await bridge().app.MoveSession(id, dir)
+      await loadSessions()
+    } catch (e) {
+      error.value = errText(e)
+    }
+  }
+
   // 返回是否成功：失败时错误落 error 位（可见），调用方（顶栏开关）据此回滚
   // 乐观状态——不回滚的话开关显示与实际策略相反。
   async function setApprovalPolicy(tools: string[]): Promise<boolean> {
@@ -963,7 +982,7 @@ export const useChatStore = defineStore('chat', () => {
   // 本身就是驾驶舱数据，切会话自动跟随、Replay 自动恢复、running 卡原地生长都免费拿到。
   // 面板开关与激活 tab 是应用级视图状态（不属于任何会话）；文件 tab 的开态即 fileDetailPath。
 
-  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks'>('file')
+  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks' | 'stats'>('file')
   const browserOpen = ref(false)
   function openBrowserPanel() {
     browserOpen.value = true
@@ -1029,6 +1048,19 @@ export const useChatStore = defineStore('chat', () => {
     tasksOpen.value = false
   }
 
+  // ---- 用量统计（右栏「统计」tab，0.0.19）----
+  // 数据源 = summaries 的 usage 字段（后端账本聚合），本 tab 只做排序与展示；
+  // 打开时顺手刷新一次列表（正在跑的轮次落的新行也能追上）。
+  const statsOpen = ref(false)
+  async function openStatsPanel() {
+    statsOpen.value = true
+    rightPanelTab.value = 'stats'
+    await loadSessions()
+  }
+  function closeStatsPanel() {
+    statsOpen.value = false
+  }
+
   // openCockpitFor：browser 工具卡到达（当前会话）→ 自动打开驾驶舱并切到浏览器 tab。
   // 后台会话的浏览器事件照常入它自己的缓冲，但绝不抢当前视图（与审批/问答同纪律）。
   function openCockpitFor(p: ChatToolEventDTO) {
@@ -1051,10 +1083,19 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // autoOpenPanelsFor：每张工具卡的落卡路径只调一次的面板联动入口（驾驶舱 + 任务）。
+  // bumpTreeFor：当前会话的 fs 写/改卡落定 → 文件树刷新信号 +1（0.0.19 自动跟手）。
+  // 后台会话写的是它自己的工作区，当前视图的树不跟；running 卡还没落定也不跟。
+  function bumpTreeFor(p: ChatToolEventDTO) {
+    if (p.name !== 'fs' || p.status === 'running') return
+    if (p.sessionID !== sessionId.value) return
+    if (p.op === 'write' || p.op === 'edit') treeRev.value++
+  }
+
+  // autoOpenPanelsFor：每张工具卡的落卡路径只调一次的面板联动入口（驾驶舱 + 任务 + 树刷新）。
   function autoOpenPanelsFor(p: ChatToolEventDTO) {
     openCockpitFor(p)
     openTasksFor(p)
+    bumpTreeFor(p)
   }
 
   // 驾驶舱各字段取"最新携带者"的值（从新往旧扫）：undefined = 本卡不带该数据
@@ -1108,6 +1149,7 @@ export const useChatStore = defineStore('chat', () => {
         const ast = inFlightAssistant(c)
         const i = ast ? c.messages.indexOf(ast) + 1 : c.messages.length
         c.messages.splice(i, 0, card)
+        treeRev.value++ // 写盘成功：文件树跟手（0.0.19）
       }
       return res
     } catch (e) {
@@ -1216,6 +1258,20 @@ export const useChatStore = defineStore('chat', () => {
         }),
       )
       c.turnStartedAt = 0
+    }
+    // 后台会话终态主动提示（0.0.19）：用户切在别的会话甚至别的应用上时，
+    // "跑完了/停了"必须穿透当前焦点被看见——toast 可点跳转 + 任务栏闪烁。
+    // 当前视图的终态不打扰（用户正盯着它，再来一条 toast 是噪音）。
+    if (p.sessionID !== sessionId.value) {
+      const name = titleOf(p.sessionID) || '未命名会话'
+      if (p.endReason === END_REASON.DONE) {
+        toast('info', `「${name}」已完成`)
+      } else if (p.endReason === END_REASON.CANCELLED) {
+        toast('info', `「${name}」已中断`)
+      } else {
+        toast('error', `「${name}」出错了${p.error ? `：${p.error}` : ''}`)
+      }
+      void bridge().app.FlashWindow()
     }
     // 首轮结束自动命名会话（开源惯例：open-webui/lobe-chat 以首条消息截断作标题，
     // 侧栏不再裸奔会话 ID）；用户重命名过的不覆盖——titleOf 回退会话 ID 即"未命名"判据。
@@ -1402,6 +1458,11 @@ export const useChatStore = defineStore('chat', () => {
     tasksOpen,
     openTasksPanel,
     closeTasksPanel,
+    statsOpen,
+    openStatsPanel,
+    closeStatsPanel,
+    treeRev,
+    moveSession,
     browserVisual,
     proposeApplyCode,
     runUserCommand,

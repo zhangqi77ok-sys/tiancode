@@ -10,6 +10,12 @@
 // 水位没动时直接复用缓存，向上翻页不再每页重扫整本账本。
 package app
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
 // 页大小默认与硬顶：默认值对齐前端 DOM 窗口的初始/增量块（40 条）。
 const (
 	defaultReplayLimit = 40
@@ -52,6 +58,10 @@ func (s *ChatService) projectSession(sessionID string) ([]ChatMessage, int64, er
 	if err != nil {
 		return nil, 0, err
 	}
+	if size := ledgerSizeOf(s, sessionID); size > maxLedgerProjectionBytes {
+		return nil, 0, fmt.Errorf("账本过大（%d MB），超过投影上限（%d MB）：无法载入该会话，请删除或手工归档 %s",
+			size>>20, maxLedgerProjectionBytes>>20, sessionID)
+	}
 	seq := ledger.LastSeq()
 	s.replayMu.Lock()
 	if c, ok := s.replayCache[sessionID]; ok && c.lastSeq == seq {
@@ -87,6 +97,20 @@ func pageOf(msgs []ChatMessage, from, limit int) ReplayPage {
 	out := make([]ChatMessage, from-start)
 	copy(out, msgs[start:from])
 	return ReplayPage{Messages: out, Total: len(msgs), From: start}
+}
+
+// maxLedgerProjectionBytes 是投影前的大小防线（0.0.19 底层债修复）：Replay 把
+// 整本账本读进内存，无上限的账本（异常增长/失控轮次）会一路吃到 OOM——
+// 到达硬顶显式报错并给出出路（删除会话 / 联系排障），绝不静默吞掉可用内存。
+const maxLedgerProjectionBytes = 256 << 20
+
+// ledgerSizeOf 可注入以便测试（生产实现 stat 账本文件）。
+var ledgerSizeOf = func(s *ChatService, sessionID string) int64 {
+	info, err := os.Stat(filepath.Join(s.cfg.DataDir, sessionID+".jsonl"))
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 // ReplayTail 返回投影的最后 limit 条（切会话首屏）。

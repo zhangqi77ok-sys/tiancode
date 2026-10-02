@@ -5,6 +5,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +24,10 @@ type SessionSummary struct {
 	// SkippedLines > 0 表示账本有未完成写入（回合进行中的常态）或坏行被跳过
 	// （0.2.36 审计 R2：元数据只读、不截断、单条坏不联坐）。
 	SkippedLines int `json:"skippedLines,omitempty"`
+	// 0.0.19 用量沉淀（账本 usage 事件累计；旧账本/未发生轮次为 0）。
+	PromptTokens     int64 `json:"promptTokens,omitempty"`
+	CompletionTokens int64 `json:"completionTokens,omitempty"`
+	TotalTokens      int64 `json:"totalTokens,omitempty"`
 }
 
 // maxTitleRunes 是标题长度上限：侧栏单行展示，过长既撑破布局也无法辨认。
@@ -57,6 +62,54 @@ func (s *ChatService) RenameSession(sessionID, title string) error {
 		return fmt.Errorf("保存会话标题失败：%w", err)
 	}
 	return nil
+}
+
+// MoveSession 把会话迁移到另一个空间（0.0.19）。dir = 目标工作区绝对路径；
+// 空串 = 移出空间（会话变为纯对话归属，本地文件工具下一轮下线）。
+//
+// 迁移是显式的账本事件（workspace_move，最后一次说了算），展示（Meta/侧栏分组）
+// 与工具根（firstWorkspaceOfLedger）同一规则——下一轮 Send 按 moved 后的根重建
+// 会话工具集（ensureSessionTools 对根变化自会收旧建新），绝不再出现"侧栏挂在
+// 新空间、文件写进旧目录"的分叉。目标目录非空时必须存在且是目录：迁移到不
+// 存在的目录 = 下一轮所有文件操作报错，宁可当场拒绝。
+func (s *ChatService) MoveSession(sessionID, dir string) error {
+	dir = normalizeWorkspace(dir)
+	if dir != "" {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("目标工作区不可用：%w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("目标工作区不是目录：%s", dir)
+		}
+	}
+	l, err := s.ledgerFor(sessionID)
+	if err != nil {
+		return err
+	}
+	// 运行中先拒绝（事件都没落——迁移不可以只完成一半）：进行中轮次的工具根已定，
+	// 此刻换根会让同一轮的文件操作写到两个目录。
+	if s.isSessionRunning(sessionID) {
+		return errors.New("会话正在运行，请先中断再迁移")
+	}
+	if _, err := l.Append(session.EventWorkspaceMove, map[string]string{"path": dir}); err != nil {
+		return fmt.Errorf("保存会话迁移失败：%w", err)
+	}
+	// 工具集随归属立即重建：ensureSessionTools 对根变化自会收旧（断在途动作、
+	// 关 shell 任务表与浏览器 tab）建新——迁移后 @ 引用/文件树立即指向新目录，
+	// 不等下一轮。构建失败显式返回（归属已迁移但工具没跟上 = 分叉，绝不静默）。
+	if _, err := s.ensureSessionTools(sessionID, dir); err != nil {
+		return fmt.Errorf("迁移后重建工具集失败：%w", err)
+	}
+	return nil
+}
+
+// isSessionRunning 报告会话是否有进行中的轮次（MoveSession 的迁移前置校验）。
+func (s *ChatService) isSessionRunning(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, busy := s.running[sessionID]
+	return busy
 }
 
 // roleLabel 把消息角色映射为中文小节标题（未知角色原样保留，不丢信息）。
@@ -121,6 +174,7 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 		out = append(out, SessionSummary{
 			ID: id, Title: meta.Title, Workspace: meta.Workspace,
 			Pinned: meta.Pinned, LastActiveMs: lastActive, SkippedLines: meta.Skipped,
+			PromptTokens: meta.UsagePrompt, CompletionTokens: meta.UsageCompletion, TotalTokens: meta.UsageTotal,
 		})
 	}
 	return out, nil

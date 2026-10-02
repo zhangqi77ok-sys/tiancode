@@ -9,6 +9,7 @@ import { buildSidebar, filterSidebar } from '../composables/sessionGrouping'
 import { useDialogs } from '../composables/useDialogs'
 import { useEscClose } from '../composables/useEsc'
 import AppIcon from './AppIcon.vue'
+import BaseModal from './BaseModal.vue'
 import SessionRow from './SessionRow.vue'
 
 // 会话侧栏（三段式，对齐商用 AI 工具）：置顶 / 会话（未归属空间）/ 空间（按工作区分组）。
@@ -160,6 +161,27 @@ function select(id: string) {
   void store.selectSession(id)
   emit('close') // 窄屏选中后收起抽屉；桌面端该事件无副作用
 }
+
+// ---- 移动到空间（0.0.19）----
+// 归属是账本事实（workspace_move 事件），展示与工具根同一规则——迁移后侧栏分组、
+// 顶栏标签、下一轮文件操作一起切到新空间。候选 = 用户用过的全部工作区
+//（summaries 归属去重 + 当前根）；也允许移出空间（纯对话归属，工具下线）。
+const moveTarget = ref('') // 待迁移的会话 ID（'' = 关闭）
+const moveTitle = computed(() => (moveTarget.value ? store.titleOf(moveTarget.value) : ''))
+const moveOptions = computed(() => {
+  const set = new Set<string>()
+  if (ws.path) set.add(ws.path)
+  for (const sm of store.summaries) if (sm.workspace) set.add(sm.workspace)
+  return [...set]
+})
+function openMove(id: string) {
+  moveTarget.value = id
+}
+async function doMove(dir: string) {
+  const id = moveTarget.value
+  moveTarget.value = ''
+  if (id) await store.moveSession(id, dir)
+}
 </script>
 
 <template>
@@ -241,6 +263,7 @@ function select(id: string) {
               @pin="(p) => store.pinSession(sm.id, p)"
               @rename="rename(sm.id)"
               @remove="remove(sm.id)"
+              @move="openMove(sm.id)"
             />
           </div>
           <button
@@ -311,6 +334,7 @@ function select(id: string) {
                 @pin="(p) => store.pinSession(sm.id, p)"
                 @rename="rename(sm.id)"
                 @remove="remove(sm.id)"
+                @move="openMove(sm.id)"
               />
             </div>
             <!-- 查看更多与文件夹折叠用不同 key，互不打架；搜索中不折叠到 5 条 -->
@@ -417,5 +441,27 @@ function select(id: string) {
         </button>
       </div>
     </div>
+  <!-- 迁移空间（0.0.19）：归属 = 账本事实，确认后落 workspace_move 事件 -->
+  <BaseModal :open="!!moveTarget" :title="`移动「${moveTitle}」到空间`" @close="moveTarget = ''">
+    <div class="space-y-1">
+      <p class="px-1 pb-1 text-xs text-[var(--c-text-dim)]">
+        归属决定侧栏分组与这场对话读写的工作区；运行中的会话不能迁移。
+      </p>
+      <button
+        v-for="w in moveOptions"
+        :key="w"
+        class="menu-item"
+        @click="doMove(w)"
+      >
+        <AppIcon name="folder" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+        <span class="min-w-0 flex-1 truncate text-left" :title="w">{{ w }}</span>
+      </button>
+      <div class="my-1 h-px bg-[var(--c-border)]"></div>
+      <button class="menu-item" @click="doMove('')">
+        <AppIcon name="message" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+        <span class="flex-1 text-left">移出空间（纯对话，文件工具下线）</span>
+      </button>
+    </div>
+  </BaseModal>
   </aside>
 </template>
