@@ -292,6 +292,13 @@ export interface RoundInfoDTO {
   files: { path: string; revertable: boolean }[]
 }
 
+// 两级记忆原文（0.0.21 记忆管理面板）：每行一条，行号即后端 Delete 的 1 基锚点。
+// project 为空 = 纯对话（没有项目记忆，不是错误）。
+export interface MemoryViewDTO {
+  global: string[]
+  project: string[]
+}
+
 // 更新检查结果（0.0.20；GitHub Releases 为源，dev 构建恒无更新）
 export interface UpdateInfoDTO {
   current: string
@@ -421,6 +428,10 @@ interface WailsApp {
   // 真正退出应用（0.0.21）：仅关窗确认框确认后调用——后台有轮次在跑时，
   // 系统关窗会被 OnBeforeClose 拦截并转成 chat:close-requested 事件。
   ForceQuit(): Promise<void>
+  // 记忆管理（0.0.21）：模型能记的用户必须看得见、删得掉。
+  MemoryLines(sessionID: string): Promise<MemoryViewDTO | null>
+  MemoryDelete(sessionID: string, scope: 'global' | 'workspace', line: number): Promise<void>
+  MemoryClear(sessionID: string, scope: 'global' | 'workspace'): Promise<void>
   // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
   RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
   RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
@@ -634,6 +645,9 @@ export function bridge(): WailsBridge {
         MoveSession: offlineWrite,
         FlashWindow: async () => {},
         ForceQuit: async () => {},
+        MemoryLines: async () => ({ global: [], project: [] }),
+        MemoryDelete: offlineWrite,
+        MemoryClear: offlineWrite,
         RoundTimeline: async () => [],
         RevertToRound: offlineWrite,
         CheckUpdate: async () => ({

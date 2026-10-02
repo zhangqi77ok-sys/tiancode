@@ -27,6 +27,7 @@ const emit = defineEmits<{
   (e: 'open-mcp'): void
   (e: 'open-skills'): void
   (e: 'open-tones'): void
+  (e: 'open-memory'): void
   (e: 'open-workspace-settings'): void
   (e: 'toggle-collapsed'): void
 }>()
@@ -70,11 +71,12 @@ onMounted(() => {
 })
 onBeforeUnmount(() => document.removeEventListener('mousedown', onSettingsMousedown))
 
-function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones') {
+function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones' | 'memory') {
   settingsMenuOpen.value = false
   if (kind === 'channels') emit('open-channels')
   else if (kind === 'mcp') emit('open-mcp')
   else if (kind === 'skills') emit('open-skills')
+  else if (kind === 'memory') emit('open-memory')
   else emit('open-tones')
 }
 
@@ -438,6 +440,11 @@ async function doMove(dir: string) {
         <button role="menuitem" class="menu-item" @click="emit('open-workspace-settings'); settingsMenuOpen = false">
           <AppIcon name="wrench" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">工作区设置</span>
+        </button>
+        <!-- 记忆（0.0.21）：模型能记的用户必须看得见、删得掉——透明度红线 -->
+        <button role="menuitem" class="menu-item" @click="openSettings('memory')">
+          <AppIcon name="book" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">记忆</span>
         </button>
       </div>
     </div>

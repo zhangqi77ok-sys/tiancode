@@ -188,3 +188,19 @@ func (s *Store) Delete(scope Scope, root string, line int) error {
 func (s *Store) Lines(scope Scope, root string) ([]string, error) {
 	return s.readLines(scope, root)
 }
+
+// Clear 清空某 scope 的全部记忆（0.0.21 记忆管理界面）：文件删除而非写空——
+// "清空后没有记忆"要回到"还没有记忆"的原始形态（文件缺失 = 空切片），这样
+// 注入段与只读路径的行为与从未记过完全一致。
+func (s *Store) Clear(scope Scope, root string) error {
+	p, err := s.pathOf(scope, root)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("清空记忆失败：%w", err)
+	}
+	return nil
+}
