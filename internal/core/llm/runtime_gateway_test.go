@@ -1,7 +1,7 @@
 // 重试语义收敛测试（0.0.23 审计第 9 项）。
 //
 // 背景：一次 Send 的上游请求数曾"说不清"——runtime 层有建流重试
-//（MaxAttempts），gateway 层有渠道级重试（MaxRetries），两者串联让人担心
+// （MaxAttempts），gateway 层有渠道级重试（MaxRetries），两者串联让人担心
 // 故障时请求数相乘。核实结论：**生产路径不相乘**，因为 gateway 从不返回
 // error，失败一律写成终态块，而 runtime 只在 provider 返回 error 时才重试。
 //
