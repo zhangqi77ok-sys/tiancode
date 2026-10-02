@@ -11,6 +11,11 @@
 //   - 流已建立（任何块已转发）后绝不重试——防上下文撕裂与内容重复；
 //   - 上限 MaxRetries 次后以终态错误收束。
 //
+// **StreamChat 永远不返回 error**（0.0.23 审计澄清）：所有失败都以终态块
+// （EndError/EndCancelled）写进返回的通道。这条纪律是 runtime 层建流重试
+// （MaxAttempts）与本层渠道重试**不叠加**的唯一保证——runtime 只在 provider
+// 返回 error 时才重试。改成返回 error 会让单次 Send 的上游请求数翻倍。
+//
 // 编排层对协议零感知：类型分派只经 adaptors.Registry。
 package gateway
 

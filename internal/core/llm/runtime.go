@@ -19,6 +19,18 @@ import (
 // RuntimePolicy 是一次调用的运行时策略。
 // MVP 为单渠道：MaxAttempts 固定语义，重试的是"建立流"这一动作而非渠道切换；
 // 多渠道时在此扩展（Strategy 变化点，见 ADR-0005），ChatRuntime 接口不变。
+//
+// 与 gateway 的分工（0.0.23 审计澄清，防"重试次数说不清"）：
+// 本层的重试**只在 provider 返回 error 时**发生（机制性失败：连不上、参数非法、
+// 建流前就炸）。provider 用**终态块**（EndError/EndCancelled）表达失败时一律不重试。
+// 生产 provider 是 gateway（NewChatRuntime(s.gw, …)），而 gateway 永远不返回 error——
+// 它把任何失败都写成终态块（见 gateway.StreamChat），所以生产路径上：
+//
+//	一次 Send 的上游请求数 = gateway 渠道级重试（默认 MaxRetries=3 → 最多 4 次，
+//	另受可用档位数约束）；本层 MaxAttempts 默认 2 **实际不触发**（恒为 1）。
+//
+// 保留 MaxAttempts 是给未来非 gateway provider（本地模型直连、测试替身）的契约。
+// 任何"让 gateway 改返回 error"的改动都会让请求数翻倍——先改这里的语义再改代码。
 type RuntimePolicy struct {
 	// MaxAttempts 流开始前的最大尝试次数（含首次）。
 	// 为什么默认语义为 2：个人工具单渠道，对"建立流"重试一次足矣；
