@@ -25,6 +25,7 @@ import (
 
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/atomicfile"
+	"tiancode/internal/platform/workspace"
 )
 
 // fsTimeout 是单个文件操作的超时上限。
@@ -705,6 +706,9 @@ func (t *Tool) tree(path string) (tools.ToolResult, error) {
 		if err != nil {
 			return nil // 单个目录读失败不整次失败（权限等），骨架继续
 		}
+		// 忽略目录过滤（0.0.21）：tree 会下钻子目录，不过滤会把 node_modules
+		// 的一级子目录清单整层吐进来（500 条上限全是垃圾）。
+		entries = filterIgnored(entries)
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].IsDir() != entries[j].IsDir() {
 				return entries[i].IsDir()
@@ -751,6 +755,20 @@ func (t *Tool) tree(path string) (tools.ToolResult, error) {
 
 var errStopTree = errors.New("tree stop")
 
+// filterIgnored 剔除默认忽略目录（0.0.21）：只对目录生效——IgnoredDir 的语义是
+// "目录名"（.git/node_modules 等），同名文件是合法内容，不误杀。
+// 单一来源在 platform/workspace（search 与 @ 引用早已接上），list/tree 是漏网的两处。
+func filterIgnored(entries []os.DirEntry) []os.DirEntry {
+	out := make([]os.DirEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() && workspace.IgnoredDir(e.Name()) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func (t *Tool) list(path string) (tools.ToolResult, error) {
 	if path == "" {
 		path = "."
@@ -770,6 +788,9 @@ func (t *Tool) list(path string) (tools.ToolResult, error) {
 	if err != nil {
 		return bizErrf("list failed: %v", err), nil
 	}
+	// 忽略目录过滤（0.0.21）：与 search / @ 引用同一份清单（platform/workspace 单一来源）
+	// ——此前 list 漏接，模型在大项目列根目录会被 node_modules 等淹没。
+	entries = filterIgnored(entries)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].IsDir() != entries[j].IsDir() {
 			return entries[i].IsDir()

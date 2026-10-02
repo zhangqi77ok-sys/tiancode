@@ -1,7 +1,7 @@
 // 目录树用例：列出这场对话工作区内一层目录（右栏「目录」tab 的数据源）。
 // 做什么：按会话根解析相对路径、校验后返回一层条目（目录在前、名称次序）。
 // 被谁依赖：壳层（Wails 绑定 app/）。
-// 依赖谁：stdlib（只读遍历；路径校验与 fstool 同强度）。
+// 依赖谁：stdlib（只读遍历；路径校验与 fstool 同强度）、platform/workspace（忽略清单）。
 package app
 
 import (
@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"tiancode/internal/platform/workspace"
 )
 
 // DirEntry 是目录树的一层条目。ModTime 用 Unix 毫秒：JSON 里时间只剩数字，
@@ -67,6 +69,12 @@ func (s *ChatService) ListWorkspaceDir(sessionID, relPath string) ([]DirEntry, e
 	})
 	out := make([]DirEntry, 0, len(entries))
 	for _, e := range entries {
+		// 忽略目录过滤（0.0.21）：目录树与 search / @ 引用同一份清单（单一来源
+		// platform/workspace）——0.0.12 登记了"filetree 承载忽略策略"但实际漏接，
+		// node_modules/.git 一直原样出现在树里。
+		if e.IsDir() && workspace.IgnoredDir(e.Name()) {
+			continue
+		}
 		modTime := int64(0)
 		if fi, ierr := e.Info(); ierr == nil {
 			modTime = fi.ModTime().UnixMilli()
