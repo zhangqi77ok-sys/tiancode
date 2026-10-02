@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"tiancode/internal/platform/applog"
 	"tiancode/internal/platform/atomicfile"
 	"tiancode/internal/platform/configfile"
 )
@@ -136,7 +137,11 @@ func (s *healthStore) record(o Outcome) {
 	s.mu.Unlock()
 
 	go func() {
-		_ = writeDay(s.dir, day, snapshot)
+		// 写盘失败要留痕（不留痕就成了"健康读数悄悄不长"）：走 applog，
+		// 不用 fmt（包内零依赖保持）。
+		if err := writeDay(s.dir, day, snapshot); err != nil {
+			applog.Errorf("channel-health write failed day=%s: %v", day, err)
+		}
 		pruneOld(s.dir)
 	}()
 }
@@ -235,7 +240,9 @@ func pruneOld(dir string) {
 	}
 	sort.Strings(names)
 	for _, n := range names[:len(names)-keepDays] {
-		_ = os.Remove(filepath.Join(dir, n))
+		if err := os.Remove(filepath.Join(dir, n)); err != nil {
+			applog.Infof("channel-health prune failed file=%s: %v", n, err)
+		}
 	}
 }
 
