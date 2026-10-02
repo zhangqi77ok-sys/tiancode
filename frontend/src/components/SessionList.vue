@@ -28,6 +28,7 @@ const emit = defineEmits<{
   (e: 'open-skills'): void
   (e: 'open-tones'): void
   (e: 'open-memory'): void
+  (e: 'open-backup'): void
   (e: 'open-workspace-settings'): void
   (e: 'toggle-collapsed'): void
 }>()
@@ -71,12 +72,13 @@ onMounted(() => {
 })
 onBeforeUnmount(() => document.removeEventListener('mousedown', onSettingsMousedown))
 
-function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones' | 'memory') {
+function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones' | 'memory' | 'backup') {
   settingsMenuOpen.value = false
   if (kind === 'channels') emit('open-channels')
   else if (kind === 'mcp') emit('open-mcp')
   else if (kind === 'skills') emit('open-skills')
   else if (kind === 'memory') emit('open-memory')
+  else if (kind === 'backup') emit('open-backup')
   else emit('open-tones')
 }
 
@@ -445,6 +447,11 @@ async function doMove(dir: string) {
         <button role="menuitem" class="menu-item" @click="openSettings('memory')">
           <AppIcon name="book" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">记忆</span>
+        </button>
+        <!-- 备份与恢复（0.0.23）：换机/重装前导一份，恢复前先预检 -->
+        <button role="menuitem" class="menu-item" @click="openSettings('backup')">
+          <AppIcon name="download" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">备份与恢复</span>
         </button>
       </div>
     </div>

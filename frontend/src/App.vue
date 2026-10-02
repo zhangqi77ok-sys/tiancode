@@ -31,6 +31,7 @@ import SkillSettings from './components/SkillSettings.vue'
 import TasksPanel from './components/TasksPanel.vue'
 import ToastHost from './components/ToastHost.vue'
 import MemoryPanel from './components/MemoryPanel.vue'
+import BackupPanel from './components/BackupPanel.vue'
 import ToneSettings from './components/ToneSettings.vue'
 import TurnReview from './components/TurnReview.vue'
 import WorkspaceSettingsPanel from './components/WorkspaceSettingsPanel.vue'
@@ -59,6 +60,7 @@ const mcpOpen = ref(false)
 const skillsOpen = ref(false)
 const tonesOpen = ref(false) // 语气设置（第 8 批）：侧栏底部入口，不进顶栏
 const memoryOpen = ref(false) // 记忆管理（0.0.21）：侧栏底部入口，不进顶栏
+const backupOpen = ref(false) // 备份与恢复（0.0.23）：侧栏底部入口
 const wsSettingsOpen = ref(false) // 工作区设置（第 8 批）：在这一行打开 / 检查命令
 // 工作区检查结果（第 8 批）：最近一次自动检查的位置列表（只读展示）
 const checkResult = ref<CheckResultDTO | null>(null)
@@ -162,6 +164,7 @@ const anyModalOpen = computed(
     skillsOpen.value ||
     tonesOpen.value ||
     memoryOpen.value ||
+    backupOpen.value ||
     wsSettingsOpen.value,
 )
 
@@ -420,6 +423,7 @@ onBeforeUnmount(() => {
         @open-skills="openSkills"
         @open-tones="openTones"
         @open-memory="openMemory"
+        @open-backup="backupOpen = true"
         @open-workspace-settings="wsSettingsOpen = true"
       />
 
@@ -489,6 +493,7 @@ onBeforeUnmount(() => {
     <SkillSettings v-if="skillsOpen" @close="skillsOpen = false" />
     <ToneSettings v-if="tonesOpen" @close="tonesOpen = false" />
     <MemoryPanel v-if="memoryOpen" @close="memoryOpen = false" />
+    <BackupPanel v-if="backupOpen" @close="backupOpen = false" />
     <WorkspaceSettingsPanel v-if="wsSettingsOpen" @close="wsSettingsOpen = false" />
     <CommandPalette
       v-if="paletteOpen"
@@ -498,6 +503,7 @@ onBeforeUnmount(() => {
       @open-skills="paletteOpen = false; openSkills()"
       @open-tones="paletteOpen = false; openTones()"
       @open-memory="paletteOpen = false; openMemory()"
+      @open-backup="paletteOpen = false; backupOpen = true"
       @open-workspace-settings="paletteOpen = false; wsSettingsOpen = true"
     />
     <ShortcutsOverlay v-if="shortcutsOpen" @close="shortcutsOpen = false" />

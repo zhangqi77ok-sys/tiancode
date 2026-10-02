@@ -68,9 +68,10 @@ func TestBind_AppCtxFallback(t *testing.T) {
 // 少一个会让 UI 静默失效，多一个说明有未接线方法。
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
-		"AddChannel", "ApplyUpdate", "ApprovalPolicy", "BgTasksSnapshot", "BindCodexOAuth", "BrowserNavigate", "ChannelHealth", "ChannelPresets", "CheckProxy", "CheckUpdate", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
+		"AddChannel", "ApplyBackup", "ApplyUpdate", "ApprovalPolicy", "BgTasksSnapshot", "BindCodexOAuth", "BrowserNavigate", "ChannelHealth", "ChannelPresets", "CheckProxy", "CheckUpdate", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
+		"ExportBackupTo",
 		"ExportSessionMarkdown", "FlashWindow", "ForceQuit", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "GitStageAndCommit", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
-		"ListSessions", "ListWorkspaceDir", "MemoryClear", "MemoryDelete", "MemoryLines", "MoveSession", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "ProbeMcpServer", "ProposeFileWrite", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "ReplayOlder", "ReplayTail", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "RevertToRound", "RoundTimeline", "RunUserCommand", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchSessions", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
+		"ListSessions", "ListWorkspaceDir", "MemoryClear", "MemoryDelete", "MemoryLines", "MoveSession", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickBackupFile", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "PreviewBackup", "ProbeMcpServer", "ProposeFileWrite", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "ReplayOlder", "ReplayTail", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "RevertToRound", "RoundTimeline", "RunUserCommand", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchSessions", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",
 		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "SuggestCommitMessage", "TestChannel", "UpdateChannel", "WorkspaceSettings",
 	}
 	bindType := reflect.TypeOf(&Bind{})

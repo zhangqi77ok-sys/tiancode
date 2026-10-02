@@ -331,6 +331,26 @@ export interface ChannelHealthDTO {
   lastErrorAt?: number
 }
 
+// 导入预检结果（0.0.23）：valid=false 时 reason 是给用户看的原因。
+export interface BackupPreviewDTO {
+  path: string
+  valid: boolean
+  format: number
+  version: string
+  exportedAt: number
+  fileCount: number
+  sessionCount: number
+  totalBytes: number
+  reason: string
+}
+
+// 恢复结果（0.0.23）：written/skipped 如实回传，界面不编"全部恢复"。
+export interface BackupApplyResultDTO {
+  file: string
+  written: number
+  skipped: number
+}
+
 // 更新检查结果（0.0.20；GitHub Releases 为源，dev 构建恒无更新）
 export interface UpdateInfoDTO {
   current: string
@@ -468,6 +488,11 @@ interface WailsApp {
   SearchSessions(query: string, workspace: string, limit: number): Promise<SearchSessionsResultDTO | null>
   // 渠道健康读数（0.0.23）：近 N 天按渠道的成功率/建流耗时/最近错误。
   ChannelHealth(days: number): Promise<Record<string, ChannelHealthDTO> | null>
+  // 备份与恢复（0.0.23）：弹系统对话框选路径；ApplyBackup 返回写入/跳过条数。
+  ExportBackupTo(version: string): Promise<string>
+  PickBackupFile(): Promise<string>
+  PreviewBackup(path: string): Promise<BackupPreviewDTO | null>
+  ApplyBackup(path: string, overwrite: boolean): Promise<BackupApplyResultDTO>
   // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
   RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
   RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
@@ -686,6 +711,20 @@ export function bridge(): WailsBridge {
         MemoryClear: offlineWrite,
         SearchSessions: async () => ({ hits: [], query: '' }),
         ChannelHealth: async () => ({}),
+        ExportBackupTo: async () => '',
+        PickBackupFile: async () => '',
+        PreviewBackup: async () => ({
+          path: '',
+          valid: false,
+          format: 0,
+          version: '',
+          exportedAt: 0,
+          fileCount: 0,
+          sessionCount: 0,
+          totalBytes: 0,
+          reason: '离线模式：备份不可用',
+        }),
+        ApplyBackup: async () => ({ file: '-', written: 0, skipped: 0 }),
         RoundTimeline: async () => [],
         RevertToRound: offlineWrite,
         CheckUpdate: async () => ({
