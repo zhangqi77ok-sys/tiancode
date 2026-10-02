@@ -667,6 +667,13 @@ export const useChatStore = defineStore('chat', () => {
         at: Date.now(),
       }),
     )
+    // 后台会话等审批主动提示（0.0.21）：轮子停着等人，比终态更急——同款
+    // toast（可点跳转）+ 任务栏闪烁穿透当前焦点；当前视图不打扰（卡片已在眼前）。
+    if (p.sessionID !== sessionId.value) {
+      const name = titleOf(p.sessionID) || p.sessionTitle || '未命名会话'
+      toast('info', `「${name}」等你确认 ${p.toolName}`, () => void selectSession(p.sessionID))
+      void bridge().app.FlashWindow()
+    }
   }
 
   // 在全部会话缓冲里找一张卡（答复回流时卡片可能在后台会话里）
@@ -867,6 +874,12 @@ export const useChatStore = defineStore('chat', () => {
         at: Date.now(),
       }),
     )
+    // 后台会话等答复主动提示（0.0.21）：与审批同款——轮子停着等人，比终态更急。
+    if (p.sessionID !== sessionId.value) {
+      const name = titleOf(p.sessionID) || '未命名会话'
+      toast('info', `「${name}」等你回答`, () => void selectSession(p.sessionID))
+      void bridge().app.FlashWindow()
+    }
   }
 
   // 提交答复：失败必须可见（例如"已处理"），成功后卡片转已答态展示所选答案

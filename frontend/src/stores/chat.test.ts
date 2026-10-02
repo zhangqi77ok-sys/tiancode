@@ -914,6 +914,47 @@ describe('chat store', () => {
     expect(store.messages.some((m) => m.approvalId === 'ap-9')).toBe(true)
   })
 
+  // 0.0.21：后台会话等审批/答复必须穿透当前焦点被看见——toast（带点击跳转动作）
+  // + 任务栏闪烁；当前会话的卡片已在眼前，不打扰。
+  it('后台审批/问答到达：toast 带跳转动作 + 任务栏闪烁；当前会话不闪', async () => {
+    const { useToast } = await import('../composables/useToast')
+    const toastsOf = () => useToast().toasts.value
+    const store = useChatStore()
+    await store.newSession()
+    await store.send('A')
+    const a = store.sessionId
+    await store.newSession()
+    await store.send('B')
+    const before = h.flashCalls
+
+    // 后台会话 a 等审批：toast 入队（文案含会话名与工具名）、FlashWindow +1
+    store.onApproval({ id: 'ap-21', sessionID: a, toolName: 'shell', arguments: '{}' })
+    const t = toastsOf().at(-1)
+    expect(t?.text).toContain('等你确认 shell')
+    expect(typeof t?.action).toBe('function') // 点击跳转动作
+    expect(h.flashCalls).toBe(before + 1)
+
+    // 点击动作 → 跳到 a
+    t?.action?.()
+    expect(store.sessionId).toBe(a)
+
+    // 后台问答：同款提示
+    await store.selectSession('') // 离开 a，模拟用户在别处
+    await store.newSession()
+    const before2 = h.flashCalls
+    store.onAsk({ id: 'ask-21', sessionID: a, question: '选哪个？' })
+    expect(toastsOf().at(-1)?.text).toContain('等你回答')
+    expect(h.flashCalls).toBe(before2 + 1)
+
+    // 当前会话的审批：卡片已在眼前，不 toast 不闪烁
+    await store.selectSession(store.sessionId)
+    await store.send('再问一次')
+    const cur = store.sessionId
+    const before3 = h.flashCalls
+    store.onApproval({ id: 'ap-22', sessionID: cur, toolName: 'fs', arguments: '{}' })
+    expect(h.flashCalls).toBe(before3) // 不闪烁
+  })
+
   it('后台会话的队列续发仍发给它自己', async () => {
     const store = useChatStore()
     await store.newSession()
