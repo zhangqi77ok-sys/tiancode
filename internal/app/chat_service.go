@@ -122,10 +122,38 @@ type ChatService struct {
 	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
 	running map[string]struct{}
 
+	// closeReqMu/closeReqAt 给"关窗拦截"防抖（0.0.21）：用户连点 X 或确认框开着
+	// 再点 X 时，事件不重发（前端确认框不堆叠）。窗口大小不追求精确。
+	closeReqMu sync.Mutex
+	closeReqAt time.Time
+
 	// Replay 分页缓存（0.3 尾屏优先，实现见 replay_service.go）：全量投影按会话
 	// 缓存，键 = 账本序号水位（LastSeq 没动 = 投影没变）——向上翻页不再每页重扫。
 	replayMu    sync.Mutex
 	replayCache map[string]replayCacheEntry
+}
+
+// AnyRunning 报告是否还有任一会话在跑轮次（0.0.21 关窗确认的判据：
+// 后台还有轮次在写账本/调工具时，直接关窗等于杀进程陪葬）。
+func (s *ChatService) AnyRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.running) > 0
+}
+
+// ShouldConfirmClose 报告这次关窗是否需要先问用户：有轮次在跑才拦；
+// 1 秒内的重复关窗不重发事件（确认框开着时连点 X 不堆叠）。
+func (s *ChatService) ShouldConfirmClose() bool {
+	if !s.AnyRunning() {
+		return false
+	}
+	s.closeReqMu.Lock()
+	defer s.closeReqMu.Unlock()
+	if time.Since(s.closeReqAt) < time.Second {
+		return false
+	}
+	s.closeReqAt = time.Now()
+	return true
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。

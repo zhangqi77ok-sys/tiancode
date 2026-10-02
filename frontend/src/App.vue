@@ -5,6 +5,7 @@ import type { ChatToolEventDTO, CheckResultDTO } from './wails'
 import { useCatalogStore } from './stores/catalog'
 import { loadSidebarCollapsed, matchShortcut, saveSidebarCollapsed } from './composables/shortcuts'
 import { consumeEsc } from './composables/useEsc'
+import { useDialogs } from './composables/useDialogs'
 import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
@@ -35,6 +36,7 @@ import WorkspaceSettingsPanel from './components/WorkspaceSettingsPanel.vue'
 // 根组件退化为布局壳：顶栏/侧栏/对话/输入各自自治，事件桥在此统一接线。
 const store = useChatStore()
 const { push: toast } = useToast()
+const dialogs = useDialogs()
 
 // 会话操作的失败原来只写在侧栏最底部，容易被挡住——通知先冒出来。
 // toast 后清空 error：否则同一文案连续出现时 watch 不再触发（第二次静默无声）。
@@ -342,6 +344,20 @@ onMounted(() => {
   bridge().runtime.EventsOn('workspace:check', (p: CheckResultDTO) => {
     if (p?.sessionID && p.sessionID !== store.sessionId) return // 后台会话的结果不插进当前视图
     checkResult.value = p?.refs?.length ? p : null
+  })
+  // 关窗拦截（0.0.21）：后台有轮次在跑时系统关窗被 OnBeforeClose 转成这个事件——
+  // 弹确认框，确认才真退（ForceQuit）；取消 = 留在应用，后台轮次继续。
+  bridge().runtime.EventsOn('chat:close-requested', () => {
+    void dialogs
+      .confirm({
+        title: '还有会话在运行',
+        message: '有会话正在执行任务（写文件/跑命令中），现在退出会中断它们。确定退出吗？',
+        confirmText: '退出',
+        danger: true,
+      })
+      .then((ok) => {
+        if (ok) void bridge().app.ForceQuit()
+      })
   })
   // 上下文治理读数（第 2 批）：油表显示预算/估算与折叠标记——折叠绝不静默
   bridge().runtime.EventsOn(

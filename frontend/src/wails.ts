@@ -418,6 +418,9 @@ interface WailsApp {
   MoveSession(sessionID: string, dir: string): Promise<void>
   // 任务栏闪烁（0.0.19）：后台会话结束时调用，让"跑完了"穿透当前焦点被看见。
   FlashWindow(): Promise<void>
+  // 真正退出应用（0.0.21）：仅关窗确认框确认后调用——后台有轮次在跑时，
+  // 系统关窗会被 OnBeforeClose 拦截并转成 chat:close-requested 事件。
+  ForceQuit(): Promise<void>
   // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
   RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
   RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
@@ -630,6 +633,7 @@ export function bridge(): WailsBridge {
         PinSession: offlineWrite,
         MoveSession: offlineWrite,
         FlashWindow: async () => {},
+        ForceQuit: async () => {},
         RoundTimeline: async () => [],
         RevertToRound: offlineWrite,
         CheckUpdate: async () => ({

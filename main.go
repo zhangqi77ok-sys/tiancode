@@ -14,6 +14,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	shell "tiancode/app"
 	"tiancode/internal/platform/configfile"
@@ -74,6 +75,16 @@ func main() {
 			if revived := chat.RevivedChannels(); len(revived) > 0 {
 				shell.LogLifecycle("渠道从自动禁用恢复（重启重新评估）：" + strings.Join(revived, "、"))
 			}
+		},
+		OnBeforeClose: func(ctx context.Context) bool {
+			// 关窗拦截（0.0.21）：后台还有轮次在跑时，点 X 不能无声杀进程——
+			// 发事件让前端弹确认框（确认后走 Bind.ForceQuit 真退）；没在跑就放行。
+			// 返回 true = 阻止本次关闭。
+			if chat.ShouldConfirmClose() {
+				wruntime.EventsEmit(ctx, "chat:close-requested")
+				return true
+			}
+			return false
 		},
 		OnShutdown: func(ctx context.Context) {
 			// 显式回收（MCP 子进程 / 账本句柄 / codex 监听）：wails.Run 异常返回或
