@@ -1,9 +1,12 @@
-// 关窗拦截判据测试（0.0.21）：AnyRunning 只读反映 running 集合；
+// 关窗拦截判据测试（0.0.21）：AnyRunning 只读反映 running 集合与用户命令行；
 // ShouldConfirmClose 有轮次才拦、1 秒内连点不重发。
 package app
 
 import (
+	"context"
+	"runtime"
 	"testing"
+	"time"
 
 	"tiancode/internal/core/session"
 )
@@ -44,6 +47,65 @@ func TestShouldConfirmClose(t *testing.T) {
 	}
 	if s.ShouldConfirmClose() {
 		t.Fatal("空闲后不应再拦截")
+	}
+}
+
+// 0.0.21 实机补洞：用户命令行（RunUserCommand）不经过 Send 轮次——它的审批等待
+// 与命令执行同样会被关窗打断，必须纳入 AnyRunning。
+func TestShouldConfirmClose_UserCommandActive(t *testing.T) {
+	s, ws := newMiniService(t)
+	seedSession(t, s, "s-uc", ws)
+
+	// 置位（模拟 RunUserCommand 已进入）：只判标志位，无需真发命令
+	s.userCmdActive.Store(true)
+	if !s.AnyRunning() {
+		t.Fatal("用户命令行执行中 AnyRunning 必须为 true")
+	}
+	if !s.ShouldConfirmClose() {
+		t.Fatal("用户命令行执行中必须拦截关窗")
+	}
+	s.userCmdActive.Store(false)
+	if s.AnyRunning() {
+		t.Fatal("命令行结束后 AnyRunning 必须为 false")
+	}
+
+	// 集成路径：审批闸门拦住 RunUserCommand（等待人确认）期间 AnyRunning 为 true，
+	// 拒绝答复后复位。
+	s.SetApprovalHandler(func(e ApprovalEvent) {}) // 收到事件不答复 = 等待中
+	if err := s.SetApprovalPolicy([]string{"shell"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = s.RunUserCommand(context.Background(), "s-uc", "echo blocked")
+	}()
+	deadline := time.After(3 * time.Second)
+	for {
+		if s.AnyRunning() {
+			break // 审批等待被 AnyRunning 观察到
+		}
+		select {
+		case <-deadline:
+			t.Fatal("审批等待期间 AnyRunning 必须为 true")
+		default:
+			runtime.Gosched()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// 逐个拒绝挂起的审批，让调用收尾
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.pendingApprovals))
+	for id := range s.pendingApprovals {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		_ = s.ResolveApproval(id, false, "test")
+	}
+	<-done
+	if s.AnyRunning() {
+		t.Fatal("审批答复后 AnyRunning 必须复位")
 	}
 }
 

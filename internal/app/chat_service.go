@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tiancode/internal/core/agent"
@@ -131,14 +132,21 @@ type ChatService struct {
 	// 缓存，键 = 账本序号水位（LastSeq 没动 = 投影没变）——向上翻页不再每页重扫。
 	replayMu    sync.Mutex
 	replayCache map[string]replayCacheEntry
+
+	// 用户命令行执行中（0.0.21 关窗确认补洞）：RunUserCommand 不走 Send 轮次、
+	// 不进 running 集合，但它的审批等待与命令执行同样是"关窗会打断的事"——
+	// 实机实测抓到：审批等待中点 X 应用直接退出。原子标志，进入/退出各一次。
+	userCmdActive atomic.Bool
 }
 
-// AnyRunning 报告是否还有任一会话在跑轮次（0.0.21 关窗确认的判据：
-// 后台还有轮次在写账本/调工具时，直接关窗等于杀进程陪葬）。
+// AnyRunning 报告是否还有"关窗会打断的事"（0.0.21 关窗确认的判据）：
+// 任一会话在跑轮次（写账本/调工具），或用户命令行在审批等待/执行中——
+// 后者是实机实测抓到的漏判路径（RunUserCommand 不经过 Send 轮次）。
 func (s *ChatService) AnyRunning() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.running) > 0
+	running := len(s.running) > 0
+	s.mu.Unlock()
+	return running || s.userCmdActive.Load()
 }
 
 // ShouldConfirmClose 报告这次关窗是否需要先问用户：有轮次在跑才拦；

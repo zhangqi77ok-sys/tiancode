@@ -38,6 +38,10 @@ func (s *ChatService) RunUserCommand(ctx context.Context, sessionID, command str
 	if root == "" {
 		return UserShellResult{}, errors.New("这场对话没有工作区，无法执行命令")
 	}
+	// 关窗判据置位（0.0.21 实机补洞）：审批等待与命令执行期间，关窗必须被确认框
+	// 拦截——这条路径不经 Send 轮次，AnyRunning 看不见 running 集合。
+	s.userCmdActive.Store(true)
+	defer s.userCmdActive.Store(false)
 	st, err := s.ensureSessionTools(sessionID, root)
 	if err != nil {
 		return UserShellResult{}, err
