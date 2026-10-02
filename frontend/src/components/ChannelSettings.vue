@@ -6,7 +6,7 @@ import { errText } from '../composables/errText'
 import { useClipboard } from '../composables/useClipboard'
 import { useToast } from '../composables/useToast'
 import { bridge, openExternal } from '../wails'
-import type { AuthDTO, ChannelDTO, CredentialDTO } from '../wails'
+import type { AuthDTO, ChannelDTO, ChannelHealthDTO, CredentialDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
 
@@ -295,6 +295,47 @@ function credBadge(ch: ChannelDTO): string {
   const off = ch.credentialDisabled ?? 0
   if (!total) return '未配置凭证'
   return off ? `凭证 ${total} 条 · ${off} 禁用` : `凭证 ${total} 条`
+}
+
+// ---- 渠道健康读数（0.0.23）----
+// 面板打开时读一次（不进渠道行的每次渲染里拉 IPC）；读失败不打扰面板——健康列
+// 显示"暂无数据"，其余功能照常（它只是观测，不该阻塞渠道管理）。
+const health = ref<Record<string, ChannelHealthDTO>>({})
+onMounted(async () => {
+  try {
+    health.value = (await bridge().app.ChannelHealth(7)) ?? {}
+  } catch {
+    health.value = {}
+  }
+})
+
+function healthOf(id: string): ChannelHealthDTO | undefined {
+  return health.value[id]
+}
+function healthLabel(id: string): string {
+  const h = healthOf(id)
+  if (!h || h.successRate < 0) return '暂无数据'
+  return `近 7 天 ${Math.round(h.successRate * 100)}%`
+}
+function healthTone(id: string): string {
+  const h = healthOf(id)
+  if (!h || h.successRate < 0) return ''
+  if (h.successRate >= 0.95) return ''
+  if (h.successRate >= 0.8) return 'border-[var(--c-warn)] text-[var(--c-warn-text)]'
+  return 'border-[var(--c-err)] text-[var(--c-err-text)]'
+}
+function healthTitle(id: string): string {
+  const h = healthOf(id)
+  if (!h) return '近 7 天还没有请求记录'
+  const total = h.ok + h.fail
+  if (total === 0) return '近 7 天还没有请求记录'
+  const parts = [
+    `近 7 天 ${total} 次请求：成功 ${h.ok} · 失败 ${h.fail}`,
+    `渠道级故障 ${h.faults} · 凭证级 ${h.credFaults}`,
+    h.avgLatencyMs > 0 ? `平均建流耗时 ${h.avgLatencyMs}ms` : '',
+    h.lastError ? `最近错误：${h.lastError}` : '',
+  ]
+  return parts.filter(Boolean).join('\n')
 }
 
 // ---- 凭证管理 ----
@@ -624,6 +665,15 @@ onMounted(async () => {
                 <span class="truncate text-sm font-medium">{{ ch.name }}</span>
                 <span v-if="ch.active" class="stat px-2 py-0.5 text-xs text-[var(--c-primary)]">默认</span>
                 <span class="stat px-2 py-0.5 text-xs">{{ ch.protocol }}</span>
+                <!-- 健康读数（0.0.23）：故障切换是自动的，这一列让切换可见。
+                     successRate=-1（近 7 天无请求）写"暂无数据"，不编 100%。 -->
+                <span
+                  class="stat px-2 py-0.5 text-xs"
+                  :class="healthTone(ch.id)"
+                  :title="healthTitle(ch.id)"
+                >
+                  {{ healthLabel(ch.id) }}
+                </span>
                 <button
                   v-if="ch.credentialCount || ch.hasKey"
                   class="stat cursor-pointer px-2 py-0.5 text-xs transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"

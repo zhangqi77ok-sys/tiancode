@@ -317,6 +317,20 @@ export interface SearchSessionsResultDTO {
   query: string
 }
 
+// 单渠道健康读数（0.0.23）：successRate = -1 表示"近 N 天无请求"（读数未知，
+// 界面写"暂无数据"而不是编 100%）；avgLatencyMs 只按成功样本算建流耗时。
+export interface ChannelHealthDTO {
+  channelID: string
+  ok: number
+  fail: number
+  faults: number
+  credFaults: number
+  successRate: number
+  avgLatencyMs: number
+  lastError?: string
+  lastErrorAt?: number
+}
+
 // 更新检查结果（0.0.20；GitHub Releases 为源，dev 构建恒无更新）
 export interface UpdateInfoDTO {
   current: string
@@ -452,6 +466,8 @@ interface WailsApp {
   MemoryClear(sessionID: string, scope: 'global' | 'workspace'): Promise<void>
   // 跨会话搜索（0.0.23）：在所有账本里搜（只读、有界）；workspace 非空 = 限定归属。
   SearchSessions(query: string, workspace: string, limit: number): Promise<SearchSessionsResultDTO | null>
+  // 渠道健康读数（0.0.23）：近 N 天按渠道的成功率/建流耗时/最近错误。
+  ChannelHealth(days: number): Promise<Record<string, ChannelHealthDTO> | null>
   // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
   RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
   RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
@@ -669,6 +685,7 @@ export function bridge(): WailsBridge {
         MemoryDelete: offlineWrite,
         MemoryClear: offlineWrite,
         SearchSessions: async () => ({ hits: [], query: '' }),
+        ChannelHealth: async () => ({}),
         RoundTimeline: async () => [],
         RevertToRound: offlineWrite,
         CheckUpdate: async () => ({

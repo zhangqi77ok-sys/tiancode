@@ -31,6 +31,7 @@ import (
 	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/adaptors"
 	"tiancode/internal/platform/applog"
+	"tiancode/internal/platform/chanhealth"
 	"tiancode/internal/platform/channels"
 )
 
@@ -152,6 +153,11 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			}
 			applog.Errorf("upstream connect failed host=%s elapsed=%s err=%v",
 				hostOf(rc.BaseURL), time.Since(reqStart).Round(time.Millisecond), err)
+			// 健康埋点（0.0.23）：渠道管理里那一列成功率/耗时的数据源。
+			chanhealth.Record(chanhealth.Outcome{
+				ChannelID: sel.ChannelID, Kind: chanhealth.KindConnect,
+				Latency: time.Since(reqStart), ErrText: err.Error(),
+			})
 			lastErr = mergeBanErr(err, g.onChannelFault(sel)) // 网络失败 = 渠道级故障
 			exclude = append(exclude, sel.ChannelID)
 			tier++
@@ -162,14 +168,19 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 			}
 			continue
 		}
+		connectedAt := time.Since(reqStart)
 		applog.Infof("upstream connected host=%s status=%d elapsed=%s（建流完成，流层空闲看门狗开始计时）",
-			hostOf(rc.BaseURL), resp.StatusCode, time.Since(reqStart).Round(time.Millisecond))
+			hostOf(rc.BaseURL), resp.StatusCode, connectedAt.Round(time.Millisecond))
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			msg := adaptors.ReadErrBody(resp)
 			serr := fmt.Errorf("渠道 %s 上游 HTTP %d: %s", sel.ChannelID, resp.StatusCode, msg)
 			resp.Body.Close()
 			switch {
 			case isChannelFaultStatus(resp.StatusCode):
+				chanhealth.Record(chanhealth.Outcome{
+					ChannelID: sel.ChannelID, Kind: chanhealth.KindChannel5xx,
+					Latency: time.Since(reqStart), ErrText: serr.Error(),
+				})
 				lastErr = mergeBanErr(serr, g.onChannelFault(sel))
 				exclude = append(exclude, sel.ChannelID)
 				tier++
@@ -179,10 +190,18 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 				}
 				continue
 			case isCredentialFaultStatus(resp.StatusCode) && sel.CredentialIndex >= 0:
+				chanhealth.Record(chanhealth.Outcome{
+					ChannelID: sel.ChannelID, Kind: chanhealth.KindCredential,
+					Latency: time.Since(reqStart), ErrText: serr.Error(),
+				})
 				// 凭证级故障：auto_ban 禁当前 Key；同档重试（轮询游标已推进到下一条）
 				lastErr = mergeBanErr(serr, g.onCredentialFault(sel))
 				continue
 			default:
+				chanhealth.Record(chanhealth.Outcome{
+					ChannelID: sel.ChannelID, Kind: chanhealth.KindOther,
+					Latency: time.Since(reqStart), ErrText: serr.Error(),
+				})
 				g.terminal(ctx, out, serr, &forwarded)
 				return
 			}
@@ -190,9 +209,16 @@ func (g *Gateway) forward(ctx context.Context, req llm.ChatRequest, out chan llm
 
 		st, err := adv.ConvertResponse(ctx, rc, resp)
 		if err != nil {
+			chanhealth.Record(chanhealth.Outcome{
+				ChannelID: sel.ChannelID, Kind: chanhealth.KindConvert,
+				Latency: time.Since(reqStart), ErrText: err.Error(),
+			})
 			g.terminal(ctx, out, err, &forwarded)
 			return
 		}
+		// 建流成功（2xx + 解析通过）：记一条成功样本，耗时 = 建流耗时。
+		// 为什么成功样本不记整轮时长：流可能跑几分钟，均摊进"建流耗时"会失真。
+		chanhealth.Record(chanhealth.Outcome{ChannelID: sel.ChannelID, OK: true, Latency: connectedAt})
 		idleRetry := false
 		for c := range st {
 			if c.EndReason != llm.EndNone {
