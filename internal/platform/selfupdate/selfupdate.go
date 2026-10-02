@@ -41,11 +41,11 @@ const (
 
 // Info 是一次更新检查的结果。
 type Info struct {
-	Current     string `json:"current"`     // 当前运行版本（如 0.0.19）
-	Latest      string `json:"latest"`      // 最新 release 版本（如 0.0.20）
-	HasUpdate   bool   `json:"hasUpdate"`   // Latest > Current
-	PageURL     string `json:"pageUrl"`     // release 页面（用户手动下载的出口）
-	AssetName   string `json:"assetName"`   // 安装包资产名（空 = 该 release 没挂安装包）
+	Current     string `json:"current"`   // 当前运行版本（如 0.0.19）
+	Latest      string `json:"latest"`    // 最新 release 版本（如 0.0.20）
+	HasUpdate   bool   `json:"hasUpdate"` // Latest > Current
+	PageURL     string `json:"pageUrl"`   // release 页面（用户手动下载的出口）
+	AssetName   string `json:"assetName"` // 安装包资产名（空 = 该 release 没挂安装包）
 	AssetURL    string `json:"assetUrl"`
 	AssetSize   int64  `json:"assetSize"`
 	AssetSHA256 string `json:"assetSha256"` // .sha256 清单资产的下载地址（0.0.21；空 = 旧 release 无清单，回退尺寸校验）
