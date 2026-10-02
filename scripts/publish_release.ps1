@@ -128,6 +128,34 @@ foreach ($f in @("tiancode-setup-v$Version.exe", "tiancode-v$Version-portable.zi
         throw "upload failed $f : $($text.Substring(0, [Math]::Min(300, $text.Length)))"
     }
     if (-not $uploaded) { throw "upload failed after retries: $f" }
+
+    # sha256 清单资产（0.0.21）：随包上传 <name>.sha256（裸哈希行），selfupdate
+    # 下载后验哈希——"诚实边界"从 TLS+尺寸升级为真校验。清单跟主资产同轮重试。
+    $shaFile = "$path.sha256"
+    $hash = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    [System.IO.File]::WriteAllText($shaFile, "$hash`n", (New-Object System.Text.UTF8Encoding $false))
+    $shaName = "$f.sha256"
+    $shaUri = "https://uploads.github.com/repos/$Repo/releases/$($rel.id)/assets?name=$shaName"
+    $shaOk = $false
+    for ($attempt = 1; $attempt -le 3 -and -not $shaOk; $attempt++) {
+        $out = & curl.exe -sS -X POST -H "Authorization: token $token" `
+            -H "Content-Type: application/octet-stream" `
+            --data-binary "@$shaFile" $shaUri 2>&1
+        $text = ($out | Out-String)
+        if ($text -match '"state"\s*:\s*"uploaded"') { $shaOk = $true; break }
+        if ($text -match 'already_exists') {
+            $fresh = Invoke-GhApi GET "https://api.github.com/repos/$Repo/releases/$($rel.id)/assets" $null
+            foreach ($a in ($fresh | Where-Object { $_.name -eq $shaName })) {
+                try { Invoke-GhApi DELETE "https://api.github.com/repos/$Repo/releases/$($rel.id)/assets/$($a.id)" $null | Out-Null } catch { }
+                Start-Sleep -Seconds 2
+            }
+            continue
+        }
+        throw "upload failed $shaName : $($text.Substring(0, [Math]::Min(300, $text.Length)))"
+    }
+    if (-not $shaOk) { throw "upload failed after retries: $shaName" }
+    Write-Host "==> uploaded: $shaName ($hash)"
+    Remove-Item $shaFile -ErrorAction SilentlyContinue
 }
 
 Remove-Item $tmpJson -ErrorAction SilentlyContinue

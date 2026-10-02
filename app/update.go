@@ -40,7 +40,12 @@ func (b *Bind) ApplyUpdate() error {
 		return fmt.Errorf("最新 release（%s）没有挂安装包，请到发布页手动下载：%s", info.Latest, info.PageURL)
 	}
 	dest := filepath.Join(os.TempDir(), "tiancode-update", info.AssetName)
-	if err := selfupdate.Download(b.appCtx(), info.AssetURL, dest, info.AssetSize, b.chat.Proxy); err != nil {
+	// 旧 release 没有 .sha256 清单资产时回退为仅尺寸校验（0.0.21 裁决：回退+日志，
+	// 不硬断旧版升级路径）——这里把回退事实写进日志，排查时看得见边界在哪。
+	if info.AssetSHA256 == "" {
+		LogLifecycle("update: release 无 .sha256 清单资产，仅做尺寸校验（旧版 release）")
+	}
+	if err := selfupdate.Download(b.appCtx(), info.AssetURL, dest, info.AssetSHA256, info.AssetSize, b.chat.Proxy); err != nil {
 		return err
 	}
 	// 拉起安装器（隐藏窗口；安装器自己会优雅关闭本应用再覆盖安装再重启新版）

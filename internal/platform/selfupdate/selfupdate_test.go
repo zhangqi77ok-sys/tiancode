@@ -2,11 +2,15 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -86,7 +90,7 @@ func TestDownload_WritesFileAndValidatesSize(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "setup.exe")
-	if err := Download(context.Background(), srv.URL+"/setup", dest, int64(len(body)), nil); err != nil {
+	if err := Download(context.Background(), srv.URL+"/setup", dest, "", int64(len(body)), nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(dest)
@@ -94,10 +98,70 @@ func TestDownload_WritesFileAndValidatesSize(t *testing.T) {
 		t.Fatalf("下载内容不符：%v", err)
 	}
 	// 尺寸不匹配 → 删除并报错（半截安装包绝不能交给安装器）
-	if err := Download(context.Background(), srv.URL+"/setup", dest, 999, nil); err == nil {
+	if err := Download(context.Background(), srv.URL+"/setup", dest, "", 999, nil); err == nil {
 		t.Fatal("尺寸不匹配必须报错")
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
 		t.Fatal("失败的下载必须删除残留文件")
+	}
+}
+
+// 0.0.21：带 .sha256 清单的强校验路径——匹配放行、不匹配删除；
+// 旧 release（shaURL 为空）回退尺寸校验，行为不变。
+func TestDownload_SHA256(t *testing.T) {
+	body := []byte("installer-bytes-0.0.21")
+	sum := sha256.Sum256(body)
+	good := hex.EncodeToString(sum[:])
+	bad := strings.Repeat("0", 64)
+
+	var mu sync.Mutex
+	servedSHA := good
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			mu.Lock()
+			fmt.Fprintf(w, "%s  tiancode-setup.exe\n", servedSHA) // sha256sum 标准行
+			mu.Unlock()
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "setup.exe")
+	base := srv.URL
+
+	// 哈希匹配：放行，文件保留
+	if err := Download(context.Background(), base+"/setup", dest, base+"/setup.exe.sha256", int64(len(body)), nil); err != nil {
+		t.Fatalf("哈希匹配必须放行：%v", err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != string(body) {
+		t.Fatalf("放行的包内容不符：%v", err)
+	}
+
+	// 哈希不匹配：删除 + 报错
+	mu.Lock()
+	servedSHA = bad
+	mu.Unlock()
+	if err := Download(context.Background(), base+"/setup", dest, base+"/setup.exe.sha256", int64(len(body)), nil); err == nil {
+		t.Fatal("哈希不匹配必须报错")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("校验失败的包必须删除")
+	}
+
+	// 清单内容坏（非 64 位哈希）：硬失败
+	mu.Lock()
+	servedSHA = "short"
+	mu.Unlock()
+	if err := Download(context.Background(), base+"/setup", dest, base+"/setup.exe.sha256", int64(len(body)), nil); err == nil {
+		t.Fatal("清单格式不对必须报错")
+	}
+
+	// 旧 release 无清单（shaURL 空）：回退尺寸校验，行为不变
+	mu.Lock()
+	servedSHA = good
+	mu.Unlock()
+	if err := Download(context.Background(), base+"/setup", dest, "", int64(len(body)), nil); err != nil {
+		t.Fatalf("无清单回退必须可用：%v", err)
 	}
 }
