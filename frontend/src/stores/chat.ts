@@ -982,7 +982,7 @@ export const useChatStore = defineStore('chat', () => {
   // 本身就是驾驶舱数据，切会话自动跟随、Replay 自动恢复、running 卡原地生长都免费拿到。
   // 面板开关与激活 tab 是应用级视图状态（不属于任何会话）；文件 tab 的开态即 fileDetailPath。
 
-  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks' | 'stats'>('file')
+  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks' | 'stats' | 'timeline'>('file')
   const browserOpen = ref(false)
   function openBrowserPanel() {
     browserOpen.value = true
@@ -1046,6 +1046,17 @@ export const useChatStore = defineStore('chat', () => {
   }
   function closeTasksPanel() {
     tasksOpen.value = false
+  }
+
+  // ---- 时间线（右栏「时间线」tab，0.0.20）----
+  // 开态是应用级视图状态；数据由 TimelinePanel 经 RoundTimeline 拉取。
+  const timelineOpen = ref(false)
+  function openTimelinePanel() {
+    timelineOpen.value = true
+    rightPanelTab.value = 'timeline'
+  }
+  function closeTimelinePanel() {
+    timelineOpen.value = false
   }
 
   // ---- 用量统计（右栏「统计」tab，0.0.19）----
@@ -1461,6 +1472,9 @@ export const useChatStore = defineStore('chat', () => {
     statsOpen,
     openStatsPanel,
     closeStatsPanel,
+    timelineOpen,
+    openTimelinePanel,
+    closeTimelinePanel,
     treeRev,
     moveSession,
     browserVisual,

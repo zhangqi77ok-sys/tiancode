@@ -6,6 +6,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 import { useEscClose } from '../composables/useEsc'
 import { errText } from '../composables/errText'
 import { useClipboard } from '../composables/useClipboard'
+import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
 import { THEME_LABEL, currentTheme, setTheme, type ThemeMode } from '../composables/useTheme'
 import { useContextGauge } from '../composables/useContextGauge'
@@ -22,6 +23,7 @@ const store = useChatStore()
 const channels = useChannelStore()
 const ws = useWorkspaceStore()
 const { push: toast } = useToast()
+const dialogs = useDialogs()
 const { copy } = useClipboard()
 
 const approvalOn = ref(false)
@@ -152,6 +154,41 @@ const recentWorkspaces = computed(() => {
   for (const s of store.summaries) if (s.workspace) set.add(s.workspace)
   return [...set]
 })
+
+// ---- 检查更新（0.0.20）：GitHub 最新 release → 确认 → 下载安装 → 自动重启 ----
+const updateChecking = ref(false)
+async function checkForUpdate() {
+  menuOpen.value = false
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    const info = await bridge().app.CheckUpdate()
+    if (!info) {
+      toast('error', '检查更新失败：后端未返回结果')
+      return
+    }
+    if (!info.hasUpdate) {
+      toast('info', `已是最新版本${info.current && info.current !== 'dev' ? `（v${info.current}）` : ''}`)
+      return
+    }
+    const sizeMB = info.assetSize ? `（约 ${(info.assetSize / 1024 / 1024).toFixed(1)} MB）` : ''
+    const ok = await dialogs.confirm({
+      title: '发现新版本',
+      message: `当前 v${info.current} → 最新 v${info.latest}${sizeMB}
+
+将下载安装包并自动安装，完成后应用会自动重启。
+未保存的草稿已自动持久化，生成中的回合会被中断。`,
+      confirmText: '立即更新',
+    })
+    if (!ok) return
+    toast('info', '正在下载并安装，完成后应用将自动重启…')
+    await bridge().app.ApplyUpdate()
+  } catch (e) {
+    toast('error', errText(e))
+  } finally {
+    updateChecking.value = false
+  }
+}
 
 function onDocMousedown(e: MouseEvent) {
   if (!menuOpen.value) return
@@ -454,6 +491,11 @@ onBeforeUnmount(() => {
               {{ THEME_LABEL[m] }}
             </button>
           </div>
+          <!-- 检查更新（0.0.20）：GitHub 最新 release，确认后自动安装重启 -->
+          <button role="menuitem" class="menu-item" :disabled="updateChecking" @click="checkForUpdate">
+            <AppIcon name="download" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
+            <span class="flex-1 text-left">{{ updateChecking ? '检查中…' : '检查更新' }}</span>
+          </button>
           <div class="my-1 h-px bg-[var(--c-border)]"></div>
           <!-- 工作区（0.0.07 语义不变）：主信息在顶栏中段（路径末段），这里做进入/切换/退出 -->
           <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">

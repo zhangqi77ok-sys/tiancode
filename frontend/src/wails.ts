@@ -283,6 +283,26 @@ export interface ReplayPageDTO {
   from: number
 }
 
+// 时间线一轮（0.0.20）：锚点 = 用户消息（userSeq 供「回滚到此轮之前」定位），
+// files 是该轮检查点里的文件（revertable = 该检查点还没被回滚消费）。
+export interface RoundInfoDTO {
+  round: number
+  userSeq: number
+  text: string
+  files: { path: string; revertable: boolean }[]
+}
+
+// 更新检查结果（0.0.20；GitHub Releases 为源，dev 构建恒无更新）
+export interface UpdateInfoDTO {
+  current: string
+  latest: string
+  hasUpdate: boolean
+  pageUrl: string
+  assetName: string
+  assetUrl: string
+  assetSize: number
+}
+
 // 用户命令行（0.3）的执行回执：output 为（有界）输出；isError 对应非零退出/超时。
 export interface UserShellResultDTO {
   output: string
@@ -398,6 +418,12 @@ interface WailsApp {
   MoveSession(sessionID: string, dir: string): Promise<void>
   // 任务栏闪烁（0.0.19）：后台会话结束时调用，让"跑完了"穿透当前焦点被看见。
   FlashWindow(): Promise<void>
+  // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
+  RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
+  RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
+  // 自更新（0.0.20）：检查 GitHub 最新 release；确认后下载安装包并拉起安装器（应用自退重启）。
+  CheckUpdate(): Promise<UpdateInfoDTO | null>
+  ApplyUpdate(): Promise<void>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
   // 顶栏分支（0.0.11）：已落账会话取该会话自己的工作区，草稿取"下一场新对话"的根；
@@ -604,6 +630,18 @@ export function bridge(): WailsBridge {
         PinSession: offlineWrite,
         MoveSession: offlineWrite,
         FlashWindow: async () => {},
+        RoundTimeline: async () => [],
+        RevertToRound: offlineWrite,
+        CheckUpdate: async () => ({
+          current: 'dev',
+          latest: '',
+          hasUpdate: false,
+          pageUrl: '',
+          assetName: '',
+          assetUrl: '',
+          assetSize: 0,
+        }),
+        ApplyUpdate: offlineWrite,
         Replay: async () => [],
         ReplayTail: async () => ({ messages: [], total: 0, from: 0 }),
         ReplayOlder: async () => ({ messages: [], total: 0, from: 0 }),

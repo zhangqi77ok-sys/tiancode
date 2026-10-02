@@ -6,6 +6,7 @@ import (
 
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/applog"
 )
 
 // 回合检查点服务（第 6 批）：撤回本轮 / 从这条用户消息重跑。
@@ -224,6 +225,192 @@ func (s *ChatService) RerunFrom(sessionID string, userSeq int64) (RerunResult, e
 	// 分叉：丢弃 [userSeq, fork] 的旧历史（目标消息本身也在内）
 	if _, err := ledger.Append(session.EventFork, map[string]any{"from_seq": userSeq, "reason": "rerun"}); err != nil {
 		return res, fmt.Errorf("撤回已完成但分叉落账失败：%w", err)
+	}
+	return res, nil
+}
+
+// ---------- 时间线（0.0.20）：历轮一览 + 按任意轮回滚 ----------
+
+// RoundFile 是时间线里一轮改动的文件（revertable = 该轮检查点还没被撤回消费）。
+type RoundFile struct {
+	Path       string `json:"path"`
+	Revertable bool   `json:"revertable"`
+}
+
+// RoundInfo 是时间线的一轮：锚点 = 用户消息（seq 供「回滚到此轮之前」定位）。
+type RoundInfo struct {
+	Round   int         `json:"round"`
+	UserSeq int64       `json:"userSeq"`
+	Text    string      `json:"text"`
+	Files   []RoundFile `json:"files"`
+}
+
+// RoundTimeline 返回会话的历轮时间线（账本只读扫描；跳过分叉丢弃区间）。
+// 长会话只回传摘要（每轮消息文本截 60 字），不投影消息体——它服务的是
+// "哪几轮动了哪些文件、哪些还能撤"这一件事。
+func (s *ChatService) RoundTimeline(sessionID string) ([]RoundInfo, error) {
+	if !s.sessionLedgerOnDisk(sessionID) {
+		return nil, fmt.Errorf("会话不存在或已删除：%s", sessionID)
+	}
+	ledger, err := s.ledgerFor(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	drops, err := ledger.ForkDrops()
+	if err != nil {
+		return nil, err
+	}
+	// 两趟扫描：第一趟只收集"已消费的检查点"——RoundRevert 事件在账本序上
+	// 总是在它标记的检查点之后，单趟边扫边标会把所有项都错标成可撤（测试抓到）。
+	turn := 0
+	var out []RoundInfo
+	reverted := map[int64]bool{}
+	if err := ledger.Replay(func(ev session.Event) error {
+		if ev.Kind() == session.EventRoundRevert && !session.ForkDropped(drops, ev.Seq()) {
+			var p struct {
+				CheckpointSeq int64 `json:"checkpoint_seq"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err == nil {
+				reverted[p.CheckpointSeq] = true
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := ledger.Replay(func(ev session.Event) error {
+		if session.ForkDropped(drops, ev.Seq()) {
+			return nil
+		}
+		switch ev.Kind() {
+		case session.EventUserMessage:
+			turn++
+			var p struct {
+				Text string `json:"text"`
+			}
+			// 坏数据行只丢摘要不丢轮次锚点（userSeq 必须可靠，回滚定位靠它）
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				p.Text = fmt.Sprintf("（消息正文不可读：%v）", err)
+			}
+			out = append(out, RoundInfo{Round: turn, UserSeq: ev.Seq(), Text: applog.Truncate(p.Text, 60), Files: []RoundFile{}})
+		case session.EventRoundCheckpoint:
+			var p struct {
+				Files []tools.RoundCheckpoint `json:"files"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			// 检查点归属"它之前的最近一条用户消息"那一轮（sendCore 的落点保证）
+			if len(out) == 0 {
+				return nil
+			}
+			idx := len(out) - 1
+			for _, cp := range p.Files {
+				out[idx].Files = append(out[idx].Files, RoundFile{Path: cp.Path, Revertable: !reverted[ev.Seq()]})
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RevertToRound 把工作区文件回滚到指定轮**开始之前**的状态（0.0.20 时间线）：
+// 恢复该轮及其后所有轮次检查点里改过的文件（同文件取最早一份 = 该用户消息时的
+// 状态，与 RerunFrom 的恢复规则完全一致），但**保留对话历史**——这是它与重跑的
+// 唯一区别：重跑 = 回滚文件 + 分叉账本重发；回滚 = 只回滚文件。
+// 消费掉的检查点逐个落 EventRoundRevert（「撤回本轮」此后不再把它们当可撤轮次）。
+func (s *ChatService) RevertToRound(sessionID string, userSeq int64) (RevertResult, error) {
+	if !s.sessionLedgerOnDisk(sessionID) {
+		return RevertResult{}, fmt.Errorf("会话不存在或已删除：%s", sessionID)
+	}
+	if s.isSessionRunning(sessionID) {
+		return RevertResult{}, fmt.Errorf("会话正在运行，请先中断再回滚")
+	}
+	ledger, err := s.ledgerFor(sessionID)
+	if err != nil {
+		return RevertResult{}, err
+	}
+	drops, err := ledger.ForkDrops()
+	if err != nil {
+		return RevertResult{}, err
+	}
+	// 锚点必须是（未被分叉丢弃的）一条 user_message
+	found := false
+	if err := ledger.Replay(func(ev session.Event) error {
+		if !found && !session.ForkDropped(drops, ev.Seq()) && ev.Seq() == userSeq && ev.Kind() == session.EventUserMessage {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		return RevertResult{}, err
+	}
+	if !found {
+		return RevertResult{}, fmt.Errorf("找不到序号为 %d 的用户消息（可能已被重跑丢弃）", userSeq)
+	}
+	// 收集该锚点之后的检查点，同文件取最早（= 该用户消息时的状态）
+	var order []string
+	byPath := map[string]tools.RoundCheckpoint{}
+	byPathSeq := map[string]int64{}
+	if err := ledger.Replay(func(ev session.Event) error {
+		if session.ForkDropped(drops, ev.Seq()) || ev.Seq() <= userSeq || ev.Kind() != session.EventRoundCheckpoint {
+			return nil
+		}
+		var p struct {
+			Files []tools.RoundCheckpoint `json:"files"`
+		}
+		if err := json.Unmarshal(ev.Data(), &p); err != nil {
+			return err
+		}
+		for _, cp := range p.Files {
+			if _, ok := byPath[cp.Path]; ok {
+				continue
+			}
+			byPath[cp.Path] = cp
+			byPathSeq[cp.Path] = ev.Seq()
+			order = append(order, cp.Path)
+		}
+		return nil
+	}); err != nil {
+		return RevertResult{}, err
+	}
+	res := RevertResult{}
+	if len(order) > 0 {
+		root := s.sessionWorkspace(sessionID)
+		if root == "" {
+			res.Skipped = append(res.Skipped, "（无工作区，文件改动未撤回）")
+		} else {
+			st, err := s.ensureSessionTools(sessionID, root)
+			if err != nil {
+				return RevertResult{}, err
+			}
+			files := make([]tools.RoundCheckpoint, 0, len(order))
+			for _, p := range order {
+				files = append(files, byPath[p])
+			}
+			rr := restoreRoundCheckpoints(st, files)
+			res.Restored, res.Skipped = rr.Restored, rr.Skipped
+		}
+	}
+	// 消费的检查点逐个标记（跳过的文件也标：这一次机会用掉了，绝不留"半撤回"歧义）
+	consumed := map[int64]bool{}
+	for _, seq := range byPathSeq {
+		if consumed[seq] {
+			continue
+		}
+		consumed[seq] = true
+		if _, err := ledger.Append(session.EventRoundRevert, map[string]any{
+			"checkpoint_seq": seq,
+			"restored":       res.Restored,
+			"skipped":        res.Skipped,
+			"via":            "timeline",
+		}); err != nil {
+			return res, fmt.Errorf("回滚已执行但落账失败：%w", err)
+		}
+	}
+	if len(order) == 0 {
+		return res, fmt.Errorf("这一轮之后没有文件改动可回滚")
 	}
 	return res, nil
 }

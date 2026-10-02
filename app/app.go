@@ -295,6 +295,16 @@ func (b *Bind) RevertRound(sessionID string) (app.RevertResult, error) {
 	return b.chat.RevertRound(sessionID)
 }
 
+// RoundTimeline 返回历轮时间线（0.0.20）：每轮锚点（用户消息）+ 该轮改动的文件与可撤标记。
+func (b *Bind) RoundTimeline(sessionID string) ([]app.RoundInfo, error) {
+	return b.chat.RoundTimeline(sessionID)
+}
+
+// RevertToRound 把文件回滚到指定轮之前（0.0.20，保留对话历史——与重跑的唯一区别）。
+func (b *Bind) RevertToRound(sessionID string, userSeq int64) (app.RevertResult, error) {
+	return b.chat.RevertToRound(sessionID, userSeq)
+}
+
 // RerunFrom 从指定的用户消息重跑（第 6 批）：撤回其后的文件改动 + 账本分叉
 // （丢弃 [userSeq, fork] 的旧历史，旧行不改写），返回原文供前端重新发送。
 func (b *Bind) RerunFrom(sessionID string, userSeq int64) (app.RerunResult, error) {

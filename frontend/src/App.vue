@@ -24,6 +24,7 @@ import MessageList from './components/MessageList.vue'
 import RightPanel, { type RightPanelTabDef } from './components/RightPanel.vue'
 import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
+import TimelinePanel from './components/TimelinePanel.vue'
 import SkillSettings from './components/SkillSettings.vue'
 import TasksPanel from './components/TasksPanel.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -109,6 +110,18 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
       close: () => store.closeTasksPanel(),
     })
   }
+  if (store.timelineOpen) {
+    tabs.push({
+      id: 'timeline',
+      label: '时间线',
+      icon: 'refresh',
+      active: store.rightPanelTab === 'timeline',
+      activate: () => {
+        store.rightPanelTab = 'timeline'
+      },
+      close: () => store.closeTimelinePanel(),
+    })
+  }
   if (store.statsOpen) {
     tabs.push({
       id: 'stats',
@@ -129,6 +142,7 @@ const railTabs = [
   { label: '目录', icon: 'folder' as const, open: () => store.openTreePanel() },
   { label: '任务', icon: 'terminal' as const, open: () => store.openTasksPanel() },
   { label: '统计', icon: 'stats' as const, open: () => void store.openStatsPanel() },
+  { label: '时间线', icon: 'refresh' as const, open: () => store.openTimelinePanel() },
 ]
 
 // 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
@@ -410,6 +424,9 @@ onBeforeUnmount(() => {
           </template>
           <template #tab-stats>
             <StatsPanel />
+          </template>
+          <template #tab-timeline>
+            <TimelinePanel />
           </template>
         </RightPanel>
         <!-- 右栏全关时的常驻开栏轨（0.3 改版）：目录/任务是"想要才打开"的 tab（文件/浏览器由

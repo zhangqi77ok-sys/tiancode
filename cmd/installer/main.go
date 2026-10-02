@@ -14,6 +14,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 )
@@ -50,6 +52,9 @@ func main() {
 	uninstall := flag.Bool("uninstall", false, "卸载已安装的 tiancode")
 	quiet := flag.Bool("quiet", false, "静默模式：不弹对话框（供自动化/脚本部署）")
 	noDesktop := flag.Bool("no-desktop-shortcut", false, "不创建桌面快捷方式（仅创建开始菜单快捷方式）")
+	// relaunch（0.0.20 自更新）：装完重启应用——自更新流程是"下载 → 拉起安装器
+	// (-quiet -relaunch) → 应用自退"，没有这一步用户得手动再点开。
+	relaunch := flag.Bool("relaunch", false, "安装完成后重启应用（自更新流程用）")
 	flag.Parse()
 
 	if *uninstall {
@@ -81,6 +86,17 @@ func main() {
 			msg = "已创建开始菜单快捷方式（按参数跳过桌面快捷方式），可从“应用和功能”卸载。"
 		}
 		messageBox("tiancode 安装完成", msg, mbOK|mbIconInfo)
+	}
+	if *relaunch {
+		// 重启用独立进程路径启动新版；失败只记日志不报错框——安装本身已成功，
+		// "没自动重启"不该伪装成安装失败（用户从开始菜单点开即可）。
+		exe := filepath.Join(*dirFlag, "tiancode.exe")
+		cmd := exec.Command(exe)
+		cmd.Dir = *dirFlag
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "relaunch failed: %v\n", err)
+		}
 	}
 }
 
