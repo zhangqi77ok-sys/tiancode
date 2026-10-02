@@ -36,9 +36,12 @@ const wsLabel = computed(() =>
   workspaceLabel({ isDraft: isDraft.value, sessionWorkspace: sessionWs.value, draftWorkspace: ws.path }),
 )
 
-// 顶栏中段（阶段 1）：只显示本场对话工作区的**路径末段**（完整路径进 title）与分支。
-// 两者都没有就整段不占位——顶栏不被长路径撑开，也不会折成两行。
-const shownWorkspace = computed(() => sessionWs.value || ws.path || '')
+// 顶栏中段（阶段 1）：只显示本场对话工作区的**路径末段**（完整路径进 title）与分支；
+// 两者都没有时明示"这场对话没有工作区"（弱样式，不冒充也不留空）。
+// 顶栏中段（0.0.18 修正）：非草稿一律显示**这场对话的归属**——归属为空时明示
+// "这场对话没有工作区"（wsLabel.main，此前算了没渲染），绝不拿"下一场新对话"
+// 的根冒充当前对话的路；草稿显示下一场的根（它就是发出后的归属）。
+const shownWorkspace = computed(() => (isDraft.value ? ws.path : sessionWs.value))
 const wsFullPath = computed(() => shownWorkspace.value)
 const wsBase = computed(() => {
   const p = shownWorkspace.value.replace(/[\\/]+$/, '')
@@ -260,6 +263,10 @@ onBeforeUnmount(() => {
           >{{ branch }}</span
         >
       </template>
+      <!-- 无根无分支（纯对话会话 / 无工作区草稿）：明示而非冒充、也非空缺 -->
+      <span v-else class="min-w-0 truncate text-[var(--c-text-faint)]" :title="wsLabel.mainTitle">
+        {{ wsLabel.main }}
+      </span>
     </div>
 
     <!-- 右：状态点 + 油表 + 图标菜单 + 窗口控制（固定不收缩——不换行的保证在这里） -->

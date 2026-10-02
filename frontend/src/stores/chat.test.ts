@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 const h = vi.hoisted(() => ({
-  summaries: [] as { id: string; title: string; workspace?: string }[],
+  summaries: [] as { id: string; title: string; workspace?: string; lastActiveMs?: number }[],
   failRename: false,
   deleted: [] as string[],
   renamed: [] as { id: string; title: string }[],
@@ -29,8 +29,12 @@ const h = vi.hoisted(() => ({
   // 带附件发送记录（0.0.11：队列续发带附件必须走 SendWithAttachments，而不是纯文本 Send）
   attachCalls: [] as { sessionID: string; text: string; attachments: string }[],
   resolvedAsks: [] as { id: string; answer: string }[],
-  // 工作区调用记录（0.2.37：切换会话绝不动工作区根）
+  // 工作区调用记录（0.0.18：点开有归属的会话，新对话根跟随该归属）
   setWorkspaceCalls: [] as string[],
+  // GetWorkspace 的回显值：SetWorkspace 写入后 refresh 能读到（贴近真实后端）
+  workspace: '',
+  // 可控延迟：指定会话的 ReplayTail 慢半拍（连点切换的竞态测试用）
+  slowReplayIds: new Set<string>(),
   // 点链接 → 会话浏览器打开（0.0.29）
   navigations: [] as { sessionID: string; url: string }[],
   failNavigate: false,
@@ -52,6 +56,7 @@ vi.mock('../wails', () => ({
       // 行为与全量 Replay 一致（旧断言不动，契约不变）
       ReplayTail: async (id: string, limit: number) => {
         if (h.replayGate) await h.replayGate
+        if (h.slowReplayIds.has(id)) await new Promise((r) => setTimeout(r, 20))
         const all = h.replayById[id] ?? h.replay
         const from = Math.max(0, all.length - limit)
         return { messages: all.slice(from), total: all.length, from }
@@ -84,9 +89,10 @@ vi.mock('../wails', () => ({
       ResolveAsk: async (id: string, answer: string) => {
         h.resolvedAsks.push({ id, answer })
       },
-      GetWorkspace: async () => '',
+      GetWorkspace: async () => h.workspace,
       SetWorkspace: async (dir: string) => {
         h.setWorkspaceCalls.push(dir)
+        h.workspace = dir
       },
       BrowserNavigate: async (sessionID: string, url: string) => {
         if (h.failNavigate) throw new Error('仅支持 http/https 链接')
@@ -123,28 +129,115 @@ describe('chat store', () => {
     h.attachCalls = []
     h.resolvedAsks = []
     h.setWorkspaceCalls = []
+    h.workspace = ''
+    h.slowReplayIds = new Set()
   })
 
-  // 0.2.37：切换会话只改视图，绝不改"下一场新对话"的根——已有会话的工具根由
-  // 后端账本首个 workspace 事件固定；在这里 setPath/clear 既影响不到正在看的
-  // 对话，还会把用户显式选好的顶栏工作区清掉或换掉（点开 B 项目会话 → 新对话
-  // 被写进 B）。
-  it('切换会话不动工作区根（分组/未分组会话都不碰）', async () => {
-    h.summaries = [
-      { id: 's-proj', title: 'B 项目', workspace: 'D:/proj-b' },
-      { id: 's-loose', title: '未分组' },
-    ]
+  // 0.0.18：点开有归属的会话 = 打算在这个项目干活——"新对话默认根"跟随该归属
+  // （侧栏空间高亮、顶栏「当前」标记、"新建对话"落点一起跟）。跟随是**完整**的：
+  // 无归属（纯对话/未分组）会话把默认根一并清空，新建对话延续纯对话（实机反馈）；
+  // 且只切根不 newSession（跟随 ≠ 抛掉正在看的会话）。
+  it('点开有归属的会话：新对话根跟随归属，不 newSession', async () => {
+    h.summaries = [{ id: 's-proj', title: 'B 项目', workspace: 'D:/proj-b' }]
+    const store = useChatStore()
+    await store.loadSessions() // 跟随的数据源是 summaries（账本首个 workspace 事件）
+    await store.selectSession('s-proj')
+    await new Promise((r) => setTimeout(r, 0)) // 跟随是 fire-and-forget 的 setPath
+    expect(h.setWorkspaceCalls).toEqual(['D:/proj-b'])
+    expect(store.sessionId).toBe('s-proj') // 视图仍是所点会话
+  })
+
+  it('点开无归属会话：默认根一并清空，新建对话延续纯对话（完整跟随）', async () => {
+    h.summaries = [{ id: 's-loose', title: '未分组' }]
     const store = useChatStore()
     const ws = useWorkspaceStore()
-    ws.path = 'D:/proj-a' // 用户显式选择的工作区
-
-    await store.selectSession('s-proj')
-    expect(ws.path).toBe('D:/proj-a')
-    expect(h.setWorkspaceCalls).toEqual([])
-
+    await ws.setPath('D:/proj-a') // 当前在工作区 A
+    h.setWorkspaceCalls.length = 0
+    await store.loadSessions()
     await store.selectSession('s-loose')
-    expect(ws.path).toBe('D:/proj-a')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.setWorkspaceCalls).toEqual(['']) // 显式清空（顶栏/侧栏高亮同步变化，非暗改）
+    expect(ws.path).toBe('')
+  })
+
+  it('已是纯对话时点无归属会话：不下发重复清空', async () => {
+    h.summaries = [{ id: 's-loose', title: '未分组' }]
+    const store = useChatStore()
+    await store.loadSessions() // ws.path 本就是 ''
+    await store.selectSession('s-loose')
+    await new Promise((r) => setTimeout(r, 0))
     expect(h.setWorkspaceCalls).toEqual([])
+  })
+
+  it('会话摘要缺失：不碰工作区（无从得知归属）', async () => {
+    const store = useChatStore()
+    const ws = useWorkspaceStore()
+    await ws.setPath('D:/proj-a')
+    h.setWorkspaceCalls.length = 0
+    await store.selectSession('s-ghost') // 不在 summaries 里
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.setWorkspaceCalls).toEqual([])
+    expect(ws.path).toBe('D:/proj-a')
+  })
+
+  it('点开归属即当前根的会话：不重复下发 SetWorkspace', async () => {
+    h.summaries = [{ id: 's-proj', title: 'B 项目', workspace: 'D:/proj-b' }]
+    const store = useChatStore()
+    const ws = useWorkspaceStore()
+    await ws.setPath('D:/proj-b')
+    h.setWorkspaceCalls.length = 0
+    await store.loadSessions()
+    await store.selectSession('s-proj')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.setWorkspaceCalls).toEqual([]) // setPath 对同值短路
+  })
+
+  // 0.0.18 修复：启动恢复**最近活跃**的会话——此前取 sessions[0]，而会话列表按
+  // ID 升序（os.ReadDir 文件名序），[0] 是最老的一场。启动也不跟随工作区
+  // （workspace store 契约：启动不自动进工作区）。
+  it('init 选中最近活跃会话，且不跟随工作区', async () => {
+    h.summaries = [
+      { id: 's-old', title: '老', lastActiveMs: 1000, workspace: 'D:/old' },
+      { id: 's-new', title: '新', lastActiveMs: 9000, workspace: 'D:/new' },
+    ]
+    const store = useChatStore()
+    await store.init()
+    expect(store.sessionId).toBe('s-new')
+    expect(h.setWorkspaceCalls).toEqual([])
+  })
+
+  // 0.0.18 竞态修复：翻页锚点按会话各存一份——A 晚到的尾屏不得污染 B 的锚点
+  //（旧全局单值下，B 视图会以 A 的下标翻页、错页前插进 B 的缓冲）。
+  it('快速连点会话：晚到的尾屏不错写当前视图的翻页锚点', async () => {
+    h.replayById = {
+      's-a': Array.from({ length: 60 }, (_, i) => ({ role: 'user', content: `a${i}` })),
+      's-b': Array.from({ length: 10 }, (_, i) => ({ role: 'user', content: `b${i}` })),
+    }
+    h.slowReplayIds = new Set(['s-a']) // A 的尾屏慢半拍：B 先就绪
+    const store = useChatStore()
+    const pA = store.selectSession('s-a')
+    await store.selectSession('s-b')
+    await pA // A 晚到
+    expect(store.sessionId).toBe('s-b')
+    expect(store.olderAvailable).toBe(false) // B 只有 10 条；被 A 的 20 污染会误报"有更早的"
+    await store.selectSession('s-a')
+    expect(store.olderAvailable).toBe(true) // A 自己的锚点（60 - 40）仍在
+  })
+
+  // 0.0.18：载入态按会话各记一份——A 先返回的 finally 不熄掉 B 正在转的"载入中"
+  it('连点会话：载入态跟随当前视图，不被先完成的会话提前熄掉', async () => {
+    h.replayById = {
+      's-a': [{ role: 'user', content: 'a1' }],
+      's-b': [{ role: 'user', content: 'b1' }],
+    }
+    h.slowReplayIds = new Set(['s-b']) // B 慢：A 先完成
+    const store = useChatStore()
+    const pA = store.selectSession('s-a')
+    const pB = store.selectSession('s-b')
+    await pA
+    expect(store.loadingSession).toBe(true) // 当前视图是 B，仍在载入（旧全局布尔此处已是 false）
+    await pB
+    expect(store.loadingSession).toBe(false)
   })
 
   // 开源惯例（open-webui/lobe-chat）：首轮结束用首条消息截断自动命名，侧栏不再裸奔会话 ID

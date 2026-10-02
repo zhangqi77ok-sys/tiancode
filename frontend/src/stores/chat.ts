@@ -252,8 +252,11 @@ export const useChatStore = defineStore('chat', () => {
     },
   })
 
-  // 切换会话的历史载入态（Replay 期间渲染"正在载入历史…"，避免闪一下空态）
-  const loadingSession = ref(false)
+  // 切换会话的历史载入态（Replay 期间渲染"正在载入历史…"，避免闪一下空态）。
+  // **按会话各记一份**（0.0.18）：全局单布尔下，连点 A→B、A 先返回时，A 的
+  // finally 会熄掉 B 正在转的"载入中"。渲染读的是当前会话的载入态。
+  const loadingSet = reactive(new Set<string>())
+  const loadingSession = computed(() => loadingSet.has(sessionId.value))
 
   // 某个会话是否正在跑（侧栏指示灯与"删除运行中会话"的判据；与当前视图无关）
   function isRunning(id: string): boolean {
@@ -423,24 +426,40 @@ export const useChatStore = defineStore('chat', () => {
     return 0
   }
 
-  async function selectSession(id: string) {
-    // 切换会话只改视图，绝不碰工作区根（0.2.37 用户反馈）：已有会话的工具根由
-    // 后端账本首个 workspace 事件固定，切到这里改顶栏工作区既影响不到当前对话，
-    // 反而会改掉"还没发出去的下一场新对话"的根——点开未分组旧会话清空工作区
-    // （新对话变纯对话丢文件工具）、点开 B 项目会话把新对话写进 B。新对话的根
-    // 只在用户显式选择工作区、或在草稿上发送时确定。
+  async function selectSession(id: string, followWorkspace = true) {
+    // 工作区跟随（0.0.18，完整语义——归属即视图上下文）：
+    //   - 有归属：新对话默认根带到该归属（点开 B 项目会话 = 打算在 B 干活）；
+    //   - 无归属（纯对话/未分组）：默认根一并清空，新建对话延续纯对话
+    //     （0.0.18 实机反馈：点开纯对话会话后新建，用户期望不落工作区。
+    //     0.2.37 担心的"点旧会话悄悄清空工作区"由完整跟随取代——清空是显式
+    //     的、可见的：顶栏与侧栏高亮同时变化，不再是看不见的暗改）；
+    //   - 摘要缺失（会话领号后尚未 loadSessions 等）：无从得知归属，不碰工作区。
+    // 归属取自账本首个 workspace 事件（summaries，与后端工具根同源），不是顶栏旧值。
+    // followWorkspace=false 只用于启动恢复（workspace store 契约：启动不自动进工作区）。
+    // 这里绝不 newSession：跟随 ≠ 抛掉正在看的会话。
     sessionId.value = id
     contextInfo.value = null // 上下文读数属于具体会话：切换后显示新会话的最近读数（无则不显示）
-    olderFrom.value = 0 // 新视图的翻页锚点复位：是否还有更早的历史由本次尾屏决定
+    if (followWorkspace) {
+      const ws = useWorkspaceStore()
+      const w = summaries.value.find((s) => s.id === id)?.workspace
+      if (w) {
+        void ws.setPath(w)
+      } else if (summaries.value.some((s) => s.id === id) && ws.path) {
+        void ws.clear() // 摘要在但归属为空 = 纯对话会话：新对话的根一并清空
+      }
+    }
     if (!convos.has(id)) {
-      loadingSession.value = true
+      olderFromMap.set(id, 0) // 新视图的翻页锚点复位：是否还有更早的历史由本次尾屏决定
+      loadingSet.add(id)
       const c = ensureConvo(id)
       try {
         // 尾屏优先（0.3）：只取最后一屏，长会话不再等全量投影传完才见首屏；
         // 更早的历史等用户向上滚动时经 loadOlder 分页补齐（DOM 窗口照常工作）。
         const page = await bridge().app.ReplayTail(id, REPLAY_TAIL_LIMIT)
         const hist = mapHistory(page?.messages ?? [])
-        olderFrom.value = Math.max(0, (page?.total ?? hist.length) - hist.length)
+        // 锚点**按请求的会话写**（0.0.18 竞态修复）：await 期间用户可能已切到别的
+        // 会话，全局单值会把 A 的锚点写进 B 的视图——按 id 落 key，晚到只影响自己。
+        olderFromMap.set(id, Math.max(0, (page?.total ?? hist.length) - hist.length))
         // Replay 窗口（IPC 往返）内用户可能已经发了消息（冷启动直接对话，0.2.30
         // 实机：打开软件就发，随后"什么都没显示"）。此前整体覆盖 `c.messages = hist`
         // 会把窗口内刚 push 的消息丢掉——改为历史前置、本地保留，重叠前缀去重。
@@ -454,15 +473,24 @@ export const useChatStore = defineStore('chat', () => {
         // 历史载入失败必须可见（此前是静默空白：用户以为会话内容丢了）
         error.value = `载入会话历史失败：${errText(e)}`
       } finally {
-        loadingSession.value = false
+        loadingSet.delete(id) // 按会话清载入态：晚到的 finally 不熄别的会话的"载入中"
       }
     }
   }
 
   // ---- 向上翻页（0.3 尾屏优先的另一半）----
-  // olderFrom 是"已载入的投影条数从末尾往前数的位置"（0 = 前面没有了）。
-  // 新事件只会追加在投影尾部，前缀下标稳定——翻页锚点不受后台轮次追加影响。
-  const olderFrom = ref(0)
+  // 翻页锚点**按会话各存一份**（0.0.18 竞态修复）：此前是全局单值——快速连点
+  // A→B 时，A 晚到的尾屏会把锚点写成 A 的，B 视图向上翻页就以 A 的下标取页、
+  // 错页前插进 B 的缓冲。按会话 ID 存取后，晚到的写入只落自己的 key，切走再
+  // 切回来锚点仍然有效（账本投影前缀下标稳定；新事件只追加在投影尾部，
+  // 前缀下标不受后台轮次追加影响）。
+  const olderFromMap = reactive(new Map<string, number>())
+  const olderFrom = computed({
+    get: () => olderFromMap.get(sessionId.value) ?? 0,
+    set: (v: number) => {
+      olderFromMap.set(sessionId.value, v)
+    },
+  })
   const olderAvailable = computed(() => olderFrom.value > 0)
   const loadingOlder = ref(false)
 
@@ -470,12 +498,12 @@ export const useChatStore = defineStore('chat', () => {
   // 前插不会与本地消息交错）。
   async function loadOlder() {
     const id = sessionId.value
-    if (!id || loadingOlder.value || olderFrom.value <= 0) return
+    if (!id || loadingOlder.value || (olderFromMap.get(id) ?? 0) <= 0) return
     loadingOlder.value = true
     try {
-      const page = await bridge().app.ReplayOlder(id, olderFrom.value, REPLAY_TAIL_LIMIT)
+      const page = await bridge().app.ReplayOlder(id, olderFromMap.get(id) ?? 0, REPLAY_TAIL_LIMIT)
       const older = mapHistory(page?.messages ?? [])
-      olderFrom.value = Math.max(0, page?.from ?? 0)
+      olderFromMap.set(id, Math.max(0, page?.from ?? 0)) // 按请求的会话写：await 期间切走也不串
       if (older.length) {
         const c = ensureConvo(id)
         c.messages = [...older, ...c.messages]
@@ -1225,6 +1253,8 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
     convos.delete(id) // 缓冲一并丢弃：会话已不存在，留着只会"复活"出幽灵消息
+    olderFromMap.delete(id) // 翻页锚点与载入态同生命周期：会话没了不残留
+    loadingSet.delete(id)
     await loadSessions()
     if (sessionId.value === id) await newSession()
   }
@@ -1311,10 +1341,17 @@ export const useChatStore = defineStore('chat', () => {
     // 抢跑保护（0.2.31 实机："打开软件就直接进行对话没显示"）：init 的 IPC 往返
     // 期间用户可能已经在输入并发送（send 里已领会话 ID、建好视图）——此时
     // 绝不把视图抢到默认会话：用户正在进行的对话必须留在眼前。
-    // 没有抢跑时行为不变（选中最近会话 / 无会话则草稿）。
+    // 没有抢跑时行为不变（选中最近活跃会话 / 无会话则草稿）。
     if (sessionId.value) return
-    if (sessions.value.length) await selectSession(sessions.value[0])
-    else await newSession()
+    if (summaries.value.length) {
+      // 恢复**最近活跃**的会话（0.0.18 修复：此前取 sessions[0]——会话列表按 ID
+      // 升序（os.ReadDir 文件名序），[0] 是最老的一场，打开软件落在几天前的对话上）。
+      const most = [...summaries.value].sort((a, b) => (b.lastActiveMs ?? 0) - (a.lastActiveMs ?? 0))[0]
+      // 启动恢复不跟随工作区（workspace store 契约：启动不自动进工作区，由用户显式进入）
+      await selectSession(most.id, false)
+    } else {
+      await newSession()
+    }
   }
 
   return {

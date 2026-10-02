@@ -167,12 +167,13 @@ describe('FileDetailPanel（第 3 批）', () => {
   })
 
   // 关闭按钮 → fileDetailPath 清空（App 层据此卸载面板）
-  // 0.3 起正文区有"编辑"等按钮，不再假设"DOM 最后一个按钮 = 关闭"，按 title 精确选中
+  // 0.3 起正文区有"编辑"等按钮，不再假设"DOM 最后一个按钮 = 关闭"，按 title 选中
+  //（title 是"关闭（Esc）"——带快捷键提示，按前缀匹配）
   it('关闭按钮清空打开状态', async () => {
     const store = await seedTwoChanges()
     store.openFileDetail('internal/a.go')
     const el = await mountPanel()
-    const closeBtn = el.querySelector('button[title="关闭"]') as HTMLButtonElement
+    const closeBtn = el.querySelector('button[title^="关闭"]') as HTMLButtonElement
     expect(closeBtn).toBeTruthy()
     await closeBtn.click()
     expect(store.fileDetailPath).toBe('')

@@ -115,6 +115,23 @@ describe('AppHeader（阶段 1）', () => {
     expect(text()).toContain('main') // 分支与工作区并列
   })
 
+  // 0.0.18：非草稿会话无归属（纯对话）时，中段明示"这场对话没有工作区"——
+  // 绝不拿"下一场新对话"的根（ws.path）冒充当前对话的路
+  it('非草稿会话无归属：明示无工作区，不显示下一场的根', async () => {
+    h.branch = '' // 纯对话会话没有工作区，后端自然给不出分支（mock 同步此语义）
+    mountHeader()
+    await nextTick()
+    const store = useChatStore()
+    const { useWorkspaceStore } = await import('../stores/workspace')
+    useWorkspaceStore().path = 'D:\\other\\proj' // 下一场新对话的根
+    store.sessionId = 's1'
+    store.summaries = [{ id: 's1', title: '' }] // 无归属（纯对话会话）
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    expect(text()).toContain('这场对话没有工作区')
+    expect(text()).not.toContain('proj')
+  })
+
   it('图标菜单收齐四个入口，导出行为不变（另存为仍走 SaveTextFile）', async () => {
     mountHeader()
     await nextTick()
