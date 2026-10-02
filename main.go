@@ -52,6 +52,7 @@ func main() {
 	}
 
 	bind := shell.New(chat)
+	shell.Version = version // 自更新基线（0.0.20）；"dev" = 本地构建不检查
 	err = wails.Run(&options.App{
 		Title: "tiancode",
 		// 无边框：标题栏由前端自绘（品牌 logo + 窗口控制按钮都在应用内），
