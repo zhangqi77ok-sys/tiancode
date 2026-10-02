@@ -20,6 +20,7 @@ import DialogHost from './components/DialogHost.vue'
 import FileDetailPanel from './components/FileDetailPanel.vue'
 import FileTreePanel from './components/FileTreePanel.vue'
 import FloatingTodo from './components/FloatingTodo.vue'
+import GlobalSearch from './components/GlobalSearch.vue'
 import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
 import RightPanel, { type RightPanelTabDef } from './components/RightPanel.vue'
@@ -51,6 +52,7 @@ watch(
 )
 
 const paletteOpen = ref(false) // 命令面板（Ctrl+K，0.0.19）
+const globalSearchOpen = ref(false) // 跨会话搜索（Ctrl+Shift+F，0.0.23）
 const shortcutsOpen = ref(false) // 快捷键速查（?，0.0.19）
 const channelsOpen = ref(false)
 const mcpOpen = ref(false)
@@ -153,6 +155,7 @@ const railTabs = [
 const anyModalOpen = computed(
   () =>
     paletteOpen.value ||
+    globalSearchOpen.value ||
     shortcutsOpen.value ||
     channelsOpen.value ||
     mcpOpen.value ||
@@ -283,6 +286,12 @@ function onGlobalKeydown(e: KeyboardEvent) {
   if (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
     e.preventDefault()
     paletteOpen.value = true
+    return
+  }
+  // 跨会话搜索（0.0.23）：与 Ctrl+F（会话内）区分用 Shift，绝不抢 Ctrl+F。
+  if (e.key.toLowerCase() === 'f' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+    e.preventDefault()
+    globalSearchOpen.value = true
     return
   }
   if (e.key === '?') {
@@ -492,6 +501,7 @@ onBeforeUnmount(() => {
       @open-workspace-settings="paletteOpen = false; wsSettingsOpen = true"
     />
     <ShortcutsOverlay v-if="shortcutsOpen" @close="shortcutsOpen = false" />
+    <GlobalSearch v-if="globalSearchOpen" @close="globalSearchOpen = false" />
     <DialogHost />
     <ToastHost />
   </div>

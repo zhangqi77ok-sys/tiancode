@@ -29,7 +29,10 @@ const GROUPS: { title: string; items: [string, string][] }[] = [
   },
   {
     title: '当前会话',
-    items: [['Ctrl+F', '会话内搜索（消息正文）']],
+    items: [
+      ['Ctrl+F', '会话内搜索（消息正文）'],
+      ['Ctrl+Shift+F', '搜索所有会话（跨会话）'],
+    ],
   },
 ]
 onMounted(() => {

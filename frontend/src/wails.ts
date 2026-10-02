@@ -299,6 +299,24 @@ export interface MemoryViewDTO {
   project: string[]
 }
 
+// 一条跨会话搜索命中（0.0.23）：anchorSeq 是所属轮的用户消息 seq——点击复用
+// 时间线跳转链路（selectSession + jumpToSeq）定位到那一轮。
+export interface SearchHitDTO {
+  sessionID: string
+  sessionTitle: string
+  workspace?: string
+  lastActiveMs: number
+  role: 'user' | 'assistant'
+  anchorSeq: number
+  snippet: string
+  truncated?: boolean
+}
+
+export interface SearchSessionsResultDTO {
+  hits: SearchHitDTO[]
+  query: string
+}
+
 // 更新检查结果（0.0.20；GitHub Releases 为源，dev 构建恒无更新）
 export interface UpdateInfoDTO {
   current: string
@@ -432,6 +450,8 @@ interface WailsApp {
   MemoryLines(sessionID: string): Promise<MemoryViewDTO | null>
   MemoryDelete(sessionID: string, scope: 'global' | 'workspace', line: number): Promise<void>
   MemoryClear(sessionID: string, scope: 'global' | 'workspace'): Promise<void>
+  // 跨会话搜索（0.0.23）：在所有账本里搜（只读、有界）；workspace 非空 = 限定归属。
+  SearchSessions(query: string, workspace: string, limit: number): Promise<SearchSessionsResultDTO | null>
   // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
   RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
   RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
@@ -648,6 +668,7 @@ export function bridge(): WailsBridge {
         MemoryLines: async () => ({ global: [], project: [] }),
         MemoryDelete: offlineWrite,
         MemoryClear: offlineWrite,
+        SearchSessions: async () => ({ hits: [], query: '' }),
         RoundTimeline: async () => [],
         RevertToRound: offlineWrite,
         CheckUpdate: async () => ({
