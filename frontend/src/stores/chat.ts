@@ -685,6 +685,28 @@ export const useChatStore = defineStore('chat', () => {
     return undefined
   }
 
+  // 时间线跳转信号（0.0.21）：{seq, n} 里的 n 是递增序号——重复跳同一轮也能
+  // 触发 watch。MessageList 消费它定位滚动 + 短暂高亮。
+  const jumpSeq = ref(0)
+  const jumpSig = ref<{ seq: number; n: number }>({ seq: 0, n: 0 })
+
+  // 跳到某一轮：目标消息不在缓冲（长会话尾屏分页未载入）时向上逐页补，
+  // 20 页上限防失控（服务端有投影缓存，每页很便宜；翻完没有 = 异常数据，如实告知）。
+  async function jumpToSeq(seq: number) {
+    if (!seq) return
+    let pages = 0
+    while (!convoOf(sessionId.value)?.messages.some((m) => m.role === 'user' && m.seq === seq)) {
+      if (pages >= 20 || !olderAvailable.value) {
+        toast('info', '该轮次不在已载入的历史范围内，未完成定位')
+        return
+      }
+      await loadOlder()
+      pages++
+    }
+    jumpSeq.value = seq
+    jumpSig.value = { seq, n: jumpSig.value.n + 1 }
+  }
+
   // 提交答复：失败必须可见（例如"已处理"），绝不静默
   async function resolveApproval(id: string, approved: boolean, reason = '') {
     error.value = ''
@@ -1457,6 +1479,8 @@ export const useChatStore = defineStore('chat', () => {
     loadOlder,
     olderAvailable,
     loadingOlder,
+    jumpSig,
+    jumpToSeq,
     newSession,
     send,
     onChunk,

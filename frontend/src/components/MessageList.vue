@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChannelStore } from '../stores/channels'
-import { useChatStore, type PendingAttachment } from '../stores/chat'
+import { useChatStore, type ChatMsg, type PendingAttachment } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { groupMessages, stabilizeItems, type RenderItem } from '../composables/messageGrouping'
@@ -195,6 +195,21 @@ async function jumpToHit(it: RenderItem | undefined) {
 function cssEscape(v: string): string {
   return v.replace(/[^a-zA-Z0-9_-]/g, (c) => `\${c}`)
 }
+
+// 时间线跳转（0.0.21）：store 已保证目标在缓冲里（必要时逐页补载），这里只负责
+// 定位滚动——与搜索跳转同一套机制（窗口外前移起点 + scrollIntoView + 短暂高亮）。
+// jumpSig.n 递增保证重复跳同一轮也能触发。
+watch(
+  () => store.jumpSig,
+  async (sig) => {
+    if (!sig?.seq) return
+    const it = allItems.value.find(
+      (x): x is Extract<RenderItem, { kind: 'single'; m: ChatMsg }> =>
+        x.kind === 'single' && x.m.role === 'user' && x.m.seq === sig.seq,
+    )
+    if (it) await jumpToHit(it)
+  },
+)
 
 function onListKeydown(e: KeyboardEvent) {
   // 模态打开时不下手（渠道管理等面板盖在上面，搜索条是背后的事）

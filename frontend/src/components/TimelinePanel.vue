@@ -20,6 +20,10 @@ const loading = ref(false)
 const error = ref('')
 const busySeq = ref<number | null>(null) // 正在回滚的锚点（防双击）
 
+// 点击轮次正文 → 跳到消息流对应位置（0.0.21）：回滚前先看清那轮干了什么。
+// 定位（含长会话补页）由 store.jumpToSeq 负责，面板只发信号。
+const emit = defineEmits<{ (e: 'jump', userSeq: number): void }>()
+
 async function load() {
   if (!store.sessionId) {
     rounds.value = []
@@ -88,7 +92,13 @@ onMounted(load)
       <div v-for="r in [...rounds].reverse()" :key="r.userSeq" class="mb-2 rounded-lg border border-[var(--c-border)] p-2">
         <div class="flex items-baseline gap-2">
           <span class="shrink-0 text-[10px] font-medium text-[var(--c-primary)]">第 {{ r.round }} 轮</span>
-          <span class="min-w-0 flex-1 truncate text-xs text-[var(--c-text-dim)]" :title="r.text">{{ r.text || '（无正文）' }}</span>
+          <button
+            class="min-w-0 flex-1 truncate text-left text-xs text-[var(--c-text-dim)] transition-colors hover:text-[var(--c-primary)]"
+            :title="`${r.text || '（无正文）'}（点击跳到消息流）`"
+            @click="emit('jump', r.userSeq)"
+          >
+            {{ r.text || '（无正文）' }}
+          </button>
         </div>
         <div v-if="r.files.length" class="mt-1 space-y-0.5">
           <p

@@ -449,7 +449,7 @@ onBeforeUnmount(() => {
             <StatsPanel />
           </template>
           <template #tab-timeline>
-            <TimelinePanel />
+            <TimelinePanel @jump="store.jumpToSeq($event)" />
           </template>
         </RightPanel>
         <!-- 右栏全关时的常驻开栏轨（0.3 改版）：目录/任务是"想要才打开"的 tab（文件/浏览器由

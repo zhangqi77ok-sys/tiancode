@@ -181,6 +181,44 @@ describe('chat store', () => {
     expect(h.setWorkspaceCalls).toEqual([])
   })
 
+  // 0.0.21 时间线跳转：目标在缓冲内直接发定位信号；在缓冲外（尾屏分页未载入）
+  // 先逐页补载再发信号；n 递增保证重复跳同一轮也触发。
+  it('jumpToSeq：缓冲内直接定位，缓冲外补页后定位', async () => {
+    const many: { role: string; content: string; seq?: number }[] = []
+    for (let i = 0; i < 200; i++) {
+      many.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `第 ${i} 条`, seq: i % 2 === 0 ? i : undefined })
+    }
+    h.summaries = [{ id: 's-long', title: '长会话', lastActiveMs: 1 }]
+    h.replayById['s-long'] = many
+    const store = useChatStore()
+    await store.init()
+    await store.selectSession('s-long')
+
+    // 尾屏只有 40 条：目标 userSeq=120（第 120 条消息）在缓冲外，补页后命中
+    const before = store.jumpSig
+    await store.jumpToSeq(120)
+    expect(store.messages.length).toBeGreaterThan(40) // 补了页
+    expect(store.jumpSig.seq).toBe(120)
+    expect(store.jumpSig.n).toBe(before.n + 1)
+
+    // 再跳同一个 seq：n 仍递增（重复跳同一轮也能触发组件 watch）
+    const n = store.jumpSig.n
+    await store.jumpToSeq(120)
+    expect(store.jumpSig.n).toBe(n + 1)
+  })
+
+  it('jumpToSeq：翻到头仍找不到时如实提示，不发定位信号', async () => {
+    h.summaries = [{ id: 's-short', title: '短会话', lastActiveMs: 1 }]
+    h.replayById['s-short'] = [{ role: 'user', content: '只有一条', seq: 5 }]
+    const store = useChatStore()
+    await store.init()
+    await store.selectSession('s-short')
+
+    const before = store.jumpSig
+    await store.jumpToSeq(999) // 投影里没有的 seq
+    expect(store.jumpSig.n).toBe(before.n) // 信号未发
+  })
+
   it('会话摘要缺失：不碰工作区（无从得知归属）', async () => {
     const store = useChatStore()
     const ws = useWorkspaceStore()
