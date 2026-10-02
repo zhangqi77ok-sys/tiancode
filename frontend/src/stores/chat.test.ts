@@ -18,8 +18,8 @@ const h = vi.hoisted(() => ({
     question?: string
     options?: string[]
   }[],
-  // 多会话：按会话 ID 定制重放（缺省回落 h.replay）
-  replayById: {} as Record<string, { role: string; content: string }[]>,
+  // 多会话：按会话 ID 定制重放（缺省回落 h.replay）；seq 是投影的用户消息锚点（0.0.11）
+  replayById: {} as Record<string, { role: string; content: string; seq?: number }[]>,
   // 可控延迟：模拟 Replay 的 IPC 往返窗口（窗口内发送的合并测试用）
   replayGate: null as Promise<void> | null,
   resolved: [] as string[],
