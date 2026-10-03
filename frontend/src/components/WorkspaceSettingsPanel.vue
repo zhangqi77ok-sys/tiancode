@@ -19,6 +19,8 @@ const checkCommand = ref('')
 const shellAllowText = ref('')
 // shell 默认超时（0.0.25）：这个工作区里不指定时的默认；0 = 内置 120s
 const shellTimeout = ref(0)
+// 工作区快捷命令（0.0.26）：三槽（build/test/run）——只存命令，执行走既有命令行链
+const quick = ref({ build: '', test: '', run: '' })
 const error = ref('')
 const saving = ref(false)
 const loaded = ref(false)
@@ -32,6 +34,11 @@ onMounted(async () => {
     checkCommand.value = s?.checkCommand ?? ''
     shellAllowText.value = (s?.shellAllow ?? []).join('\n')
     shellTimeout.value = s?.shellTimeoutSeconds ?? 0
+    quick.value = {
+      build: s?.quickCommands?.build ?? '',
+      test: s?.quickCommands?.test ?? '',
+      run: s?.quickCommands?.run ?? '',
+    }
   } catch (e) {
     error.value = errText(e)
   } finally {
@@ -52,6 +59,11 @@ async function save() {
         .map((l) => l.trim())
         .filter(Boolean),
       shellTimeoutSeconds: Math.max(0, Math.min(600, shellTimeout.value || 0)),
+      quickCommands: {
+        build: quick.value.build.trim(),
+        test: quick.value.test.trim(),
+        run: quick.value.run.trim(),
+      },
     })
     toast('info', '已保存到本工作区')
     emit('close')
@@ -131,6 +143,24 @@ async function save() {
           go build / npm install 120 秒不够用；模型仍可在单条命令上指定更短的超时。
         </span>
       </label>
+
+      <!-- 快捷命令（0.0.26）：编译主链路三步一键跑；执行走既有命令行链（含审批） -->
+      <div class="space-y-1.5">
+        <span class="text-xs font-medium">快捷命令（一键跑）</span>
+        <div v-for="slot in (['build', 'test', 'run'] as const)" :key="slot" class="flex items-center gap-2">
+          <span class="w-10 shrink-0 text-[11px] text-[var(--c-text-dim)]">{{ slot }}</span>
+          <input
+            v-model="quick[slot]"
+            class="field-input flex-1 font-mono text-xs"
+            :placeholder="slot === 'build' ? 'go build ./...' : slot === 'test' ? 'go test ./...' : 'go run .'"
+            :disabled="!loaded"
+          />
+        </div>
+        <span class="block text-[11px] text-[var(--c-text-faint)]">
+          填好后可在输入框上方一键跑（编译/测试/运行）。执行走的是同一条命令行与审批闸门——
+          命令确认开着时同样会先问你。留空则不显示该按钮。
+        </span>
+      </div>
 
       <div class="flex justify-end gap-2">
         <button class="chip" @click="emit('close')">取消</button>

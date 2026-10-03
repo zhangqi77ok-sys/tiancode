@@ -37,6 +37,33 @@ type WorkspaceSettings struct {
 	// 这里调的是"不指定时的默认"——大仓库 go build / npm install 120s 不够用。
 	// 0 = 用内置默认（120s）；上限 600s 与逐条覆盖同口径。
 	ShellTimeoutSeconds int `json:"shellTimeoutSeconds,omitempty"`
+	// QuickCommands 是这个工作区的三个快捷命令槽（0.0.26）：build / test / run。
+	// 为什么是"槽位"而不是自由键值：编程主链路就这三步（改完→编→测→跑），
+	// 固定槽位让面板与命令行提示都能给出确定的位置，不必发明一套命令名管理。
+	// 执行复用既有 RunUserCommand（同一执行器、同一超时、同一审批闸门）——
+	// 快捷命令**不新增任何执行能力**，只是把用户自己写的命令放到一个可点的位置。
+	QuickCommands QuickCommands `json:"quickCommands,omitempty"`
+}
+
+// QuickCommands 是三个快捷命令槽（空 = 未配置，不出现在面板提示里）。
+type QuickCommands struct {
+	Build string `json:"build,omitempty"`
+	Test  string `json:"test,omitempty"`
+	Run   string `json:"run,omitempty"`
+}
+
+// Empty 报告三个槽位全空（决定"删键"与"面板是否显示提示"）。
+func (q QuickCommands) Empty() bool {
+	return strings.TrimSpace(q.Build) == "" && strings.TrimSpace(q.Test) == "" && strings.TrimSpace(q.Run) == ""
+}
+
+// normalize 修剪三槽（保存前统一；空槽存空串而不是省略键——形态唯一）。
+func (q QuickCommands) normalize() QuickCommands {
+	return QuickCommands{
+		Build: strings.TrimSpace(q.Build),
+		Test:  strings.TrimSpace(q.Test),
+		Run:   strings.TrimSpace(q.Run),
+	}
 }
 
 // shellTimeoutHardCap 是默认超时的硬顶（与模型逐条指定的 timeout_seconds 同口径）。
@@ -59,6 +86,11 @@ const workspaceSettingsFile = "workspace-settings.json"
 // workspaceSettingsPath 故意做成函数变量：测试把它指到临时目录，
 // 绝不碰用户真实的 %APPDATA%\tiancode（测试污染用户配置是事故）。
 var workspaceSettingsPath = func() string { return filepath.Join(configfile.Dir(), workspaceSettingsFile) }
+
+// LoadWorkspaceSettings 供壳层读（0.0.26 快捷命令面板要读三槽）。
+// 写盘刻意不导出：改配置只经 SaveWorkspaceSettings 端点（0.0.25 审计的纪律——
+// 绑定层不提供绕过校验的写路径）。
+func LoadWorkspaceSettings(root string) WorkspaceSettings { return loadWorkspaceSettings(root) }
 
 // loadWorkspaceSettings 读某个工作区的设置。缺文件 / 解析失败 = 零值（不启用）——
 // 一个可选项读不出来不该拦住对话。
@@ -97,10 +129,11 @@ func saveWorkspaceSettings(root string, ws WorkspaceSettings) error {
 	if ws.ShellTimeoutSeconds < 0 || ws.ShellTimeoutSeconds > shellTimeoutHardCap {
 		return fmt.Errorf("shell 默认超时必须在 0~%d 秒之间：%d", shellTimeoutHardCap, ws.ShellTimeoutSeconds)
 	}
-	// 四项全空才删键：ShellAllow（0.0.24）与 ShellTimeoutSeconds（0.0.25）也是
-	// 有效设置，重建结构体时必须带上（漏了会让保存悄悄丢配置——测试抓到过）。
+	// 五项全空才删键：ShellAllow（0.0.24）、ShellTimeoutSeconds（0.0.25）与
+	// QuickCommands（0.0.26）也是有效设置，重建结构体时必须带上（漏了会让保存
+	// 悄悄丢配置——测试抓到过）。
 	if strings.TrimSpace(ws.OpenAtLine) == "" && strings.TrimSpace(ws.CheckCommand) == "" &&
-		len(ws.ShellAllow) == 0 && ws.ShellTimeoutSeconds == 0 {
+		len(ws.ShellAllow) == 0 && ws.ShellTimeoutSeconds == 0 && ws.QuickCommands.Empty() {
 		delete(all, key)
 	} else {
 		all[key] = WorkspaceSettings{
@@ -108,6 +141,7 @@ func saveWorkspaceSettings(root string, ws WorkspaceSettings) error {
 			CheckCommand:        strings.TrimSpace(ws.CheckCommand),
 			ShellAllow:          ws.ShellAllow,
 			ShellTimeoutSeconds: ws.ShellTimeoutSeconds,
+			QuickCommands:       ws.QuickCommands.normalize(),
 		}
 	}
 	data, err := json.MarshalIndent(all, "", "  ")

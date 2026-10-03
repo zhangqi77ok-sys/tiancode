@@ -218,6 +218,8 @@ export interface WorkspaceSettingsDTO {
   // shell 审批白名单（0.0.24）：命令以这些前缀开头时免审批确认
   shellAllow?: string[]
   shellTimeoutSeconds?: number
+  // 工作区快捷命令（0.0.26）：build/test/run 三槽，空串 = 未配置
+  quickCommands?: QuickCommandSlotsDTO
 }
 
 // 语气设置（第 8 批）：内置 50 条由后端给（id / 名称 / 做法），前端不复制名单。
@@ -361,6 +363,13 @@ export interface BackupApplyResultDTO {
   file: string
   written: number
   skipped: number
+}
+
+// 工作区快捷命令三槽（0.0.26）：空串 = 未配置（面板据此不显示该行）。
+export interface QuickCommandSlotsDTO {
+  build: string
+  test: string
+  run: string
 }
 
 // 更新检查结果（0.0.20；GitHub Releases 为源，dev 构建恒无更新）
@@ -515,6 +524,9 @@ interface WailsApp {
   PickBackupFile(): Promise<string>
   PreviewBackup(path: string): Promise<BackupPreviewDTO | null>
   ApplyBackup(path: string, overwrite: boolean): Promise<BackupApplyResultDTO>
+  // 工作区快捷命令（0.0.26）：三槽（build/test/run）一键跑，执行与命令行同一条链。
+  QuickCommands(sessionID: string): Promise<QuickCommandSlotsDTO>
+  RunQuickCommand(sessionID: string, slot: string, command: string): Promise<UserShellResultDTO>
   // 时间线（0.0.20）：历轮一览 + 按任意轮回滚（保留对话历史）。
   RoundTimeline(sessionID: string): Promise<RoundInfoDTO[] | null>
   RevertToRound(sessionID: string, userSeq: number): Promise<RevertResultDTO | null>
@@ -757,6 +769,8 @@ export function bridge(): WailsBridge {
           reason: '离线模式：备份不可用',
         }),
         ApplyBackup: async () => ({ file: '-', written: 0, skipped: 0 }),
+        QuickCommands: async () => ({ build: '', test: '', run: '' }),
+        RunQuickCommand: async () => ({ output: '离线模式：执行不可用', isError: true }),
         RoundTimeline: async () => [],
         RevertToRound: offlineWrite,
         CheckUpdate: async () => ({
