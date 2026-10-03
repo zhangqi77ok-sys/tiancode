@@ -134,6 +134,10 @@ const resultRows = computed<OutputRow[] | null>(() => {
   })
 })
 
+// 折叠态摘要用：输出里有多少行带可点的 path:line（0.0.26"测试失败结构化"的
+// 轻量形态——不新造面板，卡片自己报数；要看具体行仍点展开）。
+const locatableCount = computed(() => (resultRows.value ?? []).filter((r) => r.openable && r.line > 0).length)
+
 // 截图内嵌（0.0.30 用户反馈）：browser 终态卡带 shot 时**直接展示图片本体**——
 // 此前消息流里只有"已截图 路径"一行字，图只在右侧驾驶舱，用户点开对话才看到
 // 一条路径。MIME 规则与 BrowserPanel 同源（后端只产 png/jpg 两态）。
@@ -221,6 +225,16 @@ watch(
         :class="effectiveOpen ? '' : '-rotate-90'"
       />
     </button>
+
+    <!-- 失败聚合摘要（0.0.26）：模型跑的 go test / go build 失败时，卡片折叠着也能
+         看到"有几处可点位置"——不必逐卡展开翻输出（CheckResults 面板只覆盖工作区
+         检查命令那条路径，模型自己跑的测试不走它）。 -->
+    <p
+      v-if="!effectiveOpen && !m.diff && !isRunning && locatableCount > 0"
+      class="ml-1 mt-0.5 text-[11px] text-[var(--c-text-dim)]"
+    >
+      {{ locatableCount }} 处可点位置（展开可直接跳到出错行）
+    </p>
 
     <!-- 截图内嵌（0.0.30）：browser 卡的可视结果直接展示在消息流里——截图是动作
          本体，不进折叠、不看开合状态；读取失败按错误态可见（绝不静默吞图） -->
