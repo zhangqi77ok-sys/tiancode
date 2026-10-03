@@ -71,8 +71,9 @@ func (s *ChatService) ListWorkspaceDir(sessionID, relPath string) ([]DirEntry, e
 	for _, e := range entries {
 		// 忽略目录过滤（0.0.21）：目录树与 search / @ 引用同一份清单（单一来源
 		// platform/workspace）——0.0.12 登记了"filetree 承载忽略策略"但实际漏接，
-		// node_modules/.git 一直原样出现在树里。
-		if e.IsDir() && workspace.IgnoredDir(e.Name()) {
+		// node_modules/.git 一直原样出现在树里。0.0.26 起并入该工作区 .gitignore
+		// 的顶层条目（out/ target/ 这类自定义输出目录）。
+		if e.IsDir() && (workspace.IgnoredDir(e.Name()) || workspace.ExtraIgnoredDir(root, e.Name())) {
 			continue
 		}
 		modTime := int64(0)

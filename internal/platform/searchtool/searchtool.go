@@ -119,7 +119,9 @@ func (t *Tool) walkCandidates(ctx context.Context, start, glob string, contentMo
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if p != start && workspace.IgnoredDir(d.Name()) {
+			// 忽略判定 = 内置清单 ∪ 该工作区 .gitignore 的顶层条目（0.0.26）：
+			// 用户自定义输出目录（out/ target/）此前会淹没搜索结果。
+			if p != start && (workspace.IgnoredDir(d.Name()) || workspace.ExtraIgnoredDir(t.root, d.Name())) {
 				return filepath.SkipDir
 			}
 			// junction 目录：WalkDir 会走进去，但真实位置在区外时整棵跳过
