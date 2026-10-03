@@ -279,7 +279,13 @@ func (s *ChatService) ensureSessionTools(sessionID, root string) (*sessionTools,
 	st.browser = s.browser.NewTab(sessionID)
 	if root != "" {
 		st.fs = fstool.New(root)
-		st.shell = shelltool.New(shelltool.Options{Root: root})
+		// shell 默认超时按工作区设置（0.0.25）：大仓库的 go build / npm install
+		// 常超过 120s；模型仍可用 timeout_seconds 逐条覆盖。
+		opts := shelltool.Options{Root: root}
+		if d := shellDefaultTimeoutOf(loadWorkspaceSettings(root)); d > 0 {
+			opts.Timeout = d
+		}
+		st.shell = shelltool.New(opts)
 		st.git = gittool.New(root)
 		st.search = searchtool.New(root)
 	}

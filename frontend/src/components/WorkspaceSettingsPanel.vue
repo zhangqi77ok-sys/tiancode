@@ -17,6 +17,8 @@ const openAtLine = ref('')
 const checkCommand = ref('')
 // shell 审批白名单（0.0.24）：一行一条前缀；shell 命中以这些前缀开头时免审批
 const shellAllowText = ref('')
+// shell 默认超时（0.0.25）：这个工作区里不指定时的默认；0 = 内置 120s
+const shellTimeout = ref(0)
 const error = ref('')
 const saving = ref(false)
 const loaded = ref(false)
@@ -29,6 +31,7 @@ onMounted(async () => {
     openAtLine.value = s?.openAtLine ?? ''
     checkCommand.value = s?.checkCommand ?? ''
     shellAllowText.value = (s?.shellAllow ?? []).join('\n')
+    shellTimeout.value = s?.shellTimeoutSeconds ?? 0
   } catch (e) {
     error.value = errText(e)
   } finally {
@@ -48,6 +51,7 @@ async function save() {
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean),
+      shellTimeoutSeconds: Math.max(0, Math.min(600, shellTimeout.value || 0)),
     })
     toast('info', '已保存到本工作区')
     emit('close')
@@ -105,8 +109,26 @@ async function save() {
           :disabled="!loaded"
         ></textarea>
         <span class="block text-[11px] text-[var(--c-text-faint)]">
-          命令确认开着时，以这些前缀开头的 shell 命令自动放行不再弹卡（如 git status、go build）；
+          命令确认写着时，以这些前缀开头的 shell 命令自动放行不再弹卡（如 git status、go build）；
           未命中的照常确认。只在本工作区生效，只能放行、不能反向加严。
+        </span>
+      </label>
+
+      <label class="block space-y-1.5">
+        <span class="text-xs font-medium">Shell 默认超时（秒）</span>
+        <input
+          v-model.number="shellTimeout"
+          type="number"
+          min="0"
+          max="600"
+          step="30"
+          class="field-input text-xs"
+          placeholder="120（留空或 0 = 内置默认）"
+          :disabled="!loaded"
+        />
+        <span class="block text-[11px] text-[var(--c-text-faint)]">
+          这个工作区里跑 shell 命令的默认时限（0 = 内置 120 秒，上限 600 秒）。大仓库的
+          go build / npm install 120 秒不够用；模型仍可在单条命令上指定更短的超时。
         </span>
       </label>
 

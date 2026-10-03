@@ -208,13 +208,16 @@ export interface CheckResultDTO {
   at: number
 }
 
-// 工作区可选项（第 8 批）：openAtLine 空 = 用系统默认程序打开；
+// 工作区可选项（第 8 批）：openAtLine empty = 用系统默认程序打开；
 // checkCommand 空 = 任何时候都不跑检查（绝不猜 go test）。
+// shellTimeoutSeconds（0.0.25）：这个工作区里 shell 前台命令的默认超时（0 = 内置 120s，
+// 上限 600s；模型仍可用 timeout_seconds 逐条覆盖）。
 export interface WorkspaceSettingsDTO {
   openAtLine: string
   checkCommand: string
   // shell 审批白名单（0.0.24）：命令以这些前缀开头时免审批确认
   shellAllow?: string[]
+  shellTimeoutSeconds?: number
 }
 
 // 语气设置（第 8 批）：内置 50 条由后端给（id / 名称 / 做法），前端不复制名单。
@@ -791,7 +794,7 @@ export function bridge(): WailsBridge {
         ListWorkspaceDir: async () => [],
         BgTasksSnapshot: async () => [],
         OpenAtLine: offlineWrite,
-        WorkspaceSettings: async () => ({ openAtLine: '', checkCommand: '' }),
+        WorkspaceSettings: async () => ({ openAtLine: '', checkCommand: '', shellTimeoutSeconds: 0 }),
         SaveWorkspaceSettings: offlineWrite,
         ProbeMcpServer: async () => [],
         GetTones: async () => ({ mode: 'fixed', default: 'plain', disabled: [], builtin: [] }),

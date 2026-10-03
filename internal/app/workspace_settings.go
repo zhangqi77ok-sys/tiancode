@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tiancode/internal/platform/atomicfile"
 	"tiancode/internal/platform/configfile"
@@ -31,6 +32,26 @@ type WorkspaceSettings struct {
 	// 不同项目的安全基线不同。整条规则由用户显式配置，编排层只做前缀匹配，
 	// 不做任何命令语义分析（ADR-0007 的纪律边界不变）。
 	ShellAllow []string `json:"shellAllow,omitempty"`
+	// ShellTimeoutSeconds 是这个工作区里 shell 前台命令的**默认**超时（0.0.25）。
+	// 模型仍可用 timeout_seconds 逐条覆盖（上限 600s，见 shelltool 硬顶）；
+	// 这里调的是"不指定时的默认"——大仓库 go build / npm install 120s 不够用。
+	// 0 = 用内置默认（120s）；上限 600s 与逐条覆盖同口径。
+	ShellTimeoutSeconds int `json:"shellTimeoutSeconds,omitempty"`
+}
+
+// shellTimeoutHardCap 是默认超时的硬顶（与模型逐条指定的 timeout_seconds 同口径）。
+const shellTimeoutHardCap = 600
+
+// shellDefaultTimeoutOf 从工作区设置解析默认超时；非法/超顶回落内置默认。
+func shellDefaultTimeoutOf(st WorkspaceSettings) time.Duration {
+	switch {
+	case st.ShellTimeoutSeconds <= 0:
+		return 0 // 让 shelltool 用它自己的默认值
+	case st.ShellTimeoutSeconds > shellTimeoutHardCap:
+		return shellTimeoutHardCap * time.Second
+	default:
+		return time.Duration(st.ShellTimeoutSeconds) * time.Second
+	}
 }
 
 const workspaceSettingsFile = "workspace-settings.json"
@@ -72,15 +93,21 @@ func saveWorkspaceSettings(root string, ws WorkspaceSettings) error {
 		}
 	}
 	key := workspaceKey(root)
-	// 三项全空才删键：ShellAllow（0.0.24）也是有效设置，重建结构体时必须带上
-	//（漏了它会让保存悄悄丢白名单——测试抓到）。
-	if strings.TrimSpace(ws.OpenAtLine) == "" && strings.TrimSpace(ws.CheckCommand) == "" && len(ws.ShellAllow) == 0 {
+	// 非法默认超时显式拒绝（不静默夹到硬顶——用户填 9999 expects 报错而不是 600）
+	if ws.ShellTimeoutSeconds < 0 || ws.ShellTimeoutSeconds > shellTimeoutHardCap {
+		return fmt.Errorf("shell 默认超时必须在 0~%d 秒之间：%d", shellTimeoutHardCap, ws.ShellTimeoutSeconds)
+	}
+	// 四项全空才删键：ShellAllow（0.0.24）与 ShellTimeoutSeconds（0.0.25）也是
+	// 有效设置，重建结构体时必须带上（漏了会让保存悄悄丢配置——测试抓到过）。
+	if strings.TrimSpace(ws.OpenAtLine) == "" && strings.TrimSpace(ws.CheckCommand) == "" &&
+		len(ws.ShellAllow) == 0 && ws.ShellTimeoutSeconds == 0 {
 		delete(all, key)
 	} else {
 		all[key] = WorkspaceSettings{
-			OpenAtLine:   strings.TrimSpace(ws.OpenAtLine),
-			CheckCommand: strings.TrimSpace(ws.CheckCommand),
-			ShellAllow:   ws.ShellAllow,
+			OpenAtLine:          strings.TrimSpace(ws.OpenAtLine),
+			CheckCommand:        strings.TrimSpace(ws.CheckCommand),
+			ShellAllow:          ws.ShellAllow,
+			ShellTimeoutSeconds: ws.ShellTimeoutSeconds,
 		}
 	}
 	data, err := json.MarshalIndent(all, "", "  ")
