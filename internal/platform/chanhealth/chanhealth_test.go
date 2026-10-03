@@ -3,6 +3,7 @@
 package chanhealth
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,12 +29,10 @@ func TestStore_RecordAggregatesByChannelAndDay(t *testing.T) {
 	// ch-b：1 成功 + 1 凭证失败
 	s.record(Outcome{ChannelID: "ch-b", OK: true, Latency: time.Duration(50) * time.Millisecond, At: now})
 	s.record(Outcome{ChannelID: "ch-b", Kind: KindCredential, ErrText: "401 bad key", At: now})
+	_ = day
 
-	// 落盘后可被聚合读出
-	if err := writeDay(s.dir, day, s.cloneMemLocked()); err != nil {
-		t.Fatal(err)
-	}
-	// Snapshot 读的是包级路径，这里直接验聚合视图计算（不走 Snapshot 的固定目录）
+	// 只验内存聚合：record 的异步写盘与本测试并发会在 Windows 上撞 rename
+	//（落盘形态由 TestDayFile_Roundtrip 单独验）
 	a := s.viewLocked("ch-a")
 	if a.OK != 3 || a.Fail != 1 {
 		t.Fatalf("ch-a 计数错：%+v", a)
@@ -51,7 +50,31 @@ func TestStore_RecordAggregatesByChannelAndDay(t *testing.T) {
 	if b.CredFaults != 1 || b.OK != 1 {
 		t.Fatalf("ch-b 分类错：%+v", b)
 	}
-	_ = day
+}
+
+// 落盘形态：writeDay 写出的 JSON 能被读回（聚合快照 → 磁盘 → 解析）。
+func TestDayFile_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	snap := map[string]*bucket{
+		"ch-x": {OK: 2, TotalMs: 500, LastErr: "boom", LastErrAt: 123},
+	}
+	if err := writeDay(dir, "2026-10-03", snap); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "2026-10-03.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f dayFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.Day != "2026-10-03" || f.Channels["ch-x"] == nil {
+		t.Fatalf("落盘形态错：%s", raw)
+	}
+	if f.Channels["ch-x"].OK != 2 || f.Channels["ch-x"].LastErr != "boom" {
+		t.Fatalf("字段丢失：%s", raw)
+	}
 }
 
 // 无请求的渠道：成功率 -1（读数未知），不编 100%。
