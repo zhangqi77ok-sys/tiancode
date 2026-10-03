@@ -114,3 +114,26 @@ func (s *ChatService) GitStageAndCommit(sessionID, message string) (string, erro
 	}
 	return out, nil
 }
+
+// ---------- Git 面板（0.0.24）：结构化变更清单 + 单文件 diff ----------
+
+// GitStatusEntry 是 Git 面板的一行变更（透传 gittool 的结构化 porcelain）。
+type GitStatusEntry = gittool.StatusEntry
+
+// GitStatusFiles 返回这场对话工作区的变更文件清单（未跟踪单列；干净返回空切片）。
+func (s *ChatService) GitStatusFiles(sessionID string) ([]GitStatusEntry, error) {
+	root := s.sessionWorkspace(sessionID)
+	if root == "" {
+		return nil, fmt.Errorf("这场对话没有工作区，无法读取 Git 状态")
+	}
+	return gittool.StatusFiles(root)
+}
+
+// GitFileDiff 返回单个文件相对 HEAD 的未暂存 diff（有界截断与 Diff 同规）。
+func (s *ChatService) GitFileDiff(sessionID, path string) (string, error) {
+	root := s.sessionWorkspace(sessionID)
+	if root == "" {
+		return "", fmt.Errorf("这场对话没有工作区，无法读取 Git diff")
+	}
+	return gittool.DiffFile(root, path)
+}

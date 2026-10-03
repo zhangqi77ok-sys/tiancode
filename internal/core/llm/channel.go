@@ -52,6 +52,11 @@ type Channel struct {
 	// internal/core/agent/derive.go 的 estimateTextTokens（ASCII 4 字符≈1 token、
 	// 1 个非 ASCII 字符≈1 token，保守取上界）。
 	ContextLimit int `json:"contextLimit,omitempty"`
+
+	// PriceIn/PriceOut 是每百万 token 的输入/输出单价（0.0.24 成本估算用；
+	// 0 = 未配置，统计面板不显示金额）。只是展示层的估算依据，绝不参与选路。
+	PriceIn  float64 `json:"priceIn,omitempty"`
+	PriceOut float64 `json:"priceOut,omitempty"`
 }
 
 // AuthConfig 是渠道级鉴权配置：独立于协议——适配器决定"怎么发请求"，

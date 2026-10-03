@@ -77,8 +77,8 @@ func TestWorkspaceSettingsStore(t *testing.T) {
 	if got := loadWorkspaceSettings(a).OpenAtLine; got != "" {
 		t.Fatalf("清空后应为零值：%q", got)
 	}
-	// 缺文件 = 零值（不报错）
-	if got := loadWorkspaceSettings(filepath.Join(dir, "nope")); got != (WorkspaceSettings{}) {
+	// 缺文件 = 零值（不报错）；含切片字段后不可整结构体比较，逐字段判
+	if got := loadWorkspaceSettings(filepath.Join(dir, "nope")); got.OpenAtLine != "" || got.CheckCommand != "" || len(got.ShellAllow) != 0 {
 		t.Fatalf("缺文件应为零值：%+v", got)
 	}
 }

@@ -23,7 +23,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"tiancode/internal/core/agent"
@@ -123,45 +122,10 @@ type ChatService struct {
 	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
 	running map[string]struct{}
 
-	// closeReqMu/closeReqAt 给"关窗拦截"防抖（0.0.21）：用户连点 X 或确认框开着
-	// 再点 X 时，事件不重发（前端确认框不堆叠）。窗口大小不追求精确。
-	closeReqMu sync.Mutex
-	closeReqAt time.Time
-
 	// Replay 分页缓存（0.3 尾屏优先，实现见 replay_service.go）：全量投影按会话
 	// 缓存，键 = 账本序号水位（LastSeq 没动 = 投影没变）——向上翻页不再每页重扫。
 	replayMu    sync.Mutex
 	replayCache map[string]replayCacheEntry
-
-	// 用户命令行执行中（0.0.21 关窗确认补洞）：RunUserCommand 不走 Send 轮次、
-	// 不进 running 集合，但它的审批等待与命令执行同样是"关窗会打断的事"——
-	// 实机实测抓到：审批等待中点 X 应用直接退出。原子标志，进入/退出各一次。
-	userCmdActive atomic.Bool
-}
-
-// AnyRunning 报告是否还有"关窗会打断的事"（0.0.21 关窗确认的判据）：
-// 任一会话在跑轮次（写账本/调工具），或用户命令行在审批等待/执行中——
-// 后者是实机实测抓到的漏判路径（RunUserCommand 不经过 Send 轮次）。
-func (s *ChatService) AnyRunning() bool {
-	s.mu.Lock()
-	running := len(s.running) > 0
-	s.mu.Unlock()
-	return running || s.userCmdActive.Load()
-}
-
-// ShouldConfirmClose 报告这次关窗是否需要先问用户：有轮次在跑才拦；
-// 1 秒内的重复关窗不重发事件（确认框开着时连点 X 不堆叠）。
-func (s *ChatService) ShouldConfirmClose() bool {
-	if !s.AnyRunning() {
-		return false
-	}
-	s.closeReqMu.Lock()
-	defer s.closeReqMu.Unlock()
-	if time.Since(s.closeReqAt) < time.Second {
-		return false
-	}
-	s.closeReqAt = time.Now()
-	return true
 }
 
 // NewChatService 装配编排层：渠道存储 → 工具注册表 → 按激活渠道构建 agent。
@@ -625,7 +589,7 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	}
 	s.running[sessionID] = struct{}{}
 	model := s.defaultModel
-	approver := s.approverFor(sessionID)
+	approver := s.approverFor(sessionID, root)
 	// 会话级工具集：同会话复用（shell 任务表跨轮存活）；组装一轮的注册表
 	st, err := s.ensureSessionTools(sessionID, root)
 	if err != nil {

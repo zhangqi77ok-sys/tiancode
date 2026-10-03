@@ -1,12 +1,15 @@
-// 关窗生命周期用例（0.0.21）：后台有轮次在跑时拦截关窗，交前端确认。
+// 关窗生命周期（0.0.24 语义变更，取代 0.0.21 的"关窗确认框"）：
+// 点 X / Alt+F4 / 系统关窗 = 隐藏到托盘（后台轮次继续跑，不打扰）；
+// 真正退出只从托盘菜单走——"退出"置位 quitting 后，OnBeforeClose 放行本次关闭。
+// 0.0.21 的确认框链路（chat:close-requested + ForceQuit）随新语义整体下线。
 package app
 
 import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// ForceQuit 真正退出应用：仅供前端在「关窗确认」框中确认后调用。
-// 普通关窗（无运行中会话）走系统路径，不经这里。
-func (b *Bind) ForceQuit() {
-	wruntime.Quit(b.AppCtx)
+// HideToTray 隐藏主窗口到托盘（X 按钮与 OnBeforeClose 共用同一动作）。
+// 后台轮次继续跑；唤回走托盘左键或"显示主窗口"。
+func (b *Bind) HideToTray() {
+	wruntime.WindowHide(b.AppCtx)
 }

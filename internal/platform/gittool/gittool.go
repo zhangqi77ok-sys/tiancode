@@ -109,9 +109,20 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 // push / reset --hard / clean / rebase 等任何"丢弃改动或离开本机"的子命令
 // 在这里没有实现路径——扩展时必须重新评审，而不是顺手加参数。
 
-// runGitCmd 在 root 下执行一条 git 命令（超时 + 输出有界 + 业务失败转 error）。
+// runGitCmd 在 root 下执行一条 git 命令（超时 + 输出有界 + 业务失败转 error），
+// 返回 trim 后的输出（大多数消费方只要正文）。
 // 与测试文件里的 runGit 助手同名不同用，故这里带 Cmd 后缀。
 func runGitCmd(root string, args ...string) (string, error) {
+	out, err := runGitCmdRaw(root, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// runGitCmdRaw 是 runGitCmd 的不 trim 版本：porcelain 的状态列以空格占位
+// （" M b.go" 的首列是暂存区），trim 会吃掉首列导致解析错位（测试抓到）。
+func runGitCmdRaw(root string, args ...string) (string, error) {
 	runCtx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, "git", args...)
@@ -126,7 +137,7 @@ func runGitCmd(root string, args ...string) (string, error) {
 		}
 		return out, fmt.Errorf("git %s 失败：%s", args[0], strings.TrimSpace(out))
 	}
-	return strings.TrimSpace(buf.String()), nil
+	return buf.String(), nil
 }
 
 // StatusShort 返回 porcelain 状态（含 "## 分支" 头行）：提交说明生成用它判断
@@ -220,4 +231,48 @@ func truncate(s string) string {
 
 func businessErrf(format string, a ...any) tools.ToolResult {
 	return tools.ToolResult{Content: fmt.Sprintf(format, a...), IsError: true}
+}
+
+// StatusEntry 是结构化的 git status 条目（Git 面板用）：
+// X/Y 是 porcelain 两列状态码（?? = 未跟踪；重命名记录已拆为新路径）。
+type StatusEntry struct {
+	Path      string `json:"path"`
+	X         string `json:"x"`
+	Y         string `json:"y"`
+	Untracked bool   `json:"untracked"`
+}
+
+// StatusFiles 返回工作区变更文件的结构化清单（只读；未跟踪文件单列）。
+// 无变更返回空切片（不是错误——面板的"干净"态靠它表达）。
+// 解析 --porcelain -z 的 NUL 分隔输出；畸形行跳过（坏一行不牵连整个面板）。
+func StatusFiles(root string) ([]StatusEntry, error) {
+	out, err := runGitCmdRaw(root, "status", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(out, "\x00")
+	var entries []StatusEntry
+	for i := 0; i < len(parts); i++ {
+		rec := parts[i]
+		if strings.TrimSpace(rec) == "" || len(rec) < 4 {
+			continue
+		}
+		x, y := string(rec[0]), string(rec[1])
+		path := rec[3:]
+		// 重命名/拷贝：XY 行后跟 origPath 记录，下一个记录才是新路径
+		if (x == "R" || x == "C" || y == "R" || y == "C") && i+1 < len(parts) {
+			i++
+			path = parts[i]
+		}
+		entries = append(entries, StatusEntry{Path: path, X: x, Y: y, Untracked: x == "?" && y == "?"})
+	}
+	return entries, nil
+}
+
+// DiffFile 返回单个文件相对 HEAD 的未暂存 diff（Git 面板点文件展示）。
+func DiffFile(root, path string) (string, error) {
+	return runGitCmd(root, "diff", "--", path)
 }

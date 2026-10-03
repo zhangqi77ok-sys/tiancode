@@ -71,6 +71,10 @@ export interface SessionSummaryDTO {
   promptTokens?: number
   completionTokens?: number
   totalTokens?: number
+  // 0.0.24 近 7 天（按 usage 事件的 at 时间戳；旧事件无时间戳不计入）
+  prompt7d?: number
+  completion7d?: number
+  total7d?: number
 }
 
 // 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）
@@ -97,6 +101,9 @@ export interface ChannelDTO {
   auth?: AuthDTO
   // 上下文上限（token；0/缺省 = 未配置）：本地派生历史时分级折叠用，不发给上游
   contextLimit?: number
+  // 每百万 token 单价（0.0.24 成本估算；0/缺省 = 未配置，不显示金额）
+  priceIn?: number
+  priceOut?: number
   // 凭证摘要（列表卡片"N 条 · M 禁用"；逐条管理走 ListCredentials）
   credentialCount?: number
   credentialDisabled?: number
@@ -206,6 +213,8 @@ export interface CheckResultDTO {
 export interface WorkspaceSettingsDTO {
   openAtLine: string
   checkCommand: string
+  // shell 审批白名单（0.0.24）：命令以这些前缀开头时免审批确认
+  shellAllow?: string[]
 }
 
 // 语气设置（第 8 批）：内置 50 条由后端给（id / 名称 / 做法），前端不复制名单。
@@ -399,6 +408,16 @@ export interface ChannelInput {
   // 上下文上限（token；0 = 不限）。估算口径：4 个 ASCII 字符 ≈ 1 token、
   // 1 个非 ASCII 字符 ≈ 1 token（保守上界）——见后端 derive.go。
   contextLimit?: number
+  priceIn?: number
+  priceOut?: number
+}
+
+// Git 面板（0.0.24）：一行变更（porcelain 状态码 + 路径；?? = 未跟踪）
+export interface GitStatusEntryDTO {
+  path: string
+  x: string
+  y: string
+  untracked: boolean
 }
 
 // createAppStub 生成"调用即明确报错"的桩。
@@ -478,8 +497,8 @@ interface WailsApp {
   // 任务栏闪烁（0.0.19）：后台会话结束时调用，让"跑完了"穿透当前焦点被看见。
   FlashWindow(): Promise<void>
   // 真正退出应用（0.0.21）：仅关窗确认框确认后调用——后台有轮次在跑时，
-  // 系统关窗会被 OnBeforeClose 拦截并转成 chat:close-requested 事件。
-  ForceQuit(): Promise<void>
+  // 关窗语义（0.0.24）：X / Alt+F4 = 隐藏到托盘（后台轮次继续跑）；真退出只在托盘菜单。
+  HideToTray(): Promise<void>
   // 记忆管理（0.0.21）：模型能记的用户必须看得见、删得掉。
   MemoryLines(sessionID: string): Promise<MemoryViewDTO | null>
   MemoryDelete(sessionID: string, scope: 'global' | 'workspace', line: number): Promise<void>
@@ -499,6 +518,9 @@ interface WailsApp {
   // 自更新（0.0.20）：检查 GitHub 最新 release；确认后下载安装包并拉起安装器（应用自退重启）。
   CheckUpdate(): Promise<UpdateInfoDTO | null>
   ApplyUpdate(): Promise<void>
+  // Git 面板（0.0.24）：这场对话工作区的变更清单与单文件 diff。
+  GitStatusFiles(sessionID: string): Promise<GitStatusEntryDTO[] | null>
+  GitFileDiff(sessionID: string, path: string): Promise<string | null>
   // 原生目录选择框：返回选中目录，取消返回空串（工作区由用户在对话框里选，而非手敲路径）
   PickWorkspace(): Promise<string>
   // 顶栏分支（0.0.11）：已落账会话取该会话自己的工作区，草稿取"下一场新对话"的根；
@@ -639,6 +661,7 @@ interface WailsWindowRuntime {
   WindowMinimise?: () => void
   WindowMinimize?: () => void // 兼容旧/别名写法
   WindowToggleMaximise?: () => void
+  WindowHide?: () => void // 0.0.24：dev 浏览器里 winClose 的等效动作
   Quit?: () => void
   WindowClose?: () => void // 兼容别名
   BrowserOpenURL?: (url: string) => void
@@ -670,10 +693,16 @@ export function winToggleMaximize(): void {
   windowRuntime().WindowToggleMaximise?.()
 }
 
-// winClose 关闭应用（v2 的关闭入口是 Quit）。
+// winClose（0.0.24 语义变更）：X = 隐藏到托盘（后台轮次继续跑），
+// 真正退出只在托盘菜单——走后端 OnBeforeClose 的统一拦截（quitting 才放行）。
 export function winClose(): void {
-  const rt = windowRuntime()
-  ;(rt.Quit ?? rt.WindowClose)?.()
+  const w = window as unknown as { go?: { app?: { HideToTray?: () => Promise<void> } } }
+  if (w.go?.app?.HideToTray) {
+    void w.go.app.HideToTray()
+    return
+  }
+  // 纯浏览器 dev：没有托盘概念，直接隐藏当前窗口等效于"离开"
+  windowRuntime().WindowHide?.()
 }
 
 // bridge 返回类型化的 wails 注入对象。三种情形：
@@ -705,7 +734,7 @@ export function bridge(): WailsBridge {
         PinSession: offlineWrite,
         MoveSession: offlineWrite,
         FlashWindow: async () => {},
-        ForceQuit: async () => {},
+        HideToTray: async () => {},
         MemoryLines: async () => ({ global: [], project: [] }),
         MemoryDelete: offlineWrite,
         MemoryClear: offlineWrite,
@@ -737,6 +766,8 @@ export function bridge(): WailsBridge {
           assetSize: 0,
         }),
         ApplyUpdate: offlineWrite,
+        GitStatusFiles: async () => [],
+        GitFileDiff: async () => '',
         Replay: async () => [],
         ReplayTail: async () => ({ messages: [], total: 0, from: 0 }),
         ReplayOlder: async () => ({ messages: [], total: 0, from: 0 }),

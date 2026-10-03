@@ -61,6 +61,11 @@ github.com/chromedp/chromedp/kb
 # github.com/chromedp/sysutil v1.0.0
 ## explicit; go 1.15
 github.com/chromedp/sysutil
+# github.com/energye/systray v1.0.3
+## explicit; go 1.20
+github.com/energye/systray
+github.com/energye/systray/internal/generated/menu
+github.com/energye/systray/internal/generated/notifier
 # github.com/go-ole/go-ole v1.2.6
 ## explicit; go 1.12
 github.com/go-ole/go-ole
@@ -80,6 +85,8 @@ github.com/gobwas/ws/wsutil
 # github.com/godbus/dbus/v5 v5.1.0
 ## explicit; go 1.12
 github.com/godbus/dbus/v5
+github.com/godbus/dbus/v5/introspect
+github.com/godbus/dbus/v5/prop
 # github.com/google/uuid v1.3.0
 ## explicit
 github.com/google/uuid

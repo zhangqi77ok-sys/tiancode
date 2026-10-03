@@ -38,10 +38,6 @@ func (s *ChatService) RunUserCommand(ctx context.Context, sessionID, command str
 	if root == "" {
 		return UserShellResult{}, errors.New("这场对话没有工作区，无法执行命令")
 	}
-	// 关窗判据置位（0.0.21 实机补洞）：审批等待与命令执行期间，关窗必须被确认框
-	// 拦截——这条路径不经 Send 轮次，AnyRunning 看不见 running 集合。
-	s.userCmdActive.Store(true)
-	defer s.userCmdActive.Store(false)
 	st, err := s.ensureSessionTools(sessionID, root)
 	if err != nil {
 		return UserShellResult{}, err
@@ -57,7 +53,7 @@ func (s *ChatService) RunUserCommand(ctx context.Context, sessionID, command str
 	// 审批：approverFor 在审批关闭时返回 nil（行为回到零干扰）；开启时 Review
 	// 内部对不在清单内的工具直接放行——统一走 Review，不在这里重复判断清单。
 	s.mu.Lock()
-	approver := s.approverFor(sessionID)
+	approver := s.approverFor(sessionID, root)
 	s.mu.Unlock()
 	if approver != nil {
 		decision, rerr := approver.Review(ctx, agent.ApprovalRequest{ToolName: "shell", Arguments: string(args)})

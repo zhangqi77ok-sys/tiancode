@@ -28,6 +28,10 @@ type SessionSummary struct {
 	PromptTokens     int64 `json:"promptTokens,omitempty"`
 	CompletionTokens int64 `json:"completionTokens,omitempty"`
 	TotalTokens      int64 `json:"totalTokens,omitempty"`
+	// 0.0.24 近 7 天（按 usage 事件的 at；旧事件无时间戳不计入）
+	Prompt7d     int64 `json:"prompt7d,omitempty"`
+	Completion7d int64 `json:"completion7d,omitempty"`
+	Total7d      int64 `json:"total7d,omitempty"`
 }
 
 // maxTitleRunes 是标题长度上限：侧栏单行展示，过长既撑破布局也无法辨认。
@@ -175,6 +179,7 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 			ID: id, Title: meta.Title, Workspace: meta.Workspace,
 			Pinned: meta.Pinned, LastActiveMs: lastActive, SkippedLines: meta.Skipped,
 			PromptTokens: meta.UsagePrompt, CompletionTokens: meta.UsageCompletion, TotalTokens: meta.UsageTotal,
+			Prompt7d: meta.Usage7dPrompt, Completion7d: meta.Usage7dCompletion, Total7d: meta.Usage7dTotal,
 		})
 	}
 	return out, nil

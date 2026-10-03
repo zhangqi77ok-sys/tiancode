@@ -5,7 +5,6 @@ import type { ChatToolEventDTO, CheckResultDTO } from './wails'
 import { useCatalogStore } from './stores/catalog'
 import { loadSidebarCollapsed, matchShortcut, saveSidebarCollapsed } from './composables/shortcuts'
 import { consumeEsc } from './composables/useEsc'
-import { useDialogs } from './composables/useDialogs'
 import { useToast } from './composables/useToast'
 import { bridge } from './wails'
 import AppHeader from './components/AppHeader.vue'
@@ -20,6 +19,7 @@ import DialogHost from './components/DialogHost.vue'
 import FileDetailPanel from './components/FileDetailPanel.vue'
 import FileTreePanel from './components/FileTreePanel.vue'
 import FloatingTodo from './components/FloatingTodo.vue'
+import GitPanel from './components/GitPanel.vue'
 import GlobalSearch from './components/GlobalSearch.vue'
 import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
@@ -39,7 +39,6 @@ import WorkspaceSettingsPanel from './components/WorkspaceSettingsPanel.vue'
 // 根组件退化为布局壳：顶栏/侧栏/对话/输入各自自治，事件桥在此统一接线。
 const store = useChatStore()
 const { push: toast } = useToast()
-const dialogs = useDialogs()
 
 // 会话操作的失败原来只写在侧栏最底部，容易被挡住——通知先冒出来。
 // toast 后清空 error：否则同一文案连续出现时 watch 不再触发（第二次静默无声）。
@@ -130,6 +129,18 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
       close: () => store.closeTimelinePanel(),
     })
   }
+  if (store.gitOpen) {
+    tabs.push({
+      id: 'git',
+      label: 'Git',
+      icon: 'refresh',
+      active: store.rightPanelTab === 'git',
+      activate: () => {
+        store.rightPanelTab = 'git'
+      },
+      close: () => store.closeGitPanel(),
+    })
+  }
   if (store.statsOpen) {
     tabs.push({
       id: 'stats',
@@ -151,6 +162,7 @@ const railTabs = [
   { label: '任务', icon: 'terminal' as const, open: () => store.openTasksPanel() },
   { label: '统计', icon: 'stats' as const, open: () => void store.openStatsPanel() },
   { label: '时间线', icon: 'refresh' as const, open: () => store.openTimelinePanel() },
+  { label: 'Git', icon: 'folder' as const, open: () => store.openGitPanel() },
 ]
 
 // 模态守卫收敛一处：新增模态只需在这里登记（此前用三个布尔枚举，新增必漏）
@@ -363,19 +375,9 @@ onMounted(() => {
     if (p?.sessionID && p.sessionID !== store.sessionId) return // 后台会话的结果不插进当前视图
     checkResult.value = p?.refs?.length ? p : null
   })
-  // 关窗拦截（0.0.21）：后台有轮次在跑时系统关窗被 OnBeforeClose 转成这个事件——
-  // 弹确认框，确认才真退（ForceQuit）；取消 = 留在应用，后台轮次继续。
-  bridge().runtime.EventsOn('chat:close-requested', () => {
-    void dialogs
-      .confirm({
-        title: '还有会话在运行',
-        message: '有会话正在执行任务（写文件/跑命令中），现在退出会中断它们。确定退出吗？',
-        confirmText: '退出',
-        danger: true,
-      })
-      .then((ok) => {
-        if (ok) void bridge().app.ForceQuit()
-      })
+  // 托盘"新建对话"（0.0.24）：唤回主窗口并回草稿态
+  bridge().runtime.EventsOn('tray:new-session', () => {
+    void store.newSession()
   })
   // 上下文治理读数（第 2 批）：油表显示预算/估算与折叠标记——折叠绝不静默
   bridge().runtime.EventsOn(
@@ -460,6 +462,9 @@ onBeforeUnmount(() => {
           </template>
           <template #tab-stats>
             <StatsPanel />
+          </template>
+          <template #tab-git>
+            <GitPanel />
           </template>
           <template #tab-timeline>
             <TimelinePanel @jump="store.jumpToSeq($event)" />

@@ -45,6 +45,9 @@ type Channel struct {
 	// ContextLimit 是渠道声明的上下文上限（token；0 = 未配置）。池层只做汇总
 	//（MinContextLimit），折算为派生预算在编排层完成。
 	ContextLimit int `json:"contextLimit,omitempty"`
+	// PriceIn/PriceOut：每百万 token 单价（0.0.24 成本估算展示用，不参与选路）。
+	PriceIn  float64 `json:"priceIn,omitempty"`
+	PriceOut float64 `json:"priceOut,omitempty"`
 }
 
 // CredentialState 记录多凭证的启用状态与轮询下标（与按行拆分的凭证一一对应）。

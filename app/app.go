@@ -300,6 +300,16 @@ func (b *Bind) RoundTimeline(sessionID string) ([]app.RoundInfo, error) {
 	return b.chat.RoundTimeline(sessionID)
 }
 
+// GitStatusFiles 返回这场对话工作区的变更文件清单（Git 面板，0.0.24）。
+func (b *Bind) GitStatusFiles(sessionID string) ([]app.GitStatusEntry, error) {
+	return b.chat.GitStatusFiles(sessionID)
+}
+
+// GitFileDiff 返回单个文件相对 HEAD 的未暂存 diff（Git 面板点文件展示）。
+func (b *Bind) GitFileDiff(sessionID, path string) (string, error) {
+	return b.chat.GitFileDiff(sessionID, path)
+}
+
 // RevertToRound 把文件回滚到指定轮之前（0.0.20，保留对话历史——与重跑的唯一区别）。
 func (b *Bind) RevertToRound(sessionID string, userSeq int64) (app.RevertResult, error) {
 	return b.chat.RevertToRound(sessionID, userSeq)

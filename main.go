@@ -68,6 +68,8 @@ func main() {
 			// 应用上下文经字段注入：绑定方法不能带 context.Context 参数
 			// （Wails 的 ParseArgs 严格校验实参个数且不注入 ctx，见 app.Bind 注释）
 			bind.AppCtx = ctx
+			// 托盘（0.0.24）：常驻入口 + 真正退出的唯一入口（X = 隐藏到托盘）
+			shell.StartTray(bind)
 			// 窗口就绪的可断言证据（排障与验收都依赖这行）
 			shell.LogLifecycle(fmt.Sprintf("started v%s model=%s workspace=%s", version, cfg.Model, cfg.WorkDir))
 			// 自动禁用渠道的重启恢复会改变用户上次看到的渠道状态，必须留痕（否则用户
@@ -77,14 +79,15 @@ func main() {
 			}
 		},
 		OnBeforeClose: func(ctx context.Context) bool {
-			// 关窗拦截（0.0.21）：后台还有轮次在跑时，点 X 不能无声杀进程——
-			// 发事件让前端弹确认框（确认后走 Bind.ForceQuit 真退）；没在跑就放行。
+			// 关窗语义（0.0.24，用户裁决）：X / Alt+F4 / 系统关窗一律 = 隐藏到托盘
+			//（后台轮次继续跑），真正退出只从托盘菜单走——"退出"已置位 quitting
+			// 才放行本次关闭。0.0.21 的确认框链路随新语义下线。
 			// 返回 true = 阻止本次关闭。
-			if chat.ShouldConfirmClose() {
-				wruntime.EventsEmit(ctx, "chat:close-requested")
-				return true
+			if shell.Quitting() {
+				return false
 			}
-			return false
+			wruntime.WindowHide(ctx)
+			return true
 		},
 		OnShutdown: func(ctx context.Context) {
 			// 显式回收（MCP 子进程 / 账本句柄 / codex 监听）：wails.Run 异常返回或

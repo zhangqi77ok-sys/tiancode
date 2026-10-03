@@ -159,7 +159,7 @@ func TestChatService_ApprovalSnapshotNotLiveList(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
-	approver := s.approverFor("s-snap")
+	approver := s.approverFor("s-snap", "")
 	s.mu.Unlock()
 	ui, ok := approver.(*uiApprover)
 	if !ok {

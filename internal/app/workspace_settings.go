@@ -26,6 +26,11 @@ type WorkspaceSettings struct {
 	// CheckCommand 是回合终态 / 写完文件后要跑的检查命令（同一套 argv 拆分规则）。
 	// 空 = 任何时候都不跑（绝不猜 go test）。
 	CheckCommand string `json:"checkCommand"`
+	// ShellAllow 是 shell 审批白名单（0.0.24）：命令以这些前缀开头时，审批闸门
+	// 自动放行不再弹确认卡（shell 在审批清单内才有意义）。按工作区各存一份——
+	// 不同项目的安全基线不同。整条规则由用户显式配置，编排层只做前缀匹配，
+	// 不做任何命令语义分析（ADR-0007 的纪律边界不变）。
+	ShellAllow []string `json:"shellAllow,omitempty"`
 }
 
 const workspaceSettingsFile = "workspace-settings.json"
@@ -67,12 +72,15 @@ func saveWorkspaceSettings(root string, ws WorkspaceSettings) error {
 		}
 	}
 	key := workspaceKey(root)
-	if strings.TrimSpace(ws.OpenAtLine) == "" && strings.TrimSpace(ws.CheckCommand) == "" {
+	// 三项全空才删键：ShellAllow（0.0.24）也是有效设置，重建结构体时必须带上
+	//（漏了它会让保存悄悄丢白名单——测试抓到）。
+	if strings.TrimSpace(ws.OpenAtLine) == "" && strings.TrimSpace(ws.CheckCommand) == "" && len(ws.ShellAllow) == 0 {
 		delete(all, key)
 	} else {
 		all[key] = WorkspaceSettings{
 			OpenAtLine:   strings.TrimSpace(ws.OpenAtLine),
 			CheckCommand: strings.TrimSpace(ws.CheckCommand),
+			ShellAllow:   ws.ShellAllow,
 		}
 	}
 	data, err := json.MarshalIndent(all, "", "  ")

@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -87,13 +88,48 @@ func (s *ChatService) SetApprovalPolicy(toolNames []string) error {
 // 审批工具清单**拷贝快照**（0.2.35 审计#7）：此前 Review 每次读活列表，回合中途
 // 把某工具移出清单会让同回合的下一次调用直接放行——"进行中的轮次维持开跑时的
 // 策略"的注释从未成立。快照后新策略仍从下一轮开始生效（与注释一致）。
-func (s *ChatService) approverFor(sessionID string) agent.Approver {
+// approverFor 组装本轮审批器：UI 确认（uiApprover）+ 可选的工作区白名单旁路
+// （shellAllowApprover，0.0.24）。root 由调用方传入：本函数在 s.mu 持有期间被调，
+// 内部绝不能再碰 ledgerFor/sessionWorkspace（锁序纪律）。
+func (s *ChatService) approverFor(sessionID, root string) agent.Approver {
 	if len(s.approvalTools) == 0 {
 		return nil
 	}
 	snapshot := make([]string, len(s.approvalTools))
 	copy(snapshot, s.approvalTools)
-	return &uiApprover{svc: s, sessionID: sessionID, allowed: snapshot}
+	var inner agent.Approver = &uiApprover{svc: s, sessionID: sessionID, allowed: snapshot}
+	if ws := loadWorkspaceSettings(root); len(ws.ShellAllow) > 0 {
+		allow := make([]string, len(ws.ShellAllow))
+		copy(allow, ws.ShellAllow)
+		return &shellAllowApprover{inner: inner, allow: allow}
+	}
+	return inner
+}
+
+// shellAllowApprover 是审批白名单旁路：仅 shell、仅用户在工作区设置里显式
+// 配置的前缀。命中即自动放行（Reason 留痕，模型与账本都看得见依据）；
+// 不命中原样交给 UI 确认——白名单只会放行，绝不反向加严。
+type shellAllowApprover struct {
+	inner agent.Approver
+	allow []string
+}
+
+func (a *shellAllowApprover) Review(ctx context.Context, req agent.ApprovalRequest) (agent.Decision, error) {
+	if req.ToolName == "shell" {
+		var p struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(req.Arguments), &p) == nil {
+			cmd := strings.TrimSpace(p.Command)
+			for _, pre := range a.allow {
+				pre = strings.TrimSpace(pre)
+				if pre != "" && strings.HasPrefix(cmd, pre) {
+					return agent.Decision{Approved: true, Reason: "命中工作区审批白名单（前缀 " + pre + "）"}, nil
+				}
+			}
+		}
+	}
+	return a.inner.Review(ctx, req)
 }
 
 // ResolveApproval 提交用户对某次审批请求的答复。

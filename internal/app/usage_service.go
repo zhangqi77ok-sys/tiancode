@@ -6,6 +6,8 @@
 package app
 
 import (
+	"time"
+
 	"tiancode/internal/core/session"
 	"tiancode/internal/platform/applog"
 )
@@ -19,8 +21,9 @@ func (s *ChatService) RecordUsage(sessionID string, prompt, completion, total in
 		applog.Errorf("usage 落账失败（会话不可用）session=%s err=%v", sessionID, err)
 		return
 	}
-	if _, err := l.Append(session.EventUsage, map[string]int64{
+	if _, err := l.Append(session.EventUsage, map[string]any{
 		"prompt": prompt, "completion": completion, "total": total,
+		"at": time.Now().UnixMilli(), // 0.0.24：近 7 天趋势按它聚合；旧事件无此字段不参与
 	}); err != nil {
 		applog.Errorf("usage 落账失败 session=%s err=%v", sessionID, err)
 	}

@@ -155,6 +155,16 @@ const recentWorkspaces = computed(() => {
   return [...set]
 })
 
+// ---- 托盘收尾（0.0.24）：X 隐藏到托盘后首次给发现性提示；托盘"检查更新"递事件 ----
+const TRAY_HINT_KEY = 'tiancode-tray-hint-shown'
+function hideToTrayWithHint() {
+  if (!localStorage.getItem(TRAY_HINT_KEY)) {
+    localStorage.setItem(TRAY_HINT_KEY, '1')
+    toast('info', '已最小化到托盘：左键托盘图标唤回，退出在托盘右键菜单')
+  }
+  winClose() // 0.0.24 起语义 = 隐藏到托盘（OnBeforeClose 统一拦截）
+}
+
 // ---- 检查更新（0.0.20）：GitHub 最新 release → 确认 → 下载安装 → 自动重启 ----
 const updateChecking = ref(false)
 async function checkForUpdate() {
@@ -281,6 +291,11 @@ function pickTheme(mode: ThemeMode) {
 const THEME_ORDER: ThemeMode[] = ['auto', 'light', 'dark']
 
 onMounted(async () => {
+  // 托盘菜单「检查更新」（0.0.24）：托盘只能发事件，确认框流程在这里
+  bridge().runtime.EventsOn('tray:check-update', () => {
+    menuOpen.value = false
+    void checkForUpdate()
+  })
   // 三步各自隔离：启动自检任一步失败都不该打断后面的初始化（尤其审批开关初值
   // 依赖 loadApprovalPolicy）。channels.load / ws.refresh / loadApprovalPolicy
   // 内部均已吞错，这里再兜一层防未处理 rejection。
@@ -540,7 +555,7 @@ onBeforeUnmount(() => {
         <button class="win-btn" aria-label="最大化或还原" title="最大化 / 还原" @click="winToggleMaximize">
           <AppIcon name="stop" :size="11" />
         </button>
-        <button class="win-btn win-btn-close" aria-label="关闭窗口" title="关闭" @click="winClose">
+        <button class="win-btn win-btn-close" aria-label="关闭窗口" title="最小化到托盘（退出在托盘菜单）" @click="hideToTrayWithHint">
           <AppIcon name="x" :size="14" />
         </button>
       </div>

@@ -15,6 +15,8 @@ const store = useChatStore()
 const { push: toast } = useToast()
 const openAtLine = ref('')
 const checkCommand = ref('')
+// shell 审批白名单（0.0.24）：一行一条前缀；shell 命中以这些前缀开头时免审批
+const shellAllowText = ref('')
 const error = ref('')
 const saving = ref(false)
 const loaded = ref(false)
@@ -26,6 +28,7 @@ onMounted(async () => {
     const s = await bridge().app.WorkspaceSettings(store.sessionId)
     openAtLine.value = s?.openAtLine ?? ''
     checkCommand.value = s?.checkCommand ?? ''
+    shellAllowText.value = (s?.shellAllow ?? []).join('\n')
   } catch (e) {
     error.value = errText(e)
   } finally {
@@ -41,6 +44,10 @@ async function save() {
     await bridge().app.SaveWorkspaceSettings(store.sessionId, {
       openAtLine: openAtLine.value.trim(),
       checkCommand: checkCommand.value.trim(),
+      shellAllow: shellAllowText.value
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean),
     })
     toast('info', '已保存到本工作区')
     emit('close')
@@ -85,6 +92,21 @@ async function save() {
         <span class="block text-[11px] text-[var(--c-text-faint)]">
           留空则任何时候都不跑。非空时在回合结束后（以及「应用到文件」写入后）各跑一次；
           输出里的 path:line 在界面上可点。
+        </span>
+      </label>
+
+      <label class="block">
+        <span class="mb-1 block text-xs text-[var(--c-text-dim)]">Shell 审批白名单（每行一条命令前缀）</span>
+        <textarea
+          v-model="shellAllowText"
+          rows="3"
+          class="field-input font-mono text-xs"
+          placeholder="git status&#10;go test ./..."
+          :disabled="!loaded"
+        ></textarea>
+        <span class="block text-[11px] text-[var(--c-text-faint)]">
+          命令确认开着时，以这些前缀开头的 shell 命令自动放行不再弹卡（如 git status、go build）；
+          未命中的照常确认。只在本工作区生效，只能放行、不能反向加严。
         </span>
       </label>
 

@@ -48,10 +48,15 @@ func (b *Bind) ApplyUpdate() error {
 	if err := selfupdate.Download(b.appCtx(), info.AssetURL, dest, info.AssetSHA256, info.AssetSize, b.chat.Proxy); err != nil {
 		return err
 	}
+	// 先置真退出标记再拉安装器（0.0.24 实机抓到）：安装器会向本应用发 WM_CLOSE
+	// 优雅关闭——托盘版 OnBeforeClose 默认把一切关闭都转成"隐藏到托盘"，不置位
+	// 的话优雅关闭永远不生效，最后被安装器强制结束（升级日志出现"未响应关闭请求"）。
+	quitting.Store(true)
 	// 拉起安装器（隐藏窗口；安装器自己会优雅关闭本应用再覆盖安装再重启新版）
 	cmd := exec.Command(dest, "-quiet", "-relaunch")
 	hideConsole(cmd)
 	if err := cmd.Start(); err != nil {
+		quitting.Store(false) // 没拉起来就撤销标记，应用继续用
 		return fmt.Errorf("拉起安装器失败：%w", err)
 	}
 	// 给安装器一点启动时间后自退；安装器的 closeRunningApp 对"已退出"幂等。
