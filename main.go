@@ -53,7 +53,8 @@ func main() {
 	}
 
 	bind := shell.New(chat)
-	shell.Version = version // 自更新基线（0.0.20）；"dev" = 本地构建不检查
+	shell.Version = version   // 自更新基线（0.0.20）；"dev" = 本地构建不检查
+	shell.SetActiveBind(bind) // 单实例锁回调要经它唤起窗口（包级函数无 receiver）
 	err = wails.Run(&options.App{
 		Title: "tiancode",
 		// 无边框：标题栏由前端自绘（品牌 logo + 窗口控制按钮都在应用内），
@@ -63,6 +64,18 @@ func main() {
 		Height:    800,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
+		},
+		// 单实例锁（0.0.25 双开守卫）：两个 tiancode 同时开着会互相踩——
+		// 同一工作区里两套工具各改各的、账本双写、审批卡弹两份。
+		// 用 Wails 原生实现（Windows 下是命名互斥体，零新依赖）：
+		// 第二个实例启动即退出，并把已运行的那个窗口唤到前台。
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId: "d7c9e1a4-tiancode-single-instance",
+			OnSecondInstanceLaunch: func(_ options.SecondInstanceData) {
+				// 只处理"唤起"：第二实例自己会立刻退出，不重复任何装配。
+				// quitting 判据在 RestoreMainWindow 内部（正在退出时别把窗口拽回来）。
+				shell.RestoreMainWindow()
+			},
 		},
 		OnStartup: func(ctx context.Context) {
 			// 应用上下文经字段注入：绑定方法不能带 context.Context 参数

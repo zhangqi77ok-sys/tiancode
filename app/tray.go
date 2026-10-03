@@ -78,3 +78,22 @@ func (b *Bind) showMainWindow() {
 		wruntime.WindowShow(ctx)
 	}
 }
+
+// RestoreMainWindow 供 main.go 的单实例锁回调用（第二实例启动时唤起已有窗口）。
+// 为什么不复用 Bind.showMainWindow：那一刻 Bind 可能还没装配好 AppCtx（OnStartup
+// 未跑），而单实例锁在 Wails 启动早期触发——AppCtx 为 nil 时这里什么都不做，
+// 宁可"唤不醒"也不要在缺 ctx 的情况下调 runtime（会 panic）。
+func RestoreMainWindow() {
+	if quitting.Load() {
+		return // 正在退出：别把窗口拽回来
+	}
+	if b := bindInstance.Load(); b != nil {
+		b.showMainWindow()
+	}
+}
+
+// bindInstance 记录当前运行的 Bind（单实例锁回调是包级函数，没有 receiver）。
+var bindInstance atomic.Pointer[Bind]
+
+// SetActiveBind 登记运行中的 Bind（main.go 在装配后调一次）。
+func SetActiveBind(b *Bind) { bindInstance.Store(b) }
