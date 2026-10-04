@@ -53,6 +53,24 @@ func (b *boundedBuffer) String() string {
 	return s
 }
 
+// Foreground 是前台命令的最终模型可见输出（0.0.26）：
+// 解码后只截断一次，"滚动丢弃的原始字节数"与"解码膨胀后二次切掉的字节数"
+// 合并进唯一的 [truncated] 标记。此前是"缓冲先截一次 + capForegroundOutput
+// 对截断结果再截一次"，实测 5MB 输出的真实丢弃量被第二层吞掉、显示成 49 字节，
+// 模型会误以为几乎没丢内容。返回是否发生了截断，供调用方附提示。
+func (b *boundedBuffer) Foreground(limit int) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	head, tail, dropped := b.w.Parts()
+	s := decodeConsoleOutput(head) + decodeConsoleOutput(tail)
+	h, t, omitted := tools.HeadTailParts(s, limit)
+	total := dropped + omitted
+	if total == 0 {
+		return s, false
+	}
+	return h + fmt.Sprintf("\n...[truncated: %d middle bytes omitted]...\n", total) + t, true
+}
+
 // bgTask 是后台任务状态。
 type bgTask struct {
 	id      string

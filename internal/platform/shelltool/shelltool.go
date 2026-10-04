@@ -35,6 +35,15 @@ const defaultTimeout = 120 * time.Second
 // defaultBGLogLimit 是后台任务日志缓冲上限（64KB）。
 const defaultBGLogLimit = 64 * 1024
 
+// maxForegroundOutput 是前台命令进入模型上下文的字节上限（0.0.25）：
+// verbose 构建/测试动辄数 MB，不设顶会撑爆当轮上下文。
+// 与后台任务日志同一上限口径（64KB）——"前台比后台宽松"是反直觉的不一致。
+const maxForegroundOutput = 64 << 10
+
+// foregroundTruncationHint 是超限输出的出路提示。注意重定向（>）含审批白名单
+// 屏蔽记号，该命令必然走一次审批确认——如实告知，别让模型以为白名单会放行它。
+const foregroundTruncationHint = "\n[提示：输出过长被截断（丢弃量见上方标记）。完整输出可重定向到文件（如 > out.txt，此命令需审批确认）后用 fs.read 按段读取。]"
+
 // Options 是工具构造参数。
 type Options struct {
 	Root       string        // 工作目录（命令 cwd）
@@ -218,7 +227,12 @@ func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int) (too
 	close(stop)
 	<-pumpDone
 
-	out := buf.String()
+	// 最终输出只截断一次（0.0.26）：解码与丢弃量合并都发生在 Foreground 内部，
+	// 这里不再叠加任何二次截断。
+	out, truncated := buf.Foreground(maxForegroundOutput)
+	if truncated {
+		out += foregroundTruncationHint
+	}
 	switch {
 	case runCtx.Err() == context.DeadlineExceeded:
 		// C-TOOL-2：超时返回部分输出 + 明确标记

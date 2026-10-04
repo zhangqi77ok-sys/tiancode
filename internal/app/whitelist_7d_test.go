@@ -80,6 +80,8 @@ func TestShellAllowMatched_Hardened(t *testing.T) {
 		{"git log > C:\\evil.dll", false, ""}, // 重定向写文件
 		{"git commit -m \"a\nb\"", false, ""}, // 换行
 		{"echo $(evil)", false, ""},           // 求值（虽是 bash 语法，一并拦）
+		{"echo %PATH%", false, ""},            // cmd %VAR% 环境变量展开（0.0.26）
+		{"git log --format=%h", false, ""},    // % 误伤合法用法时转走审批，安全方向
 		{"  git status", true, "git"},         // 首尾空白容忍
 		{"gitx", true, "gitx"},                // 恰好等于显式前缀
 	}

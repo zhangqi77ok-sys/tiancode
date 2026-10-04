@@ -120,16 +120,40 @@ func (a *shellAllowApprover) Review(ctx context.Context, req agent.ApprovalReque
 			Command string `json:"command"`
 		}
 		if json.Unmarshal([]byte(req.Arguments), &p) == nil {
-			cmd := strings.TrimSpace(p.Command)
-			for _, pre := range a.allow {
-				pre = strings.TrimSpace(pre)
-				if pre != "" && strings.HasPrefix(cmd, pre) {
-					return agent.Decision{Approved: true, Reason: "命中工作区审批白名单（前缀 " + pre + "）"}, nil
-				}
+			if pre, ok := shellAllowMatched(p.Command, a.allow); ok {
+				return agent.Decision{Approved: true, Reason: "命中工作区审批白名单（前缀 " + pre + "）"}, nil
 			}
 		}
 	}
 	return a.inner.Review(ctx, req)
+}
+
+// shellAllowMatched 判定命令是否命中白名单（0.0.25 加固，纯函数可测）：
+//   - 含组合/重定向/求值记号（& | ; < > 反引号、换行、$()、%）一律不命中——
+//     "git status; rm -rf x" 的前缀匹配曾经放行过它（白名单发布当天审计抓到）；
+//     % 是 cmd 的求值记号（%VAR% 展开 / 批处理参数），与 $() 同罪；
+//     误伤的合法用法（如 git log --format=%h）转为走审批确认，是安全方向；
+//   - 前缀命中后必须是词边界（rest 为空或以空白开始），"gitx" 不吃 "git" 的前缀；
+//   - 空命令/空前缀不命中。
+func shellAllowMatched(cmd string, allow []string) (string, bool) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return "", false
+	}
+	if strings.ContainsAny(cmd, "&|;<>`%\n\r") || strings.Contains(cmd, "$(") {
+		return "", false
+	}
+	for _, pre := range allow {
+		pre = strings.TrimSpace(pre)
+		if pre == "" || !strings.HasPrefix(cmd, pre) {
+			continue
+		}
+		rest := cmd[len(pre):]
+		if rest == "" || rest[0] == ' ' || rest[0] == '\t' {
+			return pre, true
+		}
+	}
+	return "", false
 }
 
 // ResolveApproval 提交用户对某次审批请求的答复。

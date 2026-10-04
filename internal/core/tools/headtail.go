@@ -14,19 +14,30 @@ import (
 // 两侧都在 UTF-8 边界回退（绝不切出非法字符，审计#8 同纪律）。
 // limit 以字节计；s 不超限时原样返回（幂等友好）。
 func HeadTail(s string, limit int) string {
-	if limit <= 0 || len(s) <= limit {
+	head, tail, omitted := HeadTailParts(s, limit)
+	if omitted == 0 {
 		return s
+	}
+	return head + fmt.Sprintf("\n...[truncated: %d middle bytes omitted]...\n", omitted) + tail
+}
+
+// HeadTailParts 把 HeadTail 的"切"与"拼"拆开：返回保留下来的头、尾与本次切掉的
+// 字节数（同样 UTF-8 边界安全）。给需要把多层丢弃量合并成**一个**标记的场景用
+// （如 shell 前台输出：滚动缓冲丢过一批、解码膨胀后又得切一批）——直接叠两层
+// HeadTail 会出现两个互相矛盾的 "[truncated]"，且第一层的真实丢弃量会被第二层吞掉。
+func HeadTailParts(s string, limit int) (head, tail string, omitted int) {
+	if limit <= 0 || len(s) <= limit {
+		return s, "", 0
 	}
 	headCap := limit * 2 / 5
 	tailCap := limit - headCap
-	head := utf8SafeCut(s[:headCap])
+	head = utf8SafeCut(s[:headCap])
 	// 尾部从后往前找 UTF-8 起点：多字节字符不能从中间开始
-	tail := s[len(s)-tailCap:]
+	tail = s[len(s)-tailCap:]
 	for len(tail) > 0 && !utf8.ValidString(tail) {
 		tail = tail[1:]
 	}
-	omitted := len(s) - len(head) - len(tail)
-	return head + fmt.Sprintf("\n...[truncated: %d middle bytes omitted]...\n", omitted) + tail
+	return head, tail, len(s) - len(head) - len(tail)
 }
 
 // utf8SafeCut 从头截断并回退到 UTF-8 边界。
