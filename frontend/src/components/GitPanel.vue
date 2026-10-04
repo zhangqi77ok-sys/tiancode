@@ -4,7 +4,7 @@ import { useChatStore } from '../stores/chat'
 import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
 import { errText } from '../composables/errText'
-import { bridge, type GitStatusEntryDTO } from '../wails'
+import { bridge, type CommitSuggestionDTO, type GitStatusEntryDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
 
 // 右栏「Git」tab（0.0.24）：变更文件清单 + 单文件 diff + 提交流。
@@ -74,17 +74,29 @@ async function openFile(e: GitStatusEntryDTO) {
 
 async function commitFlow() {
   if (!store.sessionId) return
-  let message = ''
+  let sug: CommitSuggestionDTO
   try {
-    message = await store.suggestCommitMessage()
+    sug = await store.suggestCommitMessage()
   } catch (e) {
     toast('error', errText(e))
     return
   }
+  if (!sug.message.trim()) {
+    toast('error', '没有生成提交说明')
+    return
+  }
+  // 0.0.30 用户审查 R1：逐条列出 add -A 实际会纳入的每个路径（含已暂存与未跟踪），
+  // 确认框看到的清单 = 提交进去的清单。
+  const untracked = new Set(sug.untracked)
+  const list = sug.files.length
+    ? sug.files.map((p) => `  ${untracked.has(p) ? '＋' : '·'} ${p}`).join('\n')
+    : '  （无）'
   const next = await dialogs.prompt({
     title: '提交变更',
-    message: '提交说明（已按本轮 diff 生成，可修改）：',
-    value: message || '',
+    message:
+      `以下 ${sug.files.length} 个路径会进入这次提交（含已暂存与未跟踪的新文件）：\n${list}\n\n` +
+      `提交说明（由模型 ${sug.model} 按上述变更生成，可修改）：`,
+    value: sug.message,
     maxlength: 200,
   })
   if (next === null || !next.trim()) return

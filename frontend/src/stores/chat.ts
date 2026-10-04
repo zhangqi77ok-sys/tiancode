@@ -5,6 +5,7 @@ import {
   openExternal,
   type ChatMessageDTO,
   type ChatToolEventDTO,
+  type CommitSuggestionDTO,
   type RerunResultDTO,
   type RevertResultDTO,
   type SessionSummaryDTO,
@@ -1253,11 +1254,20 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ---- 提交说明（0.3 最小能力）----
-  // suggestCommitMessage：后端取工作区 diff，用当前模型生成一条提交说明（不落账本）。
-  async function suggestCommitMessage(): Promise<string> {
+  // suggestCommitMessage：后端取工作区变更（含已暂存 + 未跟踪），用当前模型生成
+  // 一条提交说明（不落账本）。0.0.30：返回结构体——files 是这次 add -A 实际会
+  // 纳入的每个路径，确认框逐条列出（说明与提交必须是同一份变更）。
+  async function suggestCommitMessage(): Promise<CommitSuggestionDTO> {
     error.value = ''
     try {
-      return (await bridge().app.SuggestCommitMessage(sessionId.value)) ?? ''
+      return (
+        (await bridge().app.SuggestCommitMessage(sessionId.value)) ?? {
+          message: '',
+          files: [],
+          model: '',
+          untracked: [],
+        }
+      )
     } catch (e) {
       error.value = errText(e)
       throw e

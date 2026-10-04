@@ -438,7 +438,11 @@ func (b *Bind) RunUserCommand(sessionID, command string) (app.UserShellResult, e
 
 // SuggestCommitMessage 根据工作区未提交变更生成提交说明（0.3）：只读辅助动作，
 // 不落账本、不写盘。失败原因显式上抛。
-func (b *Bind) SuggestCommitMessage(sessionID string) (string, error) {
+//
+// 返回结构体而非裸字符串（0.0.30 用户审查 R1）：确认框要列出这次 git add -A
+// **实际会纳入的每个路径**，否则用户看到的说明与真正提交进去的变更不是同一份
+// （已暂存块与未跟踪文件此前既不在说明里、也不在确认框里）。
+func (b *Bind) SuggestCommitMessage(sessionID string) (app.CommitSuggestion, error) {
 	return b.chat.SuggestCommitMessage(b.appCtx(), sessionID)
 }
 

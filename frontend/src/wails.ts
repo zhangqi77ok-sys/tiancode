@@ -389,6 +389,16 @@ export interface UserShellResultDTO {
   isError: boolean
 }
 
+// 提交说明生成结果（0.0.30 用户审查 R1）：message 是模型写的说明；files 是这次
+// git add -A **实际会纳入的每个路径**（含已暂存与未跟踪），确认框逐条列出——
+// 用户看到的清单必须与提交进去的清单一致。model 标出谁写的说明。
+export interface CommitSuggestionDTO {
+  message: string
+  files: string[]
+  model: string
+  untracked: string[]
+}
+
 export interface PresetDTO {
   key: string
   name: string
@@ -609,7 +619,9 @@ interface WailsApp {
   // 同样弹审批卡）。拒绝时 isError=true、output 为拒绝说明。
   RunUserCommand(sessionID: string, command: string): Promise<UserShellResultDTO | null>
   // 提交说明（0.3）：读工作区 diff 让当前模型生成一条提交说明（不落账本、不写盘）。
-  SuggestCommitMessage(sessionID: string): Promise<string | null>
+  // 0.0.30：返回结构体——files 是这次 git add -A 实际会纳入的每个路径，
+  // 确认框必须逐条列出（说明与提交必须是同一份变更）。
+  SuggestCommitMessage(sessionID: string): Promise<CommitSuggestionDTO | null>
   // git add -A + commit（0.3）：前端确认框放行后才调用；仅此两条 git 改写命令，
   // push/reset/clean 等路径在实现里根本不存在。
   GitStageAndCommit(sessionID: string, message: string): Promise<string | null>
@@ -789,7 +801,7 @@ export function bridge(): WailsBridge {
         ReplayTail: async () => ({ messages: [], total: 0, from: 0 }),
         ReplayOlder: async () => ({ messages: [], total: 0, from: 0 }),
         RunUserCommand: offlineWrite,
-        SuggestCommitMessage: offlineWrite,
+        SuggestCommitMessage: async () => ({ message: '', files: [], model: '', untracked: [] }),
         GitStageAndCommit: offlineWrite,
         Send: async () => {},
         Stop: async () => {},

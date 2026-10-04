@@ -5,6 +5,7 @@ import { diffStat } from '../composables/diffView'
 import { useDialogs } from '../composables/useDialogs'
 import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
+import type { CommitSuggestionDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
 
 // 本轮变更审查带（0.0.09 驾驶舱；第 2/3 批改造）：write/edit 收拢在输入框上方，
@@ -111,25 +112,40 @@ async function revertRound() {
   }
 }
 
-// 生成提交说明（0.3 最小能力）：本轮 diff → 模型生成说明 → 确认框里可改，
+// 生成提交说明（0.3 最小能力）：本轮变更 → 模型生成说明 → 确认框里可改，
 // **确认才执行 git add -A + commit**（取消则什么都不发生）。
+//
+// 0.0.30 用户审查 R1：确认框逐条列出这次 add -A 实际会纳入的每个路径——
+// 此前只写"提交本轮"，而已暂存块与未跟踪文件同样会被 add -A 带进去，
+// 用户看到的说明与真正提交进去的不是同一份变更。清单与提交范围一致才是真的确认。
 const suggesting = ref(false)
 async function makeCommitMessage() {
   if (suggesting.value || store.running) return
   suggesting.value = true
-  let msg = ''
+  let sug: CommitSuggestionDTO
   try {
-    msg = await store.suggestCommitMessage()
+    sug = await store.suggestCommitMessage()
   } catch (e) {
     toast('error', errText(e))
     return
   } finally {
     suggesting.value = false
   }
+  if (!sug.message.trim()) {
+    toast('error', '没有生成提交说明')
+    return
+  }
+  const untracked = new Set(sug.untracked)
+  const list = sug.files.length
+    ? sug.files.map((p) => `  ${untracked.has(p) ? '＋' : '·'} ${p}`).join('\n')
+    : '  （无）'
   const edited = await dialogs.prompt({
     title: '生成提交说明',
-    message: '确认后将在本场对话的工作区执行 git add -A 并提交；说明可修改，取消则不提交：',
-    value: msg,
+    message:
+      `确认后将在本场对话的工作区执行 git add -A 并提交，以下 ${sug.files.length} 个路径会进入这次提交` +
+      `（含已暂存与未跟踪的新文件）：\n${list}\n\n` +
+      `说明由模型 ${sug.model} 生成，可修改；取消则不提交：`,
+    value: sug.message,
   })
   if (!edited || !edited.trim()) return // 取消/清空：不提交
   try {

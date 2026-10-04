@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	pathpkg "path"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -146,7 +148,9 @@ func StatusShort(root string) (string, error) {
 	return runGitCmd(root, "status", "--porcelain", "-b")
 }
 
-// Diff 返回未提交差异（有界）：提交说明生成的原料。
+// Diff 返回未提交差异（有界）：**只含未暂存部分**，仅供只读工具给模型看。
+// 提交说明生成不要用它——它看不见已暂存块与未跟踪文件（漏一半变更），
+// 那条路径用 DiffHEAD。
 func Diff(root string) (string, error) {
 	out, err := runGitCmd(root, "diff")
 	if err != nil {
@@ -155,21 +159,65 @@ func Diff(root string) (string, error) {
 	return truncate(out), nil
 }
 
+// DiffHEAD 返回工作区相对 HEAD 的全部差异（**含已暂存块**，有界）。
+// 提交说明的原料必须是它：add -A 会把"已暂存 + 未暂存 + 未跟踪"一起收进同一次
+// 提交，说明若只看裸 diff，用户确认时看到的变更与实际提交的就不是同一份
+// （0.0.30 用户审查 R1）。未跟踪文件（??）不在 diff 里，由调用方把 porcelain
+// 的路径写进提示词补齐。
+func DiffHEAD(root string) (string, error) {
+	out, err := runGitCmd(root, "diff", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return truncate(out), nil
+}
+
 // StageAllAndCommit 执行 git add -A + git commit -m message，返回可展示的输出。
-// message 经 argv 传入（不走 shell、无注入面）；两步中任一步失败即中止并上抛。
+// message 经 argv 传入（不走 shell、无注入面）。
+//
+// 两步的失败语义不同，必须分开说（0.0.30 用户审查 R1）：
+//   - add 失败：什么都没变，索引保持原样；
+//   - commit 失败：**索引已被全部暂存**（add 已成功）——用户若不知道，下一次
+//     commit 会把这一堆东西一起带走，或以为"没生效"而重复操作。
 func StageAllAndCommit(root, message string) (string, error) {
 	if _, err := runGitCmd(root, "add", "-A"); err != nil {
-		return "", fmt.Errorf("git add 失败：%w", err)
+		return "", fmt.Errorf("git add 失败，索引未变动：%w", err)
 	}
 	out, err := runGitCmd(root, "commit", "-m", message)
 	if err != nil {
-		return "", fmt.Errorf("git commit 失败：%w", err)
+		return "", fmt.Errorf("git commit 失败（注意：git add -A 已成功，本工作区的全部改动现已处于暂存区，未提交；修好原因后可直接重新提交）：%w", err)
 	}
 	return out, nil
 }
 
+// checkRelPath 校验模型/界面传入的路径限定在会话根内（0.0.30 用户审查 R3）。
+//
+// 为什么需要：`git … -- <path>` 的 pathspec 认 "../"（git 层面合法），而会话根
+// 常常只是仓库的子目录——`../sibling` 会读到**同一仓库里、工作区之外**的兄弟
+// 目录。fstool.resolve 已经拦了 ../ 与越界符号链接，git 读路径此前没接同一道闸。
+// 只做前缀/形状校验（纯函数、可测），符号链接越界由 resolve 那侧兜。
+func checkRelPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") {
+		return fmt.Errorf("path 必须是工作区内的相对路径（收到 %q）", path)
+	}
+	// 归一化后若以 ".." 开头即越界；Windows 的反斜杠一并归一
+	norm := strings.ReplaceAll(path, "\\", "/")
+	clean := pathpkg.Clean(norm)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("path 越出工作区（收到 %q）", path)
+	}
+	return nil
+}
+
 // buildArgs 将动作映射为只读 git 参数（白名单式，绝不拼接任意用户输入到 shell）。
+// path 统一先过 checkRelPath（0.0.30 用户审查 R3）：../ 与绝对路径不进 git。
 func buildArgs(action, path string, limit int) ([]string, error) {
+	if err := checkRelPath(path); err != nil {
+		return nil, err
+	}
 	switch action {
 	case "status":
 		// -b（0.0.11）：带上 "## 分支" 头行——顶栏要显示当前分支，模型也该知道
@@ -273,6 +321,16 @@ func StatusFiles(root string) ([]StatusEntry, error) {
 }
 
 // DiffFile 返回单个文件相对 HEAD 的未暂存 diff（Git 面板点文件展示）。
+// 与 Diff 同规：先过路径闸（0.0.30 R3），返回前 truncate（0.0.30 R3——
+// 此前直接 return runGitCmd，注释写着"与 Diff 同规"但没接 truncate，
+// 大文件 diff 会整份进界面）。
 func DiffFile(root, path string) (string, error) {
-	return runGitCmd(root, "diff", "--", path)
+	if err := checkRelPath(path); err != nil {
+		return "", err
+	}
+	out, err := runGitCmd(root, "diff", "--", path)
+	if err != nil {
+		return "", err
+	}
+	return truncate(out), nil
 }
