@@ -66,6 +66,7 @@ async function save() {
       },
     })
     toast('info', '已保存到本工作区')
+    store.bumpWsSettings() // 快捷命令等派生视图立即重拉（否则要切会话才现形）
     emit('close')
   } catch (e) {
     error.value = errText(e)

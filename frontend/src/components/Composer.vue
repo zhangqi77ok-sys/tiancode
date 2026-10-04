@@ -629,6 +629,9 @@ async function loadQuick() {
 onMounted(() => void loadQuick())
 // 切换会话时换工作区 → 快捷命令随之换（显示的必须是"这场对话"的命令）
 watch(() => store.sessionId, () => void loadQuick())
+// 设置面板保存后立即重拉（0.0.29）：否则配完 build/test/run 回到输入框仍无按钮，
+// 必须切一次会话才现形——用户视角就是"配了没效果"。
+watch(() => store.wsSettingsRev, () => void loadQuick())
 
 async function runQuick(slot: string, cmd: string) {
   if (quickBusy.value || !cmd.trim()) return

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
@@ -103,6 +103,15 @@ function statusBadge(e: GitStatusEntryDTO): string {
 }
 
 onMounted(load)
+
+// 数据跟手（0.0.29，用户实机反馈"右栏里面的内容没有真实效果"）：此前只在 onMounted
+// 读一次，面板开着之后发生的改动（模型写文件、切换会话换工作区）永远看不到——
+// 数据是真的但停在打开那一瞬间，用户会当成"假数据"。与「目录」面板同款纪律
+// （watch treeRev / sessionId），这里不引入轮询：写文件必有 treeRev 信号。
+watch(
+  () => `${store.sessionId}:${store.treeRev}`,
+  () => void load(),
+)
 </script>
 
 <template>

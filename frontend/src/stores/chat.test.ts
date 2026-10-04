@@ -183,6 +183,15 @@ describe('chat store', () => {
 
   // 0.0.21 时间线跳转：目标在缓冲内直接发定位信号；在缓冲外（尾屏分页未载入）
   // 先逐页补载再发信号；n 递增保证重复跳同一轮也触发。
+  // 0.0.29 工作区设置修订号：设置面板保存后 bump，派生视图（快捷命令三槽）
+  // watch 它重拉——此前配完命令要切一次会话才现形（"配了没效果"）。
+  it('bumpWsSettings：修订号递增，供派生视图 watch', () => {
+    const store = useChatStore()
+    const before = store.wsSettingsRev
+    store.bumpWsSettings()
+    expect(store.wsSettingsRev).toBe(before + 1)
+  })
+
   it('jumpToSeq：缓冲内直接定位，缓冲外补页后定位', async () => {
     const many: { role: string; content: string; seq?: number }[] = []
     for (let i = 0; i < 200; i++) {

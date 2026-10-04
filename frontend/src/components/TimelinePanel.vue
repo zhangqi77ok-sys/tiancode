@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useDialogs } from '../composables/useDialogs'
 import { useToast } from '../composables/useToast'
@@ -69,6 +69,14 @@ async function revertTo(r: RoundInfoDTO) {
 
 defineExpose({ load })
 onMounted(load)
+
+// 数据跟手（0.0.29，用户实机反馈"右栏里面的内容没有真实效果"）：此前只在 onMounted
+// 读一次，跑完新轮次（消息条数变化 = 账本追加了新轮）面板仍停在旧快照——
+// 与「目录」面板同款纪律，不引轮询：轮次追加必有消息数变化。
+watch(
+  () => `${store.sessionId}:${store.messages.length}`,
+  () => void load(),
+)
 </script>
 
 <template>

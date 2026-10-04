@@ -200,6 +200,14 @@ export const useChatStore = defineStore('chat', () => {
   // FileTreePanel watch 它整体重载根目录（展开态由面板自己保留）。
   const treeRev = ref(0)
 
+  // 工作区设置修订号（0.0.29）：设置面板保存成功 +1——Composer 的快捷命令
+  // （build/test/run 三槽）watch 它重拉。此前只在挂载/切会话时取，配完命令
+  // 回到输入框仍看不到按钮，必须切一次会话才现形（用户视角"配了没效果"）。
+  const wsSettingsRev = ref(0)
+  function bumpWsSettings() {
+    wsSettingsRev.value++
+  }
+
   // 会话摘要（ID + 标题）：标题为空时侧栏回退显示 ID
   const summaries = ref<SessionSummaryDTO[]>([])
 
@@ -1527,6 +1535,8 @@ export const useChatStore = defineStore('chat', () => {
     openGitPanel,
     closeGitPanel,
     treeRev,
+    wsSettingsRev,
+    bumpWsSettings,
     moveSession,
     browserVisual,
     proposeApplyCode,

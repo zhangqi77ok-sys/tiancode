@@ -14,12 +14,14 @@ const st = vi.hoisted(() => ({
   revertError: '',
   confirms: [] as string[],
   confirmNext: true,
+  timelineCalls: [] as string[],
 }))
 
 vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
-      RoundTimeline: async () => {
+      RoundTimeline: async (sid: string) => {
+        st.timelineCalls.push(sid)
         if (st.failTimeline) throw new Error(st.failTimeline)
         return st.rounds
       },
@@ -80,6 +82,7 @@ beforeEach(() => {
   st.revertError = ''
   st.confirms = []
   st.confirmNext = true
+  st.timelineCalls = []
   const store = useChatStore()
   store.sessionId = 's-1'
 })
@@ -114,6 +117,34 @@ describe('TimelinePanel（右栏「时间线」tab）', () => {
     await nextTick()
     await new Promise((r) => setTimeout(r, 0))
     expect(st.revertCalls).toEqual([5]) // 取消 → 不再调用
+  })
+
+  it('数据跟手（0.0.29）：跑完新轮次（消息数变化）与切换会话都自动重取，不停在打开那一屏', async () => {
+    st.rounds = [{ round: 1, userSeq: 2, text: '第一轮', files: [] }]
+    const el = await mountPanel()
+    const afterMount = st.timelineCalls.length
+    expect(el.textContent).toContain('第一轮')
+
+    // 账本追加了新轮（真实事件路径：onChunk 追加消息）→ 自动重取，新内容出现在面板里
+    const store = useChatStore()
+    st.rounds = [
+      { round: 1, userSeq: 2, text: '第一轮', files: [] },
+      { round: 2, userSeq: 5, text: '刚刚跑完的第二轮', files: [] },
+    ]
+    store.onChunk({ sessionID: 's-1', delta: '新回答', thinking: '' })
+    await nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    expect(st.timelineCalls.length).toBeGreaterThan(afterMount)
+    expect(el.textContent).toContain('刚刚跑完的第二轮')
+
+    // 切会话 → 换工作区，重取的是新会话
+    const n = st.timelineCalls.length
+    store.sessionId = 's-2'
+    await nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(st.timelineCalls.length).toBeGreaterThan(n)
+    expect(st.timelineCalls[st.timelineCalls.length - 1]).toBe('s-2')
   })
 
   it('载入失败错误可见；会话为空不请求', async () => {
