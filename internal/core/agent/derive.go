@@ -58,6 +58,10 @@ type DeriveInfo struct {
 	FoldedReads     int
 	FoldedBodies    int  // 因超预算折叠的旧轮次回复正文数（→ 一行说明）
 	Dropped         bool // 已无可再丢仍超预算（界面须标明"上下文已折叠"）
+	// LatestTodo 是派生时账本里的最新任务清单（nil = 从未提交过清单）。
+	// 随派生读数顺带返回：内核做结构化判定（自主续跑的自评/防自欺）时直接用，
+	// 不必再扫一遍账本。落在 fork 丢弃区间内的清单不进这里。
+	LatestTodo []llm.TodoItem
 }
 
 // imageRef 指向一条 user 消息里的图片（超限时把 data URL 换成路径说明）。
@@ -135,6 +139,11 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	// 当成完成回复，thinking 也不进模型上下文）。
 	lastAssistant := -1
 	turn := -1
+	// latestTodo 是扫描中见到的最新任务清单（全量快照语义，后者覆盖前者）。
+	// 为什么不原位投影：EventTodo 是"当前状态"而非"历史事件"，原位投影会在
+	// 最终版计划前面堆一串历史版本；只在扫描结束后追加到末尾——位置落在最后
+	// 一条 user 消息（当前轮）之后，模型一定看得到。
+	var latestTodo []llm.TodoItem
 
 	complete := func() bool {
 		if len(calls) == 0 {
@@ -191,6 +200,18 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: fmt.Sprintf(
 				"[用户手动操作] 用户已把代码块应用到 %s（%d 字节），该文件当前内容以磁盘为准。",
 				p.Path, p.Bytes)})
+		case session.EventTodo:
+			// 任务清单（档位 1）：只留最新一条，扫描结束后投影为一条消息。
+			// **不设 lastAssistant**——flush() 会把待配对的 tool_calls 并入
+			// lastAssistant 指向的消息，误设会让清单吸走下一次工具调用的参数
+			//（与 EventUserEdit 同一纪律）。
+			var p struct {
+				Items []llm.TodoItem `json:"items"`
+			}
+			if err := json.Unmarshal(ev.Data(), &p); err != nil {
+				return err
+			}
+			latestTodo = p.Items
 		case session.EventUserMessage:
 			flush()
 			lastAssistant = -1
@@ -341,6 +362,7 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	for {
 		restart := false
 		msgs, calls, toolRefs, imageRefs, bodyRefs = nil, nil, nil, nil, nil
+		latestTodo = nil
 		results, resultRefs = []*llm.Message{}, []toolRef{}
 		lastAssistant, turn = -1, -1
 		err := ledger.Replay(func(ev session.Event) error {
@@ -380,11 +402,17 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	}
 	flush()
 
+	// 任务清单投影到末尾（档位 1）。全量 done 也照投——模型需要知道"计划已清空"
+	// 才会收尾；nil（从未提交）不投——没登记过计划的项目不该凭空多一段说明。
+	if len(latestTodo) > 0 {
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: todoNote(latestTodo)})
+	}
+
 	// 轮次总数 = 未丢弃的 user 消息条数：与主扫描里 turn 的自增条件完全相同
 	//（turn 从 -1 起每条 +1），终值 + 1 即旧"单独一趟计数"的结果。
 	totalTurns := turn + 1
 
-	info := DeriveInfo{BudgetTokens: opt.BudgetTokens}
+	info := DeriveInfo{BudgetTokens: opt.BudgetTokens, LatestTodo: latestTodo}
 	// 基础折叠（0.0.09 常态行为，不计入 info）：>keepFullToolTurns 轮的成功只读结果收成单行
 	foldOldReads(msgs, toolRefs, totalTurns-keepFullToolTurns)
 
@@ -428,6 +456,34 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	}
 	info.EstimatedTokens = est
 	return msgs, info, nil
+}
+
+// todoNote 把任务清单渲染成注入模型的一段说明。
+// 逐字输出模型自己写的条目，不改写不摘要——路径与行号必须精确，
+// 摘要模型会写错（与本文件拒绝摘要模型同一纪律，见文件头注释）。
+func todoNote(items []llm.TodoItem) string {
+	label := map[string]string{"pending": "待办", "in_progress": "进行中", "done": "已完成"}
+	done := 0
+	for _, it := range items {
+		if it.Status == "done" {
+			done++
+		}
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[任务清单·当前] 你在本会话登记的计划（最新一次提交，共 %d 项，已完成 %d 项）：\n", len(items), done)
+	for i, it := range items {
+		name := label[it.Status]
+		if name == "" {
+			name = it.Status // 未知状态照原样显示，不静默吞掉
+		}
+		fmt.Fprintf(&sb, "%d. [%s] %s\n", i+1, name, it.Text)
+	}
+	if done == len(items) {
+		sb.WriteString("全部条目已标记完成——请对照实际产出确认无遗漏，无遗漏即可收尾。")
+	} else {
+		sb.WriteString("开工前先对照本清单。状态变化时用 todo 工具重新提交**整张清单**（全量快照）。")
+	}
+	return sb.String()
 }
 
 // foldOldImages 把旧轮次（turn < minTurn）user 消息里的图片替换为路径说明。
