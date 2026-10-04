@@ -208,8 +208,9 @@ func seedOversizedLedger(t *testing.T, dir, id, headWord, tailWord string) {
 
 // 长账本的截断必须诚实化。此前两处缺陷让「扫描已截断」标注恒不出现、界面把
 // 「没扫到」说成「没有」：
-//   ① 标志在触顶之后才置位，此前构造的命中都带 false → 改由 defer 统一回填；
-//   ② 聚合层用 `_` 丢弃截断返回值 → 改回传 SearchStats。
+//
+//	① 标志在触顶之后才置位，此前构造的命中都带 false → 改由 defer 统一回填；
+//	② 聚合层用 `_` 丢弃截断返回值 → 改回传 SearchStats。
 func TestSearchSessions_LongLedgerReportsTruncation(t *testing.T) {
 	s, ws := newMiniService(t)
 	dir := s.cfg.DataDir
