@@ -31,6 +31,7 @@ import (
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/adaptors"
 	"tiancode/internal/platform/applog"
+	"tiancode/internal/platform/autorun"
 	"tiancode/internal/platform/browsertool"
 	"tiancode/internal/platform/catalog"
 	"tiancode/internal/platform/channels"
@@ -63,6 +64,9 @@ type Config struct {
 	// MemoryPath 是两级长期记忆目录；缺省 %APPDATA%\tiancode\memory（0.0.19）。
 	// 可注入是为测试隔离（同进程多实例不互相污染，绝不读写用户真实记忆）。
 	MemoryPath string
+	// AutoRunPath 是自主续跑额度设置；缺省 %APPDATA%\tiancode\autorun.json（档位 2）。
+	// 可注入是为测试隔离（同进程多实例不互相污染）。
+	AutoRunPath string
 }
 
 // ChatService 编排对话用例。
@@ -115,8 +119,9 @@ type ChatService struct {
 	skillTool  *exttools.SkillTool
 	mcpTool    *exttools.MCPTool
 	extManage  *exttools.ManageTool
-	tones      *tones.Store  // 语气设置（第 8 批）：每轮拼系统提示时读一次
-	memory     *memory.Store // 两级长期记忆（0.0.19）：memory 工具读写 + 每轮系统提示注入
+	tones      *tones.Store   // 语气设置（第 8 批）：每轮拼系统提示时读一次
+	memory     *memory.Store  // 两级长期记忆（0.0.19）：memory 工具读写 + 每轮系统提示注入
+	autoRun    *autorun.Store // 自主续跑额度（档位 2，ADR-0009）：每轮 Send 读一次注入
 
 	// running 标记正在跑轮次的会话（0.2.27）：同一会话的并发 Send 会在一份账本上
 	// 交错写（Replay 顺序错乱）。前端有输入队列兜，后端必须有第二道防线。
@@ -185,6 +190,7 @@ func NewChatService(cfg Config) (*ChatService, error) {
 	s.extensions = catalog.New(cfg.ExtensionsPath)
 	s.tones = tones.New(cfg.TonesPath)
 	s.memory = memory.NewStore(cfg.MemoryPath)
+	s.autoRun = autorun.New(cfg.AutoRunPath)
 	s.skillTool = exttools.NewSkill(func() catalog.File {
 		f, err := s.extensions.Load()
 		if err != nil {
@@ -637,6 +643,17 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	// 第 8 批：最近一次工作区检查有位置引用时，本轮请求末尾附一条"不是用户原话"的
 	// 说明（只存在于本次请求，不落账本、不进系统提示）。
 	ag.SetTrailingNote(func() string { return s.checkNote(sessionID) })
+	// 自主续跑额度（档位 2，ADR-0009）：每轮读一次快照（与语气/记忆同纪律——
+	// 改设置不影响进行中的轮次）。读失败显式阻断 Send：静默当 0 会让用户以为
+	// 功能开着。此处与 applyExtensionPreface 同属"看门狗启动前的失败路径"：
+	// release + cancelRun 就地收尾，不碰 watchStopped。
+	segments, aerr := s.autoRun.Resolve()
+	if aerr != nil {
+		release()
+		cancelRun()
+		return nil, aerr
+	}
+	ag.SetAutoContinueSegments(segments)
 	// 以下三个前置失败路径都在看门狗/分发 goroutine 启动之前：就地释放 runCtx
 	//（看门狗未启动，无需 close(watchStopped)）
 	if err := s.applyExtensionPreface(ctx, ag, root); err != nil {

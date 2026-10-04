@@ -89,6 +89,16 @@ type Loop struct {
 	// 却不再回写，界面就停在「全部未完成」。快照过期时在下一步提醒它重交——
 	// 提醒只存在于本轮内存消息里（阶段 4-1，见 todo_track.go）。
 	todo todoTrack
+	// autoBudget 是本轮允许的**自主续跑段数上限**（0 = 关闭，默认）。
+	// 由 Send 每轮从 autorun 设置读出注入（照 SetContextBudget 的模式）：
+	// 内核不读配置、不引入新事实源。它是"是否继续"的决策权从用户移交给模型
+	// 之后的**唯一刹车**，必须是硬上限（ADR-0009）。
+	autoBudget int
+	// autoSegments 是本轮已经自主续跑的段数（Loop 每轮重建，天然每轮归零）。
+	autoSegments int
+	// latestTodo 是本轮派生时账本里的最新任务清单（nil = 从未提交过）。
+	// 每轮 Run（含各重新派生点）从 derive 读数里取，不额外扫账本。
+	latestTodo []llm.TodoItem
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -139,6 +149,27 @@ func (l *Loop) SetContextBudget(tokens int, budgetIsDefault bool) {
 	}
 	l.ctxBudgetTokens = tokens
 	l.ctxBudgetDefault = budgetIsDefault && tokens > 0
+}
+
+// SetAutoContinueSegments 设置本轮允许自主续跑的段数上限。
+// 0（默认）= 关闭，步数用尽时一律问用户，行为与旧版逐条等价；
+// n > 0 = 允许模型在自评通过且未触顶时自主续跑至多 n 段（ADR-0009）。
+func (l *Loop) SetAutoContinueSegments(n int) {
+	if l == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	l.autoBudget = n
+}
+
+// autoQuotaLeft 返回本轮还剩几段自主续跑额度。
+func (l *Loop) autoQuotaLeft() int {
+	if l.autoBudget <= l.autoSegments {
+		return 0
+	}
+	return l.autoBudget - l.autoSegments
 }
 
 // attachPreface 把静态系统说明放到最前（派生结果本身不含 system；动态 preface
@@ -328,6 +359,7 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("derive history: %w", err)
 	}
+	l.latestTodo = ctxInfo.LatestTodo
 	// 折完仍超预算（0.0.11，阶段 5-2 修订了适用范围）：
 	//   - **渠道/用户声明**了上限：不发请求。发出去必然被上游按上下文长度拒绝，还会把
 	//     "本地预算不够"伪装成上游错误；这里给明确终态，说清差在哪、能做什么。
@@ -570,6 +602,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
 			return
 		}
+		l.latestTodo = next.LatestTodo
 		msgs = l.attachPreface(refreshed)
 		if ev := l.contextEvent(next); ev != nil {
 			if forward(llm.StreamChunk{Context: ev}) {
@@ -754,20 +787,62 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		}
 		sb.Reset() // 新一步的文本从零累计；只有最终无工具调用步的文本进入锚点
 
-		// 步数分段（第 3 批）：一段用尽先发一条可取消的询问（复用 ask_user 通道），
-		// 用户同意再续跑一段；拒绝/取消/无问答通道则跳出走收尾。
-		// 旧行为是不经询问直接打一发"无工具总结"收工——长任务被硬停在 25 步。
+		// 步数分段（第 3 批；档位 2 加自主自评）：一段用尽时——
+		//   额度 > 0：先让模型对照清单自评（continue 且未触顶 → 自主续一段并落账留痕；
+		//   done → 清单已清空直接收尾；blocked/自评失败 → 问用户）；
+		//   额度 = 0（默认）或触顶：保持旧行为——经 ask_user 通道问用户是否续跑。
 		if step >= MaxStepsPerTurn {
-			if l.continueAfterLimit(ctx, segment) {
+			autoCont := false
+			allDone := false
+			if l.autoQuotaLeft() > 0 {
+				v, reason, aerr := l.selfAssess(ctx, msgs, l.latestTodo, segment)
+				if aerr == nil {
+					allDone = v == verdictDone
+					autoCont = v == verdictContinue
+					if autoCont {
+						// 落账留痕（复用 EventAssistantMsg：前端零改动即可见，
+						// Replay 自动投影，derive 会把它并入后续模型上下文）
+						if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{
+							"text": fmt.Sprintf("（系统）已连续执行 %d 步；对照任务清单判断仍有明确下一步，自主续跑（第 %d 段，额度上限 %d 段）：%s",
+								segment*MaxStepsPerTurn, l.autoSegments+1, l.autoBudget, reason),
+						}); err != nil {
+							emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist auto continue note: %w", err)})
+							return
+						}
+						l.autoSegments++
+					}
+				}
+				// aerr != nil：自评失败不猜——落到下面问用户（失败不静默吞掉）
+			}
+			if allDone {
+				break // 清单已清空 → 跳出分段循环走"无工具总结"收尾（break 属于本 for）
+			}
+			if autoCont {
 				segment++
 				// 续跑前重新折叠（0.0.11）：本段已把大量工具输出写进上下文，开局那次
-				// 派生结果已经过时——按当前预算重新派生一次，续跑段不背着满上下文；
-				// 油表读数同步刷新（此前续跑后仍显示开局数字，用户以为折叠没生效）。
+				// 派生结果已经过时——按当前预算重新派生一次，续跑段不背着满上下文。
 				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
 				if derr != nil {
 					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
 					return
 				}
+				l.latestTodo = next.LatestTodo
+				msgs = l.attachPreface(refreshed)
+				if ev := l.contextEvent(next); ev != nil {
+					if forward(llm.StreamChunk{Context: ev}) {
+						return
+					}
+				}
+				step = 0 // 重新计一段（for 自增后回到 1）
+			} else if l.continueAfterLimit(ctx, segment) {
+				segment++
+				// 续跑前重新折叠（0.0.11）：同上，且刷新油表读数。
+				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+				if derr != nil {
+					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
+					return
+				}
+				l.latestTodo = next.LatestTodo
 				msgs = l.attachPreface(refreshed)
 				if ev := l.contextEvent(next); ev != nil {
 					if forward(llm.StreamChunk{Context: ev}) {
