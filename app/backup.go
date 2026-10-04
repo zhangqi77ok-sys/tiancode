@@ -16,9 +16,13 @@ func backupFileName(version string) string {
 
 // ExportBackupTo 弹保存对话框 → 打包整个用户数据目录 → 返回备份文件路径。
 // 用户取消对话框 = 显式的"不备份"，返回空串（前端不报错）。
-func (b *Bind) ExportBackupTo(version string) (string, error) {
+//
+// 不收 version 参数（0.0.30 审查 R4）：版本是后端的唯一真值（包级 Version，由
+// release.ps1 注入）。此前由前端传入，而 BackupPanel 写死了字面量，导出后预检一直
+// 显示一个与实际构建无关的旧版本号。
+func (b *Bind) ExportBackupTo() (string, error) {
 	dest, err := wruntime.SaveFileDialog(b.AppCtx, wruntime.SaveDialogOptions{
-		DefaultFilename: backupFileName(version),
+		DefaultFilename: backupFileName(Version),
 		Title:           "导出 tiancode 数据备份",
 	})
 	if err != nil {
@@ -27,7 +31,7 @@ func (b *Bind) ExportBackupTo(version string) (string, error) {
 	if dest == "" {
 		return "", nil // 用户取消
 	}
-	if _, err := b.chat.ExportBackup(dest, version); err != nil {
+	if _, err := b.chat.ExportBackup(dest, Version); err != nil {
 		return "", err
 	}
 	return dest, nil

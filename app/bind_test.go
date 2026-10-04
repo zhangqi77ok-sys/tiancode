@@ -68,7 +68,7 @@ func TestBind_AppCtxFallback(t *testing.T) {
 // 少一个会让 UI 静默失效，多一个说明有未接线方法。
 func TestBind_SurfaceIsExpected(t *testing.T) {
 	want := []string{
-		"AddChannel", "ApplyBackup", "ApplyUpdate", "ApprovalPolicy", "BgTasksSnapshot", "BindCodexOAuth", "BrowserNavigate", "ChannelHealth", "ChannelPresets", "CheckProxy", "CheckUpdate", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
+		"AddChannel", "AppVersion", "ApplyBackup", "ApplyUpdate", "ApprovalPolicy", "BgTasksSnapshot", "BindCodexOAuth", "BrowserNavigate", "ChannelHealth", "ChannelPresets", "CheckProxy", "CheckUpdate", "CodexCredentialOf", "CurrentBranch", "DeleteChannel", "DeleteSession", "DiscoverModels",
 		"ExportBackupTo",
 		"ExportSessionMarkdown", "FlashWindow", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "GitFileDiff", "GitStageAndCommit", "GitStatusFiles", "HideToTray", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
 		"ListSessions", "ListWorkspaceDir", "MemoryClear", "MemoryDelete", "MemoryLines", "MoveSession", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickBackupFile", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "PreviewBackup", "ProbeMcpServer", "ProposeFileWrite", "QuickCommands", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "ReplayOlder", "ReplayTail", "RerunFrom", "ResolveApproval", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "RevertToRound", "RoundTimeline", "RunQuickCommand", "RunUserCommand", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchSessions", "SearchWorkspaceFiles", "Send", "SendWithAttachments", "SetActiveChannel", "SetActiveModel",

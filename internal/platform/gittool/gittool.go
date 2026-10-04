@@ -334,3 +334,22 @@ func DiffFile(root, path string) (string, error) {
 	}
 	return truncate(out), nil
 }
+
+// DiffFileHEAD 返回单个文件相对 HEAD 的**全部**改动（含已暂存，有界）。
+//
+// 为什么需要它（0.0.30 审查 R2）：DiffFile 跑 `git diff -- path`，**只有未暂存
+// 部分**。一个"已暂存、工作区已干净"的文件在 Git 面板点开是空的——而提交说明走
+// DiffHEAD（含已暂存），于是人在面板里看不到模型写进说明的那些行，两处口径不一致。
+// 要看"这次提交会包含什么"，必须用 HEAD 口径。
+//
+// 围栏与有界同 DiffFile（checkRelPath + truncate），别因为多一个方法就少一道闸。
+func DiffFileHEAD(root, path string) (string, error) {
+	if err := checkRelPath(path); err != nil {
+		return "", err
+	}
+	out, err := runGitCmd(root, "diff", "HEAD", "--", path)
+	if err != nil {
+		return "", err
+	}
+	return truncate(out), nil
+}

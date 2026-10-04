@@ -60,7 +60,7 @@ func TestSearchSessions_CrossLedger(t *testing.T) {
 		{"assistant", "另一个会话里的 goroutine 讨论"},
 	})
 
-	hits, err := s.SearchSessions("goroutine", "", 0)
+	hits, _, err := s.SearchSessions("goroutine", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestSearchSessions_CrossLedger(t *testing.T) {
 	}
 
 	// 大小写不敏感 + 片段截断
-	hits, err = s.SearchSessions("GOROUTINE", "", 0)
+	hits, _, err = s.SearchSessions("GOROUTINE", "", 0)
 	if err != nil || len(hits) != 3 {
 		t.Fatalf("大小写不敏感失效：%d %v", len(hits), err)
 	}
@@ -104,7 +104,7 @@ func TestSearchSessions_WorkspaceFilterAndLimits(t *testing.T) {
 	seedSearchLedger(t, dir, "s-p", `D:\other`, [][2]string{{"user", "目标词在那里"}})
 
 	// 归属过滤
-	hits, err := s.SearchSessions("目标词", ws, 0)
+	hits, _, err := s.SearchSessions("目标词", ws, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestSearchSessions_WorkspaceFilterAndLimits(t *testing.T) {
 		t.Fatalf("归属过滤失效：%+v", hits)
 	}
 	// 命中数上限
-	hits, err = s.SearchSessions("目标词", "", 1)
+	hits, _, err = s.SearchSessions("目标词", "", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestSearchSessions_WorkspaceFilterAndLimits(t *testing.T) {
 		t.Fatalf("limit 未生效：%d", len(hits))
 	}
 	// 空查询显式报错
-	if _, err := s.SearchSessions("  ", "", 0); err == nil {
+	if _, _, err := s.SearchSessions("  ", "", 0); err == nil {
 		t.Fatal("空查询必须报错")
 	}
 }
@@ -146,7 +146,7 @@ func TestSearchSessions_ReadOnlyDuringActiveTurn(t *testing.T) {
 	}
 	f.Close()
 
-	hits, err := s.SearchSessions("关键词", "", 0)
+	hits, _, err := s.SearchSessions("关键词", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestSearchSessions_MergesDeltas(t *testing.T) {
 		{"delta", "前半段 "},
 		{"delta", "含关键词后半段"},
 	})
-	hits, err := s.SearchSessions("关键词", "", 0)
+	hits, _, err := s.SearchSessions("关键词", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,4 +183,79 @@ func TestSearchSessions_MergesDeltas(t *testing.T) {
 		t.Fatalf("片段应含合并后的上下文：%q", hits[0].Snippet)
 	}
 	_ = context.Background() // 保持 context 导入（与其它测试同风格）
+}
+
+// seedOversizedLedger 造一个明显超过 perLedgerBytes 的账本。
+// 目标词分处头尾两端：头部落在扫描窗口内，尾部落在 4MB 之外（扫不到）。
+func seedOversizedLedger(t *testing.T, dir, id, headWord, tailWord string) {
+	t.Helper()
+	chunk := strings.Repeat("填充内容用于撑大账本", 700) // 约 21KB
+	events := make([][2]string, 0, 251)
+	events = append(events, [2]string{"user", headWord + " " + chunk})
+	for i := 0; i < 249; i++ {
+		events = append(events, [2]string{"user", chunk})
+	}
+	events = append(events, [2]string{"user", tailWord})
+	seedSearchLedger(t, dir, id, "", events)
+	info, err := os.Stat(filepath.Join(dir, id+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() <= perLedgerBytes {
+		t.Fatalf("测试前提不成立：账本 %d 字节，未超上限 %d", info.Size(), perLedgerBytes)
+	}
+}
+
+// 长账本的截断必须诚实化。此前两处缺陷让「扫描已截断」标注恒不出现、界面把
+// 「没扫到」说成「没有」：
+//   ① 标志在触顶之后才置位，此前构造的命中都带 false → 改由 defer 统一回填；
+//   ② 聚合层用 `_` 丢弃截断返回值 → 改回传 SearchStats。
+func TestSearchSessions_LongLedgerReportsTruncation(t *testing.T) {
+	s, ws := newMiniService(t)
+	dir := s.cfg.DataDir
+	seedOversizedLedger(t, dir, "s-big", "前部目标词", "尾部目标词")
+
+	// ① 头部 4MB 内的词扫得到，但命中必须带截断标注（尾部没扫，不是全部）
+	hits, stats, err := s.SearchSessions("前部目标词", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("头部 4MB 内的词应能命中")
+	}
+	if stats.TruncatedLedgers != 1 {
+		t.Fatalf("被截断账本数 = %d, want 1", stats.TruncatedLedgers)
+	}
+	for _, h := range hits {
+		if !h.Truncated {
+			t.Fatalf("截断账本的命中未标注 Truncated：%+v", h)
+		}
+	}
+
+	// ② 尾部的词扫不到。旧实现此时界面只能显示"没有会话里包含这个搜索词"——
+	// 统计必须让调用方能区分"没扫到"与"不存在"
+	hitsTail, statsTail, err := s.SearchSessions("尾部目标词", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hitsTail) != 0 {
+		t.Fatalf("尾部词在 4MB 之外，不应命中：%+v", hitsTail)
+	}
+	if statsTail.TruncatedLedgers == 0 {
+		t.Fatal("尾部词搜不到时必须回传被截断账本数，否则界面只能说'没有'")
+	}
+	if statsTail.ByteLimitPerLedger != perLedgerBytes {
+		t.Fatalf("ByteLimitPerLedger = %d, want %d（文案要写'只扫了前 4MB'，数字由后端给）",
+			statsTail.ByteLimitPerLedger, perLedgerBytes)
+	}
+
+	// 对照：限定工作区时，归属不匹配的大账本已被排除在候选集外，不该报截断
+	// （否则文案误报"有长会话没扫完"，而那本账本根本没进结果）
+	_, statsScoped, err := s.SearchSessions("尾部目标词", ws, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statsScoped.TruncatedLedgers != 0 {
+		t.Fatalf("限定工作区后被排除的账本不该计入截断：%+v", statsScoped)
+	}
 }

@@ -19,15 +19,15 @@ const preview = ref<BackupPreviewDTO | null>(null)
 const pickedPath = ref('')
 const overwrite = ref(true)
 
-// 版本串（写进备份文件名与清单）：取当前激活渠道的模型名不合适，用 build 传进来的
-// 没有——这里用 wails 注入的 window.go 拿不到版本，直接用日期即可（文件名已含时间）。
-const appVersion = '0.0.23'
+// 版本串不再由前端持有（0.0.30 审查 R4）：此前这里写死了一个字面量（一度停在
+// 0.0.23，仓库 VERSION 已是 0.0.29），导出后预检一直显示"来自 0.0.23"。版本是
+// 后端的唯一真值（release.ps1 用 ldflags 注入），文件名与清单都由后端自己写。
 
 async function doExport() {
   if (busy.value) return
   busy.value = true
   try {
-    const path = await bridge().app.ExportBackupTo(appVersion)
+    const path = await bridge().app.ExportBackupTo()
     if (!path) return // 用户取消了对话框
     toast('info', `已导出：${path}`)
   } catch (e) {

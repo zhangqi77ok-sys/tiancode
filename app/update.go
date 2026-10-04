@@ -20,6 +20,14 @@ var Version = "dev"
 // UpdateInfo 是检查结果（与 selfupdate.Info 同构透传）。
 type UpdateInfo = selfupdate.Info
 
+// AppVersion 返回当前运行版本（"dev" = 本地构建，未注入）。
+//
+// 为什么需要这个端点（0.0.30 审查 R4）：备份清单与文件名里的版本号此前由前端
+// 传进 ExportBackupTo，而 BackupPanel 写死了一个字面量（一度停在 0.0.23，仓库
+// VERSION 已是 0.0.29）——导出后预检永远显示"来自 0.0.23"。版本是后端的唯一
+// 真值（release.ps1 用 ldflags 注入这里），前端不再自己编一份。
+func (b *Bind) AppVersion() string { return Version }
+
 // CheckUpdate 查询最新 release 并比较版本。
 func (b *Bind) CheckUpdate() (UpdateInfo, error) {
 	return selfupdate.Check(Version, b.chat.Proxy)

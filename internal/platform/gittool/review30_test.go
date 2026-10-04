@@ -138,6 +138,95 @@ func TestStageAllAndCommit_CommitFailureSaysIndexStaged(t *testing.T) {
 	}
 }
 
+// 0.0.30 审查 R2：Git 面板点开的单文件 diff 必须是「相对 HEAD 的全部改动」，
+// 与提交说明（DiffHEAD）同源。否则「已暂存、工作区已干净」的文件点开是空的，
+// 人在面板里看不到模型写进提交说明的那些行。
+func TestDiffFileHEAD_IncludesStagedBlocks(t *testing.T) {
+	tool := newRepo(t)
+	root := tool.root
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "-A")
+	runGit(t, root, "commit", "-qm", "init")
+
+	// 只暂存、不留工作区改动：git diff（未暂存口径）在这里必然是空的
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n// ONLY_STAGED\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "a.go")
+
+	head, err := DiffFileHEAD(root, "a.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(head, "ONLY_STAGED") {
+		t.Fatalf("DiffFileHEAD 未含已暂存块：%q", head)
+	}
+	// 测试前提：同一时刻未暂存口径为空（旧实现用它 → 面板与提交说明口径不一致）
+	plain, err := DiffFile(root, "a.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain != "" {
+		t.Fatalf("前提不成立：未暂存 diff 竟非空 %q", plain)
+	}
+}
+
+// DiffFileHEAD 的围栏与有界必须与 DiffFile 同规（别因为多一个方法就少一道闸）。
+func TestDiffFileHEAD_FenceAndBound(t *testing.T) {
+	tool := newRepo(t)
+	root := tool.root
+	sub := filepath.Join(root, "sub") // 会话根 = 仓库子目录
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 越界路径在 checkRelPath 就被拒，走不到 git
+	for _, p := range []string{"../sibling/secret.txt", "..", `/etc/passwd`, `C:\Windows\win.ini`} {
+		if _, err := DiffFileHEAD(sub, p); err == nil {
+			t.Fatalf("DiffFileHEAD 接受越界路径 %q", p)
+		}
+	}
+
+	// 还没有任何提交时 `git diff HEAD` 本身就不成立（fatal: bad revision 'HEAD'）。
+	// 必须显式报错——静默返回空会让"仓库还没有提交"看起来像"这个文件没有改动"。
+	if _, err := DiffFileHEAD(root, "a.go"); err == nil {
+		t.Fatal("空仓库（无 HEAD）必须显式报错，不得静默返回空 diff")
+	}
+
+	// 有首个提交后：根内相对路径照常放行
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "-A")
+	runGit(t, root, "commit", "-qm", "init")
+	if _, err := DiffFileHEAD(sub, "a.go"); err != nil {
+		t.Fatalf("根内 DiffFileHEAD 被误拒：%v", err)
+	}
+
+	// 大文件必须有界：整体重写让 diff 远超 outputLimit
+	big := strings.Repeat("这是一行用于撑大 diff 的中文内容\n", 20000)
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(big), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "-A")
+	runGit(t, root, "commit", "-qm", "init")
+	big2 := strings.Repeat("这是改写后的另一行中文内容用于撑大 diff\n", 20000)
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(big2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := DiffFileHEAD(root, "big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > outputLimit+512 {
+		t.Fatalf("DiffFileHEAD 未截断：%d 字节（上限 %d）", len(out), outputLimit)
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Fatalf("截断未标注丢了多少：%q", out[max(0, len(out)-160):])
+	}
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a

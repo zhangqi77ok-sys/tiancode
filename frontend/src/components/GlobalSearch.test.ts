@@ -10,6 +10,7 @@ import { useChatStore } from '../stores/chat'
 const h2 = vi.hoisted(() => ({
   calls: [] as Array<{ query: string; workspace: string; limit: number }>,
   hits: [] as unknown[],
+  stats: { scannedLedgers: 0, truncatedLedgers: 0, byteLimitPerLedger: 0 },
   selectSession: [] as string[],
   jumpToSeq: [] as number[],
 }))
@@ -19,7 +20,7 @@ vi.mock('../wails', () => ({
     app: {
       SearchSessions: async (query: string, workspace: string, limit: number) => {
         h2.calls.push({ query, workspace, limit })
-        return { hits: h2.hits, query }
+        return { hits: h2.hits, query, stats: h2.stats }
       },
       ListChannels: async () => ({ channels: [], activeId: '' }),
       GetWorkspace: async () => '',
@@ -82,6 +83,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   h2.calls = []
   h2.hits = []
+  h2.stats = { scannedLedgers: 0, truncatedLedgers: 0, byteLimitPerLedger: 0 }
   h2.selectSession = []
   h2.jumpToSeq = []
 })
@@ -131,10 +133,46 @@ describe('GlobalSearch（跨会话搜索）', () => {
     expect(h2.jumpToSeq).toEqual([12])
   })
 
-  it('无命中：给"没有包含该词的会话"，不显示空白', async () => {
+  it('无命中且没有长账本被截断：断言"不存在"（结果完整，说"没有"是诚实的）', async () => {
     h2.hits = []
     await mountPanel()
     await search('不存在的词')
     expect(text()).toContain('没有会话里包含这个搜索词')
+  })
+
+  // 0.0.30 审查 R1：长账本只扫了开头一段，零命中时的含义是"没扫到"而非"不存在"。
+  // 旧实现把后者说成前者，害用户在有命中时以为那句话没出现过。
+  it('无命中但有长账本被截断：如实写明只扫了前 N MB，不得断言"没有"', async () => {
+    h2.hits = []
+    h2.stats = { scannedLedgers: 3, truncatedLedgers: 2, byteLimitPerLedger: 4 * 1024 * 1024 }
+    await mountPanel()
+    await search('只在最近的话里出现的词')
+    const t = text()
+    expect(t).toContain('没有搜到')
+    expect(t).toContain('2 本长会话只扫了开头 4MB')
+    expect(t).not.toContain('没有会话里包含这个搜索词')
+  })
+
+  it('有命中且有长账本被截断：结果上方写明结果可能不全', async () => {
+    h2.hits = [
+      {
+        sessionID: 's-c',
+        sessionTitle: '长会话',
+        workspace: '',
+        lastActiveMs: 1,
+        role: 'user',
+        anchorSeq: 3,
+        snippet: '命中片段',
+        truncated: true,
+      },
+    ]
+    h2.stats = { scannedLedgers: 3, truncatedLedgers: 1, byteLimitPerLedger: 4 * 1024 * 1024 }
+    await mountPanel()
+    await search('命中片段')
+    const t = text()
+    expect(t).toContain('有 1 本长会话只扫了开头 4MB')
+    expect(t).toContain('这部分结果可能不全')
+    // 单条命中上的精确标注（本账本没扫完）保留
+    expect(t).toContain('扫描已截断')
   })
 })

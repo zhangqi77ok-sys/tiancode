@@ -67,14 +67,6 @@ export interface SessionSummaryDTO {
   workspace?: string
   pinned?: boolean
   lastActiveMs?: number
-  // 0.0.19 用量沉淀（账本 usage 事件累计；旧账本/未发生轮次缺省 0）
-  promptTokens?: number
-  completionTokens?: number
-  totalTokens?: number
-  // 0.0.24 近 7 天（按 usage 事件的 at 时间戳；旧事件无时间戳不计入）
-  prompt7d?: number
-  completion7d?: number
-  total7d?: number
 }
 
 // 渠道视图（与 app.ChannelDTO 一一对应；密钥不出现在此，只有 hasKey）
@@ -101,9 +93,6 @@ export interface ChannelDTO {
   auth?: AuthDTO
   // 上下文上限（token；0/缺省 = 未配置）：本地派生历史时分级折叠用，不发给上游
   contextLimit?: number
-  // 每百万 token 单价（0.0.24 成本估算；0/缺省 = 未配置，不显示金额）
-  priceIn?: number
-  priceOut?: number
   // 凭证摘要（列表卡片"N 条 · M 禁用"；逐条管理走 ListCredentials）
   credentialCount?: number
   credentialDisabled?: number
@@ -329,6 +318,17 @@ export interface SearchHitDTO {
 export interface SearchSessionsResultDTO {
   hits: SearchHitDTO[]
   query: string
+  // 扫描统计（0.0.30 审查 R1）：超长账本只扫了开头一段，零命中时"没扫到"与
+  // "不存在"必须区分——此前 stats 止步于后端，界面只能说"没有"（0.0.23 至此的缺陷）。
+  stats: SearchStatsDTO
+}
+
+// SearchStatsDTO 是一次搜索的扫描统计。byteLimitPerLedger 由后端给出（前端不
+// 复制一份常量，复制就会漂）；界面用它把"没扫到"如实写成"只扫了前 4MB"。
+export interface SearchStatsDTO {
+  scannedLedgers: number
+  truncatedLedgers: number
+  byteLimitPerLedger: number
 }
 
 // 单渠道健康读数（0.0.23）：successRate = -1 表示"近 N 天无请求"（读数未知，
@@ -430,8 +430,6 @@ export interface ChannelInput {
   // 上下文上限（token；0 = 不限）。估算口径：4 个 ASCII 字符 ≈ 1 token、
   // 1 个非 ASCII 字符 ≈ 1 token（保守上界）——见后端 derive.go。
   contextLimit?: number
-  priceIn?: number
-  priceOut?: number
 }
 
 // Git 面板（0.0.24）：一行变更（porcelain 状态码 + 路径；?? = 未跟踪）
@@ -530,7 +528,10 @@ interface WailsApp {
   // 渠道健康读数（0.0.23）：近 N 天按渠道的成功率/建流耗时/最近错误。
   ChannelHealth(days: number): Promise<Record<string, ChannelHealthDTO> | null>
   // 备份与恢复（0.0.23）：弹系统对话框选路径；ApplyBackup 返回写入/跳过条数。
-  ExportBackupTo(version: string): Promise<string>
+  // 0.0.30 审查 R4：版本号不再由前端传（此前 BackupPanel 写死字面量，导出后预检
+  // 一直显示一个与实际构建无关的旧版本号）——后端用注入的真值，AppVersion 只读。
+  AppVersion(): Promise<string>
+  ExportBackupTo(): Promise<string>
   PickBackupFile(): Promise<string>
   PreviewBackup(path: string): Promise<BackupPreviewDTO | null>
   ApplyBackup(path: string, overwrite: boolean): Promise<BackupApplyResultDTO>
@@ -765,8 +766,9 @@ export function bridge(): WailsBridge {
         MemoryLines: async () => ({ global: [], project: [] }),
         MemoryDelete: offlineWrite,
         MemoryClear: offlineWrite,
-        SearchSessions: async () => ({ hits: [], query: '' }),
+        SearchSessions: async () => ({ hits: [], query: '', stats: { scannedLedgers: 0, truncatedLedgers: 0, byteLimitPerLedger: 0 } }),
         ChannelHealth: async () => ({}),
+        AppVersion: async () => 'dev',
         ExportBackupTo: async () => '',
         PickBackupFile: async () => '',
         PreviewBackup: async () => ({

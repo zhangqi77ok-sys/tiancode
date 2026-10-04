@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import BaseModal from './BaseModal.vue'
 import AppIcon from './AppIcon.vue'
-import { bridge, type SearchHitDTO } from '../wails'
+import { bridge, type SearchHitDTO, type SearchStatsDTO } from '../wails'
 import { useChatStore } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useToast } from '../composables/useToast'
@@ -11,6 +11,10 @@ import { errText } from '../composables/errText'
 // 跨会话搜索面板（0.0.23）：Ctrl+Shift+F。回答"我上周让模型查过什么来着"——
 // 那在另一场会话里，后端扫所有账本（只读、有界），这里只负责输入与呈现。
 // 点击命中 → 切会话 + 跳到那一轮（复用 0.0.21 时间线跳转链路，不新造定位）。
+//
+// 0.0.30 审查 R1：单账本有 4MB 扫描上限，超限的长账本只扫了开头一段——尾部往往
+// 正是最近的对话。此前后端把"是否截断"丢了，零命中时本面板说"没有会话里包含这个
+// 搜索词"，把"没扫到"说成了"不存在"。现在用后端回传的 stats 如实写明。
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useChatStore()
@@ -20,10 +24,16 @@ const { push: toast } = useToast()
 const query = ref('')
 const scopeWs = ref(false) // 只搜当前工作区（默认全空间——"上周那场"可能在别的项目）
 const hits = ref<SearchHitDTO[]>([])
+const stats = ref<SearchStatsDTO | null>(null)
 const loading = ref(false)
 const searched = ref(false)
 const error = ref('')
 const inputEl = ref<HTMLInputElement | null>(null)
+
+// 本次有多少本长账本因字节上限没扫完（0 = 结果完整，可以断言"不存在"）
+const truncatedLedgers = computed(() => stats.value?.truncatedLedgers ?? 0)
+// 扫描上限由后端给出，界面不复制一份常量（复制就会漂）
+const scanLimitMB = computed(() => Math.round((stats.value?.byteLimitPerLedger ?? 0) / 1024 / 1024))
 
 async function run() {
   const q = query.value.trim()
@@ -33,10 +43,12 @@ async function run() {
   try {
     const res = await bridge().app.SearchSessions(q, scopeWs.value ? ws.path : '', 50)
     hits.value = res?.hits ?? []
+    stats.value = res?.stats ?? null
     searched.value = true
   } catch (e) {
     error.value = errText(e)
     hits.value = []
+    stats.value = null
     searched.value = true
   } finally {
     loading.value = false
@@ -101,10 +113,22 @@ async function nextTickTick() {
       <p v-if="!searched && !loading" class="px-1 py-6 text-center text-xs text-[var(--c-text-faint)]">
         输入搜索词，回车开始。
       </p>
-      <p v-else-if="!loading && !hits.length" class="px-1 py-6 text-center text-xs text-[var(--c-text-faint)]">
-        没有会话里包含这个搜索词。
+      <p v-else-if="!loading && !hits.length" class="px-4 py-6 text-center text-xs text-[var(--c-text-faint)]">
+        <template v-if="truncatedLedgers">
+          没有搜到。但有 {{ truncatedLedgers }} 本长会话只扫了开头 {{ scanLimitMB }}MB，<br />
+          它们后面的内容没进这次搜索——换个关键词，或把范围限定到当前工作区再试。
+        </template>
+        <template v-else>没有会话里包含这个搜索词。</template>
       </p>
-      <ul v-else class="space-y-1">
+      <template v-else>
+        <p
+          v-if="truncatedLedgers"
+          class="mb-1 px-1 text-[10px] text-[var(--c-text-faint)]"
+          data-test="scan-truncated-note"
+        >
+          有 {{ truncatedLedgers }} 本长会话只扫了开头 {{ scanLimitMB }}MB，这部分结果可能不全。
+        </p>
+        <ul class="space-y-1">
         <li v-for="(h, i) in hits" :key="`${h.sessionID}-${h.anchorSeq}-${i}`">
           <button
             class="w-full rounded-lg border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--c-primary)]"
@@ -129,6 +153,7 @@ async function nextTickTick() {
           </button>
         </li>
       </ul>
+      </template>
     </div>
   </BaseModal>
 </template>
