@@ -106,6 +106,18 @@ onBeforeUnmount(() => offEsc?.())
           class="ml-0.5 rounded-full bg-[var(--c-primary-soft)] px-1.5 text-[10px] tabular-nums text-[var(--c-primary)]"
         >{{ t.badge }}</span>
       </button>
+      <!-- 关闭当前面板（0.0.25 用户反馈"点开后没有关闭按钮"）：此前只能靠 Esc 或
+           右缘竖标，界面上看不见任何关闭入口。× 固定在 tab 条右端，title 写明
+           关的是哪一块；关掉最后一个 tab 时容器由 App 层 v-if 退场。 -->
+      <button
+        v-if="active"
+        class="chip ml-auto shrink-0 px-1.5 py-1 text-xs"
+        :title="`关闭${active.label}面板`"
+        :aria-label="`关闭${active.label}面板`"
+        @click="active.close()"
+      >
+        <AppIcon name="x" :size="12" />
+      </button>
     </div>
     <!-- 激活内容：动态插槽（tabs 空时 App 层本不该挂载，这里兜底渲染空） -->
     <div class="flex min-h-0 flex-1 flex-col">

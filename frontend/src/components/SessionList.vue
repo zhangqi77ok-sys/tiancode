@@ -395,9 +395,11 @@ async function doMove(dir: string) {
         class="absolute bottom-full left-0 z-40 mb-1.5 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-[var(--shadow-float)]"
         :class="props.collapsed ? 'w-56' : 'w-full'"
       >
-        <!-- 当前模型：带图标的一行块——图标与条目图标同列，文本与条目文本同列 -->
-        <div class="flex items-center gap-2 px-2 py-2">
-          <AppIcon name="message" :size="14" class="shrink-0 text-[var(--c-text-faint)]" aria-hidden="true" />
+        <!-- 当前模型：带图标的一行块——图标与条目图标同列，文本与条目文本同列。
+             右侧带可见关闭（0.0.25 用户反馈"点开后没有关闭按钮"）：此前只靠 Esc
+             与点外部，界面上看不见入口。 -->
+        <div class="flex items-start gap-2 px-2 py-2">
+          <AppIcon name="message" :size="14" class="mt-0.5 shrink-0 text-[var(--c-text-faint)]" aria-hidden="true" />
           <div class="min-w-0 flex-1">
             <p class="truncate text-xs font-medium text-[var(--c-text)]" :title="channels.activeModel">
               {{ channels.activeModel || '未选择模型' }}
@@ -409,6 +411,14 @@ async function doMove(dir: string) {
               {{ channels.activeChannel ? channels.activeChannel.name : '未配置渠道' }}
             </p>
           </div>
+          <button
+            class="chip shrink-0 px-1.5 py-0.5 text-[10px]"
+            title="关闭设置菜单"
+            aria-label="关闭设置菜单"
+            @click="settingsMenuOpen = false"
+          >
+            <AppIcon name="x" :size="11" />
+          </button>
         </div>
         <div class="my-1 h-px bg-[var(--c-border)]"></div>
         <button role="menuitem" class="menu-item" @click="openSettings('channels')">
