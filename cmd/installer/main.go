@@ -58,7 +58,12 @@ func main() {
 	flag.Parse()
 
 	if *uninstall {
-		closeRunningApp() // 卸载同样先关应用：运行中的 exe 文件被锁，删除会失败
+		// 卸载同样先查应用是否在跑：运行中的 exe 被锁定，删除必然失败。
+		// 与安装一致——不替用户杀进程（见 cmd/installer/install.go resolveAppClosePolicy）。
+		if err := ensureAppClosed(*quiet); err != nil {
+			fail("tiancode 正在运行", err, *quiet)
+			return
+		}
 		if err := doUninstall(*dirFlag); err != nil {
 			fail("卸载失败", err, *quiet)
 			return
@@ -75,7 +80,10 @@ func main() {
 			return
 		}
 	}
-	closeRunningApp() // 升级安装前先关闭运行中的旧版（0.2.11 用户反馈）
+	if err := ensureAppClosed(*quiet); err != nil {
+		fail("tiancode 正在运行", err, *quiet)
+		return
+	}
 	if err := doInstall(*dirFlag, !*noDesktop); err != nil {
 		fail("安装失败", err, *quiet)
 		return

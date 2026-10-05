@@ -59,9 +59,7 @@ const (
 	// 工具根同源——首次 workspace 事件仍是初始归属，最后一次 move 说了算）。
 	// path 为空串 = 移出空间（会话变为纯对话归属；本地工具在下一轮下线）。
 	EventWorkspaceMove EventKind = "workspace_move"
-	// EventUsage 记录一轮里上游上报的 token 用量（每收到一次 usage 块追加一行，
-	// 一轮可能多行——ReAct 每次模型调用各报一次）。只做统计投影（Meta 聚合），
-	// 不参与对话重放，投影时整体跳过。
+	// EventUsage 是已停用的用量统计行。旧账本里可能还有，重放与列表都跳过，不再写入。
 	EventUsage EventKind = "usage"
 )
 

@@ -28,7 +28,6 @@ export type IconName =
   | 'plug'
   | 'book'
   | 'external'
-  | 'stats'
   | 'command'
 </script>
 
@@ -39,7 +38,6 @@ withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 16 })
 
 // 每个图标由一条或多条 path 组成（viewBox 24，线性风格）
 const PATHS: Record<IconName, string[]> = {
-  stats: ['M4 20h16', 'M7 16v-5', 'M12 16V8', 'M17 16v-3'],
   command: ['M6 9a3 3 0 1 1 3-3v12a3 3 0 1 1-3-3h12a3 3 0 1 1-3 3V6a3 3 0 1 1 3 3H6'],
   plus: ['M12 5v14', 'M5 12h14'],
   x: ['M18 6 6 18', 'm6 6 12 12'],

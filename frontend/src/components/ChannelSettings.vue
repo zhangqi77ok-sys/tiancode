@@ -50,9 +50,6 @@ const emptyForm = () => ({
   authValue: '',
   // 第 2 批：上下文上限（token；0 = 不限）——本地派生折叠用，不发给上游
   contextLimit: 0,
-  // 0.0.24：每百万 token 单价（成本估算展示用；0 = 未配置）
-  priceIn: 0,
-  priceOut: 0,
 })
 const form = ref(emptyForm())
 
@@ -142,8 +139,6 @@ function fillFrom(ch: ChannelDTO) {
     authName: ch.auth?.name ?? '',
     authValue: ch.auth?.value ?? '',
     contextLimit: ch.contextLimit ?? 0,
-    priceIn: ch.priceIn ?? 0,
-    priceOut: ch.priceOut ?? 0,
   }
 }
 
@@ -266,8 +261,6 @@ async function save() {
     paramOverride: Object.keys(params).length ? params : undefined,
     auth,
     contextLimit: form.value.contextLimit || 0,
-    priceIn: form.value.priceIn || 0,
-    priceOut: form.value.priceOut || 0,
   })
   if (!store.error) {
     view.value = 'list'
@@ -942,34 +935,6 @@ onMounted(async () => {
                 接近上限时按顺序折叠：旧图片 → 两轮以前的命令/写入回执 → 更早的只读结果。
               </span>
             </label>
-
-            <div class="grid grid-cols-2 gap-2">
-              <label class="block">
-                <span class="mb-1 block text-xs text-[var(--c-text-dim)]">输入单价 ($/1M tok)</span>
-                <input
-                  v-model.number="form.priceIn"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="0 = 未配置"
-                  class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
-                />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-xs text-[var(--c-text-dim)]">输出单价 ($/1M tok)</span>
-                <input
-                  v-model.number="form.priceOut"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="0 = 未配置"
-                  class="w-full rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3 py-2 text-sm"
-                />
-              </label>
-            </div>
-            <span class="mt-1 block text-[11px] text-[var(--c-text-faint)]">
-              可选。配置后「统计」面板按当前渠道单价估算成本；多渠道混用时为近似值。
-            </span>
 
             <label class="block">
               <span class="mb-1 block text-xs text-[var(--c-text-dim)]">状态</span>

@@ -53,7 +53,7 @@ func TestDrainTurnConsumesEveryChunkKind(t *testing.T) {
 	drainTurn(context.Background(), "s1", ch, func(name string, payload any) {
 		got = append(got, name)
 		payloads = append(payloads, payload)
-	}, nil)
+	})
 
 	want := []string{"chat:chunk", "chat:chunk", "chat:usage", "chat:tool", "chat:todo", "chat:context", "chat:terminal"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -89,7 +89,7 @@ func TestDrainTurnSynthesizesTerminalOnSilentClose(t *testing.T) {
 		if m, ok := payload.(map[string]any); ok {
 			lastPayload = m
 		}
-	}, nil)
+	})
 	if last != "chat:terminal" {
 		t.Fatalf("必须合成终态，最后一个是 %q", last)
 	}
@@ -118,7 +118,7 @@ func TestDrainTurnDrainsUntilClose(t *testing.T) {
 		if name == "chat:chunk" {
 			chunks++
 		}
-	}, nil)
+	})
 	if n := <-done; n != 50 || chunks != 50 {
 		t.Fatalf("必须一路消费到关闭：写入 %d 块、收到 %d 块", n, chunks)
 	}

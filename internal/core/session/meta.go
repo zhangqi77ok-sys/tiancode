@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // Meta 是账本的元数据投影（列表/导出用，不加载消息体）。
@@ -15,16 +14,6 @@ type Meta struct {
 	Pinned    bool   // 最后一次 session_pinned
 	Events    int    // 完整事件数（诊断用）
 	Skipped   int    // 跳过的不完整/损坏行数（>0 说明账本尾部有未完成写入或坏行）
-
-	// 0.0.19 用量沉淀：所有 usage 事件累计（一轮可能多行——ReAct 每次模型调用
-	// 各报一次）。只做统计展示，不参与对话重放。
-	UsagePrompt     int64
-	UsageCompletion int64
-	UsageTotal      int64
-	// 0.0.24 近 7 天聚合（按 usage 事件的 at 毫秒时间戳；无 at 的旧事件不参与）。
-	Usage7dPrompt     int64
-	Usage7dCompletion int64
-	Usage7dTotal      int64
 }
 
 // ReadMeta 只读扫描账本聚合元数据（0.2.36 审计 R2）。
@@ -103,24 +92,7 @@ func ReadMeta(dir, sessionID string) (Meta, error) {
 				wsSeen = true
 			}
 		case EventUsage:
-			var p struct {
-				Prompt     int64 `json:"prompt"`
-				Completion int64 `json:"completion"`
-				Total      int64 `json:"total"`
-				At         int64 `json:"at"`
-			}
-			if json.Unmarshal(rec.Data, &p) == nil {
-				m.UsagePrompt += p.Prompt
-				m.UsageCompletion += p.Completion
-				m.UsageTotal += p.Total
-				// 近 7 天窗口（0.0.24）：无 at 的旧事件不参与（0.0.19~0.0.23 期间
-				// 只记了累计，补不了时间——面板照实说明，绝不倒填时间戳）
-				if p.At >= time.Now().AddDate(0, 0, -7).UnixMilli() {
-					m.Usage7dPrompt += p.Prompt
-					m.Usage7dCompletion += p.Completion
-					m.Usage7dTotal += p.Total
-				}
-			}
+			// 用量统计已取消：旧账本里的 usage 行仍可读，不再聚合。
 		}
 		m.Events++
 	}

@@ -1026,7 +1026,7 @@ export const useChatStore = defineStore('chat', () => {
   // 本身就是驾驶舱数据，切会话自动跟随、Replay 自动恢复、running 卡原地生长都免费拿到。
   // 面板开关与激活 tab 是应用级视图状态（不属于任何会话）；文件 tab 的开态即 fileDetailPath。
 
-  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks' | 'stats' | 'timeline' | 'git'>('file')
+  const rightPanelTab = ref<'file' | 'browser' | 'tree' | 'tasks' | 'timeline' | 'git'>('file')
   const browserOpen = ref(false)
   function openBrowserPanel() {
     browserOpen.value = true
@@ -1112,19 +1112,6 @@ export const useChatStore = defineStore('chat', () => {
   }
   function closeTimelinePanel() {
     timelineOpen.value = false
-  }
-
-  // ---- 用量统计（右栏「统计」tab，0.0.19）----
-  // 数据源 = summaries 的 usage 字段（后端账本聚合），本 tab 只做排序与展示；
-  // 打开时顺手刷新一次列表（正在跑的轮次落的新行也能追上）。
-  const statsOpen = ref(false)
-  async function openStatsPanel() {
-    statsOpen.value = true
-    rightPanelTab.value = 'stats'
-    await loadSessions()
-  }
-  function closeStatsPanel() {
-    statsOpen.value = false
   }
 
   // openCockpitFor：browser 工具卡到达（当前会话）→ 自动打开驾驶舱并切到浏览器 tab。
@@ -1535,9 +1522,6 @@ export const useChatStore = defineStore('chat', () => {
     tasksOpen,
     openTasksPanel,
     closeTasksPanel,
-    statsOpen,
-    openStatsPanel,
-    closeStatsPanel,
     timelineOpen,
     openTimelinePanel,
     closeTimelinePanel,

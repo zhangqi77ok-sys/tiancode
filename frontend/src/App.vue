@@ -25,7 +25,6 @@ import McpSettings from './components/McpSettings.vue'
 import MessageList from './components/MessageList.vue'
 import RightPanel, { type RightPanelTabDef } from './components/RightPanel.vue'
 import SessionList from './components/SessionList.vue'
-import StatsPanel from './components/StatsPanel.vue'
 import TimelinePanel from './components/TimelinePanel.vue'
 import SkillSettings from './components/SkillSettings.vue'
 import TasksPanel from './components/TasksPanel.vue'
@@ -141,18 +140,6 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
       close: () => store.closeGitPanel(),
     })
   }
-  if (store.statsOpen) {
-    tabs.push({
-      id: 'stats',
-      label: '统计',
-      icon: 'stats',
-      active: store.rightPanelTab === 'stats',
-      activate: () => {
-        store.rightPanelTab = 'stats'
-      },
-      close: () => store.closeStatsPanel(),
-    })
-  }
   return tabs
 })
 // 右栏全关时的竖标入口（0.3）：目录/任务两个"手动开栏" tab。
@@ -160,7 +147,6 @@ const rightTabs = computed<RightPanelTabDef[]>(() => {
 const railTabs = [
   { label: '目录', icon: 'folder' as const, open: () => store.openTreePanel() },
   { label: '任务', icon: 'terminal' as const, open: () => store.openTasksPanel() },
-  { label: '统计', icon: 'stats' as const, open: () => void store.openStatsPanel() },
   { label: '时间线', icon: 'refresh' as const, open: () => store.openTimelinePanel() },
   { label: 'Git', icon: 'folder' as const, open: () => store.openGitPanel() },
 ]
@@ -459,9 +445,6 @@ onBeforeUnmount(() => {
           </template>
           <template #tab-tasks>
             <TasksPanel />
-          </template>
-          <template #tab-stats>
-            <StatsPanel />
           </template>
           <template #tab-git>
             <GitPanel />

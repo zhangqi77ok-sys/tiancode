@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -77,28 +78,57 @@ func appendSetupLog(line string) {
 	fmt.Fprintf(f, "%s  %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
 }
 
-// closeRunningApp 安装/卸载前关闭正在运行的 tiancode（用户反馈：升级必须先关旧版）。
+// errAppRunning 表示应用正在运行、本次安装/卸载被中止，等待用户自行退出。
+// 用哨兵错误而非普通错误：调用点据此选标题（这不是"安装失败"，而是"需要用户先操作"）。
+var errAppRunning = errors.New("请先在系统托盘图标上点右键 →「退出」，等 tiancode 完全退出后，再运行本安装包。\n\n" +
+	"安装器不会替你强制结束进程：强杀会跳过应用的正常收尾，可能丢失正在进行的会话。")
+
+// appExitWaitTimeout 是静默模式下等待应用自行退出的上限。
+// 为什么给 5s：自更新路径（app/update.go）先拉起安装器、再异步 Quit，
+// 安装器必须等这段自然退出，而不是替它关窗（见 resolveAppClosePolicy）。
+const appExitWaitTimeout = 5 * time.Second
+
+// appClosePolicy 描述「应用正在运行」时安装器的处置。
+type appClosePolicy struct {
+	wait    time.Duration // 等应用自行退出的时长；0 = 不等
+	blocked error         // 非 nil = 中止本次操作
+}
+
+// resolveAppClosePolicy 是纯函数，锁定"检测到应用在跑"时各模式下的处置。
 //
-// Windows 下运行中的 exe 文件被锁定，writeFileAtomic 的 rename 与 os.Remove 都会失败，
-// 升级装不上、卸载卸不净。策略对齐主流安装器：先温和 taskkill（发 WM_CLOSE，给应用
-// 保存状态的机会），等 2s 仍存活再强杀；仍关不掉不阻断——后续文件操作若因占用失败
-// 会作为安装错误显式暴露，全过程落 setup.log 可查。
-func closeRunningApp() {
-	if !isAppRunning() {
-		return
+// 为什么安装器不再自己关应用（0.0.24 关窗语义变更后的硬约束）：
+// WM_CLOSE 在 winc 里被完全截断（winc/wndproc.go:87 → wails Quit() → OnBeforeClose），
+// 而托盘版 OnBeforeClose 对一切关闭都返回 true（隐藏到托盘、进程存活，见 main.go）。
+// 因此旧实现"先温和 taskkill 再强杀"的温和阶段**必然无效**，2s 之后只剩 /F 一条路：
+// OnShutdown 不执行 → chat.Close() 不跑 → 孤儿 MCP node 进程、账本句柄不释放，
+// 正在写入的 JSONL 可能被截断。修复方向由"安装器代替用户强杀"改为
+// "交互模式请用户自己退出、静默模式等它自然退出"。
+func resolveAppClosePolicy(running, quiet bool) appClosePolicy {
+	switch {
+	case !running:
+		return appClosePolicy{}
+	case quiet:
+		// 静默模式只有自更新一条调用路径：应用已置退出标记（app/update.go:62），
+		// 会自行 Quit。这里只等；等不到就中止，不替用户杀进程。
+		return appClosePolicy{wait: appExitWaitTimeout}
+	default:
+		return appClosePolicy{blocked: errAppRunning}
 	}
-	appendSetupLog("检测到运行中的 tiancode，正在自动关闭…")
-	killApp(false)
-	if waitAppExit(2 * time.Second) {
-		appendSetupLog("tiancode 已正常退出")
-		return
+}
+
+// ensureAppClosed 在动目标目录之前处置"应用正在运行"。
+// 返回 nil 表示可以继续；返回 errAppRunning 时中止，并把可执行的中文指引带给用户。
+func ensureAppClosed(quiet bool) error {
+	p := resolveAppClosePolicy(isAppRunning(), quiet)
+	if p.blocked != nil {
+		appendSetupLog("中止：检测到 tiancode 正在运行，等待用户从托盘退出")
+		return p.blocked
 	}
-	killApp(true)
-	if waitAppExit(2 * time.Second) {
-		appendSetupLog("tiancode 未响应关闭请求，已强制结束")
-		return
+	if p.wait == 0 || waitAppExit(p.wait) {
+		return nil
 	}
-	warn("未能关闭运行中的 tiancode，安装可能因文件占用失败")
+	appendSetupLog(fmt.Sprintf("中止：等待 tiancode 退出超过 %s，未改动任何文件", p.wait))
+	return fmt.Errorf("等待 tiancode 退出超过 %s，已中止，未改动任何文件", p.wait)
 }
 
 // isAppRunning 用 tasklist 查询应用进程是否存在。查询失败一律视为未运行：
@@ -118,19 +148,10 @@ func tasklistReportsApp(out string) bool {
 	return strings.Contains(strings.ToLower(out), strings.ToLower(appExeName))
 }
 
-// killApp 结束应用进程；force=false 发 WM_CLOSE，true 为强杀。
-// 返回值不单独判错：结果统一由 waitAppExit 轮询确认，那是唯一的生效判据。
-func killApp(force bool) {
-	args := []string{"/IM", appExeName}
-	if force {
-		args = append(args, "/F")
-	}
-	cmd := exec.Command("taskkill", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
-	_ = cmd.Run()
-}
-
 // waitAppExit 轮询等待应用退出（时序判据见 docs/TESTING.md：轮询而非固定 sleep）。
+//
+// 仅用于静默模式下等待应用**自然**退出（自更新路径）。刻意不提供"强制结束"：
+// 见 resolveAppClosePolicy —— 托盘语义下温和关闭必然无效，强杀会丢数据。
 func waitAppExit(timeout time.Duration) bool {
 	for deadline := time.Now().Add(timeout); ; {
 		if !isAppRunning() {
@@ -143,53 +164,7 @@ func waitAppExit(timeout time.Duration) bool {
 	}
 }
 
-// doInstall 安装：写应用 exe → 复制自身（卸载入口）→ 快捷方式 → 注册表项。
-// desktopIcon 为 false 时跳过桌面快捷方式（仅开始菜单），供受限环境或脚本化部署选择。
-func doInstall(dir string, desktopIcon bool) error {
-	appendSetupLog(fmt.Sprintf("install v%s dir=%s desktopIcon=%v", version, dir, desktopIcon))
-
-	if len(appBinary) == 0 {
-		return fmt.Errorf("安装包损坏：内嵌程序为空（请重新运行 release.ps1 构建）")
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("创建安装目录：%w", err)
-	}
-	appPath := filepath.Join(dir, appExeName)
-	if err := writeFileAtomic(appPath, appBinary); err != nil {
-		return fmt.Errorf("写入应用文件：%w", err)
-	}
-
-	// 复制安装器自身到目标目录，作为卸载入口（与 UninstallString 对应）
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("定位安装器：%w", err)
-	}
-	setupPath := filepath.Join(dir, setupCopyName)
-	if !samePath(self, setupPath) {
-		data, err := os.ReadFile(self)
-		if err != nil {
-			return fmt.Errorf("读取安装器：%w", err)
-		}
-		if err := writeFileAtomic(setupPath, data); err != nil {
-			return fmt.Errorf("写入卸载入口：%w", err)
-		}
-	}
-
-	for _, s := range installShortcuts(desktopIcon) {
-		if err := createShortcut(s.lnk, appPath, s.workDir); err != nil {
-			if s.required {
-				return fmt.Errorf("创建快捷方式 %s：%w", filepath.Base(s.lnk), err)
-			}
-			// 便利项失败不中断安装（应用与卸载项均可就位），但必须可见：
-			// 静默降级会让用户事后才发现入口缺失，而那时已无从判断原因。
-			warn("未创建快捷方式 %s：%v", filepath.Base(s.lnk), err)
-		}
-	}
-	if err := writeUninstallEntry(dir, setupPath); err != nil {
-		return fmt.Errorf("写入卸载注册项：%w", err)
-	}
-	return nil
-}
+// doInstall 及其步骤在 steps.go：安装步骤编排与失败回滚放在一起，便于对照"做了什么 / 撤销什么"。
 
 // doUninstall 卸载：删快捷方式/注册项/应用文件，并调度安装目录延迟清理。
 func doUninstall(dir string) error {

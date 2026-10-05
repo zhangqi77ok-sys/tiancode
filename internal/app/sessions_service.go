@@ -24,14 +24,6 @@ type SessionSummary struct {
 	// SkippedLines > 0 表示账本有未完成写入（回合进行中的常态）或坏行被跳过
 	// （0.2.36 审计 R2：元数据只读、不截断、单条坏不联坐）。
 	SkippedLines int `json:"skippedLines,omitempty"`
-	// 0.0.19 用量沉淀（账本 usage 事件累计；旧账本/未发生轮次为 0）。
-	PromptTokens     int64 `json:"promptTokens,omitempty"`
-	CompletionTokens int64 `json:"completionTokens,omitempty"`
-	TotalTokens      int64 `json:"totalTokens,omitempty"`
-	// 0.0.24 近 7 天（按 usage 事件的 at；旧事件无时间戳不计入）
-	Prompt7d     int64 `json:"prompt7d,omitempty"`
-	Completion7d int64 `json:"completion7d,omitempty"`
-	Total7d      int64 `json:"total7d,omitempty"`
 }
 
 // maxTitleRunes 是标题长度上限：侧栏单行展示，过长既撑破布局也无法辨认。
@@ -178,8 +170,6 @@ func (s *ChatService) SessionSummaries() ([]SessionSummary, error) {
 		out = append(out, SessionSummary{
 			ID: id, Title: meta.Title, Workspace: meta.Workspace,
 			Pinned: meta.Pinned, LastActiveMs: lastActive, SkippedLines: meta.Skipped,
-			PromptTokens: meta.UsagePrompt, CompletionTokens: meta.UsageCompletion, TotalTokens: meta.UsageTotal,
-			Prompt7d: meta.Usage7dPrompt, Completion7d: meta.Usage7dCompletion, Total7d: meta.Usage7dTotal,
 		})
 	}
 	return out, nil

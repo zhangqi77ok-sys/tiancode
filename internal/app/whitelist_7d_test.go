@@ -1,16 +1,13 @@
-// 审批白名单（0.0.24）与用量 7 天聚合的用例测试。
+// 审批白名单（0.0.24）的用例测试。
 package app
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"tiancode/internal/core/agent"
-	"tiancode/internal/core/session"
 )
 
 type stubApprover struct {
@@ -132,71 +129,5 @@ func TestApproverFor_UsesWorkspaceShellAllow(t *testing.T) {
 	a = s.approverFor("s-wl", root)
 	if _, ok := a.(*shellAllowApprover); !ok {
 		t.Fatalf("配了白名单必须套旁路审批器：%T", a)
-	}
-}
-
-// 用量 7 天聚合：带 at 的旧事件不计入、新事件计入、无 at 的不参与。
-func TestMeta_Usage7dWindow(t *testing.T) {
-	dir := t.TempDir()
-	l, err := session.OpenLedger(dir, "s-7d")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	appendUsage := func(at int64) {
-		if _, err := l.Append(session.EventUsage, map[string]any{
-			"prompt": 10, "completion": 5, "total": 15, "at": at,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	appendUsage(time.Now().AddDate(0, 0, -1).UnixMilli())  // 窗口内
-	appendUsage(time.Now().AddDate(0, 0, -30).UnixMilli()) // 窗口外
-	if _, err := l.Append(session.EventUsage, map[string]any{
-		"prompt": 100, "completion": 50, "total": 150, // 无 at：旧版事件
-	}); err != nil {
-		t.Fatal(err)
-	}
-	m, err := session.ReadMeta(dir, "s-7d")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.UsageTotal != 180 || m.UsagePrompt != 120 {
-		t.Fatalf("累计应包含全部（含无 at 的）：%+v", m)
-	}
-	if m.Usage7dTotal != 15 || m.Usage7dPrompt != 10 || m.Usage7dCompletion != 5 {
-		t.Fatalf("7 天窗口应只含带 at 且窗口内的事件：%+v", m)
-	}
-}
-
-// RecordUsage 落的事件必须带 at（否则 7 天窗口永远为空）。
-func TestRecordUsage_StampsTimestamp(t *testing.T) {
-	s := newChannelService(t, Config{})
-	defer s.Close()
-	if _, err := s.ledgerFor("s-at"); err != nil {
-		t.Fatal(err)
-	}
-	s.RecordUsage("s-at", 10, 5, 15)
-	l, err := s.ledgerFor("s-at")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sawAt bool
-	if err := l.Replay(func(ev session.Event) error {
-		if ev.Kind() != session.EventUsage {
-			return nil
-		}
-		var p struct {
-			At int64 `json:"at"`
-		}
-		if json.Unmarshal(ev.Data(), &p) == nil && p.At > 0 {
-			sawAt = true
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !sawAt {
-		t.Fatal("usage 事件必须带 at 时间戳")
 	}
 }

@@ -3,10 +3,12 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 回归锁：安装创建的快捷方式集合，必须与卸载删除的集合逐项一致。
@@ -212,6 +214,74 @@ func TestTasklistReportsApp(t *testing.T) {
 	for _, c := range cases {
 		if got := tasklistReportsApp(c.out); got != c.want {
 			t.Errorf("%s: tasklistReportsApp(%q) = %v, want %v", c.name, c.out, got, c.want)
+		}
+	}
+}
+
+// 处置策略锁：应用正在运行时，安装器一律不杀进程。
+//
+// 交互模式（用户双击 setup）→ 中止并请用户从托盘退出；
+// 静默模式（只有自更新一条路径）→ 只等应用自然退出，等不到就中止；
+// 应用没在运行 → 直接继续，不做任何等待。
+func TestResolveAppClosePolicy(t *testing.T) {
+	cases := []struct {
+		name        string
+		running     bool
+		quiet       bool
+		wantBlocked bool
+		wantWait    time.Duration
+	}{
+		{"应用未运行（交互）：直接继续", false, false, false, 0},
+		{"应用未运行（静默）：直接继续", false, true, false, 0},
+		{"运行中 + 交互：请用户从托盘退出", true, false, true, 0},
+		{"运行中 + 静默（自更新）：等它自己退出", true, true, false, appExitWaitTimeout},
+	}
+	for _, c := range cases {
+		p := resolveAppClosePolicy(c.running, c.quiet)
+		if (p.blocked != nil) != c.wantBlocked {
+			t.Errorf("%s: blocked = %v, wantBlocked %v", c.name, p.blocked != nil, c.wantBlocked)
+		}
+		if p.wait != c.wantWait {
+			t.Errorf("%s: wait = %s, want %s", c.name, p.wait, c.wantWait)
+		}
+		if c.wantBlocked && !errors.Is(p.blocked, errAppRunning) {
+			t.Errorf("%s: blocked 必须是 errAppRunning（调用点据此选标题），实际 %v", c.name, p.blocked)
+		}
+	}
+}
+
+// 中止提示必须给出可执行的下一步。tiancode 常驻托盘时"关闭窗口"根本不算退出，
+// 只说"请关闭程序"会让用户反复点 X 却始终装不上。
+func TestErrAppRunning_Actionable(t *testing.T) {
+	msg := errAppRunning.Error()
+	for _, want := range []string{"托盘", "退出"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("中止提示必须包含 %q，实际 %q", want, msg)
+		}
+	}
+}
+
+// 回归锁（P0）：安装器不得再持有任何"强制结束应用"的代码路径。
+//
+// 为什么必须扫源码而不是只测行为：托盘语义下（0.0.24）WM_CLOSE 会被 OnBeforeClose
+// 转成"隐藏到托盘"，温和关闭必然无效，旧实现只剩 taskkill /F 一条路——OnShutdown
+// 不执行 → chat.Close() 不跑 → 孤儿 MCP 进程，且写入中的 JSONL 可能被截断。
+// 只要 install.go 里不再出现 taskkill，这条路就被物理封死。
+func TestNoForcedAppKill(t *testing.T) {
+	src, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatalf("读取 install.go 失败：%v", err)
+	}
+	// 只扫代码行：注释里必须能写清"为什么不再用 taskkill"（那是本缺陷的根因记录），
+	// 扫全文会把这段说明自己判成违规。
+	for i, line := range strings.Split(string(src), "\n") {
+		code := strings.TrimSpace(line)
+		if code == "" || strings.HasPrefix(code, "//") {
+			continue
+		}
+		if strings.Contains(strings.ToLower(code), "taskkill") {
+			t.Errorf("install.go:%d 代码行重新出现了 taskkill：应用正在运行时应请用户从托盘退出"+
+				"（resolveAppClosePolicy），而不是替用户强制结束进程", i+1)
 		}
 	}
 }

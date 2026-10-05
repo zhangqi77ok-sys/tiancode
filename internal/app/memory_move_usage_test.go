@@ -138,32 +138,3 @@ func TestMeta_WorkspaceMoveOverridesFirstSnapshot(t *testing.T) {
 		t.Fatalf("move 到空串后归属应为空：got %q", m.Workspace)
 	}
 }
-
-// ---------- 用量沉淀 ----------
-
-// RecordUsage 落账本，SessionSummaries 聚合出来（一轮多行累加）。
-func TestChatService_UsageAggregatedInSummaries(t *testing.T) {
-	s := newChannelService(t, Config{})
-	defer s.Close()
-	if _, err := s.ledgerFor("s-usage"); err != nil {
-		t.Fatal(err)
-	}
-	s.RecordUsage("s-usage", 100, 50, 150)
-	s.RecordUsage("s-usage", 200, 80, 280)
-	sums, err := s.SessionSummaries()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got *SessionSummary
-	for i := range sums {
-		if sums[i].ID == "s-usage" {
-			got = &sums[i]
-		}
-	}
-	if got == nil {
-		t.Fatal("会话必须在列表里")
-	}
-	if got.PromptTokens != 300 || got.CompletionTokens != 130 || got.TotalTokens != 430 {
-		t.Fatalf("用量聚合错误：%+v", got)
-	}
-}

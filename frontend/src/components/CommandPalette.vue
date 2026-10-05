@@ -23,7 +23,7 @@ const ws = useWorkspaceStore()
 
 interface Cmd {
   id: string
-  icon: 'message' | 'folder' | 'sliders' | 'plug' | 'book' | 'stats' | 'plus' | 'command' | 'wrench'
+  icon: 'message' | 'folder' | 'sliders' | 'plug' | 'book' | 'plus' | 'command' | 'wrench'
   label: string
   hint: string
   run: () => void

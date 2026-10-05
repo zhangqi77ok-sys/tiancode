@@ -37,9 +37,6 @@ type ChannelDTO struct {
 
 	// ContextLimit 是渠道声明的上下文上限（token；0 = 未配置）。见 llm.Channel 注释。
 	ContextLimit int `json:"contextLimit"`
-	// PriceIn/PriceOut：每百万 token 单价（0.0.24 成本估算；0 = 未配置）。
-	PriceIn  float64 `json:"priceIn"`
-	PriceOut float64 `json:"priceOut"`
 
 	// 凭证摘要：列表卡片显示"N 条 · M 禁用"（逐条管理走 ListCredentials）
 	CredentialCount    int `json:"credentialCount"`
@@ -89,9 +86,7 @@ type ChannelInput struct {
 	HeaderOverride map[string]string `json:"headerOverride"`
 	Auth           *llm.AuthConfig   `json:"auth"`
 	// ContextLimit 是上下文上限（token；0 = 不限）——估算口径见渠道表单说明。
-	ContextLimit int     `json:"contextLimit"`
-	PriceIn      float64 `json:"priceIn"`
-	PriceOut     float64 `json:"priceOut"`
+	ContextLimit int `json:"contextLimit"`
 }
 
 func (in ChannelInput) toDomain() llm.Channel {
@@ -114,8 +109,6 @@ func (in ChannelInput) toDomain() llm.Channel {
 		HeaderOverride: in.HeaderOverride,
 		Auth:           in.Auth,
 		ContextLimit:   in.ContextLimit,
-		PriceIn:        in.PriceIn,
-		PriceOut:       in.PriceOut,
 	}
 }
 
@@ -137,8 +130,6 @@ func fromView(v llm.ChannelView, activeID string) ChannelDTO {
 		HeaderOverride: v.HeaderOverride,
 		Auth:           v.Auth,
 		ContextLimit:   v.ContextLimit,
-		PriceIn:        v.PriceIn,
-		PriceOut:       v.PriceOut,
 
 		CredentialCount:    v.CredentialCount,
 		CredentialDisabled: v.CredentialDisabled,
