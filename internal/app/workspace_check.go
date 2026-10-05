@@ -15,11 +15,18 @@ import (
 	"strings"
 	"time"
 
+	"tiancode/internal/core/llm"
 	"tiancode/internal/platform/applog"
 )
 
 // checkTimeout 是检查命令的固定超时（第 8 批：60 秒）。超时不编诊断，只把已捕获输出照实给出。
 const checkTimeout = 60 * time.Second
+
+// maxAutoFixTurns 是检查失败后自动定向修复的轮数预算（0.0.34 自愈循环）。
+// 为什么 2：自愈是"给模型一次当场纠错的机会"，不是无限重跑——持续红的检查
+// 大多是模型修不动的问题（或根本不是模型的锅），2 轮封顶把最坏代价框死；
+// 预算在检查通过或真实用户消息发送时重置（新的一手重新计数）。
+const maxAutoFixTurns = 2
 
 // CheckRef 是输出里的一处位置引用（界面点它 = 第 6 项那个"打开"入口）。
 type CheckRef struct {
@@ -115,6 +122,9 @@ func (s *ChatService) RunWorkspaceCheck(sessionID string) (CheckResult, error) {
 		res.Output += fmt.Sprintf("\n(检查命令超过 %s 已终止)", checkTimeout)
 	}
 	s.setLastCheck(sessionID, res)
+	if !res.Failed && !res.TimedOut {
+		s.resetAutoFix(sessionID) // 检查变绿：自愈预算重置（新的一手重新计数）
+	}
 	return res, nil
 }
 
@@ -123,6 +133,97 @@ func (s *ChatService) SetCheckHandler(fn func(CheckResult)) {
 	s.checkMu.Lock()
 	defer s.checkMu.Unlock()
 	s.checkEmit = fn
+}
+
+// SetAutoFixHandler 注入"检查失败 → 自动定向修复回合"的启动回调（0.0.34 自愈循环）。
+// 由壳层实现：调 SendFixTurn 拿流并用与 Send 同一条事件桥推给前端。
+// nil = 功能关闭（测试/无壳层环境）。只放行不强制：回调内部认领失败（用户正在
+// 发消息等）静默放弃——用户在驱动时绝不跟用户抢回合。
+func (s *ChatService) SetAutoFixHandler(fn func(sessionID, reason string, attempt, max int)) {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	s.autoFixEmit = fn
+}
+
+// afterTurnCheck 是回合收尾的检查入口：所有终态都跑检查并推送；只有正常收尾
+// （EndDone）才允许触发自动修复——用户中断/看门狗/错误后再自动开新回合，
+// 等于无视用户的"停"。
+func (s *ChatService) afterTurnCheck(sessionID string, ended llm.EndReason) {
+	res, err := s.RunWorkspaceCheck(sessionID)
+	if err != nil {
+		applog.Errorf("workspace check session=%s err=%v", sessionID, err)
+		return
+	}
+	if !res.Skipped {
+		s.checkMu.Lock()
+		emit := s.checkEmit
+		s.checkMu.Unlock()
+		if emit != nil {
+			emit(res)
+		}
+	}
+	if ended != llm.EndDone || res.Skipped || !res.Failed || res.TimedOut || len(res.Refs) == 0 {
+		return
+	}
+	s.maybeAutoFix(sessionID, res)
+}
+
+// maybeAutoFix 扣减自愈预算并启动修复回合。预算在检查通过（或跳过）与真实
+// 用户消息发送时重置。
+func (s *ChatService) maybeAutoFix(sessionID string, res CheckResult) {
+	s.checkMu.Lock()
+	if s.autoFixAttempts == nil {
+		s.autoFixAttempts = map[string]int{}
+	}
+	s.autoFixAttempts[sessionID]++
+	attempt := s.autoFixAttempts[sessionID]
+	fn := s.autoFixEmit
+	s.checkMu.Unlock()
+	if attempt > maxAutoFixTurns {
+		applog.Infof("auto-fix budget exhausted session=%s attempts=%d（不再自动修复；检查通过或发新消息后重置）", sessionID, attempt-1)
+		return
+	}
+	if fn == nil {
+		return
+	}
+	reason := fixTurnNote(res)
+	applog.Infof("auto-fix start session=%s attempt=%d/%d", sessionID, attempt, maxAutoFixTurns)
+	fn(sessionID, reason, attempt, maxAutoFixTurns)
+}
+
+// resetAutoFix 重置某会话的自愈预算（检查通过 / 真实用户消息发送时调用）。
+func (s *ChatService) resetAutoFix(sessionID string) {
+	s.checkMu.Lock()
+	delete(s.autoFixAttempts, sessionID)
+	s.checkMu.Unlock()
+}
+
+// fixTurnNote 是修复回合的系统留痕文本：写明为什么有这一轮、前几处位置。
+// （完整列表与界面上的检查结果卡片同源；预算次数由事件载荷带，不进留痕。）
+func fixTurnNote(res CheckResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "（系统）工作区检查未通过（%s 报告 %d 处问题），自动定向修复中。请优先修复下述位置，修完再让检查变绿：", res.Command, len(res.Refs))
+	for i, r := range res.Refs {
+		if i == 3 {
+			b.WriteString("\n…其余位置见界面检查列表")
+			break
+		}
+		pos := fmt.Sprintf("%s:%d", r.Path, r.Line)
+		if r.Col > 0 {
+			pos += fmt.Sprintf(":%d", r.Col)
+		}
+		fmt.Fprintf(&b, "\n- %s", pos)
+		if r.Text != "" {
+			b.WriteString("  " + r.Text)
+		}
+	}
+	return b.String()
+}
+
+// SendFixTurn 启动一次系统定向修复回合（壳层在 SetAutoFixHandler 回调里调用）。
+// 会话忙（用户正在发消息）→ 明确报错，自动修复绝不与用户抢回合。
+func (s *ChatService) SendFixTurn(ctx context.Context, sessionID, reason string) (<-chan llm.StreamChunk, error) {
+	return s.sendCoreMode(ctx, sessionID, "", nil, nil, reason)
 }
 
 // RunCheckAndEmit 跑一次检查并把结果推给壳层（第 8 批）。跳过与失败都不打扰对话本身：

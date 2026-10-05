@@ -335,6 +335,14 @@ onMounted(() => {
   bridge().runtime.EventsOn('chat:terminal', (p: { sessionID: string; endReason: number; error: string }) => {
     store.onTerminal(p)
   })
+  // 检查自愈（0.0.34）：系统发起的定向修复回合——置 running 态并给出可见说明，
+  // 流式增量/工具卡/终态走通用事件（chat:chunk/chat:tool/chat:terminal 原样处理）
+  bridge().runtime.EventsOn(
+    'chat:autofix',
+    (p: { sessionID: string; reason: string; attempt: number; max: number }) => {
+      store.onAutoFix(p)
+    },
+  )
   // 油表（0.0.09）：本轮 prompt token（上下文大小读数），顶栏显示
   bridge().runtime.EventsOn(
     'chat:usage',

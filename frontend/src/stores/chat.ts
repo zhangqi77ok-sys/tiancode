@@ -1244,6 +1244,23 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 检查自愈（0.0.34）：系统发起的定向修复回合。置 running 态（输入框照常锁住、
+  // 状态灯亮），并落一条可见的说明气泡——文本与后端 EventAssistantMsg 留痕一致，
+  // 重启后由 Replay 投影同一条（会话缓冲里的这条不落账本，只保当场可见）。
+  function onAutoFix(p: { sessionID: string; reason: string; attempt: number; max: number }) {
+    const c = ensureConvo(p.sessionID)
+    c.running = true
+    c.stopping = false
+    c.messages.push(
+      withId({
+        role: 'assistant' as const,
+        content: p.reason,
+        streaming: false,
+        at: Date.now(),
+      }),
+    )
+  }
+
   function onTerminal(p: { sessionID: string; endReason: number; error: string }) {
     const c = ensureConvo(p.sessionID)
     // 中断语义必须在复位**前**快照：下面两行会把 stopping 清回 false，
@@ -1510,6 +1527,7 @@ export const useChatStore = defineStore('chat', () => {
     onTodo,
     onAsk,
     resolveAsk,
+    onAutoFix,
     onTerminal,
     queue,
     enqueue,

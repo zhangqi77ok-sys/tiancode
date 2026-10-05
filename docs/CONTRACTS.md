@@ -60,6 +60,7 @@
 | C-FS-9 | 手动 `fs.diagnose`：干净明说"通过"、跳过明说原因（非 Go/非 module/testdata、vendor）、错误带可点 path:line（工作区相对、正斜杠） | `TestDiagnoseAction_Manual` / `TestDiagnose_BrokenAndClean` / `TestDiagnose_GracefulSkips` |
 | C-FS-10 | `fs.symbols` 大纲有界（≤300 条）：Go 走 parser（签名=源码原文切片，坏函数 AST 名字兜底）；其余扩展名正则启发式**必须标注**；无引擎的扩展名显式报错 | `TestSymbols_GoOutline` / `TestSymbols_RegexFallbackAndUnknown` / `TestSymbols_Bounded` |
 | C-FS-11 | vet 输出解析只认 `file:line[:col]`（exe 前缀剥离、盘符路径重组、`./` 归一），认不出的行宁可漏报不误报 | `TestParseVetLine` / `TestDiagnose_BrokenAndClean` |
+| C-FS-12 | replace 多段编辑（`edits`，与单段参数互斥）：一次调用逐段原子应用——任一段零匹配/多处未放行 → 整次失败文件零修改；每段在**前序段应用后**的内容上匹配（顺序依赖合法）；回执汇总段数 | `TestReplaceEdits_AppliesAll` / `TestReplaceEdits_AnyMissFailsAtomically` / `TestReplaceEdits_SequentialDependency` / `TestReplaceEdits_MultiMatchPolicy` / `TestReplaceEdits_Guards` |
 
 ## C-SEARCH：工作区内容搜索（M6）
 
@@ -151,6 +152,7 @@
 | C-UI-7 | 出错不再"重发原文"：助手气泡**没有**「重试上一问」；用户气泡「重跑」只把原文与附件回填输入框（可改），确认后才 `RerunFrom` 并发送**输入框里的文字**（取消则什么都不撤回）；用户气泡「复制」复制该消息正文 | `MessageBubble.test.ts`（重跑只回填不发消息 / 无重试按钮 / 复制）；`Composer.test.ts`（确认后发送改过的文字 / 取消不撤回不发送） |
 | C-UI-8 | 工具卡「复制输出」复制当前展示全文（有 diff 给 diff）；对话区选中文字可「放进输入框」（追加，不替换草稿、不自动发送） | `ToolCard.test.ts`（命令卡/写卡复制输出）；`appendSelection.test.ts` |
 | C-APP-7 | 强制工具：只允许 `skill` / `mcp`（白名单），本轮**模型开口前**先调用一次，结果按普通工具调用/结果落账本并进上下文；失败**停轮**（零后续模型请求）；未指定时行为与旧版一致 | `forcedtool_test.go`（ForcedSkillCalledFirst / ForcedMCPCalledFirst / ForcedToolFailureStopsTurn / NoForcedToolUnchanged / ForcedToolWhitelist）；`Composer.test.ts`（/ 选技能、/ 选 MCP） |
+| C-APP-8 | 检查自愈（0.0.34）：检查红且上一回合**正常收尾**（EndDone）→ 自动启动定向修复回合（RunSystemTurn，系统留痕 EventAssistantMsg 替代用户消息，位置引用随留痕/trailing note 给模型）；预算 2 轮封顶，检查变绿或真实用户消息发送时重置；**非正常收尾（中断/看门狗/错误）绝不触发**；会话忙时自动修复让位 | `TestAutoFix_TriggerBudgetReset` / `TestAutoFix_NonDoneNeverTriggers` / `TestAutoFix_EndToEnd`；`chat.test.ts: onAutoFix 置 running + 说明气泡` |
 
 ### C-EXT：扩展自管理（0.2.26）
 
@@ -297,3 +299,4 @@
 | 2026-10-04 | **新增 C-AGT-10 ~ C-AGT-14** | 档位 2：自主续跑。步数用尽时先让模型对照清单自评，额度内自主续段，不再每 25 步打扰用户。额度硬封顶 3 段、默认 0 关闭、自评不带工具、无清单强制 blocked、解析失败即问用户——五条都是"决策权交给模型"的刹车。自主续跑落账复用 `EventAssistantMsg`（"（系统）已连续执行…"），前端零改动即可见、Replay 可复原 | ADR-0009 |
 | 2026-10-04 | **新增 C-AGT-15 ~ C-AGT-18** | 档位 3：客观核账。否决"每项加 verify 命令、系统执行验证"方案（等于模型自己出考题自己判卷，且引入命令执行副作用），改用 `files` 声明 + 系统侧写入记录取证（`finishCall` 落账后按 `writeTargetOf` 采集，零新增 IO）。**边界**：只能证明"文件被写过"，不能证明"改对了"；模型可重交绕过——核账是纠偏不是闸门。`TodoItem` 加 `files`（可空加法，旧账本零影响） | `docs/superpowers/specs/2026-10-04-task-plan-closure-design.md` 档位 3 |
 | 2026-10-05 | **新增 C-FS-8 ~ C-FS-11** | codeintel 批次：编译诊断（write/replace 落盘 `.go` 后自动 go vet 所在包——含 _test.go——错误内联回当次回执，模型同一回合自纠；超时/跳过不改写成功语义、干净静默）+ `fs.diagnose` 手动诊断 + `fs.symbols` 符号大纲（Go parser 精确、其余启发式并标注、300 条有界）。引擎取 go vet 子进程而非 gopls/x/tools：本机与用户环境普遍无 gopls（dev 机实测未装），vendor x/tools 只为诊断不值；vet 覆盖类型/语法/未定义且**含 test 文件**（go build 不查）。定义/引用跳转登记档位 2（需常驻 LSP 客户端，独立工程量不与本批混装） | `docs/superpowers/specs/2026-10-05-codeintel-diagnostics-design.md` |
+| 2026-10-05 | **新增 C-APP-8 / C-FS-12** | 编程循环强化批（用户批准的"AI 干活能力"清单第 1、3 位）：① **检查自愈循环**——检查红且上一回合正常收尾时自动启动定向修复回合（`Loop.RunSystemTurn` 系统留痕开局，事件经壳层 drainTurn 与 Send 同一条桥），逻辑验证从"模型自觉"变成"循环保证"；预算 2 轮封顶、中断/错误收尾绝不触发、用户消息重置——自动修复绝不与用户抢方向盘。② **replace 多段编辑**——`edits` 多 hunk 一次调用原子应用，大文件多点修改省 N 次往返 | 本次评审结论（自愈循环/多段编辑/Plan 模式/视觉反馈/子代理五项，按序交付；本批 1、3） |

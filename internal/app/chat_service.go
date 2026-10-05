@@ -110,6 +110,10 @@ type ChatService struct {
 	checkRunning map[string]bool
 	lastChecks   map[string]CheckResult
 	checkEmit    func(CheckResult)
+	// 自愈循环（0.0.34）：检查失败后的自动定向修复。attempt 按会话计数，
+	// 预算封顶 maxAutoFixTurns；emit 由壳层实现（SendFixTurn + 事件桥）。
+	autoFixAttempts map[string]int
+	autoFixEmit     func(sessionID, reason string, attempt, max int)
 
 	// codexAuth 管理 ChatGPT 订阅账号的 OAuth 授权会话与 1455 回环监听（0.2.21）
 	codexAuth   *codexauth.Manager
@@ -559,6 +563,13 @@ func parseForcedTool(raw string) (*agent.ForcedTool, error) {
 }
 
 func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool) (<-chan llm.StreamChunk, error) {
+	return s.sendCoreMode(ctx, sessionID, text, atts, forced, "")
+}
+
+// sendCoreMode 是 Send 与系统定向回合（0.0.34 检查自愈）的共同管线。
+// fixReason 非空 = 系统发起的修复回合：不解析 @ 引用、不重置自愈预算、
+// 以 RunSystemTurn 开局（系统留痕替代用户消息）。
+func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool, fixReason string) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
@@ -576,16 +587,24 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 	// @ 文件引用（0.0.11）：消息文本里的 @相对路径 真正读成附件交给模型——
 	// 此前 @ 只在输入框弹菜单、插入裸路径文本，模型不理会就是"没效果"。
 	// 引用不存在/越界时静默保留原文（用户可能就在谈论 @ 符号本身）。
-	atAtts, err := s.resolveAtReferences(sessionID, root, text)
-	if err != nil {
-		return nil, err // running 尚未注册，无需占位释放
+	// 系统修复回合没有用户文本：跳过解析；真实用户消息重置自愈预算（新的一手开始）。
+	atRefCount := 0
+	if fixReason != "" {
+		atts = nil // fix 回合不带附件
+	} else {
+		atAtts, err := s.resolveAtReferences(sessionID, root, text)
+		if err != nil {
+			return nil, err // running 尚未注册，无需占位释放
+		}
+		atRefCount = len(atAtts)
+		atts = append(atts, atAtts...)
+		s.resetAutoFix(sessionID)
 	}
-	atts = append(atts, atAtts...)
 	// 轮次开始埋点（0.0.09）：排障第一现场——文本只记长度与首 60 字（不复制全文），
 	// 附件分开记（图片/文件），@ 引用数单独记（用户报"没效果"时先看这里）
 	turnStart := time.Now()
-	applog.Infof("turn start session=%s root=%q text=%q atts=%d attRefs=%d",
-		sessionID, root, applog.Truncate(text, 60), len(atts), len(atAtts))
+	applog.Infof("turn start session=%s root=%q text=%q atts=%d attRefs=%d fix=%t",
+		sessionID, root, applog.Truncate(text, 60), len(atts), atRefCount, fixReason != "")
 	// 锁内只取快照（模型名/注册表/审批器），构建与网络都在锁外做：
 	// Send 是长调用（流式全程），持锁会卡死切换渠道/工作区等管理操作。
 	s.mu.Lock()
@@ -675,7 +694,13 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		cancelRun()
 		return nil, fmt.Errorf("记录工作区快照失败：%w", err)
 	}
-	stream, err := ag.Run(runCtx, ledger, text, atts...)
+	var stream <-chan llm.StreamChunk
+	if fixReason != "" {
+		// 系统定向修复回合：系统留痕开局（不写用户消息），失败引用由 trailing note 附上
+		stream, err = ag.RunSystemTurn(runCtx, ledger, fixReason)
+	} else {
+		stream, err = ag.Run(runCtx, ledger, text, atts...)
+	}
 	if err != nil {
 		release()
 		cancelRun()         // 流未建立：本轮 ctx 资源就地释放
@@ -721,7 +746,10 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 		// 取消、看门狗超时各条终态路径都经过这里，与"chat:terminal 之后"同义。
 		// 放最后一个 defer（最先注册 = 最后执行），异步执行不拖住通道关闭；
 		// 未配置 = 不产生任何进程。
-		defer func() { go s.RunCheckAndEmit(sessionID) }()
+		// 0.0.34 自愈循环：只有**正常收尾**（EndDone）的回合才允许触发自动修复
+		// ——用户中断/看门狗/错误路径下再自动开新回合，等于无视用户的"停"。
+		var ended llm.EndReason // 终态原因（defer 执行时循环已结束，必有值或零值=异常关闭）
+		defer func() { go s.afterTurnCheck(sessionID, ended) }()
 		defer close(out)
 		defer release()
 		defer cancelRun()         // 流收尾后释放本轮 ctx 资源（防泄漏；绝不提前取消）
@@ -751,11 +779,13 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 				watch.mark() // 任何块（增量/工具/清单）都算活动
 				out <- c
 				if c.EndReason != llm.EndNone {
+					ended = c.EndReason
 					applog.Infof("turn end session=%s reason=%s err=%v elapsed=%s",
 						sessionID, c.EndReason, c.Err, time.Since(turnStart).Round(time.Millisecond))
 					return
 				}
 			case c := <-inject:
+				ended = c.EndReason
 				applog.Infof("turn end session=%s reason=%s err=%v elapsed=%s（看门狗注入）",
 					sessionID, c.EndReason, c.Err, time.Since(turnStart).Round(time.Millisecond))
 				out <- c

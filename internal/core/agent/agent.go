@@ -358,6 +358,27 @@ func (l *Loop) Run(ctx context.Context, ledger *session.Ledger, userText string,
 		l.phase.Store(int32(PhaseIdle))
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
+	return l.runFrom(ctx, ledger)
+}
+
+// RunSystemTurn 是**系统发起**的定向回合（0.0.34 检查自愈）：不写用户消息，
+// 以 EventAssistantMsg 落一条系统留痕（前端零改动可见、Replay 可复原、derive
+// 并入模型上下文——与自主续跑留痕同一纪律），其余管线与 Run 完全一致。
+// note 写清"这一轮为什么存在"（检查失败的引用列表由 trailing note 附上）。
+func (l *Loop) RunSystemTurn(ctx context.Context, ledger *session.Ledger, note string) (<-chan llm.StreamChunk, error) {
+	if !l.phase.CompareAndSwap(int32(PhaseIdle), int32(PhaseRunning)) {
+		return nil, ErrBusy
+	}
+	if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": note}); err != nil {
+		l.phase.Store(int32(PhaseIdle))
+		return nil, fmt.Errorf("persist system turn note: %w", err)
+	}
+	return l.runFrom(ctx, ledger)
+}
+
+// runFrom 是 Run / RunSystemTurn 的公共主体：从账本重放推导 → 预算判定 →
+// 前言/附注 → 启动 turn 循环。调用方已持 Running 相位并落好自己的首事件。
+func (l *Loop) runFrom(ctx context.Context, ledger *session.Ledger) (<-chan llm.StreamChunk, error) {
 	msgs, ctxInfo, err := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
 	if err != nil {
 		l.phase.Store(int32(PhaseIdle))

@@ -1280,6 +1280,25 @@ describe('chat store · 浏览器驾驶舱', () => {
     expect(store.messages.some((m) => m.role === 'tool')).toBe(false)
     expect(store.browserOpen).toBe(false)
   })
+
+  // 检查自愈（0.0.34）：系统发起的修复回合——置 running 态并落可见说明气泡；
+  // 终态由既有 onTerminal 复位（这里一并锁住闭环）。
+  it('onAutoFix：置 running + 说明气泡可见；onTerminal 后解锁', () => {
+    const store = useChatStore()
+    void store.newSession()
+    const sid = store.sessionId
+    store.onAutoFix({
+      sessionID: sid,
+      reason: '（系统）工作区检查未通过（go test ./... 报告 2 处问题），自动定向修复中。',
+      attempt: 1,
+      max: 2,
+    })
+    const convo = store.messages
+    expect(store.running).toBe(true)
+    expect(convo.some((m) => m.role === 'assistant' && m.content.includes('自动定向修复'))).toBe(true)
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    expect(store.running).toBe(false)
+  })
 })
 
 

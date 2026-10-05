@@ -57,6 +57,23 @@ func New(chat *app.ChatService) *Bind {
 	chat.SetCheckHandler(func(r app.CheckResult) {
 		wruntime.EventsEmit(b.appCtx(), "workspace:check", r)
 	})
+	// 检查自愈（0.0.34）：检查红且上一回合正常收尾时，服务层回调这里启动定向修复回合。
+	// 流用与 Send 同一条 drainTurn 消费（增量/工具卡/终态语义完全一致）；
+	// chat:autofix 让前端知道"这回合是系统发起的"（置 running 态，不与用户抢输入）。
+	chat.SetAutoFixHandler(func(sessionID, reason string, attempt, max int) {
+		wruntime.EventsEmit(b.appCtx(), "chat:autofix", map[string]any{
+			"sessionID": sessionID,
+			"reason":    reason,
+			"attempt":   attempt,
+			"max":       max,
+		})
+		ctx := b.appCtx()
+		ch, err := b.chat.SendFixTurn(ctx, sessionID, reason)
+		if err != nil {
+			return // 认领失败（用户正在发消息）：静默让位，绝不跟用户抢回合
+		}
+		drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) })
+	})
 	// 问答事件桥（0.2.15）：ask_user 的选项卡推给前端，答复经 ResolveAsk 回流
 	chat.SetAskHandler(func(e app.AskEvent) {
 		wruntime.EventsEmit(b.appCtx(), "chat:ask", map[string]any{

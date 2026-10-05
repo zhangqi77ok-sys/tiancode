@@ -158,7 +158,7 @@ func (t *Tool) Name() string { return "fs" }
 // 行号纪律（0.0.07）：read 输出带 "行号|正文" 前缀——replace 的 target 必须是
 // 文件**原文**，绝不能把行号前缀复制进去（否则永远零匹配）。
 func (t *Tool) Description() string {
-	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
+	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝；同一文件多处修改推荐 edits 多段形态——一次调用原子应用，省往返）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
 		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。" +
 		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go）并把错误带回，无需再跑 go build 验证语法/类型；action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
 }
@@ -173,6 +173,18 @@ func (t *Tool) Schema() json.RawMessage {
     "content": {"type": "string", "description": "write 时的完整文件内容"},
     "target": {"type": "string", "description": "replace 时的精确目标文本（文件原文，不含 read 输出的行号前缀）"},
     "replacement": {"type": "string", "description": "replace 时的替换文本"},
+    "edits": {
+      "type": "array",
+      "description": "多段编辑（推荐用于同一文件的多处修改）：逐段 {target, replacement}，一次调用原子应用——任一段匹配不上则整次失败、文件零修改；后面的段在前面的段应用后的内容上匹配。与 target/replacement 二选一",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target": {"type": "string"},
+          "replacement": {"type": "string"}
+        },
+        "required": ["target", "replacement"]
+      }
+    },
     "allow_multiple": {"type": "boolean", "description": "replace 多处匹配时是否全部替换（默认 false）"},
     "start_line": {"type": "integer", "description": "read 时的起始行（1 起；缺省 1）。大文件分段读取用行号，绝不按字节切（多字节字符安全）"},
     "line_count": {"type": "integer", "description": "read 时的读取行数（缺省到文件尾）"}
@@ -187,14 +199,15 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	defer cancel()
 
 	var args struct {
-		Action        string `json:"action"`
-		Path          string `json:"path"`
-		Content       string `json:"content"`
-		Target        string `json:"target"`
-		Replacement   string `json:"replacement"`
-		AllowMultiple bool   `json:"allow_multiple"`
-		StartLine     int64  `json:"start_line"`
-		LineCount     int64  `json:"line_count"`
+		Action        string   `json:"action"`
+		Path          string   `json:"path"`
+		Content       string   `json:"content"`
+		Target        string   `json:"target"`
+		Replacement   string   `json:"replacement"`
+		AllowMultiple bool     `json:"allow_multiple"`
+		StartLine     int64    `json:"start_line"`
+		LineCount     int64    `json:"line_count"`
+		Edits         []fsEdit `json:"edits"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return bizErrf("invalid arguments: %v", err), nil
@@ -229,7 +242,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	case "write":
 		return t.write(ctx, args.Path, args.Content)
 	case "replace":
-		return t.replace(ctx, args.Path, args.Target, args.Replacement, args.AllowMultiple)
+		return t.replace(ctx, args.Path, args.Target, args.Replacement, args.AllowMultiple, args.Edits)
 	case "list":
 		return t.list(args.Path)
 	case "tree":
@@ -498,9 +511,19 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
-	if target == "" {
-		return bizErrf("target is required for replace"), nil
+// fsEdit 是多段编辑的一个 hunk（0.0.34）。
+type fsEdit struct {
+	Target      string `json:"target"`
+	Replacement string `json:"replacement"`
+}
+
+func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool, edits []fsEdit) (tools.ToolResult, error) {
+	if target == "" && len(edits) == 0 {
+		return bizErrf("target is required for replace (or pass edits for multi-hunk)"), nil
+	}
+	// 多段与单段混用在此先拒（主校验在读取文件后，避免空 target 先于越界检查）：
+	if len(edits) > 0 && (target != "" || replacement != "") {
+		return bizErrf("provide either target/replacement or edits, not both"), nil
 	}
 	full, err := t.resolve(path)
 	if err != nil {
@@ -525,24 +548,66 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		return bizErrf("read before replace failed: %v", err), nil
 	}
 	old := string(data)
-	count := strings.Count(old, target)
-	if count == 0 {
-		// C-FS-3：零匹配报错，文件零修改。0.0.07：不再只说 "not found"——
-		// 在文件里找与 target 首行最相近的行，返回该行前后各 2 行（带行号），
-		// 模型拿真实上下文修 target；确实没有相近行就明说。
-		msg := "target not found (0 matches): file unchanged"
-		if near := nearbyLines(old, target); near != "" {
-			msg += "\nnearest match context:\n" + near
-		} else {
-			msg += "\nno similar line found in file"
+	// 形态选择（0.0.34）：edits 非空 = 多段编辑，单段参数必须为空——两套混用只会
+	// 制造歧义。多段的原子性是**整次调用**的：任一段失败文件零修改（与单段
+	// C-FS-2/3 同语义），绝不留下"改了一半"的文件。
+	useEdits := len(edits) > 0
+	if useEdits && (target != "" || replacement != "") {
+		return bizErrf("provide either target/replacement or edits, not both"), nil
+	}
+	if !useEdits && target == "" {
+		return bizErrf("target is required for replace"), nil
+	}
+	var updated string
+	var count int
+	var summary string
+	if useEdits {
+		updated = old
+		total := 0
+		for i, e := range edits {
+			if strings.TrimSpace(e.Target) == "" {
+				return bizErrf("edits[%d].target is required", i), nil
+			}
+			// 每段在**前序段应用后**的内容上匹配——后面的段可以引用前面段刚改出的文本
+			c := strings.Count(updated, e.Target)
+			switch {
+			case c == 0:
+				// 与单段同款：给最相近行的上下文，模型拿真实原文修 target
+				msg := fmt.Sprintf("edits[%d] target not found (0 matches): file unchanged", i)
+				if near := nearbyLines(updated, e.Target); near != "" {
+					msg += "\nnearest match context:\n" + near
+				} else {
+					msg += "\nno similar line found in file"
+				}
+				return bizErrf("%s", msg), nil
+			case c > 1 && !allowMultiple:
+				return bizErrf("edits[%d] target matches %d locations; refusing ambiguous replace (set allow_multiple to replace all)", i, c), nil
+			}
+			updated = strings.ReplaceAll(updated, e.Target, e.Replacement)
+			total += c
 		}
-		return bizErrf("%s", msg), nil
+		count, summary = total, fmt.Sprintf("applied %d edit(s) (%d occurrence(s)) in %s", len(edits), total, path)
+	} else {
+		count = strings.Count(old, target)
+		if count == 0 {
+			// C-FS-3：零匹配报错，文件零修改。0.0.07：不再只说 "not found"——
+			// 在文件里找与 target 首行最相近的行，返回该行前后各 2 行（带行号），
+			// 模型拿真实上下文修 target；确实没有相近行就明说。
+			msg := "target not found (0 matches): file unchanged"
+			if near := nearbyLines(old, target); near != "" {
+				msg += "\nnearest match context:\n" + near
+			} else {
+				msg += "\nno similar line found in file"
+			}
+			return bizErrf("%s", msg), nil
+		}
+		if count > 1 && !allowMultiple {
+			// C-FS-2：多处匹配默认拒绝，防误伤
+			return bizErrf("target matches %d locations; refusing ambiguous replace (set allow_multiple to replace all)", count), nil
+		}
+		updated = strings.ReplaceAll(old, target, replacement)
+		summary = fmt.Sprintf("replaced %d occurrence(s) in %s", count, path)
 	}
-	if count > 1 && !allowMultiple {
-		// C-FS-2：多处匹配默认拒绝，防误伤
-		return bizErrf("target matches %d locations; refusing ambiguous replace (set allow_multiple to replace all)", count), nil
-	}
-	updated := strings.ReplaceAll(old, target, replacement)
 	sizeAtPropose, modAtPropose := info0.Size(), info0.ModTime()
 	fullDiff := diffText(path, old, updated)
 
@@ -570,7 +635,7 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		return bizErrf("replace write failed: %v", err), nil
 	}
 	res := tools.ToolResult{
-		Content: withShortDiff(fmt.Sprintf("replaced %d occurrence(s) in %s", count, path), path, fullDiff),
+		Content: withShortDiff(summary, path, fullDiff),
 		Diff:    fullDiff,
 		Undo:    undo,
 	}
