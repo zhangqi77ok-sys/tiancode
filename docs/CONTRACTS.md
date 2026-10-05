@@ -56,6 +56,10 @@
 | C-FS-5 | `list` 越界或非目录 → `IsError` 且工作区零修改 | `TestFSList_RejectsEscapeAndNonDir` |
 | C-FS-6 | `list` 最多 500 条，超出截断并标注总数 | `TestFSList_OutputBounded` |
 | C-FS-7 | `list` 只列下一层（子目录内容不出现） | `TestFSList_NonRecursive` |
+| C-FS-8 | write/replace 成功后对 `.go`（工作区含 go.mod）自动编译诊断（go vet，含 _test.go），错误内联进当次回执；诊断超时/跳过**绝不改写写入的成功语义**，干净时静默 | `TestWrite_AutoDiagnoseInline` / `TestWrite_AutoDiagnoseSilentOnClean` / `TestWrite_AutoDiagnoseSilentNonModule` |
+| C-FS-9 | 手动 `fs.diagnose`：干净明说"通过"、跳过明说原因（非 Go/非 module/testdata、vendor）、错误带可点 path:line（工作区相对、正斜杠） | `TestDiagnoseAction_Manual` / `TestDiagnose_BrokenAndClean` / `TestDiagnose_GracefulSkips` |
+| C-FS-10 | `fs.symbols` 大纲有界（≤300 条）：Go 走 parser（签名=源码原文切片，坏函数 AST 名字兜底）；其余扩展名正则启发式**必须标注**；无引擎的扩展名显式报错 | `TestSymbols_GoOutline` / `TestSymbols_RegexFallbackAndUnknown` / `TestSymbols_Bounded` |
+| C-FS-11 | vet 输出解析只认 `file:line[:col]`（exe 前缀剥离、盘符路径重组、`./` 归一），认不出的行宁可漏报不误报 | `TestParseVetLine` / `TestDiagnose_BrokenAndClean` |
 
 ## C-SEARCH：工作区内容搜索（M6）
 
@@ -292,3 +296,4 @@
 | 2026-10-04 | **新增 C-AGT-5 ~ C-AGT-9** | 档位 1：任务清单注入模型上下文。根因是 `deriveMessagesWith` 从不投影 `EventTodo`——清单落了账本却只喂给 UI，模型每轮开局看不到计划，表现为"跨轮失忆 + 清单不遵守 + 假完成"。四条实现约束各有锁定测试：只取最新、折叠免疫、不设 `lastAssistant`（防清单吸走 tool_calls）、fork 区间不复活；全 done 也注入（模型才知道可收尾）。`DeriveInfo.LatestTodo` 读数顺带携带快照，供自主续跑的结构化判定复用（零额外 IO） | `docs/superpowers/specs/2026-10-04-task-plan-closure-design.md` 档位 1 |
 | 2026-10-04 | **新增 C-AGT-10 ~ C-AGT-14** | 档位 2：自主续跑。步数用尽时先让模型对照清单自评，额度内自主续段，不再每 25 步打扰用户。额度硬封顶 3 段、默认 0 关闭、自评不带工具、无清单强制 blocked、解析失败即问用户——五条都是"决策权交给模型"的刹车。自主续跑落账复用 `EventAssistantMsg`（"（系统）已连续执行…"），前端零改动即可见、Replay 可复原 | ADR-0009 |
 | 2026-10-04 | **新增 C-AGT-15 ~ C-AGT-18** | 档位 3：客观核账。否决"每项加 verify 命令、系统执行验证"方案（等于模型自己出考题自己判卷，且引入命令执行副作用），改用 `files` 声明 + 系统侧写入记录取证（`finishCall` 落账后按 `writeTargetOf` 采集，零新增 IO）。**边界**：只能证明"文件被写过"，不能证明"改对了"；模型可重交绕过——核账是纠偏不是闸门。`TodoItem` 加 `files`（可空加法，旧账本零影响） | `docs/superpowers/specs/2026-10-04-task-plan-closure-design.md` 档位 3 |
+| 2026-10-05 | **新增 C-FS-8 ~ C-FS-11** | codeintel 批次：编译诊断（write/replace 落盘 `.go` 后自动 go vet 所在包——含 _test.go——错误内联回当次回执，模型同一回合自纠；超时/跳过不改写成功语义、干净静默）+ `fs.diagnose` 手动诊断 + `fs.symbols` 符号大纲（Go parser 精确、其余启发式并标注、300 条有界）。引擎取 go vet 子进程而非 gopls/x/tools：本机与用户环境普遍无 gopls（dev 机实测未装），vendor x/tools 只为诊断不值；vet 覆盖类型/语法/未定义且**含 test 文件**（go build 不查）。定义/引用跳转登记档位 2（需常驻 LSP 客户端，独立工程量不与本批混装） | `docs/superpowers/specs/2026-10-05-codeintel-diagnostics-design.md` |

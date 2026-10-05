@@ -25,6 +25,7 @@ import (
 
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/atomicfile"
+	"tiancode/internal/platform/codeintel"
 	"tiancode/internal/platform/workspace"
 )
 
@@ -158,7 +159,8 @@ func (t *Tool) Name() string { return "fs" }
 // 文件**原文**，绝不能把行号前缀复制进去（否则永远零匹配）。
 func (t *Tool) Description() string {
 	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
-		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。"
+		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。" +
+		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go）并把错误带回，无需再跑 go build 验证语法/类型；action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。
@@ -166,7 +168,7 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["read", "write", "replace", "list", "tree"]},
+    "action": {"type": "string", "enum": ["read", "write", "replace", "list", "tree", "diagnose", "symbols"]},
     "path": {"type": "string", "description": "相对工作区的路径"},
     "content": {"type": "string", "description": "write 时的完整文件内容"},
     "target": {"type": "string", "description": "replace 时的精确目标文本（文件原文，不含 read 输出的行号前缀）"},
@@ -225,15 +227,19 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	case "read":
 		return t.read(args.Path, args.StartLine, args.LineCount)
 	case "write":
-		return t.write(args.Path, args.Content)
+		return t.write(ctx, args.Path, args.Content)
 	case "replace":
-		return t.replace(args.Path, args.Target, args.Replacement, args.AllowMultiple)
+		return t.replace(ctx, args.Path, args.Target, args.Replacement, args.AllowMultiple)
 	case "list":
 		return t.list(args.Path)
 	case "tree":
 		return t.tree(args.Path)
+	case "diagnose":
+		return t.diagnose(ctx, args.Path)
+	case "symbols":
+		return t.symbols(args.Path)
 	default:
-		return bizErrf("unknown action %q (want read/write/replace/list/tree)", args.Action), nil
+		return bizErrf("unknown action %q (want read/write/replace/list/tree/diagnose/symbols)", args.Action), nil
 	}
 }
 
@@ -389,7 +395,7 @@ const maxScanLineBytes = 1 << 20
 //     拒绝时写明出路（replace / 先整读）。目标不存在 = 新建，不需要先读。
 //   - 撤销快照：写入成功后把旧全文放进 Undo（只给界面/后端恢复用，不进模型
 //     上下文）；旧内容超上限时放弃快照并注明"无法恢复"——绝不为恢复多读一份。
-func (t *Tool) write(path, content string) (tools.ToolResult, error) {
+func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResult, error) {
 	full, err := t.resolve(path)
 	if err != nil {
 		return bizErr(err), nil
@@ -482,6 +488,7 @@ func (t *Tool) write(path, content string) (tools.ToolResult, error) {
 	default:
 		res.UndoNote = undoNote
 	}
+	t.appendDiagnostics(ctx, &res, path)
 	return res, nil
 }
 
@@ -491,7 +498,7 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (t *Tool) replace(path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
+func (t *Tool) replace(ctx context.Context, path, target, replacement string, allowMultiple bool) (tools.ToolResult, error) {
 	if target == "" {
 		return bizErrf("target is required for replace"), nil
 	}
@@ -562,11 +569,78 @@ func (t *Tool) replace(path, target, replacement string, allowMultiple bool) (to
 	if err != nil {
 		return bizErrf("replace write failed: %v", err), nil
 	}
-	return tools.ToolResult{
+	res := tools.ToolResult{
 		Content: withShortDiff(fmt.Sprintf("replaced %d occurrence(s) in %s", count, path), path, fullDiff),
 		Diff:    fullDiff,
 		Undo:    undo,
-	}, nil
+	}
+	t.appendDiagnostics(ctx, &res, path)
+	return res, nil
+}
+
+// appendDiagnostics 是 write/replace 成功后的自动编译诊断钩子（C-FS-8）：
+// 只对 .go 且工作区是 Go module 时触发；干净时静默，超时/跳过只附一条说明、
+// 绝不改写写入的成功语义（诊断是信息，不是闸门）。
+func (t *Tool) appendDiagnostics(ctx context.Context, res *tools.ToolResult, path string) {
+	r := codeintel.Diagnose(ctx, t.root, filepath.ToSlash(path), codeintel.AutoTimeout)
+	if !r.Attempted || ctx.Err() != nil {
+		return // 非 .go / 非 module / testdata、vendor / 轮次已取消：自动诊断静默
+	}
+	if len(r.Diagnostics) == 0 {
+		if r.Note != "" {
+			res.Content += "\n[编译诊断] " + r.Note
+		}
+		return // 干净：静默
+	}
+	res.Content += "\n" + codeintel.Format(r)
+}
+
+// diagnose 手动编译诊断（C-FS-9）：干净/跳过都明说，不静默。
+func (t *Tool) diagnose(ctx context.Context, path string) (tools.ToolResult, error) {
+	full, err := t.resolve(path)
+	if err != nil {
+		return bizErr(err), nil
+	}
+	if info, err := os.Stat(full); err == nil && info.IsDir() {
+		return bizErrf("not a file: %s", path), nil
+	}
+	r := codeintel.Diagnose(ctx, t.root, filepath.ToSlash(path), codeintel.ManualCap)
+	return tools.ToolResult{Content: codeintel.Format(r)}, nil
+}
+
+// symbols 文件符号大纲（C-FS-10）：Go 精确（parser），其余启发式并标注。
+func (t *Tool) symbols(path string) (tools.ToolResult, error) {
+	full, err := t.resolve(path)
+	if err != nil {
+		return bizErr(err), nil
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return bizErrf("symbols failed: %v", err), nil
+	}
+	if info.IsDir() {
+		return bizErrf("not a file: %s", path), nil
+	}
+	if info.Size() > maxReadBytes {
+		return bizErrf("file too large for symbols (%d bytes > %d)", info.Size(), maxReadBytes), nil
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return bizErrf("read before symbols failed: %v", err), nil
+	}
+	ss, note := codeintel.Symbols(path, data)
+	if ss == nil {
+		return bizErrf("%s", note), nil
+	}
+	var b strings.Builder
+	for _, s := range ss {
+		fmt.Fprintf(&b, "L%d %s %s\n", s.Line, s.Kind, s.Text)
+	}
+	out := strings.TrimRight(b.String(), "\n")
+	if note != "" {
+		out += "\n" + note
+	}
+	return tools.ToolResult{Content: out}, nil
 }
 
 // splitLines 按行拆分并去掉行尾 \r（CRLF 文件的行处理保持干净）；
