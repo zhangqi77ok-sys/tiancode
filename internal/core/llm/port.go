@@ -89,6 +89,10 @@ type ToolEvent struct {
 type TodoItem struct {
 	Text   string `json:"text"`
 	Status string `json:"status"` // "pending" | "in_progress" | "done"
+	// Files 是这一项预期改动的文件（工作区相对路径，可空）。
+	// 声明后系统会核对本轮是否真的写入过——声明了却没动会被拒绝（档位 3）。
+	// 可空是刻意的：旧账本与"模型没把握"的情形都走"不核对"降级。
+	Files []string `json:"files,omitempty"`
 }
 
 // TodoEvent 是任务清单动态（UI 任务卡数据源；agent 落账 EventTodo 供 Replay 恢复）。

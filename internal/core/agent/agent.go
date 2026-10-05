@@ -99,11 +99,15 @@ type Loop struct {
 	// latestTodo 是本轮派生时账本里的最新任务清单（nil = 从未提交过）。
 	// 每轮 Run（含各重新派生点）从 derive 读数里取，不额外扫账本。
 	latestTodo []llm.TodoItem
+	// written 是本轮真实发生过写入的文件集（归一化路径 → true）。
+	// 数据源是工具执行结果本身，零新增 IO（档位 3 核账的事实依据）。
+	// Loop 每轮重建，天然"只认本轮"。
+	written map[string]bool
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
 func NewLoop(rt llm.ChatRuntime, model string, registry *tools.Registry) *Loop {
-	return &Loop{runtime: rt, model: model, registry: registry}
+	return &Loop{runtime: rt, model: model, registry: registry, written: map[string]bool{}}
 }
 
 // SetPreface 设置每轮对话开头的系统说明。空串表示不插入。
@@ -487,6 +491,12 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		}
 		if _, err := ledger.Append(session.EventToolResult, payload); err != nil {
 			return err
+		}
+		// 档位 3：成功写入才记——IsError 的调用没有改成，不算事实。
+		if !result.IsError {
+			if p, ok := writeTargetOf(call); ok {
+				l.written[p] = true
+			}
 		}
 		// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
 		// 下一续步请求才合法（结果经 ToolCallID 与调用配对）

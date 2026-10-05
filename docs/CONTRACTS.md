@@ -99,6 +99,10 @@
 | C-AGT-12 | 额度为 0（默认未开启）时步数用尽一律问用户，行为与旧版逐条等价 | `TestLoop_AutoContinueBudgetDefaultsToZero` + 既有 `TestLoop_StepLimitAskThenContinue` |
 | C-AGT-13 | 清单全部 `done` 时不得续跑（结构化判定强制采纳 done，模型答 continue 也忽略）；**无清单（items 空）时自评强制降级 blocked** | `TestLoop_SelfAssessRefusesContinueWhenAllDone` / `TestLoop_SelfAssessWithoutTodoIsBlocked` |
 | C-AGT-14 | 自评响应解析失败、取值非法、缺字段一律降级 `blocked`（问用户），绝不猜 `continue` | `TestParseAutoVerdict` |
+| C-AGT-15 | `TodoItem.Files` 缺失（旧账本）或条目未声明 files → **不核对、不拒绝**（向后兼容降级） | `TestTodoItems_FilesOptional` / `TestUnaudited_DetectsUnwrittenFiles` |
+| C-AGT-16 | 条目标 `done` 且声明 files，但本轮未观察到对其中**任一**文件的写入 → 拒绝该次 todo 提交（`IsError`），给出可执行的纠偏指引 | `TestUnaudited_DetectsUnwrittenFiles` |
+| C-AGT-17 | 核账路径比对走 Windows 归一（大小写不敏感、斜杠等价、去 `./`）；空白路径与归一后重复的路径在解析期即拒绝 | `TestNormalizePathKey` / `TestTodoItems_ParsesFiles` |
+| C-AGT-18 | 核账只认 `fs.write` / `fs.replace` 的**成功**结果；shell 重定向、MCP 写操作、解析不出的调用一律不认定（宁可漏判不误判）；`written` 每轮 Run 重建，只认本轮 | `TestWriteTargetOf` |
 
 ## C-CH：模型渠道管理
 
@@ -287,3 +291,4 @@
 | 2026-10-01 | **新增 C-WF-1~8 / C-BR-1~8 / C-FT-1~3 / C-BG-1；C-SEARCH 增补 9~10；C-APR 增补 8（审批默认清单变更）** | 0.0.28 驾驶舱批次登记：① 新工具 `webfetch`（读网页正文：HTML 剥噪 stdlib 手写、GBK 兜底解码、共享工具不依赖工作区根、出网与 gateway 同源走全局代理）——模型此前没有读网页能力，查文档/查报错是硬伤。② browser 工具驾驶舱化：改变页面状态的动作自动附当前视口截图 + URL + 控制台尾部（与 diff 同纪律：UI 专用不进模型上下文、随卡落账、Replay 同构）；新增 screenshot 动作与 open 的 headless 参数；壳层 `ReadBrowserShot` 防穿越读图。③ search 两段式并行扫描（产出确定性：按路径排序、刻意不按配额早停）；`truncated, max_matches` 标注从"配额满后还有文件"收紧为"还有命中被挡"（原先对零命中文件也会误标注）。④ 忽略目录单一来源 `internal/platform/workspace`（9 项定稿，search 与壳层 @ 引用共用；归 platform 不归 core/app 的理由见包注释）。⑤ 右栏「目录」「任务」tab：`ListWorkspaceDir` 壳层签名含 sessionID（树与文件详情面板必须同一根，防"树上点开、详情 404"）；`BgTasksSnapshot` 轮询快照（无工具集返回空表而非错误）。⑥ **审批默认清单变更：`shell, ext_manage` → 追加 `mcp, browser`**——四个"不确认就执行即危险"的口子（mcp 可调宿主任意工具、browser 可提交表单）。迁移语义：channels.json v2→v3 一次性追加进既有**非空**清单（保留用户项与顺序、去重）；显式 `[]`（用户关掉整个审批的独立形态）不受影响、绝不复活；升版本号保证此后用户移出 mcp/browser 也不会被重启补回 | 0.0.28 驾驶舱批次（webfetch / browser / search / panels 四个工作流）；迁移语义锁定于 `TestPool_ApprovalToolsV2ListAppendsMcpBrowser` / `TestPool_ApprovalToolsV2ExplicitEmptyNotResurrected` |
 | 2026-10-04 | **新增 C-AGT-5 ~ C-AGT-9** | 档位 1：任务清单注入模型上下文。根因是 `deriveMessagesWith` 从不投影 `EventTodo`——清单落了账本却只喂给 UI，模型每轮开局看不到计划，表现为"跨轮失忆 + 清单不遵守 + 假完成"。四条实现约束各有锁定测试：只取最新、折叠免疫、不设 `lastAssistant`（防清单吸走 tool_calls）、fork 区间不复活；全 done 也注入（模型才知道可收尾）。`DeriveInfo.LatestTodo` 读数顺带携带快照，供自主续跑的结构化判定复用（零额外 IO） | `docs/superpowers/specs/2026-10-04-task-plan-closure-design.md` 档位 1 |
 | 2026-10-04 | **新增 C-AGT-10 ~ C-AGT-14** | 档位 2：自主续跑。步数用尽时先让模型对照清单自评，额度内自主续段，不再每 25 步打扰用户。额度硬封顶 3 段、默认 0 关闭、自评不带工具、无清单强制 blocked、解析失败即问用户——五条都是"决策权交给模型"的刹车。自主续跑落账复用 `EventAssistantMsg`（"（系统）已连续执行…"），前端零改动即可见、Replay 可复原 | ADR-0009 |
+| 2026-10-04 | **新增 C-AGT-15 ~ C-AGT-18** | 档位 3：客观核账。否决"每项加 verify 命令、系统执行验证"方案（等于模型自己出考题自己判卷，且引入命令执行副作用），改用 `files` 声明 + 系统侧写入记录取证（`finishCall` 落账后按 `writeTargetOf` 采集，零新增 IO）。**边界**：只能证明"文件被写过"，不能证明"改对了"；模型可重交绕过——核账是纠偏不是闸门。`TodoItem` 加 `files`（可空加法，旧账本零影响） | `docs/superpowers/specs/2026-10-04-task-plan-closure-design.md` 档位 3 |
