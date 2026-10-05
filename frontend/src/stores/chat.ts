@@ -1211,35 +1211,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // ---- 用户自己的命令行（0.3 最小能力）----
-  // 执行复用现有 shell 工具与审批闸门（后端 RunUserCommand：同一超时、同一审批卡），
-  // 结果落一张本地工具卡（与"点链接开浏览器"同款：这不是对话回合，不落账本）。
-  async function runUserCommand(command: string) {
-    const id = sessionId.value
-    error.value = ''
-    const cmd = command.trim()
-    if (!cmd) return
-    const c = ensureConvo(id)
-    const card = withId({
-      role: 'tool' as const,
-      content: '执行中…',
-      toolName: 'shell',
-      status: 'running',
-      title: cmd,
-      op: 'exec',
-      at: Date.now(),
-    })
-    c.messages.push(card)
-    try {
-      const res = await bridge().app.RunUserCommand(id, cmd)
-      card.status = res?.isError ? 'error' : 'success'
-      card.content = res?.output || '(无输出)'
-    } catch (e) {
-      card.status = 'error'
-      card.content = errText(e)
-    }
-  }
-
   // ---- 提交说明（0.3 最小能力）----
   // suggestCommitMessage：后端取工作区变更（含已暂存 + 未跟踪），用当前模型生成
   // 一条提交说明（不落账本）。0.0.30：返回结构体——files 是这次 add -A 实际会
@@ -1534,7 +1505,6 @@ export const useChatStore = defineStore('chat', () => {
     moveSession,
     browserVisual,
     proposeApplyCode,
-    runUserCommand,
     suggestCommitMessage,
     gitStageAndCommit,
     onTodo,

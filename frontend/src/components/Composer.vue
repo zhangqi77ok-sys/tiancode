@@ -589,28 +589,12 @@ function editQueued(id: number) {
   box.value?.focus()
 }
 
-// ---- 用户自己的命令行（0.3 最小能力）----
-// 一条单行输入：回车/点「运行」即执行，复用现有 shell 工具的超时与审批闸门
-//（后端 RunUserCommand；闸门含 shell 时照常弹审批卡）。结果进对话区的工具卡。
-// 它不是消息草稿：发送与命令行互不干扰。
-const cmdDraft = ref('')
-const cmdRunning = ref(false)
-async function runCommand() {
-  const cmd = cmdDraft.value.trim()
-  if (!cmd || cmdRunning.value) return
-  cmdRunning.value = true
-  try {
-    await store.runUserCommand(cmd)
-    cmdDraft.value = '' // 执行已受理（结果在卡上）：清空允许下一条
-  } finally {
-    cmdRunning.value = false
-  }
-}
-
 // ---- 工作区快捷命令（0.0.26）----
 // build/test/run 三槽：在工作区设置里配好，这里一键跑。执行走**同一条**链
 // （RunQuickCommand → RunUserCommand → 同一 shell 工具/超时/审批闸门）——
 // 快捷命令只是"可点的命令"，不新增执行能力。未配置的槽不出现。
+// 手动命令行输入已移除（0.0.33 用户裁决）：模型跑命令本就走同一条审批链，
+// 重复入口只添杂乱；"自己跑一条"的诉求由对话里直接说（或快捷命令槽）承接。
 const quick = ref<{ build: string; test: string; run: string }>({ build: '', test: '', run: '' })
 const quickBusy = ref('')
 const quickSlot = computed(() => [
@@ -954,39 +938,20 @@ async function runQuick(slot: string, cmd: string) {
       </button>
     </div>
 
-    <!-- 用户自己的命令行（0.3 最小能力）：一条单行输入，执行复用现有 shell 的
-         超时与审批（闸门含 shell 时照常弹审批卡），结果进对话区工具卡。
-         它不是消息草稿，也不替代模型——只是把"我自己想跑一条命令"放在手边。 -->
-    <div class="mt-2 flex items-center gap-2">
-      <!-- 快捷命令（0.0.26）：已配置的槽才出现；执行走命令行同一条链（含审批） -->
-      <template v-if="quickSlot.some((q) => q.cmd.trim())">
-        <button
-          v-for="q in quickSlot"
-          :key="q.slot"
-          class="chip shrink-0 text-[11px]"
-          :class="quickBusy === q.slot ? 'opacity-60' : ''"
-          :disabled="!!quickBusy || !q.cmd.trim()"
-          :title="q.cmd.trim() ? `执行：${q.cmd}` : '在工作区设置里配置该命令后才出现'"
-          @click="runQuick(q.slot, q.cmd)"
-        >
-          {{ quickBusy === q.slot ? `${q.slot}…` : q.slot }}
-        </button>
-      </template>
-      <AppIcon name="terminal" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />
-      <input
-        v-model="cmdDraft"
-        class="min-w-0 flex-1 rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-3.5 py-1.5 text-xs text-[var(--c-text)] outline-none transition-colors focus:border-[var(--c-primary)]"
-        placeholder="自己跑一条命令（回车执行；走与模型相同的超时与审批）…"
-        aria-label="命令行"
-        @keydown.enter.prevent="runCommand"
-      />
+    <!-- 工作区快捷命令（0.0.26）：已配置的槽才出现，整行未配置时不渲染。
+         手动命令行输入已移除（0.0.33 用户裁决）——模型跑命令走同一条审批链，
+         重复入口只添杂乱；快捷命令保留一键价值。 -->
+    <div v-if="quickSlot.some((q) => q.cmd.trim())" class="mt-2 flex items-center gap-2">
       <button
+        v-for="q in quickSlot"
+        :key="q.slot"
         class="chip shrink-0 text-[11px]"
-        :disabled="cmdRunning || !cmdDraft.trim()"
-        :title="cmdRunning ? '正在执行…' : '执行命令（结果进对话区）'"
-        @click="runCommand"
+        :class="quickBusy === q.slot ? 'opacity-60' : ''"
+        :disabled="!!quickBusy || !q.cmd.trim()"
+        :title="q.cmd.trim() ? `执行：${q.cmd}` : '在工作区设置里配置该命令后才出现'"
+        @click="runQuick(q.slot, q.cmd)"
       >
-        {{ cmdRunning ? '执行中…' : '运行' }}
+        {{ quickBusy === q.slot ? `${q.slot}…` : q.slot }}
       </button>
     </div>
   </div>

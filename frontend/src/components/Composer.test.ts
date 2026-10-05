@@ -18,6 +18,8 @@ const h2 = vi.hoisted(() => ({
   atSearches: [] as string[],
   atGate: null as Promise<void> | null,
   atResult: [] as string[],
+  // 工作区快捷命令（0.0.26）：null = 未配置
+  quickCommands: null as { build: string; test: string; run: string } | null,
 }))
 
 vi.mock('../wails', () => ({
@@ -47,6 +49,8 @@ vi.mock('../wails', () => ({
         if (h2.atGate) await h2.atGate
         return h2.atResult
       },
+      QuickCommands: async (_sid: string) => h2.quickCommands,
+      RunQuickCommand: async (_sid: string, slot: string) => ({ isError: false, output: `${slot} ok` }),
       Stop: async () => {},
     },
     runtime: { EventsOn: () => {} },
@@ -398,6 +402,31 @@ describe('Composer（第 7 批：重跑走输入框）', () => {
       expect(h2.atSearches).toEqual([])
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  // 0.0.33 用户裁决：手动命令行没必要——模型跑命令走同一条审批链，重复入口只添杂乱。
+  // 锁两件事：手动输入框/运行按钮不复存在；快捷命令配置了才出现按钮（未配置整行消失）。
+  it('命令行：手动输入已移除；快捷命令按钮仅配置后出现', async () => {
+    mountComposer('', null)
+    await nextTick()
+    expect(host.querySelector('input[aria-label="命令行"]')).toBeNull()
+    expect(host.querySelector('[title="执行命令（结果进对话区）"]')).toBeNull()
+    expect(Array.from(host.querySelectorAll("button")).some((b) => b.textContent?.trim() === 'build')).toBe(false)
+    teardown()
+    h2.quickCommands = { build: 'go build ./...', test: '', run: '' }
+    try {
+      mountComposer('', null)
+      // loadQuick 是 onMounted 里的异步拉取：轮询等它渲染（单次 nextTick 可能早于 promise 续延）
+      await vi.waitFor(() => {
+        const chip = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.trim() === 'build')
+        expect(chip).toBeTruthy()
+      })
+      const chip = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.trim() === 'build')
+      expect((chip as HTMLElement).title).toContain('go build ./...')
+      expect(host.querySelector('input[aria-label="命令行"]')).toBeNull()
+    } finally {
+      h2.quickCommands = null
     }
   })
 })
