@@ -14,7 +14,7 @@ import (
 func prefaceOf(t *testing.T, s *ChatService, root string) string {
 	t.Helper()
 	ag := agent.NewLoop(nil, "m", nil)
-	if err := s.applyExtensionPreface(context.Background(), ag, root); err != nil {
+	if err := s.applyExtensionPreface(context.Background(), ag, root, false); err != nil {
 		t.Fatal(err)
 	}
 	return ag.Preface()
@@ -81,7 +81,7 @@ func TestChatService_ToneSettingsTakeEffectNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := agent.NewLoop(nil, "m", nil)
-	if err := s.applyExtensionPreface(context.Background(), ag, root); err == nil {
+	if err := s.applyExtensionPreface(context.Background(), ag, root, false); err == nil {
 		t.Fatal("语气文件坏掉必须让本轮报错")
 	}
 }

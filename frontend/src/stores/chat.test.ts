@@ -43,6 +43,7 @@ const h = vi.hoisted(() => ({
   navigations: [] as { sessionID: string; url: string }[],
   failNavigate: false,
   externalOpens: [] as string[],
+  planCalls: [] as { sessionID: string; text: string }[],
 }))
 
 vi.mock('../wails', () => ({
@@ -69,6 +70,9 @@ vi.mock('../wails', () => ({
         const all = h.replayById[id] ?? h.replay
         const start = Math.max(0, from - limit)
         return { messages: all.slice(start, from), total: all.length, from: start }
+      },
+      SendPlan: async (sessionID: string, text: string) => {
+        h.planCalls.push({ sessionID, text })
       },
       Send: async (sessionID: string, text: string) => {
         h.sendCalls.push({ sessionID, text })
@@ -122,6 +126,7 @@ vi.mock('../wails', () => ({
 
 const { useChatStore, END_REASON } = await import('./chat')
 const { useWorkspaceStore } = await import('./workspace')
+const { useDialogs } = await import('../composables/useDialogs')
 
 describe('chat store', () => {
   beforeEach(() => {
@@ -1298,6 +1303,43 @@ describe('chat store · 浏览器驾驶舱', () => {
     expect(convo.some((m) => m.role === 'assistant' && m.content.includes('自动定向修复'))).toBe(true)
     store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
     expect(store.running).toBe(false)
+  })
+
+  // 方案模式（0.0.35）：发送走 SendPlan 且一次性关闭；方案回合终态后弹确认卡，
+  // 确认 = 方案文本随**普通消息**发出（执行回合写路径恢复在场），取消 = 什么都不发生。
+  it('方案模式：SendPlan 一次性；终态后确认卡，执行随普通消息', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.planMode = true
+    await store.send('给登录加上记住我')
+    const sid = store.sessionId // 草稿首聊：ID 在发送那一刻才领取
+    expect(h.planCalls[0].sessionID).toBe(sid)
+    expect(h.planCalls[0].text).toBe('给登录加上记住我')
+    expect(h.sends).toEqual([])
+    expect(store.planMode).toBe(false)
+    store.onChunk({ sessionID: sid, delta: '方案：1. 给登录页加"记住我"复选框 2. 跑 pnpm test 验证', thinking: '' })
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    const { confirmState, resolveConfirm } = useDialogs()
+    expect(confirmState.value?.title).toBe('实施方案确认')
+    expect(confirmState.value?.message).toContain('记住我')
+    resolveConfirm(true)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sends.at(-1)).toContain('按以下方案执行')
+    expect(h.planCalls.length).toBe(1) // 执行回合不再走 SendPlan
+  })
+
+  it('方案模式：确认卡取消则什么都不发', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    const sid = store.sessionId
+    store.planMode = true
+    await store.send('先出方案')
+    store.onChunk({ sessionID: sid, delta: '方案……', thinking: '' })
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    const { confirmState, resolveConfirm } = useDialogs()
+    resolveConfirm(false)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sends.filter((t) => t.includes('按以下方案执行'))).toEqual([])
   })
 })
 

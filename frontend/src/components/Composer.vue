@@ -913,6 +913,17 @@ async function runQuick(slot: string, cmd: string) {
         </span>
         <span v-if="usage.foldNote" class="text-[10px] text-[var(--c-warn-text)]">折叠：{{ usage.foldNote }}</span>
       </span>
+      <!-- 方案模式（0.0.35）：开着发送 = 只读调研 + 输出实施方案（一次性），
+           终态后弹方案确认卡，点"按方案执行"才进入真正的执行回合 -->
+      <button
+        type="button"
+        class="chip h-10 shrink-0"
+        :aria-pressed="store.planMode"
+        :title="store.planMode ? '方案模式已开：本轮只读调研并给出实施方案（发送后自动关闭）' : '方案模式：本轮只读调研、结束时给实施方案，确认后再执行'"
+        @click="store.planMode = !store.planMode"
+      >
+        <AppIcon name="message" :size="14" /> 方案
+      </button>
       <button class="chip h-10 shrink-0" title="上传图片或文件（可多选）" aria-label="上传附件" @click="fileInput?.click()">
         <AppIcon name="plus" :size="14" />
       </button>

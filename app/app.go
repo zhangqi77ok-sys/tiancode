@@ -631,6 +631,27 @@ func (b *Bind) Send(sessionID, text string) error {
 	return nil
 }
 
+// SendPlan 以方案模式发送（0.0.35）：只读调研 + 输出实施方案。事件形态与 Send
+// 完全一致；前端在终态后弹方案确认卡（按方案执行 = 以普通消息发回）。
+func (b *Bind) SendPlan(sessionID, text string) error {
+	ctx := b.appCtx()
+	runCtx := b.openTurn(sessionID)
+	defer b.closeTurn(sessionID)
+
+	ch, err := b.chat.SendPlan(runCtx, sessionID, text)
+	if err != nil {
+		if runCtx.Err() != nil {
+			b.emitEvent(ctx, "chat:terminal", map[string]any{
+				"sessionID": sessionID, "endReason": int(llm.EndCancelled), "error": "cancelled",
+			})
+			return nil
+		}
+		return err
+	}
+	drainTurn(ctx, sessionID, ch, func(name string, payload any) { b.emitEvent(ctx, name, payload) })
+	return nil
+}
+
 // Stop 中断指定会话的进行中轮次（幂等：无进行中轮次时为空操作）。
 func (b *Bind) Stop(sessionID string) {
 	b.mu.Lock()

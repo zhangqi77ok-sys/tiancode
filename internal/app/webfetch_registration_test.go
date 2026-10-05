@@ -24,7 +24,7 @@ func TestChatService_WebFetchSharedToolAndPreface(t *testing.T) {
 
 	// 系统说明：工具名、动作、参数、能力边界都要讲清
 	ag := agent.NewLoop(nil, "m", nil)
-	if err := s.applyExtensionPreface(context.Background(), ag, ""); err != nil {
+	if err := s.applyExtensionPreface(context.Background(), ag, "", false); err != nil {
 		t.Fatal(err)
 	}
 	p := ag.Preface()

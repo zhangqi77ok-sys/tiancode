@@ -297,7 +297,7 @@ func (s *ChatService) attachExtensions(reg *tools.Registry) error {
 // applyExtensionPreface 组装每步系统说明：技能/MCP 清单（exttools.Preface）+
 // 三行环境事实（sessionFacts，0.0.06）+ 语气（tones，第 8 批）。环境事实随会话根
 // 固定——本轮 root 已定（账本归属或用户顶栏），每个执行步骤都带着走；绝不含任何密钥。
-func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop, root string) error {
+func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop, root string, planMode bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -305,6 +305,11 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 		return nil
 	}
 	facts := sessionFacts(root)
+	// 方案模式（0.0.35）：只读调研说明段拼在环境事实之后——写路径已在工具层
+	// 结构性排除，这段告诉模型"这一轮该产出什么"（实施方案）。
+	if planMode {
+		facts = facts + "\n\n" + planModePreface
+	}
 	// 内置网页读取进系统说明：读网页正文是模型此前缺失的能力（查文档/查报错是
 	// 硬伤），能力边界与参数由 webfetch 包自己写（Preface）。拼进 facts 的头部，
 	// 下面所有组合点自然都带上；内容是常量，不破坏 prompt cache 幂等。
@@ -499,6 +504,13 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 	return s.SendWithAttachments(ctx, sessionID, text, nil, "")
 }
 
+// SendPlan 以方案模式发送（0.0.35）：只读调研 + 输出实施方案。写路径结构性
+// 不在场（planRegistry），方案文本就是本回合的普通助手消息——用户确认后的
+// 执行是**新的一手普通回合**（方案文本随用户消息带走），绝不存在"系统代为执行"。
+func (s *ChatService) SendPlan(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
+	return s.sendCoreMode(ctx, sessionID, text, nil, nil, "", true)
+}
+
 // SendWithAttachments 发送带附件的用户消息（0.0.10）：附件先物化（校验/落位/记引用），
 // 再走与 Send 相同的轮次链路（payload 带附件引用，derive 重建上下文时还原图片与内联内容）。
 // forceTool（第 7 批）是本轮"模型开口前必须先调用"的工具，JSON 形如
@@ -563,13 +575,15 @@ func parseForcedTool(raw string) (*agent.ForcedTool, error) {
 }
 
 func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool) (<-chan llm.StreamChunk, error) {
-	return s.sendCoreMode(ctx, sessionID, text, atts, forced, "")
+	return s.sendCoreMode(ctx, sessionID, text, atts, forced, "", false)
 }
 
 // sendCoreMode 是 Send 与系统定向回合（0.0.34 检查自愈）的共同管线。
 // fixReason 非空 = 系统发起的修复回合：不解析 @ 引用、不重置自愈预算、
 // 以 RunSystemTurn 开局（系统留痕替代用户消息）。
-func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool, fixReason string) (<-chan llm.StreamChunk, error) {
+// planMode（0.0.35 方案模式）：只读工具集 + 方案前言——调研后输出实施方案，
+// 写路径结构性不在场（见 plan_mode.go）。
+func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool, fixReason string, planMode bool) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
@@ -639,6 +653,14 @@ func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, 
 		release()
 		return nil, err
 	}
+	if planMode {
+		// 方案模式（0.0.35）：只读工具集替换常规装配——写路径结构性不在场
+		registry, err = s.planRegistry(st)
+		if err != nil {
+			release()
+			return nil, err
+		}
+	}
 	applog.Infof("turn model=%s", model)
 	if model == "" {
 		release()
@@ -675,7 +697,7 @@ func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, 
 	ag.SetAutoContinueSegments(segments)
 	// 以下三个前置失败路径都在看门狗/分发 goroutine 启动之前：就地释放 runCtx
 	//（看门狗未启动，无需 close(watchStopped)）
-	if err := s.applyExtensionPreface(ctx, ag, root); err != nil {
+	if err := s.applyExtensionPreface(ctx, ag, root, planMode); err != nil {
 		release()
 		cancelRun()
 		return nil, err

@@ -12,6 +12,7 @@ import {
 } from '../wails'
 import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
+import { useDialogs } from '../composables/useDialogs'
 import { useWorkspaceStore } from './workspace'
 
 // 任务清单单项（todo 工具的全量快照）
@@ -196,6 +197,12 @@ export const useChatStore = defineStore('chat', () => {
   const sessions = ref<string[]>([])
   const error = ref('')
   const { push: toast } = useToast()
+  const { confirm } = useDialogs()
+
+  // 方案模式（0.0.35）：开着发送的一轮是只读调研 + 输出实施方案（一次性），
+  // 确认后的执行是普通回合。planTurn 记录"正在跑的方案回合"的会话，终态后弹确认卡。
+  const planMode = ref(false)
+  const planTurn = ref<string | null>(null)
 
   // 文件树刷新信号（0.0.19 自动跟手）：fs 写/改卡落定（当前会话）+1——
   // FileTreePanel watch 它整体重载根目录（展开态由面板自己保留）。
@@ -606,7 +613,13 @@ export const useChatStore = defineStore('chat', () => {
     c.stopping = false
     c.turnStartedAt = Date.now()
     try {
-      if ((atts && atts.length) || opts?.forced) {
+      if (planMode.value && !(atts && atts.length) && !opts?.forced) {
+        // 方案模式（0.0.35）：本轮只读调研 + 输出实施方案；一次性——发出即关，
+        // 确认后的执行走普通回合（写路径恢复在场）。
+        planMode.value = false
+        planTurn.value = id
+        await bridge().app.SendPlan(id, text)
+      } else if ((atts && atts.length) || opts?.forced) {
         // 指定了技能/MCP 时也走带附件那条：本轮要先强制调用一次工具（第 7 批）
         await bridge().app.SendWithAttachments(
           id,
@@ -1340,6 +1353,39 @@ export const useChatStore = defineStore('chat', () => {
       // 附件与强制工具随队列续发（0.0.11 / 第 7 批）：sendTo 内部按需分派
       if (next) sendTo(p.sessionID, next.text, next.atts, { forced: next.forced }).catch(() => {}) // 队列续发失败：错误气泡已可见
     }
+    // 方案模式（0.0.35）：方案回合正常收尾且没有排队的后续 → 弹方案确认卡。
+    // 有队列时不抢（用户后面还有活，方案确认等人手动发起）；非 DONE（中断/出错）也不弹。
+    if (planTurn.value === p.sessionID) {
+      planTurn.value = null
+      if (!interrupted && p.endReason === END_REASON.DONE && c.queue.length === 0) {
+        const plan = lastAssistantText(c)
+        if (plan) {
+          void confirmPlan(p.sessionID, plan)
+        }
+      }
+    }
+  }
+
+  // 方案确认卡 → 用户点"按方案执行"：方案文本随一条**普通消息**带走（新的一手
+  // 普通回合，写路径恢复在场）；取消 = 什么都不发生（方案就是一条普通回答）。
+  async function confirmPlan(sid: string, plan: string) {
+    const ok = await confirm({
+      title: '实施方案确认',
+      message: plan,
+      confirmText: '按方案执行',
+    })
+    if (ok) {
+      await sendTo(sid, `按以下方案执行：\n\n${plan}`)
+    }
+  }
+
+  // lastAssistantText 取会话里最后一条助手消息的正文（方案回合的产出）。
+  function lastAssistantText(c: Conversation): string {
+    for (let i = c.messages.length - 1; i >= 0; i--) {
+      const m = c.messages[i]
+      if (m.role === 'assistant' && m.content && !m.error) return m.content
+    }
+    return ''
   }
 
   // 删除会话：删除后若删的是当前会话，则新建空会话
@@ -1528,6 +1574,7 @@ export const useChatStore = defineStore('chat', () => {
     onAsk,
     resolveAsk,
     onAutoFix,
+    planMode,
     onTerminal,
     queue,
     enqueue,

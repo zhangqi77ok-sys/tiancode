@@ -627,6 +627,9 @@ interface WailsApp {
   // push/reset/clean 等路径在实现里根本不存在。
   GitStageAndCommit(sessionID: string, message: string): Promise<string | null>
   Send(sessionID: string, text: string): Promise<void>
+  // 方案模式（0.0.35）：只读调研 + 输出实施方案；事件形态与 Send 一致，
+  // 终态后前端弹方案确认卡（按方案执行 = 以普通消息发回）。
+  SendPlan(sessionID: string, text: string): Promise<void>
   Stop(sessionID: string): Promise<void>
   DeleteSession(sessionID: string): Promise<void>
   ListChannels(): Promise<ChannelListDTO | null>
@@ -806,6 +809,7 @@ export function bridge(): WailsBridge {
         SuggestCommitMessage: async () => ({ message: '', files: [], model: '', untracked: [] }),
         GitStageAndCommit: offlineWrite,
         Send: async () => {},
+        SendPlan: async () => {},
         Stop: async () => {},
         DeleteSession: offlineWrite,
         ListChannels: async () => ({ channels: [], activeId: '' }),

@@ -429,4 +429,18 @@ describe('Composer（第 7 批：重跑走输入框）', () => {
       h2.quickCommands = null
     }
   })
+
+  // 0.0.35 方案模式：开关点击翻转 store.planMode 并反映到 aria-pressed（可访问性）
+  it('方案模式开关：点击翻转 store.planMode', async () => {
+    mountComposer('', null)
+    const { useChatStore } = await import('../stores/chat')
+    const store = useChatStore()
+    const btn = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.trim() === '方案')
+    expect(btn).toBeTruthy()
+    expect(store.planMode).toBe(false)
+    ;(btn as HTMLElement).click()
+    await nextTick()
+    expect(store.planMode).toBe(true)
+    expect((btn as HTMLElement).getAttribute('aria-pressed')).toBe('true')
+  })
 })

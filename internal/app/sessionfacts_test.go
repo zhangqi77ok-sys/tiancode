@@ -19,7 +19,7 @@ func TestChatService_SessionFactsPreface(t *testing.T) {
 
 	// 有工作区：三行齐 + 绝对路径在场
 	root := t.TempDir()
-	if err := s.applyExtensionPreface(context.Background(), ag, root); err != nil {
+	if err := s.applyExtensionPreface(context.Background(), ag, root, false); err != nil {
 		t.Fatal(err)
 	}
 	p := ag.Preface()
@@ -44,7 +44,7 @@ func TestChatService_SessionFactsPreface(t *testing.T) {
 
 	// 空工作区：写明纯对话、没有本地文件工具
 	ag2 := agent.NewLoop(nil, "m", nil)
-	if err := s.applyExtensionPreface(context.Background(), ag2, ""); err != nil {
+	if err := s.applyExtensionPreface(context.Background(), ag2, "", false); err != nil {
 		t.Fatal(err)
 	}
 	p2 := ag2.Preface()
