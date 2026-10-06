@@ -519,6 +519,21 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				l.written[p] = true
 			}
 		}
+		// 视觉反馈（0.0.37）：模型主动要求的截图（browser screenshot for_model）
+		// 以合成 user 消息进入**本回合**的后续请求——三协议的多模态管线与用户
+		// 附件同一条（Parts+Content 同源是附件轮定的形态）。不落账本：账本里已有
+		// Visual.Shot 路径与结果正文，之后的回合模型可再次截图。
+		if !result.IsError && result.ModelImage != "" {
+			note := "（系统）你要求的页面截图如下（仅本回合可见）。请直接依据画面内容判断页面状态与 UI 效果，不要凭想象描述。"
+			msgs = append(msgs, llm.Message{
+				Role:    "user",
+				Content: note,
+				Parts: []llm.ContentPart{
+					{Type: "text", Text: note},
+					{Type: "image_url", ImageURL: result.ModelImage, Name: "page-screenshot"},
+				},
+			})
+		}
 		// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
 		// 下一续步请求才合法（结果经 ToolCallID 与调用配对）
 		msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content})

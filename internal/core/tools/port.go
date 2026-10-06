@@ -46,6 +46,12 @@ type ToolResult struct {
 	// 仅供 UI 展示与壳层读图（agent 透传到 llm.ToolEvent，不进模型上下文——
 	// 与 Diff 同纪律：模型需要的同源信息已在 Content 里）；nil = 本次无视觉数据。
 	Visual *VisualInfo
+	// ModelImage 是给**模型**看的图像 data URL（0.0.37 视觉反馈，browser
+	// screenshot 带 for_model 时由工具填充）：非空时 agent 在回合内合成多模态
+	// user 消息送进模型上下文（仅本回合可见，不落账本——账本里已有 Visual.Shot
+	// 路径，之后的回合模型可再次截图）。与 Visual 的分工：Visual 给 UI，
+	// ModelImage 给模型；json:"-" 保证它绝不随 chat:tool 载荷漏到前端。
+	ModelImage string `json:"-"`
 }
 
 // VisualInfo 是浏览器工具结果里的"看见"数据：当前视口截图、落地 URL 与控制台

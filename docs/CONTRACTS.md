@@ -232,6 +232,7 @@
 | C-BR-6 | 驾驶舱数据与 diff 同纪律：UI 专用、**不进模型上下文**，但随卡落账本——chat:tool 载荷带 shot/url/console，Replay 投影同构（重启后卡片不丢驾驶舱数据） | `TestDrainTurnConsumesEveryChunkKind` |
 | C-BR-7 | 用户点停止 → 等待中的动作立刻被打断，返回「动作已被用户取消」（非业务失败：模型无须也无机会补救），绝不把 context canceled 伪装成"页面不存在" | `TestBrowser_EndToEnd` |
 | C-BR-8 | ref 必须是**完整**非负十进制整数（要作数字下标注入 JS，严格解析是注入面的最后防线）；fill 文本经 JSON 转义嵌入页面脚本 | `TestParseRef` / `TestClickFillJS_EscapesText` |
+| C-BR-9 | 视觉反馈（0.0.37）：`screenshot` 带 `for_model=true` → 截图以 data URL 随结果（`ToolResult.ModelImage`，json:"-" 绝不漏进 chat:tool）返回，agent **回合内**合成 user 消息送进模型上下文（Parts+Content 同源，仅本回合、不落账本）；IsError 结果不送图；原始字节超 1.5MB 拒绝并给出路；默认（无 for_model）不产生图像 token 成本 | `TestLoop_ModelImageReachesNextRequest` / `TestLoop_ModelImageSkippedOnError` / `TestModelImageDataURL_SizeCap` / `TestBrowser_EndToEnd`（for_model 段） |
 
 ## C-FT：右栏目录树（0.0.28）
 
@@ -302,3 +303,4 @@
 | 2026-10-05 | **新增 C-FS-8 ~ C-FS-11** | codeintel 批次：编译诊断（write/replace 落盘 `.go` 后自动 go vet 所在包——含 _test.go——错误内联回当次回执，模型同一回合自纠；超时/跳过不改写成功语义、干净静默）+ `fs.diagnose` 手动诊断 + `fs.symbols` 符号大纲（Go parser 精确、其余启发式并标注、300 条有界）。引擎取 go vet 子进程而非 gopls/x/tools：本机与用户环境普遍无 gopls（dev 机实测未装），vendor x/tools 只为诊断不值；vet 覆盖类型/语法/未定义且**含 test 文件**（go build 不查）。定义/引用跳转登记档位 2（需常驻 LSP 客户端，独立工程量不与本批混装） | `docs/superpowers/specs/2026-10-05-codeintel-diagnostics-design.md` |
 | 2026-10-05 | **新增 C-APP-8 / C-FS-12** | 编程循环强化批（用户批准的"AI 干活能力"清单第 1、3 位）：① **检查自愈循环**——检查红且上一回合正常收尾时自动启动定向修复回合（`Loop.RunSystemTurn` 系统留痕开局，事件经壳层 drainTurn 与 Send 同一条桥），逻辑验证从"模型自觉"变成"循环保证"；预算 2 轮封顶、中断/错误收尾绝不触发、用户消息重置——自动修复绝不与用户抢方向盘。② **replace 多段编辑**——`edits` 多 hunk 一次调用原子应用，大文件多点修改省 N 次往返 | 本次评审结论（自愈循环/多段编辑/Plan 模式/视觉反馈/子代理五项，按序交付；本批 1、3） |
 | 2026-10-06 | **新增 C-APP-9** | 方案模式（清单第 2 位）：SendPlan 一轮 = 只读调研 + 实施方案。写路径**结构性不在场**（planRegistry 重建工具集：shell/browser/memory/ext 不注册、fs 白名单只读包装），系统说明带方案段（逐字常量保 prompt cache）；方案 = 普通助手消息，确认后的执行是新的一手普通回合——审批闸门/自愈循环/审批白名单等全部既有机制在执行回合照常生效。前端：Composer"方案"开关（一次性）+ 终态后方案确认卡（执行/取消） | 用户"继续"裁决按建议顺序交付（形态按与现有交互最一致的最小闭环定案） |
+| 2026-10-06 | **新增 C-BR-9** | 视觉反馈（清单第 4 位）：模型可以亲眼看自己改的页面——`screenshot` 带 `for_model=true` 时截图以 data URL 随工具结果返回，agent 回合内合成 user 消息送进模型上下文（Parts+Content 同源走三协议既有管线；仅本回合、不落账本、IsError 不送图、1.5MB 封顶）。UI 的 Visual 链路不变（Visual 给 UI、ModelImage 给模型，json:"-" 互不泄漏）；默认不带 for_model 零图像成本。UI 盲改 → 看着改 | 用户"继续"裁决按建议顺序交付（本批 4） |

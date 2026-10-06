@@ -3,6 +3,7 @@ package browsertool
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -330,6 +331,22 @@ func TestBrowser_EndToEnd(t *testing.T) {
 	fillRes := call(`{"action":"fill","ref":"1","text":"关键词"}`)
 	if fillRes.Visual == nil || fillRes.Visual.Shot == "" || fillRes.Visual.Shot == open.Visual.Shot {
 		t.Fatalf("状态改变动作必须各附一张新截图：%+v", fillRes.Visual)
+	}
+
+	// 视觉反馈（0.0.37）：screenshot 带 for_model → 结果携带 data URL（进模型上下文）
+	shotModel := call(`{"action":"screenshot","for_model":true}`)
+	if !strings.HasPrefix(shotModel.ModelImage, "data:image/") || !strings.Contains(shotModel.ModelImage, ";base64,") {
+		t.Fatalf("for_model 截图必须携带 data URL：%q", shotModel.ModelImage[:min(60, len(shotModel.ModelImage))])
+	}
+	if raw, err := base64.StdEncoding.DecodeString(shotModel.ModelImage[strings.Index(shotModel.ModelImage, ";base64,")+len(";base64,"):]); err != nil || len(raw) == 0 {
+		t.Fatalf("data URL 必须可解码：%v", err)
+	} else if _, err := png.Decode(bytes.NewReader(raw)); err != nil {
+		t.Fatalf("进模型的截图必须是合法图片：%v", err)
+	}
+	// 不带 for_model：不携带（默认形态不产生图像 token 成本）
+	shotPlain := call(`{"action":"screenshot"}`)
+	if shotPlain.ModelImage != "" {
+		t.Fatal("默认 screenshot 不得携带 ModelImage")
 	}
 
 	// click：触发页面 JS（console.log + DOM 变化）

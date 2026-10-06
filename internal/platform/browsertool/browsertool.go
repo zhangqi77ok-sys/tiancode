@@ -25,6 +25,7 @@ package browsertool
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -228,10 +229,11 @@ func (t *Tool) Schema() json.RawMessage {
     "action": {
       "type": "string",
       "enum": ["open", "snapshot", "scroll", "click", "fill", "back", "console", "screenshot", "close"],
-      "description": "open=打开网页；snapshot=列出当前屏内可交互元素（带 ref）；scroll=下翻一屏并重新列出；click=按 ref 点击；fill=按 ref 输入；back=后退；console=读取本会话页面的控制台输出与报错；screenshot=截取当前视口画面（改变页面状态的动作完成后会自动附最新截图，一般无需显式调用）；close=关闭本会话页面"
+      "description": "open=打开网页；snapshot=列出当前屏内可交互元素（带 ref）；scroll=下翻一屏并重新列出；click=按 ref 点击；fill=按 ref 输入；back=后退；console=读取本会话页面的控制台输出与报错；screenshot=截取当前视口画面（改变页面状态的动作完成后会自动附最新截图；带 for_model=true 时截图进入你的上下文，请依据画面内容判断页面状态，适合验证 UI 改动效果）；close=关闭本会话页面"
     },
     "url": { "type": "string", "description": "action=open 时必填：完整 URL（http:// 或 https://）" },
     "headless": { "type": "boolean", "description": "action=open 时可选，默认 true（无头）；false 弹出有头浏览器窗口（调试用）" },
+    "for_model": { "type": "boolean", "description": "action=screenshot 时可选：true 把截图送进你的上下文（每张有 token 成本，仅在需要亲眼看画面时使用）" },
     "ref": { "type": "string", "description": "action=click/fill 时必填：snapshot 输出里的 [序号]，如 \"3\"" },
     "text": { "type": "string", "description": "action=fill 时必填：要输入的内容" }
   },
@@ -244,7 +246,8 @@ type browserArgs struct {
 	URL      string `json:"url"`
 	Ref      string `json:"ref"`
 	Text     string `json:"text"`
-	Headless *bool  `json:"headless,omitempty"` // 指针区分"没传"（默认 true）与显式 false
+	Headless *bool  `json:"headless,omitempty"`  // 指针区分"没传"（默认 true）与显式 false
+	ForModel bool   `json:"for_model,omitempty"` // screenshot 时可选：截图进模型上下文（模型亲眼看页面）
 }
 
 // headless 返回本次 open 的窗口形态：缺省 true（无头是默认形态，不打扰用户），
@@ -413,10 +416,22 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (tools.ToolRes
 		if note != "" {
 			content += "\n（" + note + "）"
 		}
-		return tools.ToolResult{
+		res := tools.ToolResult{
 			Content: content, Title: "screenshot", Op: "exec",
 			Visual: &tools.VisualInfo{Shot: rel, URL: t.pageURL(ctx), Console: t.consoleTail()},
-		}, nil
+		}
+		if a.ForModel {
+			// 视觉反馈（0.0.37）：模型主动要求看页面——截图以 data URL 随结果
+			// 返回，agent 回合内合成消息送进模型上下文（仅本回合）。
+			dataURL, derr := t.modelImageDataURL(rel)
+			if derr != nil {
+				res.Content += "\n（进入模型上下文失败：" + derr.Error() + "；截图已在界面可见）"
+				return res, nil
+			}
+			res.ModelImage = dataURL
+			res.Content += "\n（截图已进入你的上下文：请直接依据画面内容判断页面状态）"
+		}
+		return res, nil
 	case "close":
 		t.shutdownLocked()
 		return tools.ToolResult{Content: "已关闭本会话页面", Title: "close", Op: "exec"}, nil
@@ -655,6 +670,30 @@ func (t *Tool) withShot(ctx context.Context, res tools.ToolResult) tools.ToolRes
 // 前端拼接与 IPC 传输都用 /）与可选降级说明（压缩失败原图保存）。文件名
 // shot-NNNN.ext 会话内单调递增——可预测、按序可拼、重开页面也不覆盖。
 // 调用方持 t.mu。
+
+// maxModelImageBytes 是截图进模型上下文的原始字节上限（0.0.37）：base64 后
+// ~2MB，一次平铺进上下文的 token 成本可观——超限显式拒绝并给出路，绝不悄悄
+// 塞一张大图把当轮上下文顶爆。
+const maxModelImageBytes = 1536 << 10
+
+// modelImageDataURL 读截图文件转 data URL（给模型看的那份）。rel 是
+// browser-shots 根下的相对路径。调用方持 t.mu。
+func (t *Tool) modelImageDataURL(rel string) (string, error) {
+	full := filepath.Join(t.pool.shotRoot, filepath.FromSlash(rel))
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxModelImageBytes {
+		return "", fmt.Errorf("截图 %d 字节超过上限 %d：请缩小浏览器视口后重试", len(data), maxModelImageBytes)
+	}
+	media := "image/png"
+	if strings.HasSuffix(strings.ToLower(rel), ".jpg") || strings.HasSuffix(strings.ToLower(rel), ".jpeg") {
+		media = "image/jpeg"
+	}
+	return "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func (t *Tool) captureShot(ctx context.Context) (rel, note string, err error) {
 	if err := t.ensureRunning(); err != nil {
 		return "", "", err
