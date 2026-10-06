@@ -632,6 +632,9 @@ export const useChatStore = defineStore('chat', () => {
         await bridge().app.Send(id, text)
       }
     } catch (e) {
+      // 方案回合流建立失败：确认卡不再等待（残留的 planTurn 会让之后任何无关
+      // 回合的终态误弹方案卡——审查抓到）
+      if (planTurn.value === id) planTurn.value = null
       const ast = inFlightAssistant(c)
       if (ast) {
         ast.streaming = false
@@ -1358,7 +1361,7 @@ export const useChatStore = defineStore('chat', () => {
     if (planTurn.value === p.sessionID) {
       planTurn.value = null
       if (!interrupted && p.endReason === END_REASON.DONE && c.queue.length === 0) {
-        const plan = lastAssistantText(c)
+        const plan = planTextOf(c)
         if (plan) {
           void confirmPlan(p.sessionID, plan)
         }
@@ -1379,13 +1382,18 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // lastAssistantText 取会话里最后一条助手消息的正文（方案回合的产出）。
-  function lastAssistantText(c: Conversation): string {
-    for (let i = c.messages.length - 1; i >= 0; i--) {
+  // planTextOf 取**本轮**的方案文本：最后一条有内容的助手消息必须位于最后一条
+  // 用户消息之后。方案回合没有产出任何助手文本时（模型只调了工具就收尾、空占位
+  // 被删）返回空串——绝不把上一轮的回答错当成这一轮的方案（审查抓到）。
+  function planTextOf(c: Conversation): string {
+    let lastUser = -1
+    let lastAssistant = -1
+    for (let i = 0; i < c.messages.length; i++) {
       const m = c.messages[i]
-      if (m.role === 'assistant' && m.content && !m.error) return m.content
+      if (m.role === 'user') lastUser = i
+      else if (m.role === 'assistant' && m.content && !m.error) lastAssistant = i
     }
-    return ''
+    return lastAssistant > lastUser ? String(c.messages[lastAssistant].content) : ''
   }
 
   // 删除会话：删除后若删的是当前会话，则新建空会话

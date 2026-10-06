@@ -648,8 +648,10 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 // 绝不改写写入的成功语义（诊断是信息，不是闸门）。
 func (t *Tool) appendDiagnostics(ctx context.Context, res *tools.ToolResult, path string) {
 	r := codeintel.Diagnose(ctx, t.root, filepath.ToSlash(path), codeintel.AutoTimeout)
-	if !r.Attempted || ctx.Err() != nil {
-		return // 非 .go / 非 module / testdata、vendor / 轮次已取消：自动诊断静默
+	// Inconclusive（vet 机制性失败且无可解析诊断，如嵌套 module）自动静默：
+	// 每次写入都附"不可判定"是纯噪音；手动 fs.diagnose 会明说。
+	if !r.Attempted || r.Inconclusive || ctx.Err() != nil {
+		return
 	}
 	if len(r.Diagnostics) == 0 {
 		if r.Note != "" {

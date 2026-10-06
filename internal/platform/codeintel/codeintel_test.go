@@ -107,6 +107,31 @@ func TestDiagnose_GracefulSkips(t *testing.T) {
 	}
 }
 
+// 机制性失败 ≠ 通过：嵌套 module 下 vet 异常退出且无可解析诊断，必须 Inconclusive
+// （旧实现把它当"编译诊断通过"，把"没跑成"说成"没错误"——审查抓到）。
+func TestDiagnose_InconclusiveOnNestedModule(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module outer\n\ngo 1.22\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "go.mod"), []byte("module inner\n\ngo 1.22\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "ok.go"), []byte("package inner\n\nfunc OK() int { return 1 }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := Diagnose(context.Background(), root, filepath.Join("nested", "ok.go"), ManualCap)
+	if !r.Attempted || !r.Inconclusive || len(r.Diagnostics) != 0 {
+		t.Fatalf("嵌套 module 应 Inconclusive 而不是误报通过：%+v", r)
+	}
+	if got := Format(r); !strings.Contains(got, "不可判定") {
+		t.Fatalf("Format 应明说不可判定：%q", got)
+	}
+}
+
 func TestFormat_CleanAndSorted(t *testing.T) {
 	if got := Format(Result{Attempted: true}); got != "编译诊断通过（go vet，含 _test.go）" {
 		t.Fatalf("干净话术不符：%q", got)

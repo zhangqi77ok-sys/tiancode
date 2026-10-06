@@ -35,10 +35,14 @@ const (
 )
 
 // Result 是一次诊断的产出：attempted=false 表示优雅跳过（note 说明原因）。
+// Inconclusive 表示 vet 跑了但**没有产生可解析的诊断**且退出异常（嵌套 module、
+// 模块外目录等机制性失败）——这绝不是"通过"，把它当成通过会把"没跑成"说成
+// "没错误"误导模型（审查抓到）；调用方据此决定：手动诊断明说、自动诊断静默。
 type Result struct {
-	Diagnostics []Diagnostic
-	Attempted   bool
-	Note        string
+	Diagnostics  []Diagnostic
+	Attempted    bool
+	Inconclusive bool
+	Note         string
 }
 
 // Diagnose 对工作区内一个 .go 文件所在的包做 go vet（含 _test.go）。
@@ -79,7 +83,23 @@ func Diagnose(ctx context.Context, root, relPath string, budget time.Duration) R
 	if err == nil && len(diags) == 0 {
 		return Result{Attempted: true} // 干净：无错误
 	}
+	if err != nil && len(diags) == 0 {
+		// 退出异常但没有任何可解析诊断：机制性失败（嵌套 module / 模块外目录等），
+		// 绝不冒充"编译诊断通过"——Inconclusive 让手动诊断明说、自动诊断静默。
+		return Result{Attempted: true, Inconclusive: true, Note: inconclusiveNote(string(out))}
+	}
 	return Result{Attempted: true, Diagnostics: diags}
+}
+
+// inconclusiveNote 从 vet 输出里取第一行有信息量的话（拿不到就给固定说法）。
+func inconclusiveNote(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return "go vet 退出异常且无诊断输出"
 }
 
 // isVetFindings 区分"vet 报了问题"（预期）与"机制性失败"（go 缺失等）。
@@ -202,6 +222,9 @@ func atoi(s string) int {
 func Format(res Result) string {
 	if !res.Attempted {
 		return res.Note
+	}
+	if res.Inconclusive {
+		return "[编译诊断不可判定，不当作通过] " + res.Note
 	}
 	if len(res.Diagnostics) == 0 {
 		if res.Note != "" {
