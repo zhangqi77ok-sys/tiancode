@@ -630,7 +630,7 @@ export const useChatStore = defineStore('chat', () => {
   function send(
     text: string,
     atts?: PendingAttachment[],
-    opts?: { throwOnError?: boolean; forced?: ForcedToolDTO },
+    opts?: { throwOnError?: boolean; forced?: ForcedToolDTO; model?: string },
   ) {
     if (!sessionId.value) {
       const armed = planArmed.has('')
@@ -652,7 +652,7 @@ export const useChatStore = defineStore('chat', () => {
     id: string,
     text: string,
     atts?: PendingAttachment[],
-    opts?: { throwOnError?: boolean; forced?: ForcedToolDTO },
+    opts?: { throwOnError?: boolean; forced?: ForcedToolDTO; model?: string },
   ) {
     // 方案模式不能带附件或指定技能。以前这里静默改走可写发送，开关还亮着，
     // 看起来像“开了方案它却直接改文件”。拒绝并留在方案模式，调用方据此把草稿放回去。
@@ -703,6 +703,9 @@ export const useChatStore = defineStore('chat', () => {
           JSON.stringify(atts ?? []),
           opts?.forced ? JSON.stringify(opts.forced) : '',
         )
+      } else if (opts?.model) {
+        // 指定模型发送（0.0.44 换个模型重答）：只影响这一轮，不改默认渠道
+        await bridge().app.SendWithModel(id, text, opts.model)
       } else {
         // Send 在轮次结束（终态事件已发出）后才 resolve；前置错误走 IPC error
         await bridge().app.Send(id, text)

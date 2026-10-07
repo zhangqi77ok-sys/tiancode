@@ -277,12 +277,19 @@ func (s *ChatService) RevivedChannels() []string {
 	return out
 }
 
-func (s *ChatService) attachExtensions(reg *tools.Registry) error {
-	if s.skillTool == nil || s.mcpTool == nil {
+// attachExtensions 注册共享扩展工具。skillTool 由调用方按轮注入：
+// 有工作区时是"全局清单 + 工作区技能"的合并视图（0.0.44），纯对话退回全局。
+func (s *ChatService) attachExtensions(reg *tools.Registry, skillTool *exttools.SkillTool) error {
+	if s.mcpTool == nil {
 		return nil
 	}
-	if err := reg.Register(s.skillTool); err != nil {
-		return err
+	if skillTool == nil {
+		skillTool = s.skillTool
+	}
+	if skillTool != nil {
+		if err := reg.Register(skillTool); err != nil {
+			return err
+		}
 	}
 	if err := reg.Register(s.mcpTool); err != nil {
 		return err
@@ -292,6 +299,27 @@ func (s *ChatService) attachExtensions(reg *tools.Registry) error {
 		return reg.Register(s.extManage)
 	}
 	return nil
+}
+
+// mergedSkills 是"全局扩展清单 + 工作区技能"的合并视图（0.0.44）：
+// 同名技能工作区覆盖全局（项目约定优先于个人收藏）。读失败显式记日志并降级
+// （技能清单缺一段好过整个回合被挡住——与 prefaceFn 的失败语义一致）。
+func (s *ChatService) mergedSkills(root string) catalog.File {
+	var f catalog.File
+	if s.extensions != nil {
+		loaded, err := s.extensions.Load()
+		if err != nil {
+			applog.Errorf("load extensions: %v", err)
+		} else {
+			f = loaded
+		}
+	}
+	ws, werr := workspaceSkills(root)
+	if werr != nil {
+		applog.Errorf("workspace skills root=%q err=%v", root, werr)
+	}
+	f.Skills = mergeSkills(f.Skills, ws)
+	return f
 }
 
 // applyExtensionPreface 组装每步系统说明：技能/MCP 清单（exttools.Preface）+
@@ -341,21 +369,16 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 		ag.SetPrefaceFn(func() string { return facts + "\n\n" + tone }) // 每步刷新语义一致（值固定）
 		return nil
 	}
-	file, err := s.extensions.Load()
-	if err != nil {
-		return err
-	}
+	file := s.mergedSkills(root)
 	// 只告诉模型有什么、怎么调用。不在发消息时启动 MCP：用不用由模型决定。
 	ag.SetPreface(exttools.Preface(file) + "\n\n" + facts + "\n\n" + tone)
 	// 动态 preface（0.2.33）：每个执行步骤实时取——扩展在回合内被 ManageTool
 	// 增删后，模型在后续步骤立即看到最新清单（添加当回合即可用，不必等下一轮）。
 	// 语气段不参与实时刷新（用上面的快照）：同一回合里它必须逐字不变。
 	ag.SetPrefaceFn(func() string {
-		f, err := s.extensions.Load()
-		if err != nil {
-			return facts + "\n\n" + tone // 清单读取失败：至少保留环境事实与语气，不打断回合
-		}
-		return exttools.Preface(f) + "\n\n" + facts + "\n\n" + tone
+		// 清单读取失败时 mergedSkills 内部降级（记日志、能带上多少带多少）——
+		// 技能清单缺失应可见于读数，而不是整体静默退回"只有事实与语气"。
+		return exttools.Preface(s.mergedSkills(root)) + "\n\n" + facts + "\n\n" + tone
 	})
 	return nil
 }
@@ -516,7 +539,7 @@ func (s *ChatService) Send(ctx context.Context, sessionID, text string) (<-chan 
 // 不在场（planRegistry），方案文本就是本回合的普通助手消息——用户确认后的
 // 执行是**新的一手普通回合**（方案文本随用户消息带走），绝不存在"系统代为执行"。
 func (s *ChatService) SendPlan(ctx context.Context, sessionID, text string) (<-chan llm.StreamChunk, error) {
-	return s.sendCoreMode(ctx, sessionID, text, nil, nil, "", true)
+	return s.sendCoreMode(ctx, sessionID, text, nil, nil, "", true, "")
 }
 
 // SendWithAttachments 发送带附件的用户消息（0.0.10）：附件先物化（校验/落位/记引用），
@@ -583,7 +606,33 @@ func parseForcedTool(raw string) (*agent.ForcedTool, error) {
 }
 
 func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool) (<-chan llm.StreamChunk, error) {
-	return s.sendCoreMode(ctx, sessionID, text, atts, forced, "", false)
+	return s.sendCoreMode(ctx, sessionID, text, atts, forced, "", false, "")
+}
+
+// SendWithModel 与 Send 相同，但本轮改用指定模型（0.0.44 换个模型重答）：
+// 只影响这一轮，不改默认渠道/模型——下一轮回归默认。
+// model 必须在任一已配置渠道的模型列表里（防止拿任意字符串打渠道）。
+func (s *ChatService) SendWithModel(ctx context.Context, sessionID, text, model string) (<-chan llm.StreamChunk, error) {
+	if err := s.validateModel(model); err != nil {
+		return nil, err
+	}
+	return s.sendCoreMode(ctx, sessionID, text, nil, nil, "", false, model)
+}
+
+// validateModel 校验模型名属于某个已配置渠道（SetActiveModel 的同款纪律）。
+func (s *ChatService) validateModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return errors.New("模型名不能为空")
+	}
+	for _, ch := range s.pool.List() {
+		for _, m := range ch.Models {
+			if m == model {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("模型 %s 不在任何已配置渠道的模型列表里（可在渠道管理里补充）", model)
 }
 
 // sendCoreMode 是 Send 与系统定向回合（0.0.34 检查自愈）的共同管线。
@@ -591,7 +640,8 @@ func (s *ChatService) sendCore(ctx context.Context, sessionID, text string, atts
 // 以 RunSystemTurn 开局（系统留痕替代用户消息）。
 // planMode（0.0.35 方案模式）：只读工具集 + 方案前言——调研后输出实施方案，
 // 写路径结构性不在场（见 plan_mode.go）。
-func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool, fixReason string, planMode bool) (<-chan llm.StreamChunk, error) {
+// modelOverride 非空时本轮用它替代默认模型（SendWithModel，0.0.44）。
+func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, atts []session.UserAttachment, forced *agent.ForcedTool, fixReason string, planMode bool, modelOverride string) (<-chan llm.StreamChunk, error) {
 	ledger, err := s.ledgerFor(sessionID) // 注意：先取账本（内部加锁），再读状态，避免自锁
 	if err != nil {
 		return nil, fmt.Errorf("open session ledger: %w", err)
@@ -636,6 +686,9 @@ func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, 
 	}
 	s.running[sessionID] = struct{}{}
 	model := s.defaultModel
+	if modelOverride != "" {
+		model = modelOverride // 已在 SendWithModel 入口校验过（防御：覆盖须非空）
+	}
 	approver := s.approverFor(sessionID, root)
 	// 会话级工具集：同会话复用（shell 任务表跨轮存活）；组装一轮的注册表
 	st, err := s.ensureSessionTools(sessionID, root)

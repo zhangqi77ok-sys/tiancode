@@ -113,3 +113,73 @@ func TestSessionFacts_AgentsCheckCommand(t *testing.T) {
 		t.Fatalf("规则正文应保留：%q", got)
 	}
 }
+
+// 0.0.44（C-EXT-1）：工作区技能——<root>/.tiancode/skills/*.md 注入技能清单，
+// skill 工具能取到正文；同名技能工作区覆盖全局。
+func TestWorkspaceSkills_MergedIntoPrefaceAndTool(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tiancode", "skills")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wsSkill := "---\nname: 发布流程\ndescription: 本项目的发版步骤\n---\n第一步：跑 release.ps1"
+	if err := os.WriteFile(filepath.Join(dir, "release.md"), []byte(wsSkill), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 同名全局技能：应被工作区覆盖
+	globalDir := t.TempDir()
+	globalPath := filepath.Join(globalDir, "extensions.json")
+	if err := os.WriteFile(globalPath, []byte(`{"skills":[{"id":"g1","name":"发布流程","description":"全局旧版","body":"过时的步骤","enabled":true}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newChannelService(t, Config{ExtensionsPath: globalPath})
+	defer s.Close()
+
+	ag := agent.NewLoop(nil, "m", nil)
+	if err := s.applyExtensionPreface(context.Background(), ag, root, false); err != nil {
+		t.Fatal(err)
+	}
+	p := ag.Preface()
+	if !strings.Contains(p, "发布流程") || !strings.Contains(p, "本项目的发版步骤") {
+		t.Fatalf("工作区技能应进清单：%q", p)
+	}
+	if strings.Contains(p, "全局旧版") {
+		t.Fatalf("同名全局技能应被覆盖：%q", p)
+	}
+
+	// skill 工具取到的是工作区正文
+	file := s.mergedSkills(root)
+	found := false
+	for _, sk := range file.Skills {
+		if sk.Name == "发布流程" {
+			found = true
+			if !strings.Contains(sk.Body, "release.ps1") {
+				t.Fatalf("工作区正文应覆盖全局：%q", sk.Body)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("合并清单应含工作区技能：%+v", file.Skills)
+	}
+
+	// 无目录：零噪声
+	if got, err := workspaceSkills(t.TempDir()); err != nil || got != nil {
+		t.Fatalf("无技能目录应零噪声：%v %v", got, err)
+	}
+}
+
+// 解析纪律：frontmatter 缺省回退文件名、空文件丢弃、体量有界。
+func TestWorkspaceSkills_ParseDiscipline(t *testing.T) {
+	sk := parseWorkspaceSkill("debug.md", []byte("直接正文，无 frontmatter"))
+	if sk.Name != "debug" || !strings.Contains(sk.Body, "直接正文") {
+		t.Fatalf("无 frontmatter 应回退文件名：%+v", sk)
+	}
+	if got := parseWorkspaceSkill("empty.md", []byte("   \n")); got.Name != "" {
+		t.Fatalf("空文件应丢弃：%+v", got)
+	}
+	big := strings.Repeat("长", wsSkillMaxBody+100)
+	got := parseWorkspaceSkill("big.md", []byte(big))
+	if len(got.Body) > wsSkillMaxBody+200 {
+		t.Fatalf("正文应有界：%d", len(got.Body))
+	}
+}

@@ -17,6 +17,8 @@ import (
 	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/catalog"
+	"tiancode/internal/platform/exttools"
 	"tiancode/internal/platform/fstool"
 	"tiancode/internal/platform/gittool"
 	"tiancode/internal/platform/memory"
@@ -336,7 +338,14 @@ func (s *ChatService) assembleRegistry(st *sessionTools, model string) (*tools.R
 			}
 		}
 	}
-	if err := s.attachExtensions(registry); err != nil {
+	// 技能工具按轮注入合并视图：有工作区时带上 <root>/.tiancode/skills 的
+	// 项目私有技能（同名覆盖全局）；纯对话（st==nil）退回全局清单。
+	turnSkill := s.skillTool
+	if st != nil && st.root != "" {
+		root := st.root
+		turnSkill = exttools.NewSkill(func() catalog.File { return s.mergedSkills(root) })
+	}
+	if err := s.attachExtensions(registry, turnSkill); err != nil {
 		return nil, err
 	}
 	// task 子代理（0.0.41）：只读调研子代理。只读实例从主装配挑出（fs/git/search/

@@ -247,7 +247,7 @@ func fixTurnNote(res CheckResult) string {
 // SendFixTurn 启动一次系统定向修复回合（壳层在 SetAutoFixHandler 回调里调用）。
 // 会话忙（用户正在发消息）→ 明确报错，自动修复绝不与用户抢回合。
 func (s *ChatService) SendFixTurn(ctx context.Context, sessionID, reason string) (<-chan llm.StreamChunk, error) {
-	return s.sendCoreMode(ctx, sessionID, "", nil, nil, reason, false)
+	return s.sendCoreMode(ctx, sessionID, "", nil, nil, reason, false, "")
 }
 
 // RunCheckAndEmit 跑一次检查并把结果推给壳层（第 8 批）。跳过与失败都不打扰对话本身：

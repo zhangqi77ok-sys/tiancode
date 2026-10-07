@@ -608,6 +608,8 @@ interface WailsApp {
   // forceTool（第 7 批）：本轮"模型开口前必须先调用"的工具 JSON（{"name","arguments"}；
   // 空串 = 不强制）——用户在输入框里指定了技能或 MCP 工具时才有值。
   SendWithAttachments(sessionID: string, text: string, attachments: string, forceTool: string): Promise<void>
+  // 指定模型发送（0.0.44）：只影响这一轮，不改默认渠道/模型
+  SendWithModel(sessionID: string, text: string, model: string): Promise<void>
   // 代码块「应用到文件」：内容直接写入工作区，返回写入回执（路径 + diff + 新建/覆盖）。
   ProposeFileWrite(sessionID: string, path: string, content: string): Promise<ProposeWriteResultDTO | null>
   // kind：mcp | skill | skill-dir。取消返回空串。skill-dir 返回 {"files":[{name,body}]}
@@ -843,6 +845,7 @@ export function bridge(): WailsBridge {
         },
         SearchWorkspaceFiles: async () => [],
         SendWithAttachments: offlineWrite,
+        SendWithModel: offlineWrite,
         ProposeFileWrite: offlineWrite,
         RevertRound: offlineWrite,
         RerunFrom: offlineWrite,

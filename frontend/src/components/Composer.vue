@@ -21,6 +21,10 @@ const MAX_INPUT_HEIGHT = '50vh'
 
 const store = useChatStore()
 const channels = useChannelStore()
+// 模型覆盖（0.0.44 换个模型重答）：空 = 跟随默认渠道；选定后本轮发送（含重跑）
+// 用指定模型，只影响单轮不改默认——下一轮想要别的模型再选一次。
+const overrideModel = ref('')
+void channels.load().catch(() => {}) // 加载失败时下拉只有"跟随默认"，不阻断输入
 
 // 调研进行中按钮保持亮着，点它不能把这一轮改成可写（后端已经按只读发出去了）。
 const planTitle = computed(() => {
@@ -535,7 +539,7 @@ async function submit() {
   atts.value = []
   resetBox()
   try {
-    await store.send(text, curAtts, { throwOnError: true, forced })
+    await store.send(text, curAtts, { throwOnError: true, forced, model: overrideModel.value || undefined })
     forcedTool.value = null
   } catch {
     // 发送失败：文字/附件/指定工具全部保留在输入区，允许重试
@@ -590,7 +594,7 @@ async function submitRerun(text: string, curAtts: PendingAttachment[], forced?: 
       toast(res.skipped.length ? 'error' : 'info', parts.join('；'))
     }
     emit('rerun-done')
-    await store.send(text, curAtts, { throwOnError: true, forced })
+    await store.send(text, curAtts, { throwOnError: true, forced, model: overrideModel.value || undefined })
     forcedTool.value = null
   } catch (e) {
     toast('error', errText(e))
@@ -934,6 +938,19 @@ async function runQuick(slot: string, cmd: string) {
         </span>
         <span v-if="usage.foldNote" class="text-[10px] text-[var(--c-warn-text)]">折叠：{{ usage.foldNote }}</span>
       </span>
+      <!-- 模型选择器（0.0.44）：空 = 跟随默认渠道；选定后发送（含重跑重答）用
+           指定模型，只影响单轮不改默认。模型列表来自全部可用渠道的并集。 -->
+      <select
+        v-model="overrideModel"
+        class="chip h-10 max-w-36 shrink-0 text-xs"
+        :title="overrideModel ? `本轮将用 ${overrideModel} 发送（不改默认渠道）` : '跟随默认渠道发送'"
+        aria-label="选择本轮使用的模型"
+      >
+        <option value="">跟随默认渠道</option>
+        <option v-for="o in channels.modelOptions" :key="o.channelId + '/' + o.model" :value="o.model">
+          {{ o.model }}
+        </option>
+      </select>
       <!-- 方案模式：开着发送 = 只读调研。发出后开关关掉（免得别的会话也只读），
            但这一轮按钮保持亮着，直到终态。确认后才进入真正的执行回合。 -->
       <button

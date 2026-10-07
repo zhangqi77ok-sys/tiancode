@@ -409,3 +409,24 @@ func TestChatService_SetActiveModel(t *testing.T) {
 		t.Fatal("不存在的渠道必须拒绝")
 	}
 }
+
+// 0.0.44（C-APP-9）：SendWithModel 的模型校验——必须在某条已配置渠道的模型列表里；
+// 非法模型拒绝且不产生任何回合。
+func TestChatService_SendWithModelValidation(t *testing.T) {
+	s := newChannelService(t, Config{})
+	defer s.Close()
+	if _, err := s.AddChannel(llm.Channel{
+		Name: "a", Protocol: llm.ProtocolOpenAI, BaseURL: "http://127.0.0.1:1", Model: "m1", APIKey: "k", Models: []string{"m1", "m2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.validateModel("m2"); err != nil {
+		t.Fatalf("已知模型应通过：%v", err)
+	}
+	if err := s.validateModel("nope"); err == nil {
+		t.Fatal("未知模型应拒绝")
+	}
+	if err := s.validateModel("  "); err == nil {
+		t.Fatal("空模型应拒绝")
+	}
+}
