@@ -519,6 +519,8 @@ interface WailsApp {
   // 真正退出应用（0.0.21）：仅关窗确认框确认后调用——后台有轮次在跑时，
   // 关窗语义（0.0.24）：X / Alt+F4 = 隐藏到托盘（后台轮次继续跑）；真退出只在托盘菜单。
   HideToTray(): Promise<void>
+  // 系统通知（0.0.43）：前端在窗口失焦时对轮次终态/审批/问答触发；后端限速。
+  SendNotification(title: string, body: string): Promise<void>
   // 记忆管理（0.0.21）：模型能记的用户必须看得见、删得掉。
   MemoryLines(sessionID: string): Promise<MemoryViewDTO | null>
   MemoryDelete(sessionID: string, scope: 'global' | 'workspace', line: number): Promise<void>
@@ -766,6 +768,7 @@ export function bridge(): WailsBridge {
         MoveSession: offlineWrite,
         FlashWindow: async () => {},
         HideToTray: async () => {},
+        SendNotification: async () => {},
         MemoryLines: async () => ({ global: [], project: [] }),
         MemoryDelete: offlineWrite,
         MemoryClear: offlineWrite,

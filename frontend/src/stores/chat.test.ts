@@ -1529,3 +1529,34 @@ describe('chat store · 右栏「目录」「任务」tab', () => {
     expect(store.tasksOpen).toBe(false)
   })
 })
+
+// 0.0.43（C-APP-8）：压缩绝不静默——chat:context 带 compacted 时油表读数标注
+// "历史已压缩"；旧后端不带该字段时按 false 处理（降级兼容）。
+it('chat:context 携带 compacted 标记进油表读数', async () => {
+  const store = useChatStore()
+  await store.newSession()
+  store.onContext({
+    sessionID: store.sessionId,
+    estimatedTokens: 5000,
+    budgetTokens: 8000,
+    foldedImages: 0,
+    foldedTools: 2,
+    foldedReads: 0,
+    foldedBodies: 0,
+    dropped: false,
+    compacted: true,
+  })
+  expect(store.contextInfo?.compacted).toBe(true)
+  // 旧后端/旧数据不带字段：false（不误标）
+  store.onContext({
+    sessionID: store.sessionId,
+    estimatedTokens: 5000,
+    budgetTokens: 8000,
+    foldedImages: 0,
+    foldedTools: 0,
+    foldedReads: 0,
+    foldedBodies: 0,
+    dropped: false,
+  })
+  expect(store.contextInfo?.compacted).toBe(false)
+})
