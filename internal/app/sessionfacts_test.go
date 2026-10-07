@@ -92,3 +92,24 @@ func TestSessionFacts_AgentsRules(t *testing.T) {
 		t.Fatalf("注入体量应受限：len=%d", len(got))
 	}
 }
+
+// 0.0.43（C-APP-6）：AGENTS.md frontmatter 的 check 命令注入环境事实；
+// 无 frontmatter / 无文件 = 零噪声。
+func TestSessionFacts_AgentsCheckCommand(t *testing.T) {
+	root := t.TempDir()
+	if got := sessionFacts(root); strings.Contains(got, "项目检查命令") {
+		t.Fatalf("无声明不应出现检查命令行：%q", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"),
+		[]byte("---\ncheck: npm run build\n---\n\n# 规则\n- 用 pnpm"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := sessionFacts(root)
+	if !strings.Contains(got, "项目检查命令：`npm run build`") {
+		t.Fatalf("check 命令应注入事实：%q", got)
+	}
+	// 规则正文与命令同场注入
+	if !strings.Contains(got, "用 pnpm") {
+		t.Fatalf("规则正文应保留：%q", got)
+	}
+}

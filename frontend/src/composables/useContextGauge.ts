@@ -14,6 +14,8 @@ export interface GaugeUsage {
   full: string
   // foldNote 是折叠明细（"旧工具输出 2 · 重复读 1"）；没有折叠时为空串
   foldNote: string
+  // compacted：本轮请求带历史压缩摘要（0.0.41/0.0.43）——油表必须写明
+  compacted: boolean
 }
 
 export function useContextGauge() {
@@ -32,6 +34,7 @@ export function useContextGauge() {
         short: `${tok} · 无预算读数`,
         full: `上下文 ${n} tok · 本轮没有上下文预算读数（后端未上报）`,
         foldNote: '',
+        compacted: ctx?.compacted === true,
       }
     }
     const left = Math.max(0, ctx.budgetTokens - n)
@@ -39,6 +42,9 @@ export function useContextGauge() {
     const budget = `${(ctx.budgetTokens / 1000).toFixed(0)}k tok`
     // 折完了还是超：两种情况含义不同（阶段 5-2 修订）——渠道上限是硬限制（不发请求），
     // 默认值只是折叠阈值（照发）。写成同一句会让用户以为默认预算也能拒掉他的回合。
+    // 压缩绝不静默（0.0.43 补 UI 侧）：折叠与压缩是两件事，分开标注——
+    // 压缩是"旧轮次叙事被摘要成续传上下文"，原文在账本里没丢。
+    const comp = ctx.compacted ? ' · 历史已压缩' : ''
     const fold = ctx.dropped
       ? ctx.budgetDefault
         ? ' · 已尽量折叠'
@@ -49,6 +55,7 @@ export function useContextGauge() {
     // 折叠明细（0.3）：写清"折了什么"，而不是只报总数——用户需要知道丢的是
     // 工具输出还是对话正文（禁止静默丢历史的界面侧保证）。
     const parts: string[] = []
+    if (ctx.compacted) parts.push('历史已压缩（旧轮次已摘要）')
     if (ctx.foldedTools) parts.push(`旧工具输出 ${ctx.foldedTools}`)
     if (ctx.foldedImages) parts.push(`图片 ${ctx.foldedImages}`)
     if (ctx.foldedReads) parts.push(`重复读 ${ctx.foldedReads}`)
@@ -60,13 +67,14 @@ export function useContextGauge() {
     return {
       pct,
       bar: pct > 30 ? 'bg-[var(--c-primary)]' : pct > 10 ? 'bg-[var(--c-warn)]' : 'bg-[var(--c-err)]',
-      short: ctx.budgetDefault ? `余 ${pct}% · 按默认预算${fold}` : `余 ${pct}%${fold}`,
+      short: ctx.budgetDefault ? `余 ${pct}% · 按默认预算${fold}${comp}` : `余 ${pct}%${fold}${comp}`,
       full: ctx.budgetDefault
         ? `上下文 ${n} tok / 默认预算 ${budget}（余 ${pct}%）${fold}；渠道未声明上下文上限，这是保守默认值——在「渠道管理」里填 contextLimit 可覆盖` +
           (ctx.dropped ? '（默认值只作折叠阈值、不是硬限制：本轮照发，若上游装不下会自己报错）' : '') +
           fullSuffix
-        : `上下文 ${n} tok / 上限 ${budget}（余 ${pct}%）${fold}` + fullSuffix,
+        : `上下文 ${n} tok / 上限 ${budget}（余 ${pct}%）${fold}${comp}` + fullSuffix,
       foldNote,
+      compacted: ctx.compacted,
     }
   })
 

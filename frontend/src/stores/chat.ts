@@ -234,6 +234,17 @@ export const useChatStore = defineStore('chat', () => {
   const sessions = ref<string[]>([])
   const error = ref('')
   const { push: toast } = useToast()
+  // 系统级通知（0.0.43）：应用内 toast 在用户切到别的应用时看不见——窗口失焦时
+  // 补一条操作系统通知（后端全局限速 3s）。尽力而为：失败只记控制台，通知是
+  // 辅助通道，不该把错误打进对话的 error 位打扰用户。
+  function systemNotify(text: string) {
+    if (document.hasFocus()) return
+    const send = bridge().app.SendNotification
+    if (typeof send !== 'function') return // 旧内核/测试桩没有该方法：降级为无通知
+    void send
+      .call(bridge().app, 'tiancode', text)
+      .catch((e) => console.warn('[notify] 系统通知失败：', e))
+  }
   const { confirmPlanEdit } = useDialogs()
 
   // 方案模式按会话记。planArmed：这场对话下一次发送走只读调研。
@@ -762,6 +773,7 @@ export const useChatStore = defineStore('chat', () => {
     if (p.sessionID !== sessionId.value) {
       const name = titleOf(p.sessionID) || p.sessionTitle || '未命名会话'
       toast('info', `「${name}」等你确认 ${p.toolName}`, () => void selectSession(p.sessionID))
+      systemNotify(`「${name}」等你确认 ${p.toolName}`)
       void bridge().app.FlashWindow()
     }
   }
@@ -990,6 +1002,7 @@ export const useChatStore = defineStore('chat', () => {
     if (p.sessionID !== sessionId.value) {
       const name = titleOf(p.sessionID) || '未命名会话'
       toast('info', `「${name}」等你回答`, () => void selectSession(p.sessionID))
+      systemNotify(`「${name}」等你回答：${p.question}`)
       void bridge().app.FlashWindow()
     }
   }
@@ -1031,6 +1044,7 @@ export const useChatStore = defineStore('chat', () => {
     foldedReads: number
     foldedBodies: number
     dropped: boolean
+    compacted: boolean
   } | null>(null)
   function onContext(p: {
     sessionID: string
@@ -1042,6 +1056,7 @@ export const useChatStore = defineStore('chat', () => {
     foldedReads: number
     foldedBodies?: number
     dropped: boolean
+    compacted?: boolean
   }) {
     if (p.sessionID !== sessionId.value) return
     const foldedBodies = p.foldedBodies ?? 0
@@ -1055,6 +1070,7 @@ export const useChatStore = defineStore('chat', () => {
       foldedReads: p.foldedReads,
       foldedBodies,
       dropped: p.dropped,
+      compacted: p.compacted === true,
     }
   }
 
@@ -1397,10 +1413,12 @@ export const useChatStore = defineStore('chat', () => {
       const name = titleOf(p.sessionID) || '未命名会话'
       if (p.endReason === END_REASON.DONE) {
         toast('info', `「${name}」已完成`)
+        systemNotify(`「${name}」的回合已完成`)
       } else if (p.endReason === END_REASON.CANCELLED) {
         toast('info', `「${name}」已中断`)
       } else {
         toast('error', `「${name}」出错了${p.error ? `：${p.error}` : ''}`)
+        systemNotify(`「${name}」的回合出错${p.error ? `：${p.error}` : ''}`)
       }
       void bridge().app.FlashWindow()
     }

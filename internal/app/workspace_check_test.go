@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -183,4 +184,50 @@ func newCheckFixture(t *testing.T, sessionID string) (*ChatService, string) {
 		t.Fatal(err)
 	}
 	return s, root
+}
+
+// 0.0.43（C-APP-6）：工作区设置未配 CheckCommand 时，回退 AGENTS.md frontmatter
+// 的 check 命令；设置显式配置优先。
+func TestRunWorkspaceCheck_AgentsFallback(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"),
+		[]byte("---\ncheck: fake-check stub\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newChannelService(t, Config{})
+	defer s.Close()
+	l, err := s.ledgerFor("s-agents-check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": root}); err != nil {
+		t.Fatal(err)
+	}
+	sess := "s-agents-check"
+
+	old := checkRunner
+	checkRunner = func(_ context.Context, name string, args []string, _ string) (string, error) {
+		return strings.Join(append([]string{name}, args...), " ") + " OK", nil
+	}
+	defer func() { checkRunner = old }()
+
+	res, err := s.RunWorkspaceCheck(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped || res.Command != "fake-check stub" {
+		t.Fatalf("应回退到 AGENTS.md 声明的命令：%+v", res)
+	}
+
+	// 设置显式配置优先于仓库声明
+	if err := saveWorkspaceSettings(root, WorkspaceSettings{CheckCommand: "settings-wins"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err = s.RunWorkspaceCheck(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped || res.Command != "settings-wins" {
+		t.Fatalf("设置应优先：%+v", res)
+	}
 }

@@ -96,6 +96,9 @@
 | C-APP-1 | 持久化/流式任何错误必须上抛到 UI 层（守卫 R2 静态强制 + 用例测试） | `TestChatService_PersistErrorPropagates` |
 | C-APP-2 | 用户中断 → `EndCancelled` 终态 + 账本保留已产生事件，UI 显示"已取消" | `TestChatService_CancelKeepsEvents` |
 | C-APP-3 | `Replay` 投影含 tool 卡（name/status/content）与 assistant thinking | `TestChatService_ReplayIncludesTools` |
+| C-APP-6 | 项目检查命令的项目级默认（0.0.43）：AGENTS.md frontmatter `check:` 作为工作区检查命令的回退——设置显式配置优先；命令同时注入环境事实（模型知道它存在）；解析不出 = 与"未配置"完全一致（绝不猜命令） | `TestSessionFacts_AgentsCheckCommand` / `TestRunWorkspaceCheck_AgentsFallback` |
+| C-APP-7 | 系统通知绑定（0.0.43）：`SendNotification` 文本有界（标题 80/正文 200 字节，UTF-8 安全）、XML 转义防注入、全局限速 3s（窗口内静默丢弃不报错）、执行失败上抛；触发判定在前端（窗口失焦才发，后端无前台会话概念）；旧内核缺方法时前端降级为无通知 | `TestSendNotification_RateLimited` / `TestSendNotification_Runs` / `TestSendNotification_ErrorPropagates` / `TestSendNotification_TextBoundaries` |
+| C-APP-8 | 压缩绝不静默（UI 侧，0.0.43）：chat:context 携带 `compacted` 标记进油表读数（"历史已压缩"）；旧后端不带字段按 false 处理 | `chat.test.ts: chat:context 携带 compacted 标记进油表读数` |
 | C-APP-5 | 项目规则注入（0.0.42）：工作区根 `AGENTS.md` 非空时其正文快照进本轮系统说明（上限 8KB 头尾保留并注明节选）；无/空文件整段不出现（零噪声）；每轮读一次快照、逐字稳定不破坏 prompt cache | `TestSessionFacts_AgentsRules` |
 | C-APP-4 | **零块终态必须可见**：整回合没有任何增量到达就失败时（无可用渠道 / 流未建立即失败），错误必须新建一条错误气泡呈现，禁止因"没有进行中的助手气泡"而静默丢弃——否则界面表现为"消息发出去了、什么都没发生" | `chat.test.ts: 零块错误终态必须新建可见错误气泡` / `chat.test.ts: 零块空闲超时也可见` / `chat.test.ts: 零块正常终态不补空气泡` |
 

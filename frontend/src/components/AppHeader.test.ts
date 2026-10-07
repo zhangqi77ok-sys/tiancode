@@ -188,6 +188,7 @@ describe('AppHeader（阶段 1）', () => {
       foldedReads: 0,
       foldedBodies: 0,
       dropped: false,
+      compacted: false,
     }
     await nextTick()
     expect(text()).toContain('余 88%')
@@ -207,6 +208,7 @@ describe('AppHeader（阶段 1）', () => {
       foldedReads: 0,
       foldedBodies: 0,
       dropped: false,
+      compacted: false,
     }
     await nextTick()
     expect(text()).toContain('按默认预算')
@@ -227,6 +229,7 @@ describe('AppHeader（阶段 1）', () => {
       foldedReads: 1,
       foldedBodies: 0,
       dropped: true,
+      compacted: false,
     }
     await nextTick()
     expect(text()).toContain('已尽量折叠')
@@ -246,6 +249,7 @@ describe('AppHeader（阶段 1）', () => {
       foldedReads: 1,
       foldedBodies: 0,
       dropped: true,
+      compacted: false,
     }
     await nextTick()
     expect(text()).toContain('已达上限')

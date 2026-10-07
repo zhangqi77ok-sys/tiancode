@@ -113,6 +113,11 @@ func (s *ChatService) RunWorkspaceCheck(sessionID string) (CheckResult, error) {
 	ws := loadWorkspaceSettings(root)
 	tmpl := strings.TrimSpace(ws.CheckCommand)
 	if tmpl == "" {
+		// 工作区设置没配：回退项目级默认（AGENTS.md frontmatter 的 check，0.0.43）。
+		// 设置显式配置永远优先——用户机器上的临时覆盖高于仓库声明。
+		tmpl = agentsCheckCommand(root)
+	}
+	if tmpl == "" {
 		return CheckResult{Skipped: true}, nil
 	}
 	tokens := SplitArgv(tmpl)

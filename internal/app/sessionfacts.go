@@ -35,8 +35,49 @@ func sessionFacts(root string) string {
 	if root == "" {
 		return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：无——纯对话，没有本地文件工具", osName, shell)
 	}
-	return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：%s（本地文件工具的根，相对路径都相对它）", osName, shell, root) +
-		agentsRulesSection(root)
+	facts := fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：%s（本地文件工具的根，相对路径都相对它）", osName, shell, root)
+	if check := agentsCheckCommand(root); check != "" {
+		// 项目检查命令（0.0.43）：模型知道它的存在才会主动跑；回合终态系统也会自动执行
+		facts += fmt.Sprintf("\n- 项目检查命令：`%s`（回合结束会自动运行；改动后你也可以主动用 shell 执行它确认）", check)
+	}
+	return facts + agentsRulesSection(root)
+}
+
+// agentsCheckCommand 从工作区根 AGENTS.md 的 frontmatter 取 check 命令（0.0.43）：
+//
+//	---
+//	check: npm run build
+//	---
+//
+// 为什么放 frontmatter：规则正文是给模型读的自然语言，检查命令是给系统执行的
+// 精确指令，两者不能混。它是 workspace 设置里 CheckCommand 的**项目级默认值**——
+// 设置显式配置了就用设置（用户机器上的临时覆盖优先于仓库声明）。解析不出 = 空，
+// 行为与"未配置"完全一致（绝不猜命令）。
+func agentsCheckCommand(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(b), "\n")
+	if len(lines) < 3 || strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+	for _, line := range lines[1:] {
+		t := strings.TrimSpace(line)
+		if t == "---" {
+			break // frontmatter 结束
+		}
+		name, value, found := strings.Cut(t, ":")
+		if !found || strings.TrimSpace(name) != "check" {
+			continue
+		}
+		cmd := strings.TrimSpace(value)
+		if len(cmd) > 300 {
+			cmd = "" // 荒谬长度当解析失败处理（绝不执行来历不明的长串）
+		}
+		return cmd
+	}
+	return ""
 }
 
 // agentsRulesLimit 是注入的项目规则正文字节上限：AGENTS.md 写多长是项目的事，
