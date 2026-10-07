@@ -35,7 +35,7 @@ const (
 )
 
 // Result 是一次诊断的产出：attempted=false 表示优雅跳过（note 说明原因）。
-// Inconclusive 表示 vet 跑了但**没有产生可解析的诊断**且退出异常（嵌套 module、
+// Inconclusive 表示检查跑了但**没有产生可解析的诊断**且退出异常（嵌套 module、
 // 模块外目录等机制性失败）——这绝不是"通过"，把它当成通过会把"没跑成"说成
 // "没错误"误导模型（审查抓到）；调用方据此决定：手动诊断明说、自动诊断静默。
 type Result struct {
@@ -43,12 +43,23 @@ type Result struct {
 	Attempted    bool
 	Inconclusive bool
 	Note         string
+	// Via 是本次诊断用的检查器展示名（"go vet" / "vue-tsc" / "tsc"；空 = 未运行）。
+	Via string
 }
 
-// Diagnose 对工作区内一个 .go 文件所在的包做 go vet（含 _test.go）。
+// Diagnose 是写后/手动诊断的总入口：按扩展名分派——.ts/.tsx/.mts/.cts/.vue 走
+// 工程级类型检查（vue-tsc/tsc，见 webdiag.go），其余（.go）走 go vet。
+func Diagnose(ctx context.Context, root, relPath string, budget time.Duration) Result {
+	if isWebFile(relPath) {
+		return diagnoseWeb(ctx, root, relPath, budget)
+	}
+	return diagnoseGo(ctx, root, relPath, budget)
+}
+
+// diagnoseGo 对工作区内一个 .go 文件所在的包做 go vet（含 _test.go）。
 // root 是工作区绝对路径（模块根），relPath 是工作区相对路径。
 // 非 .go / 无 go.mod / testdata、vendor 下 → 不执行并说明原因（调用方据此静默或提示）。
-func Diagnose(ctx context.Context, root, relPath string, budget time.Duration) Result {
+func diagnoseGo(ctx context.Context, root, relPath string, budget time.Duration) Result {
 	if !strings.HasSuffix(strings.ToLower(relPath), ".go") {
 		return Result{Note: "仅支持 Go 文件的编译诊断"}
 	}
@@ -81,14 +92,14 @@ func Diagnose(ctx context.Context, root, relPath string, budget time.Duration) R
 	}
 	diags := parseVetOutput(string(out), root)
 	if err == nil && len(diags) == 0 {
-		return Result{Attempted: true} // 干净：无错误
+		return Result{Attempted: true, Via: "go vet"} // 干净：无错误
 	}
 	if err != nil && len(diags) == 0 {
 		// 退出异常但没有任何可解析诊断：机制性失败（嵌套 module / 模块外目录等），
 		// 绝不冒充"编译诊断通过"——Inconclusive 让手动诊断明说、自动诊断静默。
 		return Result{Attempted: true, Inconclusive: true, Note: inconclusiveNote(string(out))}
 	}
-	return Result{Attempted: true, Diagnostics: diags}
+	return Result{Attempted: true, Via: "go vet", Diagnostics: diags}
 }
 
 // inconclusiveNote 从 vet 输出里取第一行有信息量的话（拿不到就给固定说法）。
@@ -206,6 +217,14 @@ func buildDiag(file string, rest []string, root, msg string) (Diagnostic, bool) 
 	}, true
 }
 
+// viaName 返回结果应展示的检查器名。
+func viaName(res Result) string {
+	if res.Via != "" {
+		return res.Via
+	}
+	return "go vet"
+}
+
 func atoi(s string) int {
 	n := 0
 	for _, c := range s {
@@ -230,7 +249,7 @@ func Format(res Result) string {
 		if res.Note != "" {
 			return res.Note
 		}
-		return "编译诊断通过（go vet，含 _test.go）"
+		return "编译诊断通过（" + viaName(res) + "）"
 	}
 	ds := make([]Diagnostic, len(res.Diagnostics))
 	copy(ds, res.Diagnostics)
@@ -241,7 +260,7 @@ func Format(res Result) string {
 		return ds[i].Line < ds[j].Line
 	})
 	var b strings.Builder
-	fmt.Fprintf(&b, "[编译诊断] %d 处：", len(ds))
+	fmt.Fprintf(&b, "[编译诊断·%s] %d 处：", viaName(res), len(ds))
 	for _, d := range ds {
 		loc := fmt.Sprintf("%s:%d", d.File, d.Line)
 		if d.Col > 0 {

@@ -160,7 +160,7 @@ func (t *Tool) Name() string { return "fs" }
 func (t *Tool) Description() string {
 	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝；同一文件多处修改推荐 edits 多段形态——一次调用原子应用，省往返）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
 		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。" +
-		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go）并把错误带回；这份诊断只覆盖该文件所在包，跨包影响不会出现，需要时自行跑 go test。action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
+		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go，只覆盖该文件所在包）；写完 .ts/.tsx/.vue 会自动做工程级类型诊断（vue-tsc/tsc --noEmit，只展开本文件的错误，其它文件错误给计数）；需要时自行跑完整构建或测试。action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。

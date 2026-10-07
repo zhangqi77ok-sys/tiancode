@@ -88,7 +88,7 @@ func TestDiagnose_GracefulSkips(t *testing.T) {
 	for _, c := range []struct {
 		rel, reason string
 	}{
-		{"a.ts", "仅支持 Go"},
+		{"a.ts", "跳过类型诊断"},
 		{filepath.Join("testdata", "x.go"), "testdata"},
 		{filepath.Join("vendor", "x.go"), "vendor"},
 	} {
@@ -133,7 +133,7 @@ func TestDiagnose_InconclusiveOnNestedModule(t *testing.T) {
 }
 
 func TestFormat_CleanAndSorted(t *testing.T) {
-	if got := Format(Result{Attempted: true}); got != "编译诊断通过（go vet，含 _test.go）" {
+	if got := Format(Result{Attempted: true, Via: "go vet"}); got != "编译诊断通过（go vet）" {
 		t.Fatalf("干净话术不符：%q", got)
 	}
 	res := Result{Attempted: true, Diagnostics: []Diagnostic{
@@ -142,7 +142,7 @@ func TestFormat_CleanAndSorted(t *testing.T) {
 		{File: "a.go", Line: 1, Message: "m1"},
 	}}
 	got := Format(res)
-	if !strings.Contains(got, "[编译诊断] 3 处：") {
+	if !strings.Contains(got, "[编译诊断·go vet] 3 处：") {
 		t.Fatalf("缺计数头：%q", got)
 	}
 	if strings.Index(got, "a.go:1") > strings.Index(got, "a.go:9") {

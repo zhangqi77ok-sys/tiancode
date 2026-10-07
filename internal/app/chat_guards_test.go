@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"testing"
+	"time"
 
 	"tiancode/internal/core/llm"
 )
@@ -66,7 +67,18 @@ func TestChatService_DeleteRunningSessionRejected(t *testing.T) {
 	}
 	for range stream {
 	}
-	if err := s.DeleteSession("sess-del"); err != nil {
-		t.Fatalf("回合结束后应可删除：%v", err)
+	// 通道关闭与转发 goroutine 摘除 running 表项之间有一小段收尾——负载下
+	// 可达数百毫秒（release 流水线实测偶发红）。生产语义是"结束后很快可删"，
+	// 按限期轮询断言，不做固定 sleep 的脆弱等待。
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		err := s.DeleteSession("sess-del")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("回合结束后应可删除（3s 内未放行）：%v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

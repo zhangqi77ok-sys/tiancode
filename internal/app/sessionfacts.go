@@ -2,7 +2,12 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
+
+	"tiancode/internal/core/tools"
 )
 
 // sessionFacts 是每步系统说明的三行环境事实（0.0.06 用户要求）。
@@ -30,5 +35,30 @@ func sessionFacts(root string) string {
 	if root == "" {
 		return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：无——纯对话，没有本地文件工具", osName, shell)
 	}
-	return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：%s（本地文件工具的根，相对路径都相对它）", osName, shell, root)
+	return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：%s（本地文件工具的根，相对路径都相对它）", osName, shell, root) +
+		agentsRulesSection(root)
+}
+
+// agentsRulesLimit 是注入的项目规则正文字节上限：AGENTS.md 写多长是项目的事，
+// 系统说明不能被它无限撑大（超出头尾保留，注明节选）。
+const agentsRulesLimit = 8 << 10
+
+// agentsRulesSection 读取工作区根的 AGENTS.md 作为项目规则注入（0.0.42）：
+// 项目特有的构建命令、代码风格、禁区由项目自己声明，不再靠用户每轮口述。
+// 纪律：每轮读一次快照进本轮 preface（回合内文件变更下一轮生效）——文本随
+// 文件内容固定，逐字稳定不破坏 prompt cache；没有该文件 = 整段不出现（零噪声）；
+// 读取失败（存在但读不了）忽略——项目规则是增强，不该为此打断对话。
+func agentsRulesSection(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		return ""
+	}
+	content := strings.TrimSpace(string(b))
+	if content == "" {
+		return ""
+	}
+	if len(content) > agentsRulesLimit {
+		content = tools.HeadTail(content, agentsRulesLimit) + "\n（超出上限，已节选；全文见工作区根 AGENTS.md）"
+	}
+	return "\n\n## 项目规则（来自工作区根 AGENTS.md，本会话开始时快照）\n\n" + content
 }

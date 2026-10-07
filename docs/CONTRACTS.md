@@ -71,6 +71,7 @@
 | C-FS-9 | 手动 `fs.diagnose`：干净明说"通过"、跳过明说原因（非 Go/非 module/testdata、vendor）、错误带可点 path:line（工作区相对、正斜杠） | `TestDiagnoseAction_Manual` / `TestDiagnose_BrokenAndClean` / `TestDiagnose_GracefulSkips` |
 | C-FS-10 | `fs.symbols` 大纲有界（≤300 条）：Go 走 parser（签名=源码原文切片，坏函数 AST 名字兜底）；其余扩展名正则启发式**必须标注**；无引擎的扩展名显式报错 | `TestSymbols_GoOutline` / `TestSymbols_RegexFallbackAndUnknown` / `TestSymbols_Bounded` |
 | C-FS-11 | vet 输出解析只认 `file:line[:col]`（exe 前缀剥离、盘符路径重组、`./` 归一），认不出的行宁可漏报不误报 | `TestParseVetLine` / `TestDiagnose_BrokenAndClean` |
+| C-FS-13 | 前端类型诊断（0.0.42）：.ts/.tsx/.mts/.cts/.vue 走工程级 vue-tsc/tsc --noEmit（按 package.json+node_modules 定位工程、tsconfig 可在上一层）；**只展开本文件**的诊断、其它文件只计数；全干净静默通过（带检查器名）；退出异常且无输出 = Inconclusive 绝不冒充通过；无工程/无检查器/无 tsconfig = Attempted=false（自动钩子静默、手动明说） | `TestWebDiag_ProjectRunFiltersToFile` / `TestWebDiag_CleanFileOthersDirty` / `TestWebDiag_AllClean` / `TestWebDiag_InconclusiveOnSilentFailure` / `TestWebDiag_SkipsWithoutProject` / `TestWrite_AutoDiagnoseTypeScript` |
 | C-FS-12 | replace 多段编辑（`edits`，与单段参数互斥）：一次调用逐段原子应用——任一段零匹配/多处未放行 → 整次失败文件零修改；每段在**前序段应用后**的内容上匹配（顺序依赖合法）；回执汇总段数 | `TestReplaceEdits_AppliesAll` / `TestReplaceEdits_AnyMissFailsAtomically` / `TestReplaceEdits_SequentialDependency` / `TestReplaceEdits_MultiMatchPolicy` / `TestReplaceEdits_Guards` |
 
 ## C-SEARCH：工作区内容搜索（M6）
@@ -95,6 +96,7 @@
 | C-APP-1 | 持久化/流式任何错误必须上抛到 UI 层（守卫 R2 静态强制 + 用例测试） | `TestChatService_PersistErrorPropagates` |
 | C-APP-2 | 用户中断 → `EndCancelled` 终态 + 账本保留已产生事件，UI 显示"已取消" | `TestChatService_CancelKeepsEvents` |
 | C-APP-3 | `Replay` 投影含 tool 卡（name/status/content）与 assistant thinking | `TestChatService_ReplayIncludesTools` |
+| C-APP-5 | 项目规则注入（0.0.42）：工作区根 `AGENTS.md` 非空时其正文快照进本轮系统说明（上限 8KB 头尾保留并注明节选）；无/空文件整段不出现（零噪声）；每轮读一次快照、逐字稳定不破坏 prompt cache | `TestSessionFacts_AgentsRules` |
 | C-APP-4 | **零块终态必须可见**：整回合没有任何增量到达就失败时（无可用渠道 / 流未建立即失败），错误必须新建一条错误气泡呈现，禁止因"没有进行中的助手气泡"而静默丢弃——否则界面表现为"消息发出去了、什么都没发生" | `chat.test.ts: 零块错误终态必须新建可见错误气泡` / `chat.test.ts: 零块空闲超时也可见` / `chat.test.ts: 零块正常终态不补空气泡` |
 
 ## C-AGT：模型上下文回放（M6）

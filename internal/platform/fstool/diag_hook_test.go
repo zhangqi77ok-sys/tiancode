@@ -34,7 +34,7 @@ func TestWrite_AutoDiagnoseInline(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("写入本身必须成功（诊断不改写成功语义）：%s", res.Content)
 	}
-	if !strings.Contains(res.Content, "[编译诊断]") || !strings.Contains(res.Content, "undefined: missing") {
+	if !strings.Contains(res.Content, "[编译诊断·go vet]") || !strings.Contains(res.Content, "undefined: missing") {
 		t.Fatalf("坏代码应内联诊断：%q", res.Content)
 	}
 	if !strings.Contains(res.Content, "broken.go:3") {
@@ -104,9 +104,11 @@ func TestDiagnoseAction_Manual(t *testing.T) {
 	if res.IsError || !strings.Contains(res.Content, "编译诊断通过") {
 		t.Fatalf("干净包应明说通过：%+v", res)
 	}
+	// a.ts 现在走前端诊断器（0.0.42）：夹具没有 package.json/node_modules，
+	// 明说跳过原因（不再是"仅支持 Go"）
 	res, _ = tool.Execute(context.Background(), mustArgs(t, map[string]any{"action": "diagnose", "path": "a.ts"}))
-	if res.IsError || !strings.Contains(res.Content, "仅支持 Go") {
-		t.Fatalf("非 Go 应明说局限：%+v", res)
+	if res.IsError || !strings.Contains(res.Content, "跳过类型诊断") {
+		t.Fatalf("前端文件应明说类型诊断跳过原因：%+v", res)
 	}
 }
 
@@ -131,5 +133,36 @@ func TestSymbolsAction(t *testing.T) {
 	res, _ = tool.Execute(context.Background(), mustArgs(t, map[string]any{"action": "symbols", "path": "x.ini"}))
 	if !res.IsError {
 		t.Fatalf("无大纲引擎的扩展名应显式报错：%+v", res)
+	}
+}
+
+// 0.0.42（C-FS-8 扩展面）：写 .ts 文件自动跑工程类型诊断——写后钩子按扩展名
+// 分派到 vue-tsc/tsc，本文件的错误内联回执。检查器是输出固定内容的 .cmd 桩。
+func TestWrite_AutoDiagnoseTypeScript(t *testing.T) {
+	root := t.TempDir()
+	must := func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(os.MkdirAll(filepath.Join(root, "node_modules", ".bin"), 0o700))
+	must(os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name":"fixture"}`), 0o600))
+	must(os.WriteFile(filepath.Join(root, "tsconfig.json"), []byte(`{}`), 0o600))
+	must(os.WriteFile(filepath.Join(root, "node_modules", ".bin", "tsc.cmd"),
+		[]byte("@echo off\r\necho src/bad.ts(2,3): error TS2322: stub type error\r\nexit /b 1\r\n"), 0o700))
+	tool := New(root)
+	res, err := tool.Execute(context.Background(), mustArgs(t, map[string]any{
+		"action":  "write",
+		"path":    "src/bad.ts",
+		"content": "const x: number = 'oops';\nexport { x };\n",
+	}))
+	if err != nil {
+		t.Fatalf("机制错误：%v", err)
+	}
+	if res.IsError {
+		t.Fatalf("写入必须成功（诊断不改写成功语义）：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "src/bad.ts:2") || !strings.Contains(res.Content, "stub type error") {
+		t.Fatalf(".ts 写后应内联类型诊断：%q", res.Content)
 	}
 }
