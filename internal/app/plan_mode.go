@@ -56,9 +56,17 @@ func (s *ChatService) planRegistry(st *sessionTools) (*tools.Registry, error) {
 	return registry, nil
 }
 
-// planFSActions 是方案模式下放行的 fs 动作（**白名单**：新增动作默认不出现，
-// 与 isReadOnlyCall 的"白名单宁可窄"同一纪律）。
-var planFSActions = map[string]bool{"read": true, "list": true, "tree": true, "diagnose": true, "symbols": true}
+// planFSActionEnum 是方案模式下放行的 fs 动作（**白名单**：新增动作默认不出现，
+// 与 isReadOnlyCall 的"白名单宁可窄"同一纪律）。顺序固定，schema 才稳定。
+var planFSActionEnum = []string{"read", "list", "tree", "diagnose", "symbols"}
+
+var planFSActions = func() map[string]bool {
+	m := make(map[string]bool, len(planFSActionEnum))
+	for _, a := range planFSActionEnum {
+		m[a] = true
+	}
+	return m
+}()
 
 // planFS 是 fs 工具的只读视图：write/replace 及未来任何新动作一律业务拒绝。
 type planFS struct{ inner tools.ToolPort }
@@ -69,7 +77,28 @@ func (p planFS) Description() string {
 	return "【方案模式 · 只读】" + p.inner.Description() + "（当前为方案模式：write/replace 不可用）"
 }
 
-func (p planFS) Schema() json.RawMessage { return p.inner.Schema() }
+func (p planFS) Schema() json.RawMessage {
+	var doc map[string]any
+	if err := json.Unmarshal(p.inner.Schema(), &doc); err != nil {
+		return p.inner.Schema()
+	}
+	props, _ := doc["properties"].(map[string]any)
+	action, _ := props["action"].(map[string]any)
+	if action == nil {
+		return p.inner.Schema()
+	}
+	enum := make([]any, len(planFSActionEnum))
+	for i, name := range planFSActionEnum {
+		enum[i] = name
+	}
+	action["enum"] = enum
+	action["description"] = "方案模式仅允许只读动作"
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return p.inner.Schema()
+	}
+	return b
+}
 
 func (p planFS) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResult, error) {
 	var a struct {

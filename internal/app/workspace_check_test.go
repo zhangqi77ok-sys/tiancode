@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
 )
 
@@ -95,4 +96,91 @@ func TestRunWorkspaceCheck_EmptyNeverRuns(t *testing.T) {
 	if !strings.Contains(note, "工作区检查，不是用户原话") || !strings.Contains(note, "foo.go:10") {
 		t.Fatalf("附注 = %q", note)
 	}
+}
+
+func TestParseCheckRefs_DriveAndParen(t *testing.T) {
+	refs := ParseCheckRefs("D:\\a\\f.go:3:1: x\nApp.vue(12,5): error TS2322: type\nnote:12:3 这说的是注释里的编号\n")
+	if len(refs) != 2 {
+		t.Fatalf("refs = %+v", refs)
+	}
+	if refs[0].Path != `D:\a\f.go` || refs[0].Line != 3 || refs[0].Col != 1 || refs[0].Text != "x" {
+		t.Fatalf("drive ref = %+v", refs[0])
+	}
+	if refs[1].Path != "App.vue" || refs[1].Line != 12 || refs[1].Col != 5 || !strings.Contains(refs[1].Text, "TS2322") {
+		t.Fatalf("paren ref = %+v", refs[1])
+	}
+}
+
+func TestCheckNote_FailedWithoutRefsDoesNotAutoFix(t *testing.T) {
+	s, root := newCheckFixture(t, "s-noref")
+	if err := saveWorkspaceSettings(root, WorkspaceSettings{CheckCommand: "go test ./..."}); err != nil {
+		t.Fatal(err)
+	}
+	old := checkRunner
+	t.Cleanup(func() { checkRunner = old })
+	checkRunner = func(context.Context, string, []string, string) (string, error) {
+		return "FAIL\nno locations\n", errStub{}
+	}
+	if _, err := s.RunWorkspaceCheck("s-noref"); err != nil {
+		t.Fatal(err)
+	}
+	note := s.checkNote("s-noref")
+	if note == "" || !strings.Contains(note, "未能解析出位置") || strings.Contains(note, "自动修复") {
+		t.Fatalf("附注 = %q", note)
+	}
+	if !strings.Contains(note, "FAIL") {
+		t.Fatalf("原文应在附注里：%q", note)
+	}
+
+	calls := 0
+	s.SetAutoFixHandler(func(string, string, int, int) { calls++ })
+	s.afterTurnCheck("s-noref", llm.EndDone)
+	if calls != 0 {
+		t.Fatalf("没有位置引用不得启动自愈，calls=%d", calls)
+	}
+}
+
+func TestCheckNote_FailedWithoutRefsKeepsHeadAndTail(t *testing.T) {
+	s, root := newCheckFixture(t, "s-big")
+	if err := saveWorkspaceSettings(root, WorkspaceSettings{CheckCommand: "go test ./..."}); err != nil {
+		t.Fatal(err)
+	}
+	old := checkRunner
+	t.Cleanup(func() { checkRunner = old })
+	body := "HEADMARKER\n" + strings.Repeat("x", 20*1024) + "\nTAILMARKER"
+	checkRunner = func(context.Context, string, []string, string) (string, error) {
+		return body, errStub{}
+	}
+	if _, err := s.RunWorkspaceCheck("s-big"); err != nil {
+		t.Fatal(err)
+	}
+	note := s.checkNote("s-big")
+	if !strings.Contains(note, "HEADMARKER") || !strings.Contains(note, "TAILMARKER") || !strings.Contains(note, "未能解析出位置") {
+		t.Fatalf("头尾应保留：%s", note)
+	}
+	if len(note) > checkNoteRawLimit+512 {
+		t.Fatalf("附注过长：%d", len(note))
+	}
+}
+
+// newCheckFixture 把检查设置写到临时文件，并把这场对话的工作区绑到另一个临时目录。
+// 不改真实的用户设置文件。
+func newCheckFixture(t *testing.T, sessionID string) (*ChatService, string) {
+	t.Helper()
+	dir := t.TempDir()
+	oldPath := workspaceSettingsPath
+	workspaceSettingsPath = func() string { return filepath.Join(dir, "workspace-settings.json") }
+	t.Cleanup(func() { workspaceSettingsPath = oldPath })
+
+	s := newChannelService(t, Config{})
+	t.Cleanup(func() { s.Close() })
+	root := t.TempDir()
+	l, err := s.ledgerFor(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": root}); err != nil {
+		t.Fatal(err)
+	}
+	return s, root
 }

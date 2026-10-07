@@ -26,9 +26,9 @@ func TestBuildArgs_LogWithPath(t *testing.T) {
 		{"status 带 path", "status", "src", 0,
 			[]string{"status", "--porcelain", "-b", "--", "src"}},
 		{"diff 带 path", "diff", "src", 0,
-			[]string{"diff", "--", "src"}},
+			[]string{"diff", "HEAD", "--", "src"}},
 		{"diff 无 path", "diff", "", 0,
-			[]string{"diff"}},
+			[]string{"diff", "HEAD"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -458,6 +458,14 @@ func (s *ChatService) newAgentWith(model string, registry *tools.Registry, appro
 	return ag
 }
 
+// AnyTurnRunning 报告是否有任一会话正在进行回合（0.0.38 升级退出握手用）：
+// 忙 = 拒绝安装器的优雅退出请求（绝不中断正在跑的任务），空闲 = 允许退出。
+func (s *ChatService) AnyTurnRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.running) > 0
+}
+
 // DeleteSession 删除会话及其账本文件。
 // 打开中的账本必须先关闭：Windows 上句柄未释放时删除会失败（与旧实现 rename 失败同源）。
 // 工具集收尾在 sessMu 内完成到账本文件删除：与 ensureSessionTools 的存活校验互斥，
@@ -648,7 +656,7 @@ func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, 
 	if st != nil && st.fs != nil {
 		st.fs.BeginRound()
 	}
-	registry, err := s.assembleRegistry(st)
+	registry, err := s.assembleRegistry(st, model)
 	if err != nil {
 		release()
 		return nil, err

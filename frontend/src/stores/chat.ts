@@ -15,6 +15,9 @@ import { useToast } from '../composables/useToast'
 import { useDialogs } from '../composables/useDialogs'
 import { useWorkspaceStore } from './workspace'
 
+// 执行消息里说明性段落的上限。超过才丢掉非步骤行；步骤行整段保留，不从中间挖。
+const PLAN_PROSE_LIMIT = 48_000
+
 // 任务清单单项（todo 工具的全量快照）
 export interface TodoItem {
   text: string
@@ -176,6 +179,40 @@ export interface QueuedMessage {
   forced?: ForcedToolDTO
 }
 
+// isExecutablePlan 判断这一轮助手正文是不是可以拿去改文件的方案。
+// 只问了一句、或只说「我先看一下」就停的，不算。
+export function isExecutablePlan(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  const numbered = t.match(/\d+[.)、]\s*\S/g)?.length ?? 0
+  if (numbered >= 2) return true
+  const lines = t.split(/\n/).map((s) => s.trim()).filter(Boolean)
+  const bullets = lines.filter((l) => /^[-*]\s+\S/.test(l)).length
+  if (bullets >= 2) return true
+  const actionLines = lines.filter((l) => /(改|加|删|修|实现|新增|替换|调整)/.test(l)).length
+  if (actionLines >= 2) return true
+  if (/[？?]\s*$/.test(t)) return false
+  if (t.length < 80) return false
+  return /方案/.test(t) && /(改|加|删|修|实现|新增|替换)/.test(t)
+}
+
+function isStepLine(line: string): boolean {
+  const t = line.trim()
+  return /^(?:\d+[.)、]|[-*]|#{1,3})\s+\S/.test(t)
+}
+
+// planExecuteText 把已确认方案嵌进执行指令。过长时只省略说明，步骤全部留下。
+export function planExecuteText(plan: string): string {
+  let body = plan
+  if (plan.length > PLAN_PROSE_LIMIT) {
+    const steps = plan.split('\n').filter((line) => isStepLine(line))
+    if (steps.length >= 2) {
+      body = `${steps.join('\n').trim()}\n\n（过长的说明已省略，步骤都保留）`
+    }
+  }
+  return `下面是已确认的方案。现在直接改代码，不要再输出方案，也不要扩大范围。\n\n${body}`
+}
+
 // 单个会话的运行态（0.2.25 多会话）：消息缓冲 + 运行标志 + 输入队列 + 本轮计时。
 // 为什么按会话各一份：回合进行中也允许切到别的会话继续聊——流式事件必须各归各位
 // （后台会话的事件照常入它自己的缓冲，不再被丢弃），切回来时原地接着看。
@@ -197,12 +234,26 @@ export const useChatStore = defineStore('chat', () => {
   const sessions = ref<string[]>([])
   const error = ref('')
   const { push: toast } = useToast()
-  const { confirm } = useDialogs()
+  const { confirmPlanEdit } = useDialogs()
 
-  // 方案模式（0.0.35）：开着发送的一轮是只读调研 + 输出实施方案（一次性），
-  // 确认后的执行是普通回合。planTurn 记录"正在跑的方案回合"的会话，终态后弹确认卡。
-  const planMode = ref(false)
-  const planTurn = ref<string | null>(null)
+  // 方案模式按会话记。planArmed：这场对话下一次发送走只读调研。
+  // planTurnIds：这场对话正在跑方案回合。两场可以同时调研，互不覆盖。
+  const planArmed = reactive(new Set<string>())
+  const planTurnIds = reactive(new Set<string>())
+  // 调研期间用户补的话。不能进普通队列，否则终态会把它当成可写回合发出去。
+  const planNotes = new Map<string, QueuedMessage[]>()
+  const draftRestores = new Map<string, { text: string; atts: PendingAttachment[] }>()
+  const draftRestoreNonce = ref(0)
+  const planMode = computed({
+    get: () => planArmed.has(sessionId.value),
+    set: (on: boolean) => {
+      const id = sessionId.value
+      if (on) planArmed.add(id)
+      else planArmed.delete(id)
+    },
+  })
+  // 当前正在看的这场是否在调研。别的会话的调研不点亮这个按钮。
+  const planTurn = computed(() => (planTurnIds.has(sessionId.value) ? sessionId.value : null))
 
   // 文件树刷新信号（0.0.19 自动跟手）：fs 写/改卡落定（当前会话）+1——
   // FileTreePanel watch 它整体重载根目录（展开态由面板自己保留）。
@@ -571,7 +622,12 @@ export const useChatStore = defineStore('chat', () => {
     opts?: { throwOnError?: boolean; forced?: ForcedToolDTO },
   ) {
     if (!sessionId.value) {
+      const armed = planArmed.has('')
       sessionId.value = newSessionId() // 草稿首聊：此刻才领 ID，由后端 Send 落账本
+      if (armed) {
+        planArmed.delete('')
+        planArmed.add(sessionId.value)
+      }
       announcePending()
     }
     return sendTo(sessionId.value, text, atts, opts)
@@ -587,6 +643,15 @@ export const useChatStore = defineStore('chat', () => {
     atts?: PendingAttachment[],
     opts?: { throwOnError?: boolean; forced?: ForcedToolDTO },
   ) {
+    // 方案模式不能带附件或指定技能。以前这里静默改走可写发送，开关还亮着，
+    // 看起来像“开了方案它却直接改文件”。拒绝并留在方案模式，调用方据此把草稿放回去。
+    // 看的是这场对话自己的开关，不是全局一个。
+    if (planArmed.has(id) && ((atts && atts.length) || opts?.forced)) {
+      const msg = '方案模式只做只读调研，不能带附件或指定技能。去掉它们再发，或先关掉方案。'
+      toast('error', msg)
+      if (opts?.throwOnError) throw new Error(msg)
+      return
+    }
     const c = ensureConvo(id)
     const localAtts = atts?.map((a) => ({
       kind: a.kind,
@@ -613,11 +678,11 @@ export const useChatStore = defineStore('chat', () => {
     c.stopping = false
     c.turnStartedAt = Date.now()
     try {
-      if (planMode.value && !(atts && atts.length) && !opts?.forced) {
-        // 方案模式（0.0.35）：本轮只读调研 + 输出实施方案；一次性——发出即关，
-        // 确认后的执行走普通回合（写路径恢复在场）。
-        planMode.value = false
-        planTurn.value = id
+      if (planArmed.has(id) && !(atts && atts.length) && !opts?.forced) {
+        // 方案模式：本轮只读调研 + 输出实施方案。只关掉这场的开关。
+        // 这一轮仍由 planTurnIds 点亮按钮，终态后才灭。确认后的执行是普通回合。
+        planArmed.delete(id)
+        planTurnIds.add(id)
         await bridge().app.SendPlan(id, text)
       } else if ((atts && atts.length) || opts?.forced) {
         // 指定了技能/MCP 时也走带附件那条：本轮要先强制调用一次工具（第 7 批）
@@ -634,7 +699,7 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e) {
       // 方案回合流建立失败：确认卡不再等待（残留的 planTurn 会让之后任何无关
       // 回合的终态误弹方案卡——审查抓到）
-      if (planTurn.value === id) planTurn.value = null
+      planTurnIds.delete(id)
       const ast = inFlightAssistant(c)
       if (ast) {
         ast.streaming = false
@@ -1350,50 +1415,123 @@ export const useChatStore = defineStore('chat', () => {
       void loadSessions() // 新会话首聊后进入列表
     }
     // 队列：本轮结束自动发出下一条（发给"刚结束的这个会话"，即使它已不是当前视图）。
-    // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去（重新入队的留给用户手动发）
-    if (!interrupted) {
+    // 用户点了中断：这一轮结束，不要自动把队列里的下一条发出去。
+    // 方案回合例外：调研时补的话不在这条队列里，也不能在确认前当成可写回合发出去。
+    const wasPlan = planTurnIds.has(p.sessionID)
+    if (wasPlan) planTurnIds.delete(p.sessionID)
+    if (!interrupted && !wasPlan) {
       const next = c.queue.shift()
       // 附件与强制工具随队列续发（0.0.11 / 第 7 批）：sendTo 内部按需分派
-      if (next) sendTo(p.sessionID, next.text, next.atts, { forced: next.forced }).catch(() => {}) // 队列续发失败：错误气泡已可见
+      if (next) {
+        sendTo(p.sessionID, next.text, next.atts, { forced: next.forced }).catch(() => {}) // 队列续发失败：错误气泡已可见
+      }
     }
-    // 方案模式（0.0.35）：方案回合正常收尾且没有排队的后续 → 弹方案确认卡。
-    // 有队列时不抢（用户后面还有活，方案确认等人手动发起）；非 DONE（中断/出错）也不弹。
-    if (planTurn.value === p.sessionID) {
-      planTurn.value = null
-      if (!interrupted && p.endReason === END_REASON.DONE && c.queue.length === 0) {
+    if (wasPlan) {
+      const notes = takePlanNotes(p.sessionID)
+      if (!interrupted && p.endReason === END_REASON.DONE) {
         const plan = planTextOf(c)
-        if (plan) {
-          void confirmPlan(p.sessionID, plan)
+        if (isExecutablePlan(plan)) {
+          schedulePlanConfirm(p.sessionID, planWithNotes(plan, notes), notes)
+        } else {
+          toast('info', '这一轮没有给出可执行的方案，未开始改文件。')
+          restoreNotes(p.sessionID, notes)
         }
+      } else {
+        restoreNotes(p.sessionID, notes)
       }
     }
   }
 
-  // 方案确认卡 → 用户点"按方案执行"：方案文本随一条**普通消息**带走（新的一手
-  // 普通回合，写路径恢复在场）；取消 = 什么都不发生（方案就是一条普通回答）。
-  async function confirmPlan(sid: string, plan: string) {
-    const ok = await confirm({
-      title: '实施方案确认',
-      message: plan,
-      confirmText: '按方案执行',
-    })
-    if (ok) {
-      await sendTo(sid, `按以下方案执行：\n\n${plan}`)
+  const planConfirmQueue: { sid: string; shown: string; notes: QueuedMessage[] }[] = []
+  let planConfirming = false
+
+  // 两场方案同时结束时，后一场不能把前一场的确认框取消掉。排着来。
+  function schedulePlanConfirm(sid: string, shown: string, notes: QueuedMessage[]) {
+    planConfirmQueue.push({ sid, shown, notes })
+    void pumpPlanConfirm()
+  }
+
+  async function pumpPlanConfirm() {
+    if (planConfirming) return
+    planConfirming = true
+    try {
+      while (planConfirmQueue.length) {
+        const item = planConfirmQueue.shift()!
+        await confirmPlan(item.sid, item.shown, item.notes)
+      }
+    } finally {
+      planConfirming = false
     }
   }
 
-  // planTextOf 取**本轮**的方案文本：最后一条有内容的助手消息必须位于最后一条
-  // 用户消息之后。方案回合没有产出任何助手文本时（模型只调了工具就收尾、空占位
-  // 被删）返回空串——绝不把上一轮的回答错当成这一轮的方案（审查抓到）。
+  function planWithNotes(plan: string, notes: QueuedMessage[]): string {
+    const extra = notes.map((n) => n.text.trim()).filter(Boolean)
+    if (!extra.length) return plan
+    return `${plan}\n\n调研期间补充：\n${extra.join('\n')}`
+  }
+
+  // 确认框里是可改的全文。取消不改文件，并提示方案还在对话里。
+  async function confirmPlan(sid: string, shown: string, notes: QueuedMessage[]) {
+    const whose = sid === sessionId.value ? '' : `（${titleOf(sid) || '另一场对话'}）`
+    const edited = await confirmPlanEdit({
+      title: `按方案执行？${whose}`,
+      message: '可以改完再执行。取消不会改文件。',
+      value: shown,
+      confirmText: '按方案执行',
+    })
+    if (edited == null || !edited.trim()) {
+      if (edited != null) toast('info', '方案是空的，没有执行。')
+      else toast('info', '方案还在对话里。要改请再开一次方案模式。')
+      restoreNotes(sid, notes)
+      return
+    }
+    // 执行回合必须可写。这场若又被打开了方案开关，会再走只读的 SendPlan。
+    planArmed.delete(sid)
+    const atts = notes.flatMap((n) => n.atts)
+    const forced = notes.find((n) => n.forced)?.forced
+    await sendTo(sid, planExecuteText(edited.trim()), atts.length ? atts : undefined, forced ? { forced } : undefined)
+  }
+
+  function takePlanNotes(id: string): QueuedMessage[] {
+    const list = planNotes.get(id) ?? []
+    planNotes.delete(id)
+    return list
+  }
+
+  // 补的话没有发出去时放回输入框。用户正看着别的会话时，切回来再放。
+  function restoreNotes(id: string, notes: QueuedMessage[]) {
+    if (!notes.length) return
+    const text = notes.map((n) => n.text.trim()).filter(Boolean).join('\n')
+    const atts = notes.flatMap((n) => n.atts)
+    if (!text && !atts.length) return
+    draftRestores.set(id, { text, atts })
+    draftRestoreNonce.value++
+  }
+
+  function takeDraftRestore(id: string): { text: string; atts: PendingAttachment[] } | undefined {
+    const v = draftRestores.get(id)
+    if (!v) return undefined
+    draftRestores.delete(id)
+    return v
+  }
+
+  // planTextOf 拼**本轮**全部助手正文（最后一条用户消息之后）。
+  // 只拿最后一条会把前面写好的步骤丢掉，只剩收尾的一句。
+  // 没有任何助手正文时返回空串——绝不把上一轮的回答错当成这一轮的方案。
   function planTextOf(c: Conversation): string {
     let lastUser = -1
-    let lastAssistant = -1
     for (let i = 0; i < c.messages.length; i++) {
-      const m = c.messages[i]
-      if (m.role === 'user') lastUser = i
-      else if (m.role === 'assistant' && m.content && !m.error) lastAssistant = i
+      if (c.messages[i].role === 'user') lastUser = i
     }
-    return lastAssistant > lastUser ? String(c.messages[lastAssistant].content) : ''
+    const parts: string[] = []
+    for (let i = lastUser + 1; i < c.messages.length; i++) {
+      const m = c.messages[i]
+      if (m.role === 'assistant' && m.content && !m.error) {
+        const text = String(m.content).trim()
+        if (text) parts.push(text)
+      }
+    }
+    return parts.join('\n\n')
   }
 
   // 删除会话：删除后若删的是当前会话，则新建空会话
@@ -1449,6 +1587,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!c || !c.running || c.stopping) return
     c.stopping = true
     c.queue = [] // 中断是停掉这一轮，不能在终态后把排队消息接着发出去
+    restoreNotes(id, takePlanNotes(id))
     void bridge().app.Stop(id)
     clearStopTimer(id)
     stopTimers.set(
@@ -1476,7 +1615,16 @@ export const useChatStore = defineStore('chat', () => {
   // 入队（0.0.11：附件随行）：附件拷贝一份——调用方随后会清空待发送区，
   // 队列里这条必须自持（否则续发时附件已被清掉，消息静默丢附件）。
   function enqueue(text: string, atts: PendingAttachment[] = [], forced?: ForcedToolDTO) {
-    ensureConvo(sessionId.value).queue.push({ id: ++queueSeq, text, atts: [...atts], forced })
+    const id = sessionId.value
+    const item: QueuedMessage = { id: ++queueSeq, text, atts: [...atts], forced }
+    if (planTurnIds.has(id)) {
+      const list = planNotes.get(id) ?? []
+      list.push(item)
+      planNotes.set(id, list)
+      toast('info', '方案还在调研，这句会附在确认里，不会直接改文件')
+      return
+    }
+    ensureConvo(id).queue.push(item)
   }
   function removeQueued(id: number) {
     const c = ensureConvo(sessionId.value)
@@ -1583,6 +1731,9 @@ export const useChatStore = defineStore('chat', () => {
     resolveAsk,
     onAutoFix,
     planMode,
+    planTurn,
+    draftRestoreNonce,
+    takeDraftRestore,
     onTerminal,
     queue,
     enqueue,

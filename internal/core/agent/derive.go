@@ -62,7 +62,18 @@ type DeriveInfo struct {
 	// 随派生读数顺带返回：内核做结构化判定（自主续跑的自评/防自欺）时直接用，
 	// 不必再扫一遍账本。落在 fork 丢弃区间内的清单不进这里。
 	LatestTodo []llm.TodoItem
+	// CompactionSummary 是账本里最近一次压缩事件的摘要文本（空 = 无压缩）。
+	// 派生已把它作为首条 user 消息拼进结果（compactionMarker 前缀），此处再带一份
+	// 供内核判断"已压缩过"（避免压缩循环）。
+	CompactionSummary string
+	// CompactionUpTo 是最近一次压缩事件声明的截点：seq < 截点的叙事事件不投影。
+	CompactionUpTo int64
 }
+
+// compactionMarker 是压缩摘要消息的前缀。既是模型的标记（一眼知道这是历史摘要
+// 不是用户新话），也是派生输出里区分"摘要消息"与"真实用户轮"的判据——压缩器
+// 统计用户轮次时必须跳过它。
+const compactionMarker = "【历史摘要】"
 
 // imageRef 指向一条 user 消息里的图片（超限时把 data URL 换成路径说明）。
 type imageRef struct {
@@ -355,6 +366,53 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 		return nil
 	}
 
+	// 预扫描：先定位最新一次压缩事件（0.0.41）。主扫描是单遍流式——压缩事件必然
+	// 位于账本尾部，等遇到它时旧事件早已投影过，截点只能来自预扫描。预扫描同时
+	// 收集全部 fork 声明的丢弃区间（union 语义，与主扫描一致）：落在丢弃区间里的
+	// 压缩事件不生效——用户从更早处重跑后，被归档的历史必须回来。
+	var comp *struct {
+		upTo    int64
+		summary string
+	}
+	{
+		var preDrops []session.ForkDrop
+		err := ledger.Replay(func(ev session.Event) error {
+			switch ev.Kind() {
+			case session.EventFork:
+				var p struct {
+					FromSeq int64 `json:"from_seq"`
+				}
+				if err := json.Unmarshal(ev.Data(), &p); err != nil {
+					return err
+				}
+				if p.FromSeq > 0 && p.FromSeq <= ev.Seq() {
+					preDrops = append(preDrops, session.ForkDrop{From: p.FromSeq, To: ev.Seq()})
+				}
+			case session.EventCompaction:
+				if session.ForkDropped(preDrops, ev.Seq()) {
+					return nil
+				}
+				var p struct {
+					UpToSeq int64  `json:"up_to_seq"`
+					Summary string `json:"summary"`
+				}
+				if err := json.Unmarshal(ev.Data(), &p); err != nil {
+					return err
+				}
+				if p.UpToSeq > 0 {
+					comp = &struct {
+						upTo    int64
+						summary string
+					}{upTo: p.UpToSeq, summary: p.Summary}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, DeriveInfo{}, err
+		}
+	}
+
 	// 唯一一次全量重放（性能改造）：轮次计数与分叉区间并入主扫描。fork 事件
 	// 极少（仅「从这条用户消息重跑」时追加）；扫描中发现新区间则重启——重启后
 	// 该 fork 已入 drops 不会再触发，总扫描数 = 分叉数 + 1，无分叉（常态）恰好
@@ -391,6 +449,16 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 			if session.ForkDropped(drops, ev.Seq()) {
 				return nil
 			}
+			// 压缩截点（0.0.41，comp 来自预扫描）：seq < 截点的叙事事件不再投影
+			//（摘要替代）。EventTodo 例外照常扫描——它是"当前状态"而非历史叙事，
+			// 最新清单必须始终可见（与 C-AGT-5 同一纪律）；压缩事件本身跳过
+			//（最新一次已在预扫描生效）。
+			if ev.Kind() == session.EventCompaction {
+				return nil
+			}
+			if comp != nil && ev.Seq() < comp.upTo && ev.Kind() != session.EventTodo {
+				return nil
+			}
 			return projectEvent(ev)
 		})
 		if err != nil {
@@ -401,6 +469,14 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 		}
 	}
 	flush()
+
+	// 压缩摘要（0.0.41）：作为首条 user 消息拼进派生结果。它不是用户新话，
+	// compactionMarker 前缀让模型（与压缩器自己的轮次统计）能把它与真实用户轮区分开。
+	if comp != nil && strings.TrimSpace(comp.summary) != "" {
+		msgs = append([]llm.Message{{Role: "user", Content: compactionMarker +
+			"以下是本会话更早历史的摘要（原始事件已归档，细节以之后的轮次为准）：\n" +
+			comp.summary}}, msgs...)
+	}
 
 	// 任务清单投影到末尾（档位 1）。全量 done 也照投——模型需要知道"计划已清空"
 	// 才会收尾；nil（从未提交）不投——没登记过计划的项目不该凭空多一段说明。
@@ -413,6 +489,9 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	totalTurns := turn + 1
 
 	info := DeriveInfo{BudgetTokens: opt.BudgetTokens, LatestTodo: latestTodo}
+	if comp != nil {
+		info.CompactionSummary, info.CompactionUpTo = comp.summary, comp.upTo
+	}
 	// 基础折叠（0.0.09 常态行为，不计入 info）：>keepFullToolTurns 轮的成功只读结果收成单行
 	foldOldReads(msgs, toolRefs, totalTurns-keepFullToolTurns)
 

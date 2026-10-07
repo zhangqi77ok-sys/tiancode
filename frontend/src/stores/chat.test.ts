@@ -127,6 +127,7 @@ vi.mock('../wails', () => ({
 const { useChatStore, END_REASON } = await import('./chat')
 const { useWorkspaceStore } = await import('./workspace')
 const { useDialogs } = await import('../composables/useDialogs')
+const { useToast } = await import('../composables/useToast')
 
 describe('chat store', () => {
   beforeEach(() => {
@@ -148,6 +149,7 @@ describe('chat store', () => {
     h.flashCalls = 0
     h.workspace = ''
     h.slowReplayIds = new Set()
+    h.planCalls = []
   })
 
   // 0.0.18：点开有归属的会话 = 打算在这个项目干活——"新对话默认根"跟随该归属
@@ -1106,6 +1108,7 @@ describe('chat store · 浏览器驾驶舱', () => {
     h.navigations = []
     h.failNavigate = false
     h.externalOpens = []
+    h.planCalls = []
   })
 
   function browserTool(over: Record<string, unknown>) {
@@ -1305,9 +1308,9 @@ describe('chat store · 浏览器驾驶舱', () => {
     expect(store.running).toBe(false)
   })
 
-  // 方案模式（0.0.35）：发送走 SendPlan 且一次性关闭；方案回合终态后弹确认卡，
-  // 确认 = 方案文本随**普通消息**发出（执行回合写路径恢复在场），取消 = 什么都不发生。
-  it('方案模式：SendPlan 一次性；终态后确认卡，执行随普通消息', async () => {
+  // 方案模式：发送走 SendPlan，只关掉这场的开关。确认框里是可改的全文，
+  // 执行消息必须带上改完的方案，否则模型空转。
+  it('方案模式：SendPlan 一次性；确认后执行消息带上方案', async () => {
     const store = useChatStore()
     await store.newSession()
     store.planMode = true
@@ -1317,29 +1320,156 @@ describe('chat store · 浏览器驾驶舱', () => {
     expect(h.planCalls[0].text).toBe('给登录加上记住我')
     expect(h.sends).toEqual([])
     expect(store.planMode).toBe(false)
+    expect(store.planTurn).toBe(sid)
     store.onChunk({ sessionID: sid, delta: '方案：1. 给登录页加"记住我"复选框 2. 跑 pnpm test 验证', thinking: '' })
     store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
-    const { confirmState, resolveConfirm } = useDialogs()
-    expect(confirmState.value?.title).toBe('实施方案确认')
-    expect(confirmState.value?.message).toContain('记住我')
-    resolveConfirm(true)
+    expect(store.planTurn).toBe(null)
+    const { planEditState, resolvePlanEdit } = useDialogs()
+    expect(planEditState.value?.title).toBe('按方案执行？')
+    expect(planEditState.value?.value).toContain('记住我')
+    store.planMode = true // 确认前开关被重新打开，也不能再走只读
+    resolvePlanEdit('1. 只改登录页的记住我\n2. 跑 pnpm test')
     await new Promise((r) => setTimeout(r, 0))
-    expect(h.sends.at(-1)).toContain('按以下方案执行')
+    const executed = h.sends.at(-1) ?? ''
+    expect(executed).toContain('已确认的方案')
+    expect(executed).toContain('只改登录页的记住我')
+    expect(store.planMode).toBe(false)
     expect(h.planCalls.length).toBe(1) // 执行回合不再走 SendPlan
   })
 
-  it('方案模式：确认卡取消则什么都不发', async () => {
+  it('方案模式：超长方案保留中间步骤', async () => {
     const store = useChatStore()
     await store.newSession()
+    store.planMode = true
+    await store.send('大方案')
     const sid = store.sessionId
+    const mid = '4. 修改 frontend/src/stores/chat.ts 的确认逻辑'
+    const delta = `1. 先看登录页\n${'这是说明，不是步骤。\n'.repeat(5000)}${mid}\n9. 跑测试`
+    store.onChunk({ sessionID: sid, delta, thinking: '' })
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    const { planEditState, resolvePlanEdit } = useDialogs()
+    resolvePlanEdit(planEditState.value?.value ?? '')
+    await new Promise((r) => setTimeout(r, 0))
+    const executed = h.sends.at(-1) ?? ''
+    expect(executed).toContain('1. 先看登录页')
+    expect(executed).toContain(mid)
+    expect(executed).toContain('9. 跑测试')
+    expect(executed).not.toContain('中间已省略')
+    expect(executed).not.toContain('这是说明，不是步骤')
+    expect(executed).toContain('步骤都保留')
+  })
+
+  it('方案模式：取消不改文件，并提示方案还在', async () => {
+    const store = useChatStore()
+    await store.newSession()
     store.planMode = true
     await store.send('先出方案')
-    store.onChunk({ sessionID: sid, delta: '方案……', thinking: '' })
+    const sid = store.sessionId
+    store.onChunk({ sessionID: sid, delta: '1. 改登录页\n2. 跑测试', thinking: '' })
     store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
-    const { confirmState, resolveConfirm } = useDialogs()
-    resolveConfirm(false)
+    const { resolvePlanEdit } = useDialogs()
+    resolvePlanEdit(null)
     await new Promise((r) => setTimeout(r, 0))
-    expect(h.sends.filter((t) => t.includes('按以下方案执行'))).toEqual([])
+    expect(h.sends.filter((t) => t.includes('已确认的方案'))).toEqual([])
+    expect(useToast().toasts.value.some((t) => t.text.includes('方案还在对话里'))).toBe(true)
+    expect(store.planMode).toBe(false)
+  })
+
+  it('方案模式：只问一句或只说先看目录，不弹确认', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.planMode = true
+    await store.send('先出方案')
+    const sid = store.sessionId
+    store.onChunk({ sessionID: sid, delta: '改 A 还是 B？', thinking: '' })
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    const { planEditState } = useDialogs()
+    expect(planEditState.value).toBeFalsy()
+    expect(h.sends).toEqual([])
+    expect(useToast().toasts.value.some((t) => t.text.includes('没有给出可执行的方案'))).toBe(true)
+
+    store.planMode = true
+    await store.send('再看一眼')
+    store.onChunk({ sessionID: sid, delta: '我先看一下目录', thinking: '' })
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    expect(planEditState.value).toBeFalsy()
+    expect(h.sends).toEqual([])
+  })
+
+  it('方案模式：带附件不静默改成可写发送', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.planMode = true
+    const att = {
+      kind: 'file' as const,
+      name: 'a.txt',
+      mediaType: 'text/plain',
+      size: 1,
+      inline: 'none' as const,
+    }
+    await expect(store.send('看这个', [att], { throwOnError: true })).rejects.toThrow(/方案模式/)
+    expect(h.planCalls).toEqual([])
+    expect(h.attachCalls).toEqual([])
+    expect(h.sends).toEqual([])
+    expect(store.planMode).toBe(true)
+    expect(store.messages.some((m) => m.role === 'user')).toBe(false)
+  })
+
+  it('方案模式：调研时补一句不直接改文件，确认框里带上这句', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.planMode = true
+    await store.send('先出方案')
+    const sid = store.sessionId
+    store.enqueue('不要改注册页')
+    store.onChunk({ sessionID: sid, delta: '1. 改登录页\n2. 跑测试', thinking: '' })
+    store.onTerminal({ sessionID: sid, endReason: END_REASON.DONE, error: '' })
+    await new Promise((r) => setTimeout(r, 0))
+    const { planEditState, resolvePlanEdit } = useDialogs()
+    expect(h.sends).not.toContain('不要改注册页')
+    expect(planEditState.value?.value).toContain('不要改注册页')
+    expect(planEditState.value?.value).toContain('改登录页')
+    resolvePlanEdit(planEditState.value?.value ?? '')
+    await new Promise((r) => setTimeout(r, 0))
+    const executed = h.sends.at(-1) ?? ''
+    expect(executed).toContain('不要改注册页')
+    expect(executed).toContain('已确认的方案')
+    expect(h.planCalls).toHaveLength(1)
+  })
+
+  it('方案模式：开关和调研跟着会话走，两场结束都会确认', async () => {
+    const store = useChatStore()
+    await store.newSession()
+    store.planMode = true
+    await store.send('给 A 出方案')
+    const a = store.sessionId
+    expect(store.planTurn).toBe(a)
+    await store.newSession()
+    expect(store.planMode).toBe(false)
+    expect(store.planTurn).toBe(null)
+    store.planMode = true
+    await store.send('给 B 出方案')
+    const b = store.sessionId
+    expect(store.planTurn).toBe(b)
+    expect(h.planCalls.map((c) => c.sessionID)).toEqual([a, b])
+    store.sessionId = a
+    expect(store.planMode).toBe(false)
+    expect(store.planTurn).toBe(a)
+
+    store.onChunk({ sessionID: a, delta: '1. 改 A 的登录\n2. 测 A', thinking: '' })
+    store.onTerminal({ sessionID: a, endReason: END_REASON.DONE, error: '' })
+    store.onChunk({ sessionID: b, delta: '1. 改 B 的登录\n2. 测 B', thinking: '' })
+    store.onTerminal({ sessionID: b, endReason: END_REASON.DONE, error: '' })
+    const { planEditState, resolvePlanEdit } = useDialogs()
+    expect(planEditState.value?.value).toContain('改 A 的登录')
+    resolvePlanEdit('1. 只改 A\n2. 测 A')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(planEditState.value?.value).toContain('改 B 的登录')
+    resolvePlanEdit('1. 只改 B\n2. 测 B')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.sends.some((t) => t.includes('只改 A'))).toBe(true)
+    expect(h.sends.some((t) => t.includes('只改 B'))).toBe(true)
+    expect(h.planCalls).toHaveLength(2)
   })
 })
 

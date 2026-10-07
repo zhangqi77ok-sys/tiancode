@@ -1,0 +1,121 @@
+# ============================================================
+# tiancode .gitignore —— 提交纪律的强制执行（单一定义源见 docs/STANDARDS.md）
+# 原则：不该提交的坚决不提交；例外白名单必须在 README 中声明理由。
+# ============================================================
+
+# --- 依赖与构建产物（永不入库） ---
+node_modules/
+# dist 构建产物忽略，但保留 .gitkeep 占位（go:embed all:frontend/dist 需要目录存在）
+frontend/dist/*
+!frontend/dist/.gitkeep
+*.exe
+# 下面三条刻意**锚定到仓库根**（前导 /），不要写回 `bin/` `/build/` `dist/` 形式。
+# 为什么：不锚定的 `dist/` 会连 `frontend/dist` 这个**目录本身**一起排除，而 git 的规则是
+# 「父目录被排除时，无法再取反其中的文件」（gitignore(5) 明文）——
+# 于是上一行的 `!frontend/dist/.gitkeep` 变成一句废话，占位文件永远进不了仓库，
+# 最终让新克隆的 `go build ./...` 因 go:embed 找不到 frontend/dist 而失败。
+# 同理，release.ps1 的产物都在仓库根，锚定后语义完全等价。
+/bin/
+# /build/ 锚定排除 + 逐级放行应用图标（0.2.34）：gitignore(5) 明文——父目录
+# 被排除时无法直接取反其中的文件，必须逐级放行目录本身（frontend/dist 同款教训）。
+/build/*
+!/build/windows
+/build/windows/*
+!/build/windows/icon.ico
+/dist/
+
+# --- 运行时数据（永不入库） ---
+data/
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+# --- 密钥与环境（永不入库；API Key 只进环境变量） ---
+.env
+.env.*
+*.local
+
+# --- 临时文件与个人 IDE 配置（永不入库） ---
+tmp/
+.tmp/
+.worktrees/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Go 工具产物（永不入库） ---
+coverage.out
+*.test
+*.out
+
+# --- 安装器 payload（构建时由 release.ps1 生成，仅保留 .gitkeep 占位） ---
+cmd/installer/payload/*
+!cmd/installer/payload/.gitkeep
+
+# ------------------------------------------------------------
+# 白名单例外（必须入库，禁止被上方规则忽略）
+#
+# 为什么这里必须写成"取反规则"而不是"注释里列一份清单"：
+# gitignore 只认规则，注释不起任何作用。此处原先只有注释，于是上方的 `*.exe`
+# 把 vendor 内的
+#   vendor/github.com/wailsapp/wails/v2/internal/webview2runtime/MicrosoftEdgeWebview2Setup.exe
+# 一并挡在仓库外；而 wails 的 webview2installer.go 用 //go:embed 无条件嵌入该文件，
+# 导致任何新克隆执行 `go build ./...` / `go vet ./...` / `go test ./...` 全部失败：
+#   pattern MicrosoftEdgeWebview2Setup.exe: no matching files found
+# 后果是"离线全绿"只在作者本机（go mod vendor 复制过该文件）成立，仓库本身不可构建。
+#
+# 规则：vendor/ 是第三方源码快照，其内部一切文件（含 *.exe、*.log、与 dist/bin 同名的
+# 目录）都必须入库，否则离线构建不可复现。
+#
+# 取反规则必须放在本文件最后：gitignore 后匹配者优先。
+# ------------------------------------------------------------
+!vendor/**
+
+# agent 本地工作状态（brainstorm 服务端口/token、会话临时产物）
+.superpowers/
+
+# agent 联调时的抓取快照等临时产物（0.2.26 曾误入库 9 个 _*.json）
+/_*.json
+/_*.md
+
+# agent 本地工作状态（IDE 侧）
+.codebuddy/
+
+# 应用图标是**源资源**而非构建产物（0.2.34）：它是 rsrc_windows_amd64.syso 的
+# 生成输入（tools/genicon.ps1 的输出），随仓库入库保证新克隆可重建 exe 图标。
+# 父目录 /build/ 被锚定排除，取反规则必须在此（后匹配者优先）。
+!/build/windows/icon.ico
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

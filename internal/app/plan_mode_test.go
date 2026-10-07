@@ -139,3 +139,28 @@ func TestSendPlan_ReadOnlyEnforced(t *testing.T) {
 		t.Fatal("fs（只读包装）必须在场")
 	}
 }
+
+func TestPlanFS_SchemaOmitsWrites(t *testing.T) {
+	p := planFS{inner: fstool.New(t.TempDir())}
+	var doc struct {
+		Properties struct {
+			Action struct {
+				Enum []string `json:"enum"`
+			} `json:"action"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(p.Schema(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(doc.Properties.Action.Enum, ",")
+	if got != "read,list,tree,diagnose,symbols" {
+		t.Fatalf("enum = %q", got)
+	}
+	for _, banned := range []string{"write", "replace"} {
+		for _, name := range doc.Properties.Action.Enum {
+			if name == banned {
+				t.Fatalf("方案模式 schema 不得广告 %s", banned)
+			}
+		}
+	}
+}

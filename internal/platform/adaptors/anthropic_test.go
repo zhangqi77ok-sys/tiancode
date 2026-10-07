@@ -28,12 +28,26 @@ func TestAnthropic_ConvertRequest(t *testing.T) {
 	if m["max_tokens"] != float64(1024) {
 		t.Fatalf("max_tokens = %v（param_override 必须生效）", m["max_tokens"])
 	}
-	if m["system"] != "你是编码助手" {
-		t.Fatalf("system = %v（system 消息必须提升）", m["system"])
+	sys, ok := m["system"].([]any)
+	if !ok || len(sys) != 1 {
+		t.Fatalf("system = %v（应为单元素块数组）", m["system"])
 	}
+	sb := sys[0].(map[string]any)
+	if sb["text"] != "你是编码助手" {
+		t.Fatalf("system text = %v（system 消息必须提升）", sb["text"])
+	}
+	if cc, ok := sb["cache_control"].(map[string]any); !ok || cc["type"] != "ephemeral" {
+		t.Fatalf("system 块应带 cache_control：%v", sb)
+	}
+	// 末条消息的最后一块带 cache_control（移动断点，C-RT-5）
 	msgs := m["messages"].([]any)
 	if len(msgs) != 4 {
 		t.Fatalf("messages = %d, want 4（user/tool_use/tool_result/assistant）", len(msgs))
+	}
+	mL := msgs[len(msgs)-1].(map[string]any)
+	lb := mL["content"].([]any)[len(mL["content"].([]any))-1].(map[string]any)
+	if cc, ok := lb["cache_control"].(map[string]any); !ok || cc["type"] != "ephemeral" {
+		t.Fatalf("最后一块应带 cache_control：%v", lb)
 	}
 	m0 := msgs[0].(map[string]any)
 	if m0["role"] != "user" {

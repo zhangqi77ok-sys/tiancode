@@ -216,7 +216,7 @@ func (t *Tool) Description() string {
 	return "内置浏览器，本环境唯一的浏览器：打开任意网页（本地 dev server 如 http://127.0.0.1:8765 或公网 URL）并实时展示给用户（右侧驾驶舱面板），" +
 		"列出当前屏内可交互元素（含无文本的图标按钮）、点击按钮、填写输入框、下翻一屏、后退、读取控制台报错、截取当前画面。" +
 		"要让用户看到网页、或验证自己写的前端页面，必须用本工具；不要用 shell start 打开网页，也不要经 mcp 找浏览器（本环境没有 cursor-ide-browser / playwright 这类 MCP 浏览器）。" +
-		"流程：先 open(url)，再 snapshot 拿元素 ref，然后按 ref 执行 click/fill；长页面用 scroll 下翻看更多元素。" +
+		"流程：先 open(url)（结果里已有元素列表），再按 ref 执行 click/fill；click/fill/back 成功后会附上当前元素列表，控制台非空时把尾部写进结果，不必为了看结果再调一次 snapshot/console。长页面用 scroll 下翻看更多元素。" +
 		"注意：默认无头模式 + 独立临时配置目录，看不到用户日常浏览器的登录态，不要用它操作需要登录的网站；" +
 		"fill/click 可能提交数据，browser 默认在审批清单（每个动作执行前需用户确认）。"
 }
@@ -352,7 +352,7 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (tools.ToolRes
 			out += fmt.Sprintf("（%d 字）", len([]rune(a.Text)))
 		}
 		return t.withShot(ctx, tools.ToolResult{
-			Content: out + "\n" + t.location(ctx),
+			Content: t.appendModelView(ctx, out+"\n"+t.location(ctx)),
 			Title:   a.Action + " [" + a.Ref + "]", Op: "exec",
 		}), nil
 	case "back":
@@ -375,7 +375,10 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (tools.ToolRes
 			return fail(ctx, "读取导航历史失败：%v", err), nil
 		}
 		if idx <= 0 || len(hist) == 0 {
-			return tools.ToolResult{Content: "没有可后退的历史\n" + t.location(ctx), Title: "back", Op: "exec"}, nil
+			return t.withShot(ctx, tools.ToolResult{
+				Content: t.appendModelView(ctx, "没有可后退的历史\n"+t.location(ctx)),
+				Title:   "back", Op: "exec",
+			}), nil
 		}
 		if err := page.NavigateToHistoryEntry(hist[idx-1].ID).Do(cctx); err != nil {
 			return fail(ctx, "后退失败：%v", err), nil
@@ -390,7 +393,7 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (tools.ToolRes
 			note = "（页面就绪等待失败，可能仍在加载）"
 		}
 		return t.withShot(ctx, tools.ToolResult{
-			Content: "已后退" + note + "\n" + t.location(ctx), Title: "back", Op: "exec",
+			Content: t.appendModelView(ctx, "已后退"+note+"\n"+t.location(ctx)), Title: "back", Op: "exec",
 		}), nil
 	case "console":
 		if err := t.ensureRunning(); err != nil {
@@ -598,6 +601,28 @@ func (t *Tool) snapshotLocked(ctx context.Context) (string, error) {
 	}
 	b.WriteString("\n（ref=方括号里的序号；用 browser click/fill 的 ref 参数引用）")
 	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// appendModelView 把动作之后的屏内元素和控制台尾部写进模型能看到的 Content。
+// 点完再盲等一次 snapshot/console 会白走一步；读取失败不否定已经成功的动作。
+// Visual 仍只给界面，不在这里改。
+func (t *Tool) appendModelView(ctx context.Context, content string) string {
+	var b strings.Builder
+	b.WriteString(content)
+	list, err := t.snapshotLocked(ctx)
+	if err != nil {
+		b.WriteString("\n（动作后读取元素失败：")
+		b.WriteString(err.Error())
+		b.WriteString("）")
+	} else {
+		b.WriteString("\n\n")
+		b.WriteString(list)
+	}
+	if tail := t.consoleTail(); len(tail) > 0 {
+		b.WriteString("\n\n控制台尾部：\n")
+		b.WriteString(strings.Join(tail, "\n"))
+	}
+	return b.String()
 }
 
 // location 读当前页 URL 与标题（辅助信息，失败静默为空——主动作已成功，不让

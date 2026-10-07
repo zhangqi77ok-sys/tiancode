@@ -14,7 +14,7 @@ func TestChatService_WebFetchSharedToolAndPreface(t *testing.T) {
 	s := newChannelService(t, Config{})
 
 	// assembleRegistry(nil) 模拟纯对话：webfetch 仍要在场
-	reg, err := s.assembleRegistry(nil)
+	reg, err := s.assembleRegistry(nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

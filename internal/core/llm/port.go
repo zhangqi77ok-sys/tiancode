@@ -115,6 +115,10 @@ type ContextEvent struct {
 	FoldedReads   int  `json:"foldedReads"`  // 因超预算额外折叠的只读结果数（收窄窗口 + 重复读去重）
 	FoldedBodies  int  `json:"foldedBodies"` // 因超预算折叠的旧轮次回复正文数（→ 一行说明；最后一级）
 	Dropped       bool `json:"dropped"`      // 已无可再丢仍超预算（界面须标明"已折叠"）
+	// Compacted 标记本请求带上了历史压缩摘要（0.0.41）：折叠到底仍超预算时，
+	// 旧轮次叙事被摘要成一条【历史摘要】消息（原文在账本里不丢）。界面可据此
+	// 显示"已压缩历史"，压缩绝不静默。
+	Compacted bool `json:"compacted,omitempty"`
 }
 
 // StreamChunk 是流式传输的最小单元。

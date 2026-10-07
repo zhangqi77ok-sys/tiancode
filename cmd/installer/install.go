@@ -78,62 +78,61 @@ func appendSetupLog(line string) {
 	fmt.Fprintf(f, "%s  %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
 }
 
-// errAppRunning 表示应用正在运行、本次安装/卸载被中止，等待用户自行退出。
-// 用哨兵错误而非普通错误：调用点据此选标题（这不是"安装失败"，而是"需要用户先操作"）。
-var errAppRunning = errors.New("请先在系统托盘图标上点右键 →「退出」，等 tiancode 完全退出后，再运行本安装包。\n\n" +
+// errAppRunning 表示应用正在运行、本次安装/卸载被中止。用哨兵错误而非普通错误：
+// 调用点据此选标题（这不是"安装失败"，而是"需要用户先操作"）。
+var errAppRunning = errors.New("tiancode 有任务正在进行（升级退出请求被应用拒绝），且等待超时。\n\n" +
+	"请等应用里的任务跑完，或从系统托盘图标右键「退出」后重试。\n" +
 	"安装器不会替你强制结束进程：强杀会跳过应用的正常收尾，可能丢失正在进行的会话。")
 
-// appExitWaitTimeout 是静默模式下等待应用自行退出的上限。
-// 为什么给 5s：自更新路径（app/update.go）先拉起安装器、再异步 Quit，
-// 安装器必须等这段自然退出，而不是替它关窗（见 resolveAppClosePolicy）。
-const appExitWaitTimeout = 5 * time.Second
+// upgradeExitWaitTimeout 是发出优雅退出请求后等待应用退出的上限（0.0.38 握手）。
+// 为什么 20s：空闲实例 1~2s 内退出；忙实例会**拒绝退出**（任务在跑），等到超时
+// 如实中止——绝不替用户中断任务。
+const upgradeExitWaitTimeout = 20 * time.Second
 
-// appClosePolicy 描述「应用正在运行」时安装器的处置。
-type appClosePolicy struct {
-	wait    time.Duration // 等应用自行退出的时长；0 = 不等
-	blocked error         // 非 nil = 中止本次操作
+// signalUpgradeExit 是"请求优雅退出"的出口（测试注入点）：向运行中的实例拉起
+// `tiancode.exe -upgrade-exit` 第二实例——参数经单实例锁的 WM_COPYDATA 送达主实例，
+// 主实例空闲则优雅退出、忙则拒绝。第二实例自身发完参数即退出。
+var signalUpgradeExit = func(installDir string) error {
+	exe := filepath.Join(installDir, appExeName)
+	if _, err := os.Stat(exe); err != nil {
+		return err // 没有（或找不到）已安装的应用可发信号：交回调用方走等待/中止
+	}
+	cmd := exec.Command(exe, "-upgrade-exit")
+	cmd.Dir = installDir
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// 不 Wait：第二实例发完参数立即自退；短命僵尸无害，阻塞安装进程才有害。
+	return cmd.Process.Release()
 }
 
-// resolveAppClosePolicy 是纯函数，锁定"检测到应用在跑"时各模式下的处置。
+// ensureAppClosed 在动目标目录之前处置"应用正在运行"（0.0.38 握手版）：
+// 先请应用优雅退出，再等它退出。返回 nil 表示可以继续；返回 errAppRunning 时中止。
 //
-// 为什么安装器不再自己关应用（0.0.24 关窗语义变更后的硬约束）：
-// WM_CLOSE 在 winc 里被完全截断（winc/wndproc.go:87 → wails Quit() → OnBeforeClose），
-// 而托盘版 OnBeforeClose 对一切关闭都返回 true（隐藏到托盘、进程存活，见 main.go）。
-// 因此旧实现"先温和 taskkill 再强杀"的温和阶段**必然无效**，2s 之后只剩 /F 一条路：
-// OnShutdown 不执行 → chat.Close() 不跑 → 孤儿 MCP node 进程、账本句柄不释放，
-// 正在写入的 JSONL 可能被截断。修复方向由"安装器代替用户强杀"改为
-// "交互模式请用户自己退出、静默模式等它自然退出"。
-func resolveAppClosePolicy(running, quiet bool) appClosePolicy {
-	switch {
-	case !running:
-		return appClosePolicy{}
-	case quiet:
-		// 静默模式只有自更新一条调用路径：应用已置退出标记（app/update.go:62），
-		// 会自行 Quit。这里只等；等不到就中止，不替用户杀进程。
-		return appClosePolicy{wait: appExitWaitTimeout}
-	default:
-		return appClosePolicy{blocked: errAppRunning}
-	}
-}
-
-// ensureAppClosed 在动目标目录之前处置"应用正在运行"。
-// 返回 nil 表示可以继续；返回 errAppRunning 时中止，并把可执行的中文指引带给用户。
-func ensureAppClosed(quiet bool) error {
-	p := resolveAppClosePolicy(isAppRunning(), quiet)
-	if p.blocked != nil {
-		appendSetupLog("中止：检测到 tiancode 正在运行，等待用户从托盘退出")
-		return p.blocked
-	}
-	if p.wait == 0 || waitAppExit(p.wait) {
+// 与 0.0.31 版的差异：不再"交互模式请用户自己退出、静默模式干等 5s"——两者都先
+// 走握手（空闲实例 1~2s 退出，用户无需任何手动步骤）；旧版本应用不认识
+// -upgrade-exit 参数会立即自退（flag 解析失败），同样落回等待/中止，行为安全退化。
+// 强制结束进程的路径仍然不存在（TestNoForcedAppKill 锁死）。
+func ensureAppClosed(quiet bool, installDir string) error {
+	if !isAppRunning() {
 		return nil
 	}
-	appendSetupLog(fmt.Sprintf("中止：等待 tiancode 退出超过 %s，未改动任何文件", p.wait))
-	return fmt.Errorf("等待 tiancode 退出超过 %s，已中止，未改动任何文件", p.wait)
+	if err := signalUpgradeExit(installDir); err != nil {
+		warn("发送升级退出请求失败：%v（继续等待应用自行退出）", err)
+	}
+	if waitAppExit(upgradeExitWaitTimeout) {
+		appendSetupLog("应用已响应升级退出请求（或自行退出），继续安装")
+		return nil
+	}
+	appendSetupLog(fmt.Sprintf("中止：tiancode 有任务在跑、等待 %s 未退出，未改动任何文件", upgradeExitWaitTimeout))
+	return errAppRunning
 }
 
 // isAppRunning 用 tasklist 查询应用进程是否存在。查询失败一律视为未运行：
 // 关闭是尽力而为的前置优化，探测失败不应让安装失败。
-func isAppRunning() bool {
+// 包级 var：测试注入点（cmd/installer 的握手用例换探针，不真跑 tasklist）。
+var isAppRunning = func() bool {
 	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+appExeName, "/FO", "CSV", "/NH").Output()
 	if err != nil {
 		return false
@@ -149,10 +148,10 @@ func tasklistReportsApp(out string) bool {
 }
 
 // waitAppExit 轮询等待应用退出（时序判据见 docs/TESTING.md：轮询而非固定 sleep）。
-//
-// 仅用于静默模式下等待应用**自然**退出（自更新路径）。刻意不提供"强制结束"：
-// 见 resolveAppClosePolicy —— 托盘语义下温和关闭必然无效，强杀会丢数据。
-func waitAppExit(timeout time.Duration) bool {
+// 仅用于等待应用在握手后退出（升级退出请求 / 自更新的自然退出）。刻意不提供
+// "强制结束"：托盘语义下温和关闭必然无效，强杀会丢数据（TestNoForcedAppKill）。
+// 包级 var：测试注入点（用例换探针，不真等 20s）。
+var waitAppExit = func(timeout time.Duration) bool {
 	for deadline := time.Now().Add(timeout); ; {
 		if !isAppRunning() {
 			return true
@@ -386,6 +385,30 @@ func uninstallOwnsEntry(recordedLoc, dir string) bool {
 	return samePath(recordedLoc, dir)
 }
 
+// readRecordedInstallDir 读卸载注册项记录的安装位置（InstallLocation），读不到返回空串。
+// 调用方（resolveUninstallDir）拿到空串才回退默认目录：读不到注册表不应让卸载失败。
+func readRecordedInstallDir() string {
+	k, err := registry.OpenKey(registry.CURRENT_USER, uninstallKey, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	loc, _, err := k.GetStringValue("InstallLocation")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(loc)
+}
+
+// uninstallCommand 返回写进「应用和功能」的卸载命令行。
+// 必须带上实际安装目录：装到自定义目录的安装，卸载入口可能从任意位置被拉起
+// （「应用和功能」/ 开始菜单 / 用户手动双击），不带目录就只能卸默认位置。
+// 无 -dir 时卸载会回退读注册表里的 InstallLocation（见 resolveUninstallDir），
+// 兼容旧安装写下的、不带目录的 UninstallString。
+func uninstallCommand(setupPath, dir string) string {
+	return fmt.Sprintf(`"%s" -uninstall -dir "%s"`, setupPath, dir)
+}
+
 // writeUninstallEntry 写 HKCU 卸载注册项（"应用和功能"可见）。
 func writeUninstallEntry(dir, setupPath string) error {
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, uninstallKey, registry.WRITE)
@@ -397,7 +420,7 @@ func writeUninstallEntry(dir, setupPath string) error {
 		"DisplayName":     appName,
 		"DisplayVersion":  version,
 		"InstallLocation": dir,
-		"UninstallString": fmt.Sprintf(`"%s" -uninstall`, setupPath),
+		"UninstallString": uninstallCommand(setupPath, dir),
 		"Publisher":       "tiancode",
 	}
 	for name, val := range values {

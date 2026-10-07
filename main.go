@@ -30,7 +30,16 @@ var version = "dev"
 
 func main() {
 	configPath := flag.String("config", configfile.DefaultPath(), "配置文件路径（默认 %APPDATA%\\tiancode\\config.json）")
+	// upgrade-exit（0.0.38 安装器握手）：安装包检测到本应用在跑时拉起
+	// `tiancode.exe -upgrade-exit`——第二实例经单实例锁把参数送达主实例，
+	// 主实例空闲则优雅退出（OnShutdown 正常收尾）、忙则拒绝（安装器超时中止）。
+	// 无主实例时（检测与信号之间的退出竞态）静默退出，绝不因此拉起第二份 UI。
+	upgradeExit := flag.Bool("upgrade-exit", false, "（安装器使用）请求正在运行的实例优雅退出")
 	flag.Parse()
+
+	if *upgradeExit && !shell.PrimaryInstanceAlive() {
+		return
+	}
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -71,7 +80,15 @@ func main() {
 		// 第二个实例启动即退出，并把已运行的那个窗口唤到前台。
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "d7c9e1a4-tiancode-single-instance",
-			OnSecondInstanceLaunch: func(_ options.SecondInstanceData) {
+			OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
+				// 升级退出握手（0.0.38）：第二实例参数带 -upgrade-exit = 安装器
+				// 在请求优雅退出（空闲退 / 忙拒退），不再做"唤起窗口"。
+				for _, a := range data.Args {
+					if a == "-upgrade-exit" {
+						shell.HandleUpgradeExit(chat)
+						return
+					}
+				}
 				// 只处理"唤起"：第二实例自己会立刻退出，不重复任何装配。
 				// quitting 判据在 RestoreMainWindow 内部（正在退出时别把窗口拽回来）。
 				shell.RestoreMainWindow()

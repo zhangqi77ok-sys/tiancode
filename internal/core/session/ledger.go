@@ -61,6 +61,13 @@ const (
 	EventWorkspaceMove EventKind = "workspace_move"
 	// EventUsage 是已停用的用量统计行。旧账本里可能还有，重放与列表都跳过，不再写入。
 	EventUsage EventKind = "usage"
+
+	// EventCompaction 记录一次历史压缩（0.0.41）：折叠到底仍超预算时，把
+	// (账本开头, up_to_seq) 区间的旧轮次摘要成一段文字（LLM 摘要只覆盖对话叙事，
+	// 工具输出仍走确定性单行——0.0.09 用户裁决不变），事件落账后派生跳过
+	// seq < up_to_seq 的叙事事件、以摘要开头。账本只追加：摘要不覆盖原文，
+	// UI 投影与「撤回/分叉」语义不受影响；同一账本可多次压缩，后一次覆盖前一次。
+	EventCompaction EventKind = "compaction"
 )
 
 // Event 是账本中的最小事件单元。

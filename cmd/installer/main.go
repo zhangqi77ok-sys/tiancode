@@ -11,6 +11,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -48,7 +49,9 @@ func messageBox(title, text string, style uint) int {
 }
 
 func main() {
-	dirFlag := flag.String("dir", defaultInstallDir(), "安装目录")
+	// -dir 默认为空串而非 defaultInstallDir()：卸载需要区分"没给参数"（该走注册表里
+	// 实际安装位置）与"给了一个目录"，只能靠空值判断。安装侧由 resolveInstallDir 兜默认值。
+	dirFlag := flag.String("dir", "", "安装目录（默认 %LOCALAPPDATA%\\Programs\\tiancode）")
 	uninstall := flag.Bool("uninstall", false, "卸载已安装的 tiancode")
 	quiet := flag.Bool("quiet", false, "静默模式：不弹对话框（供自动化/脚本部署）")
 	noDesktop := flag.Bool("no-desktop-shortcut", false, "不创建桌面快捷方式（仅创建开始菜单快捷方式）")
@@ -58,13 +61,16 @@ func main() {
 	flag.Parse()
 
 	if *uninstall {
-		// 卸载同样先查应用是否在跑：运行中的 exe 被锁定，删除必然失败。
-		// 与安装一致——不替用户杀进程（见 cmd/installer/install.go resolveAppClosePolicy）。
-		if err := ensureAppClosed(*quiet); err != nil {
+		// 卸载目录：参数优先，没有就读注册表里记录的安装位置（见 resolveUninstallDir）——
+		// 旧版 UninstallString 不带目录，只认默认目录会卸错地方。
+		dir := resolveUninstallDir(*dirFlag, readRecordedInstallDir())
+		// 卸载同样先握手（0.0.38）：请运行中的实例优雅退出（空闲退 / 忙拒退），
+		// 运行中的 exe 被锁定，删除必然失败。不替用户杀进程（TestNoForcedAppKill）。
+		if err := ensureAppClosed(*quiet, dir); err != nil {
 			fail("tiancode 正在运行", err, *quiet)
 			return
 		}
-		if err := doUninstall(*dirFlag); err != nil {
+		if err := doUninstall(dir); err != nil {
 			fail("卸载失败", err, *quiet)
 			return
 		}
@@ -74,17 +80,29 @@ func main() {
 		return
 	}
 
+	installDir := resolveInstallDir(*dirFlag)
 	if !*quiet {
-		msg := fmt.Sprintf("将安装 tiancode %s 到：\n%s\n\n继续？", version, *dirFlag)
+		// 交互模式先让用户改目录：MessageBox 只有「继续 / 取消」，路径改不了。
+		// 用户点取消 = 主动放弃安装，静默退出（不算失败，不弹错误框）。
+		dir, err := pickInstallDir(installDir)
+		if errors.Is(err, dirPickCanceled) {
+			return
+		}
+		if err != nil {
+			fail("选择安装目录失败", err, false)
+			return
+		}
+		installDir = dir
+		msg := fmt.Sprintf("将安装 tiancode %s 到：\n%s\n\n继续？", version, installDir)
 		if messageBox("tiancode 安装", msg, mbOKCancel|mbIconQuest) != idOK {
 			return
 		}
 	}
-	if err := ensureAppClosed(*quiet); err != nil {
+	if err := ensureAppClosed(*quiet, installDir); err != nil {
 		fail("tiancode 正在运行", err, *quiet)
 		return
 	}
-	if err := doInstall(*dirFlag, !*noDesktop); err != nil {
+	if err := doInstall(installDir, !*noDesktop); err != nil {
 		fail("安装失败", err, *quiet)
 		return
 	}
@@ -98,9 +116,9 @@ func main() {
 	if *relaunch {
 		// 重启用独立进程路径启动新版；失败只记日志不报错框——安装本身已成功，
 		// "没自动重启"不该伪装成安装失败（用户从开始菜单点开即可）。
-		exe := filepath.Join(*dirFlag, "tiancode.exe")
+		exe := filepath.Join(installDir, "tiancode.exe")
 		cmd := exec.Command(exe)
-		cmd.Dir = *dirFlag
+		cmd.Dir = installDir
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
 		if err := cmd.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "relaunch failed: %v\n", err)
@@ -108,11 +126,14 @@ func main() {
 	}
 }
 
-// fail 报告失败：静默模式写 stderr 并退码 1；交互模式弹错误框。
+// fail 报告失败：写明结果并**统一退码 1**（0.0.38 修复 0.0.31 登记的缺陷——
+// 此前交互模式只弹框不 exit，任何失败（含"请先退出"中止）都返回 exit 0，
+// 自动化判定会把"没装成"读成"成功"）。
 func fail(title string, err error, quiet bool) {
 	if quiet {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", title, err)
-		os.Exit(1)
+	} else {
+		messageBox(title, err.Error(), mbOK|mbIconError)
 	}
-	messageBox(title, err.Error(), mbOK|mbIconError)
+	os.Exit(1)
 }

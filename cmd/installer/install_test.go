@@ -223,40 +223,54 @@ func TestTasklistReportsApp(t *testing.T) {
 // 交互模式（用户双击 setup）→ 中止并请用户从托盘退出；
 // 静默模式（只有自更新一条路径）→ 只等应用自然退出，等不到就中止；
 // 应用没在运行 → 直接继续，不做任何等待。
-func TestResolveAppClosePolicy(t *testing.T) {
-	cases := []struct {
-		name        string
-		running     bool
-		quiet       bool
-		wantBlocked bool
-		wantWait    time.Duration
-	}{
-		{"应用未运行（交互）：直接继续", false, false, false, 0},
-		{"应用未运行（静默）：直接继续", false, true, false, 0},
-		{"运行中 + 交互：请用户从托盘退出", true, false, true, 0},
-		{"运行中 + 静默（自更新）：等它自己退出", true, true, false, appExitWaitTimeout},
-	}
-	for _, c := range cases {
-		p := resolveAppClosePolicy(c.running, c.quiet)
-		if (p.blocked != nil) != c.wantBlocked {
-			t.Errorf("%s: blocked = %v, wantBlocked %v", c.name, p.blocked != nil, c.wantBlocked)
-		}
-		if p.wait != c.wantWait {
-			t.Errorf("%s: wait = %s, want %s", c.name, p.wait, c.wantWait)
-		}
-		if c.wantBlocked && !errors.Is(p.blocked, errAppRunning) {
-			t.Errorf("%s: blocked 必须是 errAppRunning（调用点据此选标题），实际 %v", c.name, p.blocked)
-		}
-	}
-}
+// 0.0.38 握手用例：未运行 → 不发信号直接继续；运行中 → 发信号、退出后继续；
+// 忙（应用拒绝退出）→ 等待超时中止且错误可执行。探针/信号/等待全部注入，不真跑。
+func TestEnsureAppClosed_Handshake(t *testing.T) {
+	oldProbe, oldSignal, oldWait := isAppRunning, signalUpgradeExit, waitAppExit
+	defer func() { isAppRunning, signalUpgradeExit, waitAppExit = oldProbe, oldSignal, oldWait }()
 
-// 中止提示必须给出可执行的下一步。tiancode 常驻托盘时"关闭窗口"根本不算退出，
-// 只说"请关闭程序"会让用户反复点 X 却始终装不上。
-func TestErrAppRunning_Actionable(t *testing.T) {
-	msg := errAppRunning.Error()
-	for _, want := range []string{"托盘", "退出"} {
+	// 1) 未运行：不发信号直接继续
+	probed, signaled := 0, 0
+	isAppRunning = func() bool { probed++; return false }
+	signalUpgradeExit = func(dir string) error { signaled++; return nil }
+	waitAppExit = func(time.Duration) bool { t.Fatal("未运行不得进入等待"); return false }
+	if err := ensureAppClosed(true, "d"); err != nil {
+		t.Fatalf("未运行应直接继续：%v", err)
+	}
+	if signaled != 0 {
+		t.Fatalf("未运行不得发握手信号：%d", signaled)
+	}
+	_ = probed
+
+	// 2) 运行中 → 发信号 → 应用退出：继续
+	signaled = 0
+	live := true
+	isAppRunning = func() bool { return live } // 首次在跑；waitAppExit 被换掉不看它
+	signalUpgradeExit = func(dir string) error { signaled++; live = false; return nil }
+	waitAppExit = func(time.Duration) bool { return !live }
+	if err := ensureAppClosed(false, "d"); err != nil {
+		t.Fatalf("握手成功应继续安装：%v", err)
+	}
+	if signaled != 1 {
+		t.Fatalf("运行中必须先发握手信号：%d", signaled)
+	}
+
+	// 3) 忙（应用拒绝退出）：等待超时中止，错误 = errAppRunning 且指引可执行
+	signaled = 0
+	isAppRunning = func() bool { return true }
+	signalUpgradeExit = func(dir string) error { signaled++; return nil }
+	waitAppExit = func(time.Duration) bool { return false }
+	err := ensureAppClosed(true, "d")
+	if !errors.Is(err, errAppRunning) {
+		t.Fatalf("忙实例必须中止且返回 errAppRunning：%v", err)
+	}
+	if signaled != 1 {
+		t.Fatalf("中止前也必须先发过握手信号：%d", signaled)
+	}
+	msg := err.Error()
+	for _, want := range []string{"任务", "退出"} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("中止提示必须包含 %q，实际 %q", want, msg)
+			t.Errorf("中止提示必须包含 %q（可执行的下一步），实际 %q", want, msg)
 		}
 	}
 }

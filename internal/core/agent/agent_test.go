@@ -589,7 +589,7 @@ func TestAgent_StepLimit_SummaryCallFailureIsError(t *testing.T) {
 		t.Fatalf("terminal err = %v, want step limit", terminal.Err)
 	}
 	if fr.requestCount() != MaxStepsPerTurn+1 {
-		t.Fatalf("requests = %d, want %d（25 步工具 + 1 步总结）", fr.requestCount(), MaxStepsPerTurn+1)
+		t.Fatalf("requests = %d, want %d（工具步 + 1 步总结）", fr.requestCount(), MaxStepsPerTurn+1)
 	}
 	if n := countEvents(t, dir, session.EventAssistantMsg); n != 0 {
 		t.Fatalf("assistant anchors = %d, want 0 (turn incomplete)", n)

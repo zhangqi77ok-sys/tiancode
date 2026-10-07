@@ -23,6 +23,17 @@
 | C-RT-2 | 首块发出后的失败**不重试、不换渠道**，直接透传上游 EndReason 终态（防上下文撕裂） | `TestRuntime_NoRetryMidStream` |
 | C-RT-3 | Runtime 施加连接/空闲/总时长三层超时预算；ProviderPort 无法绕过（经构造注入） | `TestRuntime_TimeoutBudget` |
 | C-RT-4 | agent 只依赖 ChatRuntime，不感知渠道与重试的存在（Facade 边界，守卫 R1 静态保证） | `TestRuntime_FacadeBoundary` |
+| C-RT-5 | prompt cache（0.0.41）：Anthropic 适配器请求在 system 块与最后一条消息的最后一个块打 `cache_control`（覆盖 tools+system 稳定前缀与整段历史）；OpenAI 兼容协议依赖上游自动前缀缓存，不发送标记 | `TestAnthropic_ConvertRequest`（缓存点断言） |
+
+## C-SUB：只读子代理（0.0.41）
+
+| ID | 契约 | 锁定测试 |
+| --- | --- | --- |
+| C-SUB-1 | task 子代理在临时目录的一次性账本里运行，跑完即删——绝不写主会话账本、不进侧栏 | `TestSubagent_RunsIsolatedAndReturnsReport` |
+| C-SUB-2 | 写路径结构性排除：子代理工具集经只读闸门包装，`fs` 写类 action 与 `memory` 写 action 一律拒绝且原因可读（回给子代理模型）；search/git/webfetch 整体只读 | `TestSubagent_WriteActionsRejected` |
+| C-SUB-3 | 子代理最终回复作为 task 工具结果交还主对话（Title/Op 语义标签在案），报告有界（头尾保留） | `TestSubagent_RunsIsolatedAndReturnsReport` |
+| C-SUB-4 | 主轮取消经 ctx 传播，子代理以取消终态收束为可读业务失败；task 自带 15min 硬超时（C-TOOL-1） | `TestSubagent_CancelPropagates` |
+| C-SUB-5 | 子代理工具集里没有 task（不递归）、没有 shell/browser 写面；`task` 在内核只读白名单内（可 fan-out 并行） | `TestSubagent_RegistryHasNoTaskAndWrapsReadonly` |
 
 ## C-SES：事件账本与会话恢复（M1）
 
@@ -108,6 +119,8 @@
 | C-AGT-16 | 条目标 `done` 且声明 files，但本轮未观察到对其中**任一**文件的写入 → 拒绝该次 todo 提交（`IsError`），给出可执行的纠偏指引 | `TestUnaudited_DetectsUnwrittenFiles` |
 | C-AGT-17 | 核账路径比对走 Windows 归一（大小写不敏感、斜杠等价、去 `./`）；空白路径与归一后重复的路径在解析期即拒绝 | `TestNormalizePathKey` / `TestTodoItems_ParsesFiles` |
 | C-AGT-18 | 核账只认 `fs.write` / `fs.replace` 的**成功**结果；shell 重定向、MCP 写操作、解析不出的调用一律不认定（宁可漏判不误判）；`written` 每轮 Run 重建，只认本轮 | `TestWriteTargetOf` |
+| C-AGT-19 | 历史压缩（0.0.41）：账本存在 `EventCompaction` 时，`seq < up_to_seq` 的叙事事件不投影，摘要以 `【历史摘要】` user 消息开头；截点后的轮次完整保留；`EventTodo` 是状态不是叙事，截点前的最新清单照常注入；多次压缩后一次覆盖前一次；落在 fork 丢弃区间的压缩事件不生效 | `TestDerive_CompactionReplacesOldTurns` / `TestDerive_CompactionLatestWins` |
+| C-AGT-20 | 折叠到底仍超预算（声明上限）→ 先尝试 LLM 压缩（截点=保留最近 3 轮，摘要只覆盖对话叙事，工具输出仍走确定性单行）并落账 `EventCompaction`，成功则带摘要继续；摘要调用失败或压缩后仍超 → 回退旧超限错误终态；不可压缩（用户轮不足）不发起任何模型调用 | `TestAgent_OverflowTriggersCompaction` / `TestAgent_OverflowCompactionFailureFallsBack` / `TestAgent_OverflowTooFewTurnsFallsBack` |
 
 ## C-CH：模型渠道管理
 
@@ -271,6 +284,8 @@
 | C-INS-5 | 桌面路径按**注册表实际位置**解析（支持 OneDrive/组策略重定向），读不到才回退 `%USERPROFILE%\Desktop`；`%NAME%` 需展开 | `TestDesktopDirFallback_UsesUserProfile` / `TestExpandEnvVars` |
 | C-INS-6 | 不依赖 PATH 解析 PowerShell：优先用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`，缺失才回退裸名 | `TestPowershellExe_ResolvesToExistingFile` / `TestPowershellExe_FallsBackWhenMissing` |
 | C-INS-7 | 非致命问题（跳过桌面项、注册项归属不符、清理调度失败）必须**同时写 stderr 与 `%APPDATA%\tiancode\setup.log`**——GUI 子系统无控制台，只写 stderr 等于静默 | `scripts/install-smoke.ps1`（读取 setup.log 并逐行回显） |
+| C-INS-8 | 升级退出握手（0.0.38）：检测到应用在跑 → 先经单实例通道发 `-upgrade-exit`（空闲实例优雅退出、忙实例拒绝）→ 等待 20s 内退出则继续安装，超时中止且**绝不强制结束进程**；旧版本应用不认识该参数立即自退，安全退化为"等待/中止" | `TestEnsureAppClosed_Handshake` / `TestNoForcedAppKill` |
+| C-INS-9 | 安装器**任何**失败（含"请先退出"类中止）统一 exit 1——交互模式此前只弹框不退出，自动化会把"没装成"读成"成功" | `TestEnsureAppClosed_Handshake`（errAppRunning 路径）+ 0.0.31 登记、0.0.38 修复 |
 
 ## 契约变更记录
 

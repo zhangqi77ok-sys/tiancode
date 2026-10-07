@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"time"
 
 	"tiancode/internal/core/agent"
+	"tiancode/internal/core/llm"
 	"tiancode/internal/core/session"
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/fstool"
@@ -20,6 +22,7 @@ import (
 	"tiancode/internal/platform/memory"
 	"tiancode/internal/platform/searchtool"
 	"tiancode/internal/platform/shelltool"
+	"tiancode/internal/platform/subagenttool"
 	"tiancode/internal/platform/workspace"
 )
 
@@ -295,7 +298,8 @@ func (s *ChatService) ensureSessionTools(sessionID, root string) (*sessionTools,
 
 // assembleRegistry 组装一轮用的工具注册表：共享交互/扩展工具 + 该会话的
 // 受控工具。每轮组装只是把已缓存的工具实例注册一遍（结构很轻）。
-func (s *ChatService) assembleRegistry(st *sessionTools) (*tools.Registry, error) {
+// model 非空时注册 task 子代理工具（同一渠道同一模型派生只读调研子代理）。
+func (s *ChatService) assembleRegistry(st *sessionTools, model string) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
 	// todo / ask_user：交互类工具。定义进模型工具集，执行由 Loop 按名拦截
 	//（todo → agent.runTodo；ask_user → Loop.runAsk 阻塞等 UI 答复）
@@ -334,6 +338,31 @@ func (s *ChatService) assembleRegistry(st *sessionTools) (*tools.Registry, error
 	}
 	if err := s.attachExtensions(registry); err != nil {
 		return nil, err
+	}
+	// task 子代理（0.0.41）：只读调研子代理。只读实例从主装配挑出（fs/git/search/
+	// webfetch/memory），包装层的写闸门再兜一道底（不信任装配意图）；子代理
+	// 与主轮同一 runtime 预算。model 为空（无渠道装配场景）时不注册。
+	if model != "" {
+		rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{FirstByte: 3 * time.Minute, Total: 30 * time.Minute})
+		var readonly []tools.ToolPort
+		if st != nil {
+			for _, t := range []tools.ToolPort{st.fs, st.git, st.search} {
+				if t != nil {
+					readonly = append(readonly, t)
+				}
+			}
+		}
+		readonly = append(readonly, s.webFetch)
+		if s.memory != nil {
+			root := ""
+			if st != nil {
+				root = st.root
+			}
+			readonly = append(readonly, memory.NewTool(s.memory, root))
+		}
+		if err := registry.Register(subagenttool.New(rt, model, readonly...)); err != nil {
+			return nil, fmt.Errorf("register tool: %w", err)
+		}
 	}
 	return registry, nil
 }

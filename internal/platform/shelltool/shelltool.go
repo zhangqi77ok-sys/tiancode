@@ -20,11 +20,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
-
-	"golang.org/x/text/encoding/simplifiedchinese"
 
 	"tiancode/internal/core/tools"
+	"tiancode/internal/platform/oemtext"
 )
 
 // defaultTimeout 是前台命令默认超时。
@@ -127,7 +125,7 @@ func (t *Tool) Schema() json.RawMessage {
     "action": {"type": "string", "enum": ["run", "bg_start", "bg_status", "bg_kill"]},
     "command": {"type": "string", "description": "run / bg_start 时必填"},
     "task_id": {"type": "string", "description": "bg_status / bg_kill 时必填"},
-    "timeout_seconds": {"type": "integer", "description": "run 时可选，覆盖默认超时"}
+    "timeout_seconds": {"type": "integer", "description": "run 时可选，覆盖默认超时（最大 600 秒，超出被钳制并在结果里写明）"}
   },
   "required": ["action"]
 }`)
@@ -146,6 +144,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	}
 	// 超时硬顶（0.2.35 审计#6）：timeout_seconds 无上限会让一条命令挂死整个
 	// 回合；600s 覆盖 npm install 等重任务，更长的让模型分步处理。
+	// 钳了却不说，模型会以为自己要的时长已经生效。
+	requestedTimeout := a.TimeoutSeconds
 	if a.TimeoutSeconds > 600 {
 		a.TimeoutSeconds = 600
 	}
@@ -166,7 +166,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	}
 	switch a.Action {
 	case "run":
-		return t.run(ctx, a.Command, a.TimeoutSeconds)
+		res, err = t.run(ctx, a.Command, a.TimeoutSeconds)
+		if requestedTimeout > 600 {
+			res.Content = strings.TrimRight(res.Content, "\n") + fmt.Sprintf("\n（请求超时 %d 秒，已钳为 600）", requestedTimeout)
+		}
+		return res, err
 	case "bg_start":
 		return t.bg.start(a.Command, t.root)
 	case "bg_status":
@@ -298,12 +302,5 @@ func businessErrf(format string, a ...any) tools.ToolResult {
 // 满屏替换符（0.2.4 实测）。策略对齐开源工具（VS Code terminal 等）：
 // 合法 UTF-8 原样通过；否则按 GBK 解码；都解不开就原样返回（宁可乱码可见，不静默造数据）。
 func decodeConsoleOutput(b []byte) string {
-	if utf8.Valid(b) {
-		return string(b)
-	}
-	out, err := simplifiedchinese.GBK.NewDecoder().Bytes(b)
-	if err != nil {
-		return string(b)
-	}
-	return string(out)
+	return oemtext.Decode(b)
 }

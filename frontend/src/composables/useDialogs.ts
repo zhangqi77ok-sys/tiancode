@@ -17,15 +17,27 @@ export interface PromptOptions {
   maxlength?: number
 }
 
+// 方案确认：正文可改。取消返回 null，确定返回改完的全文。
+export interface PlanEditOptions {
+  title: string
+  message?: string
+  value: string
+  confirmText?: string
+}
+
 interface ConfirmState extends ConfirmOptions {
   resolve: (ok: boolean) => void
 }
 interface PromptState extends PromptOptions {
   resolve: (value: string | null) => void
 }
+interface PlanEditState extends PlanEditOptions {
+  resolve: (value: string | null) => void
+}
 
 const confirmState = ref<ConfirmState | null>(null)
 const promptState = ref<PromptState | null>(null)
+const planEditState = ref<PlanEditState | null>(null)
 
 export function useDialogs() {
   // 已有对话框在等答案时再次调用：前一个按取消收场，绝不叠加悬挂的 Promise
@@ -55,5 +67,28 @@ export function useDialogs() {
     promptState.value = null
   }
 
-  return { confirmState, promptState, confirm, prompt, resolveConfirm, resolvePrompt }
+  // 与 confirm 分开：方案正文要能改，返回的是改完的文字，不是是否点了确定。
+  function confirmPlanEdit(opts: PlanEditOptions): Promise<string | null> {
+    planEditState.value?.resolve(null)
+    return new Promise((resolve) => {
+      planEditState.value = { ...opts, resolve }
+    })
+  }
+
+  function resolvePlanEdit(value: string | null) {
+    planEditState.value?.resolve(value)
+    planEditState.value = null
+  }
+
+  return {
+    confirmState,
+    promptState,
+    planEditState,
+    confirm,
+    prompt,
+    confirmPlanEdit,
+    resolveConfirm,
+    resolvePrompt,
+    resolvePlanEdit,
+  }
 }

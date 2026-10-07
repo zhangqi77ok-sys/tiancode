@@ -10,6 +10,13 @@ import (
 	"testing"
 )
 
+func writeRepoFile(t *testing.T, root, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func args(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -94,6 +101,66 @@ func TestGitTool_StatusShowsBranchHeader(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "feature-y") {
 		t.Fatalf("status output = %q, want contains branch header", res.Content)
+	}
+}
+
+// 模型看的 diff 必须含已暂存块，并在无 path 时列出未跟踪文件。
+// Diff()（给提交说明以外的裸未暂存视图）保持原口径，不因这条改动变宽。
+func TestGitTool_ModelDiffIncludesStagedAndUntracked(t *testing.T) {
+	tool := newRepo(t)
+	writeRepoFile(t, tool.root, "a.go", "package a\n")
+	runGit(t, tool.root, "add", "a.go")
+	runGit(t, tool.root, "commit", "-qm", "init")
+	writeRepoFile(t, tool.root, "a.go", "package a\n// STAGED_MARKER\n")
+	runGit(t, tool.root, "add", "a.go")
+	writeRepoFile(t, tool.root, "new.txt", "u")
+
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"action": "diff"}))
+	if err != nil || res.IsError {
+		t.Fatalf("diff failed: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "STAGED_MARKER") {
+		t.Fatalf("已暂存内容必须出现在模型 diff 里：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "含已暂存") || !strings.Contains(res.Content, "不含未跟踪") {
+		t.Fatalf("口径行缺失：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "new.txt") || !strings.Contains(res.Content, "未跟踪文件") {
+		t.Fatalf("未跟踪清单缺失：%s", res.Content)
+	}
+
+	limited, err := tool.Execute(context.Background(), args(t, map[string]any{"action": "diff", "path": "a.go"}))
+	if err != nil || limited.IsError {
+		t.Fatalf("path diff failed: %v %s", err, limited.Content)
+	}
+	if !strings.Contains(limited.Content, "STAGED_MARKER") {
+		t.Fatalf("path 限定仍应含已暂存：%s", limited.Content)
+	}
+	if strings.Contains(limited.Content, "未跟踪文件（不在上面的 diff 里）") || strings.Contains(limited.Content, "new.txt") {
+		t.Fatalf("有 path 时不应附未跟踪清单：%s", limited.Content)
+	}
+
+	plain, err := Diff(tool.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "STAGED_MARKER") {
+		t.Fatalf("Diff() 仍应只含未暂存，不应含已暂存：%s", plain)
+	}
+}
+
+func TestGitTool_ModelDiffBeforeFirstCommit(t *testing.T) {
+	tool := newRepo(t)
+	writeRepoFile(t, tool.root, "a.go", "package a\n")
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{"action": "diff"}))
+	if err != nil || res.IsError {
+		t.Fatalf("无提交时 diff 不应失败：%v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "还没有提交") {
+		t.Fatalf("应写明无法相对 HEAD：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "a.go") {
+		t.Fatalf("应列出未跟踪文件：%s", res.Content)
 	}
 }
 

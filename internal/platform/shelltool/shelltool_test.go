@@ -219,3 +219,16 @@ func TestDecodeConsoleOutput_GBKFallback(t *testing.T) {
 		t.Fatalf("ascii = %q", got)
 	}
 }
+
+func TestShellRun_ClampedTimeoutIsVisible(t *testing.T) {
+	tool := newTool(t, Options{})
+	res, err := tool.Execute(context.Background(), args(t, map[string]any{
+		"action": "run", "command": "echo hi", "timeout_seconds": 9999,
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("run failed: %v %s", err, res.Content)
+	}
+	if !strings.Contains(res.Content, "请求超时 9999 秒，已钳为 600") {
+		t.Fatalf("钳制说明缺失：%s", res.Content)
+	}
+}

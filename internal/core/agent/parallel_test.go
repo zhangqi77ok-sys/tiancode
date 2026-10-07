@@ -151,6 +151,89 @@ func TestAgent_WriteCallsStaySerial(t *testing.T) {
 	}
 }
 
+func TestIsReadOnlyCall_ExtendedWhitelist(t *testing.T) {
+	cases := []struct {
+		name string
+		call llm.ToolCall
+		want bool
+	}{
+		{"fs symbols", llm.ToolCall{Name: "fs", Arguments: `{"action":"symbols","path":"a.go"}`}, true},
+		{"fs diagnose", llm.ToolCall{Name: "fs", Arguments: `{"action":"diagnose","path":"a.go"}`}, false},
+		{"webfetch", llm.ToolCall{Name: "webfetch", Arguments: `{"url":"http://127.0.0.1/"}`}, true},
+		{"memory read", llm.ToolCall{Name: "memory", Arguments: `{"action":"read","scope":"workspace"}`}, true},
+		{"memory append", llm.ToolCall{Name: "memory", Arguments: `{"action":"append","scope":"workspace","text":"x"}`}, false},
+		{"browser snapshot", llm.ToolCall{Name: "browser", Arguments: `{"action":"snapshot"}`}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isReadOnlyCall(c.call); got != c.want {
+				t.Fatalf("isReadOnlyCall = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestAgent_SymbolsAndWebfetchRunInParallel(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	a := &slowTool{name: "fs", delay: 300 * time.Millisecond}
+	b := &slowTool{name: "webfetch", delay: 300 * time.Millisecond}
+	c := &slowTool{name: "memory", delay: 300 * time.Millisecond}
+	peak := &sharedPeak{}
+	a.peak, b.peak, c.peak = peak, peak, peak
+	registry := tools.NewRegistry()
+	for _, tl := range []tools.ToolPort{a, b, c} {
+		if err := registry.Register(tl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fr := &fakeRuntime{script: scriptCalls(
+		llm.ToolCallChunk{Index: 0, ID: "c1", Name: "fs", ArgumentsDelta: `{"action":"symbols","path":"a.go"}`},
+		llm.ToolCallChunk{Index: 1, ID: "c2", Name: "webfetch", ArgumentsDelta: `{"url":"http://127.0.0.1/"}`},
+		llm.ToolCallChunk{Index: 2, ID: "c3", Name: "memory", ArgumentsDelta: `{"action":"read","scope":"workspace"}`},
+	)}
+	loop := NewLoop(fr, "test-model", registry)
+	ch, err := loop.Run(context.Background(), ledger, "read three")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 15*time.Second)
+	if peak.peak.Load() < 2 {
+		t.Fatalf("symbols/webfetch/memory read 应并发，峰值 = %d", peak.peak.Load())
+	}
+}
+
+func TestAgent_MemoryWriteStaysSerial(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+
+	a := &slowTool{name: "memory", delay: 250 * time.Millisecond}
+	peak := &sharedPeak{}
+	a.peak = peak
+	registry := tools.NewRegistry()
+	if err := registry.Register(a); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: scriptCalls(
+		llm.ToolCallChunk{Index: 0, ID: "c1", Name: "memory", ArgumentsDelta: `{"action":"append","text":"x"}`},
+		llm.ToolCallChunk{Index: 1, ID: "c2", Name: "memory", ArgumentsDelta: `{"action":"read"}`},
+	)}
+	loop := NewLoop(fr, "test-model", registry)
+	start := time.Now()
+	ch, err := loop.Run(context.Background(), ledger, "write then read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch, 5*time.Second)
+	if peak.peak.Load() != 1 {
+		t.Fatalf("memory 写入必须串行，峰值 = %d", peak.peak.Load())
+	}
+	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
+		t.Fatalf("append 与后续 read 串行应 ≥500ms，实测 %v", elapsed)
+	}
+}
+
 // 混合批次：[read, write, read] → 并行纪律不得让 write 与任何调用同时执行；
 // 且三个调用的账本/消息顺序保持原序。
 func TestAgent_MixedBatchKeepsOrderAndSerialWrites(t *testing.T) {

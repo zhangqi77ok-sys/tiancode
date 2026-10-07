@@ -28,6 +28,10 @@ const gitTimeout = 30 * time.Second
 // outputLimit 是输出上限（git diff 可能极大）。
 const outputLimit = 64 * 1024
 
+// maxUntrackedListed 是无 path 限定时附在 diff 后面的未跟踪文件上限。
+// 整仓未跟踪可能上万，不封顶会把真正的 diff 挤出上下文。
+const maxUntrackedListed = 40
+
 // maxLogLimit 是 log 返回条数的硬顶（0.0.06）。
 const maxLogLimit = 50
 
@@ -44,7 +48,7 @@ func (t *Tool) Name() string { return "git" }
 
 // Description 实现工具端口。
 func (t *Tool) Description() string {
-	return "只读查看 git 仓库：status（变更列表）/ diff（差异）/ log（最近提交）"
+	return "只读查看 git 仓库：status（变更列表）/ diff（相对 HEAD 的差异：含已暂存，不含未跟踪；没有 path 时结果末尾另附未跟踪文件清单。仓库还没有提交时退回未暂存差异并写明）/ log（最近提交）"
 }
 
 // Schema 实现工具端口。
@@ -52,7 +56,7 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["status", "diff", "log"]},
+    "action": {"type": "string", "enum": ["status", "diff", "log"], "description": "diff 相对 HEAD（含已暂存，不含未跟踪；无 path 时结果末尾另附未跟踪清单）"},
     "path": {"type": "string", "description": "可选：限定单个路径（status/diff/log 都支持）"},
     "limit": {"type": "integer", "description": "log 时可选，返回条数上限（默认 10，最大 50）"}
   },
@@ -85,6 +89,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 
 	runCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
+	// 模型看的 diff 是相对 HEAD（含已暂存），并在无 path 时附上未跟踪清单。
+	// Diff()（裸 git diff，只有未暂存）不走这条，提交说明仍用 DiffHEAD。
+	if a.Action == "diff" {
+		return t.modelDiff(runCtx, gitArgs, a.Path)
+	}
 	cmd := exec.CommandContext(runCtx, "git", gitArgs...)
 	hideConsole(cmd)
 	cmd.Dir = t.root
@@ -103,6 +112,109 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		out = "(empty)"
 	}
 	return tools.ToolResult{Content: truncate(out)}, nil
+}
+
+// modelDiff 是给模型看的 diff：相对 HEAD（含已暂存），第一行写明口径。
+// 仓库还没有提交时退回裸 git diff，避免 "bad revision HEAD" 把新仓库说成工具坏了。
+// 无 path 时把未跟踪文件附在后面——它们不进 diff，但模型不看 status 就会当它们不存在。
+func (t *Tool) modelDiff(ctx context.Context, gitArgs []string, path string) (tools.ToolResult, error) {
+	usedHEAD := true
+	if !t.headExists(ctx) {
+		if ctx.Err() == context.DeadlineExceeded {
+			return tools.ToolResult{Content: "[TIMEOUT: git killed]", IsError: true, TimedOut: true}, nil
+		}
+		gitArgs = dropRevisionHEAD(gitArgs)
+		usedHEAD = false
+	}
+	out, err := t.runGit(ctx, gitArgs...)
+	if err != nil {
+		text := truncate(out)
+		if ctx.Err() == context.DeadlineExceeded {
+			return tools.ToolResult{Content: text + "\n[TIMEOUT: git killed]", IsError: true, TimedOut: true}, nil
+		}
+		return businessErrf("git diff failed: %s\n%v", strings.TrimSpace(text), err), nil
+	}
+	header := "（口径：相对 HEAD，含已暂存，不含未跟踪文件）"
+	if !usedHEAD {
+		header = "（口径：仓库还没有提交，无法相对 HEAD；以下只含未暂存差异，不含未跟踪文件）"
+	}
+	if path != "" {
+		header += "；已按 path 限定"
+	}
+	body := strings.TrimSpace(out)
+	if body == "" {
+		body = "(empty)"
+	}
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteByte('\n')
+	b.WriteString(body)
+	if path == "" {
+		t.appendUntracked(&b, ctx)
+	}
+	return tools.ToolResult{Content: truncate(b.String())}, nil
+}
+
+func (t *Tool) headExists(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD")
+	hideConsole(cmd)
+	cmd.Dir = t.root
+	return cmd.Run() == nil
+}
+
+func (t *Tool) runGit(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	hideConsole(cmd)
+	cmd.Dir = t.root
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	err := cmd.Run()
+	return buf.String(), err
+}
+
+// dropRevisionHEAD 只去掉 `diff HEAD` 里那个修订参数。路径恰好叫 HEAD 时在 "--" 后面，不动。
+func dropRevisionHEAD(args []string) []string {
+	if len(args) >= 2 && args[0] == "diff" && args[1] == "HEAD" {
+		out := make([]string, 0, len(args)-1)
+		out = append(out, args[0])
+		out = append(out, args[2:]...)
+		return out
+	}
+	return args
+}
+
+func (t *Tool) appendUntracked(b *strings.Builder, ctx context.Context) {
+	out, err := t.runGit(ctx, "status", "--porcelain")
+	if err != nil {
+		fmt.Fprintf(b, "\n\n（未跟踪清单读取失败：%s）", strings.TrimSpace(out))
+		return
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "?? ") {
+			files = append(files, strings.TrimPrefix(line, "?? "))
+		}
+	}
+	if len(files) == 0 {
+		return
+	}
+	b.WriteString("\n\n未跟踪文件（不在上面的 diff 里）：\n")
+	n := len(files)
+	shown := files
+	if n > maxUntrackedListed {
+		shown = files[:maxUntrackedListed]
+	}
+	for _, f := range shown {
+		b.WriteString(f)
+		b.WriteByte('\n')
+	}
+	if n > maxUntrackedListed {
+		fmt.Fprintf(b, "…还有 %d 个未跟踪文件\n", n-maxUntrackedListed)
+	}
 }
 
 // ---- 0.3 最小能力：工作区提交路径（仅由壳层调用，不注册进模型工具） ----
@@ -148,9 +260,8 @@ func StatusShort(root string) (string, error) {
 	return runGitCmd(root, "status", "--porcelain", "-b")
 }
 
-// Diff 返回未提交差异（有界）：**只含未暂存部分**，仅供只读工具给模型看。
-// 提交说明生成不要用它——它看不见已暂存块与未跟踪文件（漏一半变更），
-// 那条路径用 DiffHEAD。
+// Diff 返回未暂存差异（有界，裸 git diff）。提交说明不要用它（看不见已暂存），用 DiffHEAD。
+// 模型工具的 diff 动作也不走这里：那条路径是 diff HEAD + 未跟踪清单（见 modelDiff）。
 func Diff(root string) (string, error) {
 	out, err := runGitCmd(root, "diff")
 	if err != nil {
@@ -228,7 +339,8 @@ func buildArgs(action, path string, limit int) ([]string, error) {
 		}
 		return args, nil
 	case "diff":
-		args := []string{"diff"}
+		// 相对 HEAD：已暂存的改动也要让模型看见。仓库还没有提交时由 modelDiff 退回裸 diff。
+		args := []string{"diff", "HEAD"}
 		if path != "" {
 			args = append(args, "--", path)
 		}

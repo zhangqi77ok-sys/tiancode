@@ -26,10 +26,11 @@ import (
 	"tiancode/internal/core/tools"
 )
 
-// MaxStepsPerTurn 单轮（一次用户消息触发的连续推理）最大步数。
-// 为什么 25：足够覆盖常见多步编码任务，同时封顶失控循环的 token 消耗；
-// 每步 = 一次模型调用（可能带工具调用）。步数耗尽以 EndError 收束且不写锚点。
-const MaxStepsPerTurn = 25
+// MaxStepsPerTurn 是单轮里一段最多多少步（每步一次模型调用，可能带工具）。
+// 50 而不是 25：多文件改动经常在 25 步内收不干净，模型会被提前赶去写总结。
+// 这仍是安全封顶，不是“做完了”的判断——一段用尽后先自评，能续跑就续，否则问用户。
+// 步数耗尽且不能续时，以 EndError 收束且不写锚点。
+const MaxStepsPerTurn = 50
 
 // deltaMergeLimit 是流式增量的就地合并阈值（字节，0.3）：与账本攒批同量级——
 // 超过即合并成一行落账本，进程崩溃时未持久化的流式内容不超过这一块。
@@ -201,6 +202,7 @@ func (l *Loop) contextEvent(info DeriveInfo) *llm.ContextEvent {
 		FoldedReads:     info.FoldedReads,
 		FoldedBodies:    info.FoldedBodies,
 		Dropped:         info.Dropped,
+		Compacted:       info.CompactionUpTo > 0,
 	}
 }
 
@@ -385,23 +387,28 @@ func (l *Loop) runFrom(ctx context.Context, ledger *session.Ledger) (<-chan llm.
 		return nil, fmt.Errorf("derive history: %w", err)
 	}
 	l.latestTodo = ctxInfo.LatestTodo
-	// 折完仍超预算（0.0.11，阶段 5-2 修订了适用范围）：
-	//   - **渠道/用户声明**了上限：不发请求。发出去必然被上游按上下文长度拒绝，还会把
-	//     "本地预算不够"伪装成上游错误；这里给明确终态，说清差在哪、能做什么。
-	//   - 只是**我们兜底的默认值**：照发。默认值不是用户定的限制，拿它阻断回合等于惩罚
-	//     "没填 contextLimit"（实机回归：58k/79k 的会话被 32k 默认值硬拒，用户没法继续这场
-	//     对话）。折叠已经做到位（体量压到最小），油表标"已尽量折叠"；上游真装不下会自己
-	//     报错——可见且可归因（超时文案带本轮附件体量，见 inlineAttachmentNote）。
+	// 折完仍超预算（0.0.11，阶段 5-2 修订了适用范围；0.0.41 增加压缩末级）：
+	//   - **渠道/用户声明**了上限：先尝试历史压缩（tryCompact：把旧轮次叙事摘要成
+	//     一段续传上下文，截点前事件落账归档）——成功则带摘要继续；压缩不可行或
+	//     失败才不发请求，给明确终态，说清差在哪、能做什么。
+	//   - 只是**我们兜底的默认值**：照发（不压缩）。默认值不是用户定的限制，拿它
+	//     阻断回合等于惩罚"没填 contextLimit"；且每轮多一次摘要调用的成本不该由
+	//     "没配置"的用户默默承担。折叠已把体量压到最小，上游真装不下会自己报错。
 	// 用户原话已 write-ahead 落账本（上面几行），不会因这一判断丢失。
 	if ctxInfo.Dropped && !l.ctxBudgetDefault {
-		l.phase.Store(int32(PhaseIdle))
-		msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过渠道上限（%d tok）：折叠旧内容后仍装不下。"+
-			"可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。",
-			ctxInfo.EstimatedTokens, ctxInfo.BudgetTokens)
-		if _, aerr := ledger.Append(session.EventError, map[string]any{"message": msg}); aerr != nil {
-			return nil, fmt.Errorf("persist context overflow: %w", aerr)
+		compacted, cinfo, ok := l.tryCompact(ctx, ledger, ctxInfo)
+		if ok {
+			msgs, ctxInfo = compacted, cinfo
+		} else {
+			l.phase.Store(int32(PhaseIdle))
+			msg := fmt.Sprintf("本轮上下文（估算约 %d tok）超过渠道上限（%d tok）：折叠与历史压缩后仍装不下。"+
+				"可以调大该渠道的上下文上限、换一条上限更大的渠道，或新开一轮对话。",
+				ctxInfo.EstimatedTokens, ctxInfo.BudgetTokens)
+			if _, aerr := ledger.Append(session.EventError, map[string]any{"message": msg}); aerr != nil {
+				return nil, fmt.Errorf("persist context overflow: %w", aerr)
+			}
+			return nil, errors.New(msg)
 		}
-		return nil, errors.New(msg)
 	}
 	msgs = l.attachPreface(msgs)
 	// 仅本次请求的补充说明（第 8 批）：附在真正的用户消息之后——不写账本，
@@ -1039,15 +1046,30 @@ func (l *Loop) execTool(ctx context.Context, call llm.ToolCall) tools.ToolResult
 var errConsumerGone = errors.New("consumer gone")
 
 // isReadOnlyCall 判定一次工具调用是否只读（0.0.09 并行白名单）。
-// 白名单宁可窄：write/replace/shell/ext_manage 及一切解析不出的形态一律串行——
-// 两个人同时改同一个文件的代价远大于少并行几次。
-//   - fs：action ∈ {read,list,tree} 才只读（fs 是"一个名字两种人"，按参数分）；
-//   - search/git：整体只读（git 在本仓库只有 status/diff/log，无改写子命令——
-//     审计约束见工具描述与 ADR；新增子命令时必须回来更新这里）。
+// 白名单宁可窄：write/replace/shell/ext_manage/browser 及一切解析不出的形态一律串行——
+// 两个人同时改同一个文件的代价远大于少并行几次。diagnose 会跑 go vet（最多约 20s），
+// 也不进并行，避免把机器打满。
+//   - fs：action ∈ {read,list,tree,symbols} 才只读（fs 是"一个名字两种人"，按参数分）；
+//   - search/git/webfetch：整体只读（git 在本仓库只有 status/diff/log，无改写子命令——
+//     审计约束见工具描述与 ADR；新增子命令时必须回来更新这里）；
+//   - memory：只有 action=read 只读（append/delete 会改记忆文件）。
 func isReadOnlyCall(call llm.ToolCall) bool {
 	switch call.Name {
-	case "search", "git":
+	case "search", "git", "webfetch":
 		return true
+	case "task":
+		// 子代理（0.0.41）：task 工具的子代理只有只读工具集（包装层结构性排除
+		// 写路径），且主对话侧它只是"等待一份报告"——放进并行白名单才能
+		// 多个调研任务同时跑（fan-out 是它的主要用法）。
+		return true
+	case "memory":
+		var p struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal([]byte(call.Arguments), &p); err != nil {
+			return false
+		}
+		return p.Action == "read"
 	case "mcp":
 		// MCP（0.0.11）：只有 tool=list 是纯查询（拉服务器工具清单）；其余一律串行——
 		// server 侧工具名对我们是黑盒，可能是写操作，"两个人同时动同一资源"的代价
@@ -1067,7 +1089,7 @@ func isReadOnlyCall(call llm.ToolCall) bool {
 			return false // 解析不出 = 串行
 		}
 		switch p.Action {
-		case "read", "list", "tree":
+		case "read", "list", "tree", "symbols":
 			return true
 		default:
 			return false

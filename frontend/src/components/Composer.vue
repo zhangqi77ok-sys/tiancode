@@ -21,6 +21,17 @@ const MAX_INPUT_HEIGHT = '50vh'
 
 const store = useChatStore()
 const channels = useChannelStore()
+
+// 调研进行中按钮保持亮着，点它不能把这一轮改成可写（后端已经按只读发出去了）。
+const planTitle = computed(() => {
+  if (store.planTurn === store.sessionId) return '方案调研进行中：这一轮只读，结束后再确认是否执行'
+  if (store.planMode) return '方案模式已开：发送后只读调研并给出方案，确认后才改文件'
+  return '方案模式：只读调研、结束时给方案，确认后再执行'
+})
+function togglePlan() {
+  if (store.planTurn === store.sessionId) return
+  store.planMode = !store.planMode
+}
 const draft = defineModel<string>({ required: true })
 const box = ref<HTMLTextAreaElement | null>(null)
 
@@ -277,6 +288,16 @@ function buildForcedPayload(): ForcedToolDTO | undefined {
 
 // ---- 附件（0.0.10）：粘贴/拖放/上传三路进入同一个待发送区 ----
 const atts = ref<PendingAttachment[]>([])
+
+// 方案调研时补的话如果没发出去，终态后放回输入框（可能要等切回这场对话）。
+function applyPlanDraftRestore() {
+  const back = store.takeDraftRestore(store.sessionId)
+  if (!back) return
+  draft.value = draft.value.trim() ? `${draft.value.replace(/\s+$/, '')}\n${back.text}` : back.text
+  if (back.atts.length) atts.value = [...atts.value, ...back.atts]
+}
+watch(() => store.draftRestoreNonce, applyPlanDraftRestore)
+watch(() => store.sessionId, applyPlanDraftRestore)
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragOver = ref(false)
 
@@ -913,16 +934,16 @@ async function runQuick(slot: string, cmd: string) {
         </span>
         <span v-if="usage.foldNote" class="text-[10px] text-[var(--c-warn-text)]">折叠：{{ usage.foldNote }}</span>
       </span>
-      <!-- 方案模式（0.0.35）：开着发送 = 只读调研 + 输出实施方案（一次性），
-           终态后弹方案确认卡，点"按方案执行"才进入真正的执行回合 -->
+      <!-- 方案模式：开着发送 = 只读调研。发出后开关关掉（免得别的会话也只读），
+           但这一轮按钮保持亮着，直到终态。确认后才进入真正的执行回合。 -->
       <button
         type="button"
         class="chip h-10 shrink-0"
-        :aria-pressed="store.planMode"
-        :title="store.planMode ? '方案模式已开：本轮只读调研并给出实施方案（发送后自动关闭）' : '方案模式：本轮只读调研、结束时给实施方案，确认后再执行'"
-        @click="store.planMode = !store.planMode"
+        :aria-pressed="store.planMode || store.planTurn === store.sessionId"
+        :title="planTitle"
+        @click="togglePlan"
       >
-        <AppIcon name="message" :size="14" /> 方案
+        <AppIcon name="message" :size="14" /> {{ store.planTurn === store.sessionId ? '方案中' : '方案' }}
       </button>
       <button class="chip h-10 shrink-0" title="上传图片或文件（可多选）" aria-label="上传附件" @click="fileInput?.click()">
         <AppIcon name="plus" :size="14" />

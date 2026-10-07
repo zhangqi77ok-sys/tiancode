@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"tiancode/internal/core/llm"
+	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/applog"
+	"tiancode/internal/platform/oemtext"
 )
 
 // checkTimeout 是检查命令的固定超时（第 8 批：60 秒）。超时不编诊断，只把已捕获输出照实给出。
@@ -48,9 +50,14 @@ type CheckResult struct {
 	At        int64      `json:"at"` // Unix 毫秒
 }
 
-// checkRefRe 与前端 outputRows.ts 的 INLINE_REF 同一形态：`path:line` 或 `path:line:col`。
-// 路径不许含空白与冒号，且要"像路径"（含 / . \）——避免把说明文字里的编号当引用。
-var checkRefRe = regexp.MustCompile(`([^\s:]+?):(\d+)(?::(\d+))?:(.*)`)
+// checkNoteRawLimit 是"失败但解析不出位置"时附给模型的原文上限（头尾保留）。
+const checkNoteRawLimit = 4 * 1024
+
+// checkRefColonRe：`path:line` 或 `path:line:col`。盘符冒号单独放行（`D:\a\f.go:3:1`），
+// 其余路径不许含空白与冒号。checkRefParenRe：vue-tsc / tsc 的 `file(line,col):`。
+// 路径还要"像路径"（含 / . \）——避免把说明文字里的编号当引用。
+var checkRefColonRe = regexp.MustCompile(`((?:[A-Za-z]:)?[^\s:]+?):(\d+)(?::(\d+))?:(.*)`)
+var checkRefParenRe = regexp.MustCompile(`((?:[A-Za-z]:)?[^\s:()]+)\((\d+)(?:,(\d+))?\):\s*(.*)`)
 
 var checkPathLike = regexp.MustCompile(`[./\\]`)
 
@@ -59,7 +66,7 @@ func ParseCheckRefs(output string) []CheckRef {
 	var refs []CheckRef
 	seen := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
-		m := checkRefRe.FindStringSubmatch(strings.TrimSpace(line))
+		m := matchCheckRef(strings.TrimSpace(line))
 		if m == nil || !checkPathLike.MatchString(m[1]) {
 			continue
 		}
@@ -78,12 +85,24 @@ func ParseCheckRefs(output string) []CheckRef {
 	return refs
 }
 
+// matchCheckRef 先认 `file(line,col):`，再认 `path:line:col:`。两组捕获下标一致：
+// 1 路径、2 行、3 列（可空）、4 说明。
+func matchCheckRef(line string) []string {
+	if m := checkRefParenRe.FindStringSubmatch(line); m != nil {
+		return m
+	}
+	return checkRefColonRe.FindStringSubmatch(line)
+}
+
 // checkRunner 是唯一启动进程的出口（测试注入，避免真跑用户的检查命令）。
+// 隐藏控制台、按与 shell 相同的规则解码：中文 Windows 上裸 CombinedOutput 会乱码，
+// 桌面进程还会闪一个黑窗。
 var checkRunner = func(ctx context.Context, name string, args []string, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	hideCheckConsole(cmd)
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return oemtext.Decode(out), err
 }
 
 // RunWorkspaceCheck 跑一次这场对话工作区的检查命令（第 8 批）。
@@ -256,8 +275,22 @@ func (s *ChatService) LastCheck(sessionID string) CheckResult {
 // 为空表示什么都不附。
 func (s *ChatService) checkNote(sessionID string) string {
 	res := s.LastCheck(sessionID)
-	if len(res.Refs) == 0 {
+	if res.Skipped || res.Command == "" {
 		return ""
+	}
+	if len(res.Refs) == 0 {
+		// 命令红了但一个 path:line 都没有：自愈仍不启动，但模型必须看见原文，
+		// 否则下一轮会当成检查没跑过。
+		if !res.Failed && !res.TimedOut {
+			return ""
+		}
+		body := strings.TrimSpace(res.Output)
+		if body == "" {
+			body = "(无输出)"
+		} else if len(body) > checkNoteRawLimit {
+			body = tools.HeadTail(body, checkNoteRawLimit)
+		}
+		return fmt.Sprintf("【工作区检查，不是用户原话】上一步结束后自动跑了 %s，命令未通过，但未能解析出位置。以下是命令输出（头尾保留）：\n%s", res.Command, body)
 	}
 	var b strings.Builder
 	b.WriteString("【工作区检查，不是用户原话】上一步结束后自动跑了 ")

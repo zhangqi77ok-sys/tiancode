@@ -332,6 +332,9 @@ func TestBrowser_EndToEnd(t *testing.T) {
 	if fillRes.Visual == nil || fillRes.Visual.Shot == "" || fillRes.Visual.Shot == open.Visual.Shot {
 		t.Fatalf("状态改变动作必须各附一张新截图：%+v", fillRes.Visual)
 	}
+	if !strings.Contains(fillRes.Content, "[1]") {
+		t.Fatalf("fill 成功后 Content 应带回元素列表：%s", fillRes.Content)
+	}
 
 	// 视觉反馈（0.0.37）：screenshot 带 for_model → 结果携带 data URL（进模型上下文）
 	shotModel := call(`{"action":"screenshot","for_model":true}`)
@@ -353,6 +356,9 @@ func TestBrowser_EndToEnd(t *testing.T) {
 	clickRes := call(`{"action":"click","ref":"0"}`)
 	if clickRes.Visual == nil || len(clickRes.Visual.Console) == 0 || !strings.Contains(strings.Join(clickRes.Visual.Console, "\n"), "被点击了") {
 		t.Fatalf("click 结果必须带控制台尾部（含页面 log）：%+v", clickRes.Visual)
+	}
+	if !strings.Contains(clickRes.Content, "被点击了") || !strings.Contains(clickRes.Content, "[0]") {
+		t.Fatalf("click 的 Content 必须带回控制台尾部与元素列表：%s", clickRes.Content)
 	}
 
 	// console：能看到刚才那条 log（事件监听已生效）

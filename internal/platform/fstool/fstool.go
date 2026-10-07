@@ -160,7 +160,7 @@ func (t *Tool) Name() string { return "fs" }
 func (t *Tool) Description() string {
 	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝；同一文件多处修改推荐 edits 多段形态——一次调用原子应用，省往返）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
 		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。" +
-		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go）并把错误带回，无需再跑 go build 验证语法/类型；action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
+		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go）并把错误带回；这份诊断只覆盖该文件所在包，跨包影响不会出现，需要时自行跑 go test。action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。
@@ -416,7 +416,6 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	// 整读门卫（0.0.07）：已存在的文件必须本会话整读过
 	var old string
 	haveDiff := false
-	undoExists := false
 	existed := false
 	var sizeAtPropose int64
 	var modAtPropose time.Time
@@ -429,7 +428,6 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 		if !fullRead {
 			return bizErrf("refusing to overwrite %s: 本会话没有整读过这个文件（只读片段就整体覆盖会丢掉未读内容）。已存在的文件请用 replace；若确要整文件重写，先不带 start_line/line_count 整读一遍再 write", path), nil
 		}
-		undoExists = true
 		existed = true
 		sizeAtPropose, modAtPropose = info.Size(), info.ModTime()
 		if info.Size() <= maxWriteBytes {
@@ -481,11 +479,6 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	if err != nil {
 		return bizErrf("write failed: %v", err), nil
 	}
-	var undoNote string
-	if undo == nil || (!undoExists && !existed) {
-		undoNote = "这次无法恢复：写入前的内容超过上限，未保存恢复数据"
-	}
-
 	res := tools.ToolResult{
 		Content: fmt.Sprintf("written %s (%d bytes)", path, len(content)),
 	}
@@ -494,12 +487,13 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 		res.Content = withShortDiff(res.Content, path, res.Diff)
 	}
 	switch {
-	case existed && haveDiff:
+	case existed && haveDiff && undo != nil:
 		res.Undo = undo
-	case !existed:
+	case !existed && undo != nil:
 		res.Undo = undo // OldExists=false：新建文件没有旧内容
-	default:
-		res.UndoNote = undoNote
+	case existed && !haveDiff:
+		// 旧内容超过上限，快照是空的。不挂 Undo（恢复会写成空文件），说明给界面。
+		res.UndoNote = "旧内容超过上限，这次无法恢复"
 	}
 	t.appendDiagnostics(ctx, &res, path)
 	return res, nil

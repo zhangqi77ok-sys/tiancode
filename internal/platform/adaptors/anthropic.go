@@ -65,6 +65,14 @@ type antBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result
 	Content   string          `json:"content,omitempty"`     // tool_result
+	// CacheControl 是 prompt cache 断点（0.0.41）：非 nil 时上游把截至该块的
+	// 前缀写入缓存，下一轮同前缀的请求按缓存价读取。nil = 不打点（默认）。
+	CacheControl *antCacheControl `json:"cache_control,omitempty"`
+}
+
+// antCacheControl 是 Anthropic 的缓存标记（目前只有 ephemeral 一种）。
+type antCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
 // antSource 是 image 块的来源（0.0.25）：只支持 base64 内联。
@@ -106,12 +114,16 @@ type antTool struct {
 }
 
 type antRequest struct {
-	Model     string       `json:"model"`
-	MaxTokens int          `json:"max_tokens"`
-	System    string       `json:"system,omitempty"`
-	Messages  []antMessage `json:"messages"`
-	Tools     []antTool    `json:"tools,omitempty"`
-	Stream    bool         `json:"stream"`
+	Model string `json:"model"`
+	// System 是顶层系统提示：非空时序列化为单元素块数组并带 cache_control
+	//（0.0.41 prompt cache：system 前缀每轮逐字稳定——技能清单/环境事实/语气
+	// 快照进本轮后不再变——打点后 tools+system 一段被缓存）。
+	// string 旧形态仍是合法的上游写法，但无法携带缓存标记，弃用。
+	System    json.RawMessage `json:"system,omitempty"`
+	MaxTokens int             `json:"max_tokens"`
+	Messages  []antMessage    `json:"messages"`
+	Tools     []antTool       `json:"tools,omitempty"`
+	Stream    bool            `json:"stream"`
 }
 
 // ConvertRequest 把统一请求转为 Anthropic Messages 报文。
@@ -207,7 +219,25 @@ func (a Anthropic) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte,
 		}
 	}
 	flushToolResults(pendingRole, pendingBlocks)
-	out.System = strings.TrimSpace(system.String())
+	// prompt cache（0.0.41，契约 C-RT-5）：两处打点——
+	//   1) system 块：覆盖 tools + system 的稳定前缀（内核保证本轮内逐字不变）；
+	//   2) 最后一条消息的最后一个块（移动断点）：整段对话历史随轮增长逐段入缓存，
+	//      下一轮前缀相同部分按缓存价读取。断点数 2 ≤ 上限 4。
+	if system.Len() > 0 {
+		sysBlocks := []antBlock{{
+			Type: "text", Text: strings.TrimSpace(system.String()),
+			CacheControl: &antCacheControl{Type: "ephemeral"},
+		}}
+		if b, err := json.Marshal(sysBlocks); err == nil {
+			out.System = b
+		}
+	}
+	if len(out.Messages) > 0 {
+		last := &out.Messages[len(out.Messages)-1]
+		if n := len(last.Content); n > 0 {
+			last.Content[n-1].CacheControl = &antCacheControl{Type: "ephemeral"}
+		}
+	}
 	for _, d := range req.Tools {
 		schema := d.Parameters
 		if len(schema) == 0 {
