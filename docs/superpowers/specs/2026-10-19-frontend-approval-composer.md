@@ -239,6 +239,25 @@
 
 ---
 
+## 任务 10：会话 token 用量显示（第三批，2026-10-19 补充）
+
+### 后端已就绪
+
+`SessionUsage(sessionID): Promise<SessionUsageDTO>`，字段：`promptTokens` / `completionTokens` / `totalTokens` / `cacheReadTokens` / `cacheWriteTokens` / `turns`（带用量的轮数）/ `reportedAll`（false = 有轮次上游没报用量，数字是下限）。数据来自每轮结束时落账的用量，上游不报就没有。
+
+### 要求
+
+1. 输入区工具栏（任务 2 的第二行）上下文油表旁边显示本会话累计 token，如"本会话 12.3k tok"；悬停提示列出输入/输出/缓存命中/缓存写入与轮数；`reportedAll=false` 时数字前加"≥"并在提示里写明"部分轮次上游未报告用量"。
+2. 每轮终态后（`chat:terminal`）与切换会话时刷新；`totalTokens` 为 0 时不显示。
+3. `wails.ts` 接口与离线桩补齐（桩返回全 0）。
+
+### 验收标准
+
+- [ ] vitest：mock 返回 12345 → 显示"12.3k"；`reportedAll=false` → 显示"≥"；全 0 → 不显示。
+- [ ] vitest：触发终态事件后重新调用 `SessionUsage`。
+
+---
+
 ## 交付与验收流程
 
 1. Antigravity 完成后，在交付说明里逐条对照上面的复选框，写明改了哪些文件、新增了哪些测试。
