@@ -13,7 +13,11 @@ import (
 // newTestStore 造一个隔离目录的 store（包级单例在测试里换指向）。
 func newTestStore(t *testing.T) *healthStore {
 	t.Helper()
-	return &healthStore{dir: filepath.Join(t.TempDir(), "channel-health")}
+	s := &healthStore{dir: filepath.Join(t.TempDir(), "channel-health")}
+	// Cleanup 按注册逆序执行：TempDir 的清理在前注册，这里先等后台写盘结束，
+	// 避免目录在写入途中被删（"directory is not empty"）。
+	t.Cleanup(s.flush)
+	return s
 }
 
 func TestStore_RecordAggregatesByChannelAndDay(t *testing.T) {
@@ -103,6 +107,17 @@ func TestView_RateEdges(t *testing.T) {
 	}
 	if got := s.viewLocked("all-ok").SuccessRate; got != 1 {
 		t.Fatalf("全成功成功率 = %v, want 1", got)
+	}
+}
+
+// 乱序落盘：较新的快照先写入后，较旧的快照不得覆盖它（写盘异步化的回归保护）。
+func TestWriteSnapshot_StaleSnapshotDoesNotOverwrite(t *testing.T) {
+	s := newTestStore(t)
+	day := s.ensureDayLocked()
+	s.writeSnapshot(day, 2, map[string]*bucket{"ch": {OK: 5}})
+	s.writeSnapshot(day, 1, map[string]*bucket{"ch": {OK: 1}})
+	if got := s.loadDayLocked(day)["ch"].OK; got != 5 {
+		t.Fatalf("旧快照覆盖了新快照：OK = %d, want 5", got)
 	}
 }
 

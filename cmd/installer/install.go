@@ -350,9 +350,10 @@ func powershellExe() string {
 
 // createShortcut 经 WScript.Shell 创建 .lnk（Go 标准库无 COM 能力）。
 func createShortcut(lnk, target, workDir string) error {
+	// 路径必须经 psQuote 转义：目录名里的单引号（如 O'Brien）否则会截断脚本。
 	ps := fmt.Sprintf(
-		`$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%s');$s.TargetPath='%s';$s.WorkingDirectory='%s';$s.Save()`,
-		lnk, target, workDir)
+		`$s=(New-Object -ComObject WScript.Shell).CreateShortcut(%s);$s.TargetPath=%s;$s.WorkingDirectory=%s;$s.Save()`,
+		psQuote(lnk), psQuote(target), psQuote(workDir))
 	cmd := exec.Command(powershellExe(), "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -434,8 +435,8 @@ func writeUninstallEntry(dir, setupPath string) error {
 // scheduleSelfCleanup 派生独立进程延迟删除安装目录（规避"运行中无法自删"）。
 func scheduleSelfCleanup(dir string) {
 	ps := fmt.Sprintf(
-		`Start-Sleep -Milliseconds 900; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '%s'`,
-		dir)
+		`Start-Sleep -Milliseconds 900; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue %s`,
+		psQuote(dir))
 	cmd := exec.Command(powershellExe(), "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
 	if err := cmd.Start(); err != nil {

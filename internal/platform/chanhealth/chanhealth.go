@@ -91,7 +91,17 @@ type healthStore struct {
 	dir string
 	mem map[string]*bucket // 今天（内存镜像：避免每次请求都读盘）
 	day string
+
+	// 写盘异步化后必须保证两件事：快照按产生顺序落盘（旧快照不能覆盖新快照），
+	// 以及测试能等到写盘结束（否则临时目录清理会与后台写入竞争）。
+	seq     uint64         // 由 mu 保护：每次 record 递增
+	writeMu sync.Mutex     // 串行化落盘
+	written uint64         // 由 writeMu 保护：已落盘的最新快照序号
+	pending sync.WaitGroup // 在途写盘
 }
+
+// flush 阻塞直到已发起的写盘全部完成（测试与退出前使用）。
+func (s *healthStore) flush() { s.pending.Wait() }
 
 func (s *healthStore) ensureDayLocked() string {
 	today := time.Now().Format("2006-01-02")
@@ -134,16 +144,31 @@ func (s *healthStore) record(o Outcome) {
 	}
 	applyOutcome(b, o)
 	snapshot := s.cloneMemLocked()
+	s.seq++
+	seq := s.seq
 	s.mu.Unlock()
 
+	s.pending.Add(1)
 	go func() {
+		defer s.pending.Done()
+		s.writeSnapshot(day, seq, snapshot)
+	}()
+}
+
+// writeSnapshot 落盘一份快照。若更新的快照已经写过，则丢弃本份（它已被覆盖）。
+func (s *healthStore) writeSnapshot(day string, seq uint64, snapshot map[string]*bucket) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if seq > s.written {
 		// 写盘失败要留痕（不留痕就成了"健康读数悄悄不长"）：走 applog，
 		// 不用 fmt（包内零依赖保持）。
 		if err := writeDay(s.dir, day, snapshot); err != nil {
 			applog.Errorf("channel-health write failed day=%s: %v", day, err)
+		} else {
+			s.written = seq
 		}
-		pruneOld(s.dir)
-	}()
+	}
+	pruneOld(s.dir)
 }
 
 // applyOutcome 把一次观测并进桶（Record 与 store.record 共用）。
