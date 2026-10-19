@@ -86,21 +86,49 @@ func TestMerge_EnvOverridesFile(t *testing.T) {
 }
 
 // C-CFG-6：数据目录固定到用户级路径（与安装目录解耦，卸载不删用户数据）。
-func TestDataDir_UnderAppData(t *testing.T) {
-	t.Setenv("APPDATA", `C:\Users\x\AppData\Roaming`)
-	dir := DataDir()
-	want := filepath.Join(`C:\Users\x\AppData\Roaming`, "tiancode", "sessions")
-	if dir != want {
-		t.Fatalf("DataDir() = %q, want %q", dir, want)
+// 测试进程里 appDataDir 不读 APPDATA（见 TestAppDataDir_TestProcessNeverUsesRealAppData），
+// 故用纯函数 dirUnder 断言正式环境的路径布局。
+func TestDirUnder_AppDataLayout(t *testing.T) {
+	got := dirUnder(`C:\Users\x\AppData\Roaming`)
+	want := filepath.Join(`C:\Users\x\AppData\Roaming`, "tiancode")
+	if got != want {
+		t.Fatalf("dirUnder() = %q, want %q", got, want)
+	}
+	if got := dirUnder(""); got != filepath.Join(os.TempDir(), "tiancode") {
+		t.Fatalf("APPDATA 缺失应退化到临时目录，got %q", got)
 	}
 }
 
-// DefaultPath 落在 %APPDATA%\tiancode\config.json。
-func TestDefaultPath_UnderAppData(t *testing.T) {
-	t.Setenv("APPDATA", `C:\Users\x\AppData\Roaming`)
-	want := filepath.Join(`C:\Users\x\AppData\Roaming`, "tiancode", "config.json")
-	if got := DefaultPath(); got != want {
-		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+// 显式覆盖优先：会话目录与配置路径都跟随 TIANCODE_DATA_DIR。
+func TestDataDirEnv_Overrides(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(DataDirEnv, root)
+	if got := Dir(); got != root {
+		t.Fatalf("Dir() = %q, want %q", got, root)
+	}
+	if got := DataDir(); got != filepath.Join(root, "sessions") {
+		t.Fatalf("DataDir() = %q", got)
+	}
+	if got := DefaultPath(); got != filepath.Join(root, "config.json") {
+		t.Fatalf("DefaultPath() = %q", got)
+	}
+}
+
+// 回归：go test 进程绝不落到真实 %APPDATA%（此前测试把假渠道、临时工作区设置、
+// 测试记忆与升级日志写进了用户真实数据目录）。
+func TestAppDataDir_TestProcessNeverUsesRealAppData(t *testing.T) {
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+	t.Setenv(DataDirEnv, "")
+	got := Dir()
+	if strings.HasPrefix(strings.ToLower(got), strings.ToLower(appData)) {
+		t.Fatalf("测试进程的数据目录落进了 APPDATA：%q", got)
+	}
+	if !strings.HasPrefix(got, filepath.Join(os.TempDir(), "tiancode-test")) {
+		t.Fatalf("测试数据目录应在 %%TEMP%%\\tiancode-test 下，got %q", got)
+	}
+	if Dir() != got {
+		t.Fatal("同一测试进程内数据目录必须稳定")
 	}
 }
 

@@ -1,6 +1,5 @@
 // 数据备份测试（0.0.23）：导出→预检→导入闭环 + zip slip 防护 + 坏包拒绝。
-// 数据目录用独立 APPDATA 隔离（configfile.Dir() 读环境变量——实测走查时用过
-// 同一手法的正式路径），绝不碰用户真实数据。
+// 数据目录经 TIANCODE_DATA_DIR 指向临时目录隔离，绝不碰用户真实数据。
 package app
 
 import (
@@ -9,14 +8,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tiancode/internal/platform/configfile"
 )
 
-// withIsolatedAppData 把 %APPDATA% 指向临时目录（t.Setenv 自动复原）。
+// withIsolatedAppData 把数据目录指向临时目录（t.Setenv 自动复原）。
 func withIsolatedAppData(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("APPDATA", dir)
-	return filepath.Join(dir, "tiancode")
+	dir := filepath.Join(t.TempDir(), "tiancode")
+	t.Setenv(configfile.DataDirEnv, dir)
+	return dir
 }
 
 // seedDataDir 造一份"用户数据"：配置 + 两个会话 + 一条记忆。

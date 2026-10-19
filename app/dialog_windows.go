@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"tiancode/internal/platform/configfile"
 )
 
 // NotifyError 以系统消息框展示启动期错误，并追加写入日志文件。
@@ -34,11 +36,9 @@ func LogLifecycle(msg string) {
 // appendLog 追加一行到 %APPDATA%\tiancode\tiancode.log（排障用；失败静默，
 // 日志不可写不应阻断启动错误提示本身）。
 func appendLog(line string) {
-	base := os.Getenv("APPDATA")
-	if base == "" {
-		return
-	}
-	dir := filepath.Join(base, "tiancode")
+	// 经 configfile.Dir() 而非直读 APPDATA：与其余数据文件同一目录规则，
+	// 也就同享 TIANCODE_DATA_DIR 覆盖与测试进程隔离（此前单测把升级日志写进了用户真实日志）。
+	dir := configfile.Dir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}

@@ -3,7 +3,7 @@
 // 做什么：读取 %APPDATA%\tiancode\config.json；不存在时生成**可直接启动**的默认配置
 // （EnsureDefault：首启零配置，不再要求用户先手改文件——那是装完点开即报错的根源）。
 // 被谁依赖：main.go（组合根装配）。
-// 依赖谁：仅 stdlib。
+// 依赖谁：仅 stdlib（含 testing，仅用 testing.Testing() 判断是否处于 go test 进程）。
 //
 // 为什么以文件为主、环境变量为覆盖：安装版从开始菜单启动**没有环境变量**——
 // 旧方案（env-only）导致"装完点开没反应"（M5 复现实证 exit=1）。
@@ -17,6 +17,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"testing"
+	"time"
 )
 
 // ErrNotFound 表示配置文件不存在（调用方据此进入首次运行引导）。
@@ -46,13 +49,50 @@ func DefaultPath() string { return filepath.Join(appDataDir(), "config.json") }
 // 也不会把会话写进安装目录（旧实现 DataDir="data" 相对 cwd，M5 复现时踩到）。
 func DataDir() string { return filepath.Join(appDataDir(), "sessions") }
 
-// appDataDir 返回 %APPDATA%\tiancode（APPDATA 缺失时退化到系统临时目录）。
+// DataDirEnv 显式指定数据目录（整个 %APPDATA%\tiancode 的替身）。
+// 用途：开发版/并排安装与正式版数据隔离；测试里把数据目录指到临时目录。
+const DataDirEnv = "TIANCODE_DATA_DIR"
+
+// appDataDir 返回数据目录。优先级：
+//  1. TIANCODE_DATA_DIR（显式覆盖）；
+//  2. go test 进程：每进程独立的临时目录，**绝不落到真实 %APPDATA%**；
+//  3. %APPDATA%\tiancode（APPDATA 缺失时退化到系统临时目录）。
+//
+// 为什么第 2 条放在生产代码里而不是靠各包 TestMain：曾经只有安装器有 TestMain，
+// 其余测试把假渠道、临时工作区设置、测试记忆和升级日志写进了用户真实数据目录；
+// 且 chanhealth 在包初始化时就解析目录（早于任何 TestMain）。在源头兜底，
+// 新增的测试包无需记得隔离也不会污染用户数据。
 func appDataDir() string {
-	base := os.Getenv("APPDATA")
-	if base == "" {
-		base = os.TempDir()
+	if d := os.Getenv(DataDirEnv); d != "" {
+		return d
 	}
-	return filepath.Join(base, appDirName)
+	if testing.Testing() {
+		return testDataDir()
+	}
+	return dirUnder(os.Getenv("APPDATA"))
+}
+
+// dirUnder 由 APPDATA 值推出数据目录（纯函数，便于测试路径布局）。
+func dirUnder(appData string) string {
+	if appData == "" {
+		appData = os.TempDir()
+	}
+	return filepath.Join(appData, appDirName)
+}
+
+var (
+	testDirOnce sync.Once
+	testDir     string
+)
+
+// testDataDir 返回本测试进程专属的数据目录（只拼路径，用到时由调用方创建）。
+// 带纳秒时间戳：PID 会被复用，仅凭 PID 可能读到上一轮测试的残留。
+// 目录在 %TEMP%\tiancode-test 下，不自动删除（没有进程退出钩子），由系统临时目录清理回收。
+func testDataDir() string {
+	testDirOnce.Do(func() {
+		testDir = filepath.Join(os.TempDir(), "tiancode-test", fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
+	})
+	return testDir
 }
 
 // Load 读取并解析配置；文件不存在时错误包装 ErrNotFound。
