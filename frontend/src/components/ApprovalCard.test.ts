@@ -4,12 +4,17 @@ import { createPinia, setActivePinia } from 'pinia'
 import ApprovalCard from './ApprovalCard.vue'
 import type { ChatMsg } from '../stores/chat'
 
+const allowPrefixCalls: Array<[string, string]> = []
+
 vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
       ApprovalPolicy: async () => [],
       SetApprovalPolicy: async () => {},
       ResolveApproval: async () => {},
+      ResolveApprovalAllowPrefix: async (id: string, prefix: string) => {
+        allowPrefixCalls.push([id, prefix])
+      },
       ResolveAsk: async () => {},
       GetWorkspace: async () => 'D:/proj-a',
       SetWorkspace: async () => {},
@@ -91,5 +96,53 @@ describe('ApprovalCard（0.0.06 人话主内容）', () => {
     })
     expect(el.textContent).toContain('执行命令：go build ./...')
     expect(el.textContent).not.toContain('可能删除或覆盖文件')
+  })
+})
+
+// 2026-10-19：跑测试/构建要反复点审批——shell 卡给「本会话总是允许「前缀」」，
+// 按钮上写的前缀就是提交给后端的规则；没有建议前缀（组合命令等）或非 shell 不出按钮。
+describe('ApprovalCard 本会话总是允许此前缀', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    teardown()
+    allowPrefixCalls.length = 0
+  })
+
+  it('shell 卡带建议前缀：显示按钮，点击按原前缀提交并转为已允许', async () => {
+    const m: ChatMsg = {
+      role: 'approval',
+      content: '',
+      toolName: 'shell',
+      approvalId: 'ap-9',
+      allowPrefix: 'go test',
+      args: JSON.stringify({ command: 'go test ./...' }),
+    }
+    const el = mountCard(m)
+    const btn = Array.from(el.querySelectorAll('button')).find((b) => b.textContent?.includes('本会话总是允许'))
+    expect(btn?.textContent).toContain('本会话总是允许「go test」')
+    btn!.click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(allowPrefixCalls).toEqual([['ap-9', 'go test']])
+  })
+
+  it('没有建议前缀或非 shell：不出按钮', () => {
+    const el = mountCard({
+      role: 'approval',
+      content: '',
+      toolName: 'shell',
+      approvalId: 'ap-10',
+      args: JSON.stringify({ command: 'echo a > out.txt' }),
+    })
+    expect(el.textContent).not.toContain('本会话总是允许')
+    teardown()
+    const el2 = mountCard({
+      role: 'approval',
+      content: '',
+      toolName: 'browser',
+      approvalId: 'ap-11',
+      allowPrefix: 'x',
+      args: '{}',
+    })
+    expect(el2.textContent).not.toContain('本会话总是允许')
   })
 })

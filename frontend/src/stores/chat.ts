@@ -51,6 +51,8 @@ export interface ChatMsg {
   approvalId?: string
   args?: string
   sessionTitle?: string
+  // shell 审批卡「本会话总是允许」的建议前缀（后端给出；空 = 不出该按钮）
+  allowPrefix?: string
   // 驾驶舱数据（0.0.28，仅 browser 工具的终态卡携带）：截图相对路径（browser-shots
   // 根下正斜杠，面板经壳层 ReadBrowserShot 读图）+ 落地 URL + 控制台尾部。
   // undefined = 本卡不带该数据（running 卡/旧账本）；空串/空数组 = 明确携带的空值
@@ -755,6 +757,7 @@ export const useChatStore = defineStore('chat', () => {
     sessionTitle?: string
     toolName: string
     arguments: string
+    suggestedPrefix?: string
   }) {
     if (!p.sessionID) {
       error.value = '收到缺少会话标识的审批事件（已丢弃，避免串会话）'
@@ -768,6 +771,7 @@ export const useChatStore = defineStore('chat', () => {
         approvalId: p.id,
         args: p.arguments,
         sessionTitle: p.sessionTitle,
+        allowPrefix: p.suggestedPrefix || undefined,
         at: Date.now(),
       }),
     )
@@ -823,6 +827,19 @@ export const useChatStore = defineStore('chat', () => {
     }
     const card = findCard((m) => m.approvalId === id)
     if (card) card.status = approved ? 'approved' : 'denied'
+  }
+
+  // 允许并在本会话内对同前缀的 shell 命令免确认（应用重启失效）：失败同样可见
+  async function resolveApprovalAllowPrefix(id: string, prefix: string) {
+    error.value = ''
+    try {
+      await bridge().app.ResolveApprovalAllowPrefix(id, prefix)
+    } catch (e) {
+      error.value = errText(e)
+      return
+    }
+    const card = findCard((m) => m.approvalId === id)
+    if (card) card.status = 'approved'
   }
 
   // 置顶/取消置顶：失败可见（error 位），成功后刷新摘要（分区与排序随之变化）
@@ -1765,6 +1782,7 @@ export const useChatStore = defineStore('chat', () => {
     exportMarkdown,
     onApproval,
     resolveApproval,
+    resolveApprovalAllowPrefix,
     setApprovalPolicy,
     loadApprovalPolicy,
     stop,

@@ -111,7 +111,7 @@
 | ID | 契约 | 锁定测试 |
 | --- | --- | --- |
 | C-AGT-1 | 第二轮 `Run` 的请求消息含上一轮 `assistant(tool_calls)` + `role=tool`，ID 配对 | `TestAgent_DerivesToolHistoryAcrossTurns` |
-| C-AGT-2 | 单条 tool 结果 >4096 字节时模型侧截断并含 `truncated` 标注；账本仍是全文 | `TestAgent_TruncatesToolResultForModel` |
+| C-AGT-2 | 单条 tool 结果 >4096 字节时模型侧截断并含 `truncated` 标注；账本仍是全文。**2026-10-19 修订**：成功的 `fs.read` 跨轮按回合内上限（96KiB）保留，旧轮次照旧被基础折叠/预算分级折掉；段内重折叠与续跑段重派生（`CompactReads`）仍按 4096；读之后被成功 write/replace 的文件，保留的读全文前加"修改前内容"标注 | `TestAgent_TruncatesToolResultForModel` / `TestDerive_RecentFileReadKeptAcrossTurns` / `TestDerive_StaleReadMarked` / `TestDerive_OldFileReadStillFolded` |
 | C-AGT-3 | 无对应 result 的 tool_call 不进入模型消息 | `TestAgent_OmitsUnpairedToolCall` |
 | C-AGT-4 | 缺 `id` 的旧事件能合成 ID 并配对，第二轮请求协议合法 | `TestAgent_SyntheticIDsForLegacyLedger` |
 | C-AGT-5 | 账本存在 `EventTodo` 时，派生消息末尾含**最新一条**清单全文，且只注入一次；`DeriveInfo.LatestTodo` 同步携带该快照 | `TestDerive_InjectsLatestTodoAtEnd` |
@@ -213,6 +213,7 @@
 
 | ID | 契约 | 锁定测试 |
 | --- | --- | --- |
+| C-APR-9 | shell 审批卡「本会话总是允许「前缀」」：前缀由后端建议（程序名 + 普通子命令；含组合/重定向/求值记号的命令不给建议），授予时必须覆盖当前命令且自身不含组合记号；授予后**本会话**同前缀命令免确认（匹配规则与工作区白名单同一个 `shellAllowMatched`），别的会话不受影响；内存态，应用重启或会话删除即失效 | `TestApproval_SessionAllowPrefix` / `TestSuggestShellPrefix` / `ApprovalCard.test.ts` |
 | C-APR-1 | 未配置审批清单时不干预（approver 为 nil，行为与历史版本完全一致） | `TestExecTool_NoApproverRunsDirectly` |
 | C-APR-2 | 拒绝必须产生**模型可见**的失败结果（含工具名与原因），且工具零执行；无原因时补默认说明 | `TestExecTool_Denied` / `TestExecTool_DeniedWithoutReason` |
 | C-APR-3 | 审批通道故障按**拒绝**处理（故障时放行最危险） | `TestExecTool_ApproverErrorDenies` |
@@ -256,7 +257,7 @@
 | C-BR-6 | 驾驶舱数据与 diff 同纪律：UI 专用、**不进模型上下文**，但随卡落账本——chat:tool 载荷带 shot/url/console，Replay 投影同构（重启后卡片不丢驾驶舱数据） | `TestDrainTurnConsumesEveryChunkKind` |
 | C-BR-7 | 用户点停止 → 等待中的动作立刻被打断，返回「动作已被用户取消」（非业务失败：模型无须也无机会补救），绝不把 context canceled 伪装成"页面不存在" | `TestBrowser_EndToEnd` |
 | C-BR-8 | ref 必须是**完整**非负十进制整数（要作数字下标注入 JS，严格解析是注入面的最后防线）；fill 文本经 JSON 转义嵌入页面脚本 | `TestParseRef` / `TestClickFillJS_EscapesText` |
-| C-BR-9 | 视觉反馈（0.0.37）：`screenshot` 带 `for_model=true` → 截图以 data URL 随结果（`ToolResult.ModelImage`，json:"-" 绝不漏进 chat:tool）返回，agent **回合内**合成 user 消息送进模型上下文（Parts+Content 同源，仅本回合、不落账本）；IsError 结果不送图；原始字节超 1.5MB 拒绝并给出路；默认（无 for_model）不产生图像 token 成本 | `TestLoop_ModelImageReachesNextRequest` / `TestLoop_ModelImageSkippedOnError` / `TestModelImageDataURL_SizeCap` / `TestBrowser_EndToEnd`（for_model 段） |
+| C-BR-9 | 视觉反馈（0.0.37）：`screenshot` 带 `for_model=true` → 截图以 data URL 随结果（`ToolResult.ModelImage`，json:"-" 绝不漏进 chat:tool）返回，agent **回合内**合成 user 消息送进模型上下文（Parts+Content 同源，仅本回合、不落账本）；IsError 结果不送图；原始字节超 1.5MB 拒绝并给出路；默认（无 for_model）不产生图像 token 成本。**2026-10-19 修订**：截图消息排在本步**全部** tool 结果之后（此前插在 tool 结果之前，违反 OpenAI/Anthropic 协议） | `TestLoop_ModelImageReachesNextRequest` / `TestLoop_ModelImageAfterAllToolResults` / `TestAnthropic_ToolResultBeforeScreenshot` / `TestLoop_ModelImageSkippedOnError` / `TestModelImageDataURL_SizeCap` / `TestBrowser_EndToEnd`（for_model 段） |
 
 ## C-FT：右栏目录树（0.0.28）
 
@@ -331,3 +332,4 @@
 | 2026-10-06 | **新增 C-APP-9** | 方案模式（清单第 2 位）：SendPlan 一轮 = 只读调研 + 实施方案。写路径**结构性不在场**（planRegistry 重建工具集：shell/browser/memory/ext 不注册、fs 白名单只读包装），系统说明带方案段（逐字常量保 prompt cache）；方案 = 普通助手消息，确认后的执行是新的一手普通回合——审批闸门/自愈循环/审批白名单等全部既有机制在执行回合照常生效。前端：Composer"方案"开关（一次性）+ 终态后方案确认卡（执行/取消） | 用户"继续"裁决按建议顺序交付（形态按与现有交互最一致的最小闭环定案） |
 | 2026-10-06 | **新增 C-BR-9** | 视觉反馈（清单第 4 位）：模型可以亲眼看自己改的页面——`screenshot` 带 `for_model=true` 时截图以 data URL 随工具结果返回，agent 回合内合成 user 消息送进模型上下文（Parts+Content 同源走三协议既有管线；仅本回合、不落账本、IsError 不送图、1.5MB 封顶）。UI 的 Visual 链路不变（Visual 给 UI、ModelImage 给模型，json:"-" 互不泄漏）；默认不带 for_model 零图像成本。UI 盲改 → 看着改 | 用户"继续"裁决按建议顺序交付（本批 4） |
 | 2026-10-19 | **修订 C-APP-6 / C-AGT-20；新增 C-AGT-21 / C-AGT-22 / C-LLM-8 / C-FS-14** | 体检 P0+P1：① AGENTS.md `check:` 曾在回合结束自动执行且不经审批，而 `fs.write`（不在审批清单）可改写 AGENTS.md——等于绕过 shell 审批执行任意命令；改为用户确认 + 原文逐字一致才执行。② CRLF 文件多行 replace 永远零匹配（read 输出去 `\r`）。③ 回合内工具结果无界、段内不折叠、一个会话只能压缩一次。④ max_tokens/length 截断被当作正常完成（正文静默缺尾、残缺参数被执行） | 2026-10-19 全量功能审查 |
+| 2026-10-19 | **新增编程基础系统说明；修订 C-AGT-2 / C-BR-9；新增 C-APR-9** | 编码能力审查前四项：① 主对话此前没有任何"怎么干活"的系统说明（只有技能清单/环境事实/语气/记忆），新增逐字常量的编程基础说明排在最前（有工作区：先读再改、小步精准、改完验证、诚实边界；纯对话版不提文件工具），`TestChatService_CodingPrefaceLeadsSystemPrompt` 锁定。② 跨轮 fs.read 一律截 4KB → "把刚才那个函数改一下"只能重读；改为按回合内上限保留并标注读后被改。③ 回合内截图消息插在 tool 结果之前，带图那一步上游必 400。④ 跑测试/构建每次都要点审批，新增本会话前缀授予 | 2026-10-19 编码能力审查 |

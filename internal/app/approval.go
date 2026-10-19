@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -25,6 +26,91 @@ type ApprovalEvent struct {
 	SessionTitle string `json:"sessionTitle,omitempty"`
 	ToolName     string `json:"toolName"`
 	Arguments    string `json:"arguments"` // 原始 JSON，原样展示，不解析（ADR-0007 第 2 条）
+	// SuggestedPrefix 是 shell 审批卡上「本会话总是允许」的建议前缀（命令前一到两个词）；
+	// 空 = 不提供该按钮（非 shell、含组合/重定向记号等白名单本就不会命中的命令）。
+	SuggestedPrefix string `json:"suggestedPrefix,omitempty"`
+}
+
+// pendingApproval 是一条未决审批的上下文（会话 + shell 命令原文）。
+type pendingApproval struct {
+	sessionID string
+	toolName  string
+	command   string
+}
+
+// shellCommandOf 取 shell 调用参数里的命令原文（解析失败返回空串）。
+func shellCommandOf(args string) string {
+	var p struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal([]byte(args), &p) != nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Command)
+}
+
+// suggestShellPrefix 给审批卡建议一个「本会话总是允许」的前缀：程序名，第二个词是
+// 普通子命令（不以 - 开头、不像路径）时带上它——`go test ./...` → `go test`，
+// `npm run build` → `npm run`。含组合/重定向/求值记号的命令白名单本就不会命中
+// （shellAllowMatched），不给建议。
+func suggestShellPrefix(cmd string) string {
+	if _, ok := shellAllowMatched(cmd, []string{strings.TrimSpace(cmd)}); !ok {
+		return ""
+	}
+	f := strings.Fields(cmd)
+	if len(f) == 0 {
+		return ""
+	}
+	if len(f) > 1 && !strings.HasPrefix(f[1], "-") && !strings.ContainsAny(f[1], `/\.:"'`) {
+		return f[0] + " " + f[1]
+	}
+	return f[0]
+}
+
+// sessionAllowed 报告这条 shell 命令是否命中本会话已授予的前缀。
+func (s *ChatService) sessionAllowed(sessionID, cmd string) (string, bool) {
+	s.mu.Lock()
+	allow := append([]string(nil), s.sessionShellAllow[sessionID]...)
+	s.mu.Unlock()
+	return shellAllowMatched(cmd, allow)
+}
+
+// ResolveApprovalAllowPrefix 批准这条 shell 请求，并在**本会话**内对同前缀的命令免确认
+// （直到应用重启或会话删除）。前缀必须真的覆盖这条命令——用户看到的和被授予的是同一条
+// 规则；含组合/重定向记号的前缀拒绝（它永远匹配不到，授予了只会让人误以为生效）。
+func (s *ChatService) ResolveApprovalAllowPrefix(id, prefix string) error {
+	prefix = strings.TrimSpace(prefix)
+	s.mu.Lock()
+	info, ok := s.pendingApprovalInfo[id]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("审批请求不存在或已处理：%s", id)
+	}
+	if info.toolName != "shell" {
+		return errors.New("只有 shell 命令可以按前缀总是允许")
+	}
+	if prefix == "" || strings.ContainsAny(prefix, "&|;<>`%\n\r") || strings.Contains(prefix, "$(") {
+		return fmt.Errorf("前缀不合法：%q", prefix)
+	}
+	if _, hit := shellAllowMatched(info.command, []string{prefix}); !hit {
+		return fmt.Errorf("前缀 %q 不覆盖这条命令：%s", prefix, info.command)
+	}
+	s.mu.Lock()
+	if s.sessionShellAllow == nil {
+		s.sessionShellAllow = map[string][]string{}
+	}
+	exists := false
+	for _, p := range s.sessionShellAllow[info.sessionID] {
+		if p == prefix {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		s.sessionShellAllow[info.sessionID] = append(s.sessionShellAllow[info.sessionID], prefix)
+	}
+	s.mu.Unlock()
+	return s.ResolveApproval(id, true, "用户允许本会话执行以「"+prefix+"」开头的命令")
 }
 
 // approvalReplyTimeout 是审批等待的独立上限（0.2.36 审计 R3）：审批只跟随
@@ -164,6 +250,7 @@ func (s *ChatService) ResolveApproval(id string, approved bool, reason string) e
 	ch, ok := s.pendingApprovals[id]
 	if ok {
 		delete(s.pendingApprovals, id)
+		delete(s.pendingApprovalInfo, id)
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -203,6 +290,16 @@ func (a *uiApprover) Review(ctx context.Context, req agent.ApprovalRequest) (age
 	if !found {
 		return agent.Decision{Approved: true}, nil
 	}
+	// 本会话已授予的 shell 前缀（审批卡「本会话总是允许」）：读活列表——授予当回合
+	// 后续同前缀命令立即免确认，这正是这个按钮的意义（与"清单快照"语义不冲突：
+	// 清单决定哪些工具要问，这里是用户对具体命令的答复）。
+	cmd := ""
+	if req.ToolName == "shell" {
+		cmd = shellCommandOf(req.Arguments)
+		if pre, ok := a.svc.sessionAllowed(a.sessionID, cmd); ok {
+			return agent.Decision{Approved: true, Reason: "命中本会话允许的前缀 " + pre}, nil
+		}
+	}
 
 	id := fmt.Sprintf("ap-%d", approvalSeq.Add(1))
 	ch := make(chan agent.Decision, 1)
@@ -211,15 +308,23 @@ func (a *uiApprover) Review(ctx context.Context, req agent.ApprovalRequest) (age
 	if a.svc.pendingApprovals == nil {
 		a.svc.pendingApprovals = make(map[string]chan agent.Decision)
 	}
+	if a.svc.pendingApprovalInfo == nil {
+		a.svc.pendingApprovalInfo = make(map[string]pendingApproval)
+	}
 	a.svc.pendingApprovals[id] = ch
+	a.svc.pendingApprovalInfo[id] = pendingApproval{sessionID: a.sessionID, toolName: req.ToolName, command: cmd}
 	emit := a.svc.approvalEmit
 	a.svc.mu.Unlock()
 
 	if emit != nil {
-		emit(ApprovalEvent{
+		ev := ApprovalEvent{
 			ID: id, SessionID: a.sessionID, SessionTitle: a.svc.sessionTitleOf(a.sessionID),
 			ToolName: req.ToolName, Arguments: req.Arguments,
-		})
+		}
+		if req.ToolName == "shell" {
+			ev.SuggestedPrefix = suggestShellPrefix(cmd)
+		}
+		emit(ev)
 	}
 
 	// 独立超时（0.2.36 审计 R3）：到点按拒绝处理（理由回传给模型），绝不放行
@@ -246,6 +351,7 @@ func (a *uiApprover) forget(id string) {
 	a.svc.mu.Lock()
 	defer a.svc.mu.Unlock()
 	delete(a.svc.pendingApprovals, id)
+	delete(a.svc.pendingApprovalInfo, id)
 }
 
 // toolNeedsApproval 判断某工具是否在审批清单内（精确匹配，不做模糊/语义判断）。

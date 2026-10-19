@@ -109,6 +109,16 @@ const extNote = computed(() => (props.m.toolName === 'ext_manage' ? '该操作�
         <button class="btn-primary px-4 py-1.5 text-xs" @click="store.resolveApproval(m.approvalId!, true)">
           允许执行
         </button>
+        <!-- 跑测试/构建这类反复出现的命令：一次授予本会话同前缀免确认（应用重启失效）。
+             前缀原样写在按钮上——用户点的就是会被放行的那条规则 -->
+        <button
+          v-if="m.toolName === 'shell' && m.allowPrefix"
+          class="chip"
+          :title="`本会话内以「${m.allowPrefix}」开头的命令不再询问（含 & | ; > 等组合记号的命令仍会询问；重启应用后失效）`"
+          @click="store.resolveApprovalAllowPrefix(m.approvalId!, m.allowPrefix)"
+        >
+          本会话总是允许「{{ m.allowPrefix }}」
+        </button>
         <button class="chip" @click="store.resolveApproval(m.approvalId!, false, '用户拒绝')">拒绝</button>
       </div>
     </div>

@@ -51,6 +51,8 @@ func New(chat *app.ChatService) *Bind {
 			"sessionTitle": e.SessionTitle, // 确认卡显示会话名（0.2.36 审计 R3）
 			"toolName":     e.ToolName,
 			"arguments":    e.Arguments,
+			// 「本会话总是允许」的建议前缀（仅 shell；空 = 不出按钮）
+			"suggestedPrefix": e.SuggestedPrefix,
 		})
 	})
 	// 工作区检查结果桥（第 8 批）：回合收尾后自动跑的命令，结果推给界面（列表 + 点击打开）
@@ -261,6 +263,12 @@ func (b *Bind) SetApprovalPolicy(tools []string) error { return b.chat.SetApprov
 // 未知或已处理的 ID 返回错误——UI 会明确提示，绝不静默放行。
 func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 	return b.chat.ResolveApproval(id, approved, reason)
+}
+
+// ResolveApprovalAllowPrefix 允许这条 shell 命令，并在本会话内对同前缀命令免确认（应用重启失效）。
+// 前缀必须覆盖这条命令，否则报错——授予的规则与卡片上显示的必须是同一条。
+func (b *Bind) ResolveApprovalAllowPrefix(id string, prefix string) error {
+	return b.chat.ResolveApprovalAllowPrefix(id, prefix)
 }
 
 // ProposeFileWrite 把「应用到文件」的代码块内容直接写入工作区（改了就是改了）。

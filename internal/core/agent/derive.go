@@ -44,6 +44,9 @@ const (
 // （只做 0.0.09 的基础只读折叠，不因预算裁剪任何内容）。
 type DeriveOptions struct {
 	BudgetTokens int // 渠道声明的上下文上限（token）；0 = 未配置
+	// CompactReads：fs.read 也按通用模型侧上限截断（段内重折叠用——那时上下文已超水位，
+	// 本回合更早步骤的读全文是要先让出来的；本步结果由调用方原样回填）。
+	CompactReads bool
 }
 
 // DeriveInfo 是本轮派生的治理读数（经 llm.ContextEvent 透传 UI 油表）。
@@ -96,7 +99,8 @@ type toolRef struct {
 	title      string
 	isError    bool
 	isReadOnly bool
-	folded     bool // 已被某级折叠处理过（避免重复覆盖）
+	fsAction   string // fs 调用的 action（非 fs 为空）：保留读全文与"读后被改"标注用
+	folded     bool   // 已被某级折叠处理过（避免重复覆盖）
 }
 
 // deriveMessages 以"未配置上下文上限"派生历史（旧签名入口，测试与旧调用点用）。
@@ -339,10 +343,18 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 			}
 			// 内容一律先按模型侧上限截断（头尾保留）；是否折叠由预算分级统一决定
 			//（第 2 批：折叠从"构建时无条件"改为"构建后按预算分级"，见 deriveMessagesWith 文档）。
+			// 例外：成功的 fs.read 按回合内上限保留（2026-10-19）——上一轮读过的文件此前
+			// 跨轮只剩 4KB，"把刚才那个函数改一下"时模型对着残缺正文只能重读。旧轮次的读
+			// 照旧由基础折叠（>keepFullToolTurns 轮）与预算分级折掉，上下文仍然有界。
+			action := fsActionOf(calls[idx])
+			content := truncateToolResult(p.Content)
+			if !p.IsError && action == "read" && !opt.CompactReads {
+				content = truncateFileRead(p.Content)
+			}
 			results[idx] = &llm.Message{
 				Role:       "tool",
 				ToolCallID: calls[idx].ID,
-				Content:    truncateToolResult(p.Content),
+				Content:    content,
 			}
 			resultRefs[idx] = toolRef{
 				turn:       turn,
@@ -350,6 +362,7 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 				title:      p.Title,
 				isError:    p.IsError,
 				isReadOnly: isReadOnlyCall(llm.ToolCall{Name: calls[idx].Name, Arguments: calls[idx].Arguments}),
+				fsAction:   action,
 			}
 		case session.EventAssistantMsg:
 			flush()
@@ -492,6 +505,9 @@ func deriveMessagesWith(ledger *session.Ledger, opt DeriveOptions) ([]llm.Messag
 	if comp != nil {
 		info.CompactionSummary, info.CompactionUpTo = comp.summary, comp.upTo
 	}
+	// 读后被改标注（2026-10-19）：保留下来的读全文若之后被成功 write/replace 过，
+	// 正文前注明"以下是修改前内容"——模型不会把旧正文当成文件现状去写 replace。
+	markStaleReads(msgs, toolRefs)
 	// 基础折叠（0.0.09 常态行为，不计入 info）：>keepFullToolTurns 轮的成功只读结果收成单行
 	foldOldReads(msgs, toolRefs, totalTurns-keepFullToolTurns)
 
@@ -763,6 +779,49 @@ func pairToolResult(calls []llm.ToolCall, results []*llm.Message, id, name strin
 		}
 	}
 	return -1
+}
+
+// fsActionOf 取 fs 调用的 action；非 fs 或解析失败返回空串。
+func fsActionOf(call llm.ToolCall) string {
+	if call.Name != "fs" {
+		return ""
+	}
+	var p struct {
+		Action string `json:"action"`
+	}
+	if json.Unmarshal([]byte(call.Arguments), &p) != nil {
+		return ""
+	}
+	return p.Action
+}
+
+// truncateFileRead 是跨轮保留的文件读取上限：与回合内同一个数（回合内看到多少，
+// 下一轮还看到多少），超限头尾保留并注明。
+func truncateFileRead(content string) string {
+	return capInTurnToolResult(content)
+}
+
+// staleReadNote 是"读后被改"的前缀标注。
+const staleReadNote = "[注意：本文件在这次读取之后被修改过，以下是修改前的内容；以修改回执为准，需要现状请重读]\n"
+
+// markStaleReads 给"之后被成功 write/replace 过"的 fs.read 结果加前缀标注。
+// 按标题（工作区相对路径）配对：fs 的读与写用同一个 fsTitle 生成标题。
+func markStaleReads(msgs []llm.Message, refs []toolRef) {
+	writtenAfter := map[string]bool{}
+	for i := len(refs) - 1; i >= 0; i-- {
+		r := refs[i]
+		if r.name != "fs" || r.isError || r.title == "" {
+			continue
+		}
+		switch r.fsAction {
+		case "write", "replace":
+			writtenAfter[r.title] = true
+		case "read":
+			if writtenAfter[r.title] {
+				msgs[r.msgIdx].Content = staleReadNote + msgs[r.msgIdx].Content
+			}
+		}
+	}
 }
 
 func truncateToolResult(content string) string {

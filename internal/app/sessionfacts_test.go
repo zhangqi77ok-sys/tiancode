@@ -58,6 +58,40 @@ func TestChatService_SessionFactsPreface(t *testing.T) {
 	}
 }
 
+// 2026-10-19：系统说明必须以编程智能体基础说明开头（此前没有任何"怎么干活"的约定）；
+// 有工作区用工作区版（读→改→验证、诚实边界），纯对话用不提文件工具的版本；
+// 每步取值逐字相同（prompt cache 前提）。
+func TestChatService_CodingPrefaceLeadsSystemPrompt(t *testing.T) {
+	s := newChannelService(t, Config{})
+	defer s.Close()
+
+	ag := agent.NewLoop(nil, "m", nil)
+	if err := s.applyExtensionPreface(context.Background(), ag, t.TempDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	p := ag.Preface()
+	if !strings.HasPrefix(p, codingPrefaceWorkspace) {
+		t.Fatalf("有工作区时系统说明应以编程基础说明开头：%q", p[:min(200, len(p))])
+	}
+	for _, must := range []string{"先弄清再动手", "改完要验证", "没有证据绝不说"} {
+		if !strings.Contains(p, must) {
+			t.Fatalf("基础说明缺少 %q", must)
+		}
+	}
+	if p != ag.Preface() {
+		t.Fatal("每步取值必须逐字相同（prompt cache）")
+	}
+
+	chat := agent.NewLoop(nil, "m", nil)
+	if err := s.applyExtensionPreface(context.Background(), chat, "", false); err != nil {
+		t.Fatal(err)
+	}
+	pc := chat.Preface()
+	if !strings.HasPrefix(pc, codingPrefaceChat) || strings.Contains(pc, "fs.replace") {
+		t.Fatalf("纯对话应使用不提文件工具的版本：%q", pc[:min(200, len(pc))])
+	}
+}
+
 // 0.0.42（C-PRE-1）：工作区根 AGENTS.md 作为项目规则注入；无/空文件零噪声；
 // 超上限头尾保留并注明节选。
 func TestSessionFacts_AgentsRules(t *testing.T) {

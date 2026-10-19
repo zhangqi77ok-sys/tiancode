@@ -60,10 +60,13 @@ func (l *Loop) refoldMidTurn(ctx context.Context, ledger *session.Ledger, msgs [
 	if estimateMessagesTokens(msgs) <= l.ctxBudgetTokens*contextFoldWatermark/100 {
 		return nil, DeriveInfo{}, false
 	}
-	refreshed, info, err := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+	// CompactReads：已超水位，本回合更早步骤的读全文先让出来（本步结果下面原样回填）
+	refreshed, info, err := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens, CompactReads: true})
 	if err != nil {
 		return nil, DeriveInfo{}, false
 	}
+	l.compactReads = true
+	defer func() { l.compactReads = false }()
 	// 声明了上限仍装不下：尝试历史压缩（与回合开头同一规则——兜底默认值不压缩）
 	if info.Dropped && !l.ctxBudgetDefault {
 		if compacted, cinfo, ok := l.tryCompact(ctx, ledger, info); ok {

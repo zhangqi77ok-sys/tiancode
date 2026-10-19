@@ -104,6 +104,9 @@ type Loop struct {
 	// 数据源是工具执行结果本身，零新增 IO（档位 3 核账的事实依据）。
 	// Loop 每轮重建，天然"只认本轮"。
 	written map[string]bool
+	// compactReads 只在段内重折叠期间为真：其中触发的历史压缩重派生也要让出读全文
+	// （与 refoldMidTurn 同口径，见 DeriveOptions.CompactReads）。
+	compactReads bool
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -534,6 +537,9 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		// 以合成 user 消息进入**本回合**的后续请求——三协议的多模态管线与用户
 		// 附件同一条（Parts+Content 同源是附件轮定的形态）。不落账本：账本里已有
 		// Visual.Shot 路径与结果正文，之后的回合模型可再次截图。
+		// 位置：先攒进 stepImages，等本步**全部** tool 结果回填后再追加——此前直接插在
+		// tool 结果之前，违反 OpenAI（tool 必须紧跟 assistant(tool_calls)）与 Anthropic
+		// （tool_result 块须排在 user 消息最前）的协议，带图那一步上游必 400。
 		if !result.IsError && result.ModelImage != "" {
 			note := "（系统）你要求的页面截图如下（仅本回合可见）。请直接依据画面内容判断页面状态与 UI 效果，不要凭想象描述。"
 			img := llm.Message{
@@ -544,7 +550,6 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 					{Type: "image_url", ImageURL: result.ModelImage, Name: "page-screenshot"},
 				},
 			}
-			msgs = append(msgs, img)
 			stepImages = append(stepImages, img)
 		}
 		// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
@@ -879,13 +884,15 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		// 段内重折叠（P1）：本步结果落完后估算一次，超预算水位就从账本重新派生
 		// （必要时压缩历史），本步结果与截图原样保留。未超水位时零开销、零行为变化。
 		if refolded, info, ok := l.refoldMidTurn(ctx, ledger, msgs, stepFresh); ok {
-			msgs = append(refolded, stepImages...)
+			msgs = refolded
 			if ev := l.contextEvent(info); ev != nil {
 				if forward(llm.StreamChunk{Context: ev}) {
 					return
 				}
 			}
 		}
+		// 本步截图排在全部 tool 结果之后（协议合法位置，见 finishCall 注释）
+		msgs = append(msgs, stepImages...)
 		stepFresh = map[string]string{}
 		stepImages = nil
 		// 截断留痕（P1）：前面的调用照常执行完，被丢弃的最后一笔在这里说明。
@@ -946,7 +953,8 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				segment++
 				// 续跑前重新折叠（0.0.11）：本段已把大量工具输出写进上下文，开局那次
 				// 派生结果已经过时——按当前预算重新派生一次，续跑段不背着满上下文。
-				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+				// CompactReads：本段几十步的读全文不随续跑段整份带走（需要时模型会重读）。
+				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens, CompactReads: true})
 				if derr != nil {
 					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
 					return
@@ -962,7 +970,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			} else if l.continueAfterLimit(ctx, segment) {
 				segment++
 				// 续跑前重新折叠（0.0.11）：同上，且刷新油表读数。
-				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+				refreshed, next, derr := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens, CompactReads: true})
 				if derr != nil {
 					emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("derive history: %w", derr)})
 					return

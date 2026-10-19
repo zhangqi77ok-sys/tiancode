@@ -645,6 +645,8 @@ interface WailsApp {
   ApprovalPolicy(): Promise<string[] | null>
   SetApprovalPolicy(tools: string[]): Promise<void>
   ResolveApproval(id: string, approved: boolean, reason: string): Promise<void>
+  // 允许这条 shell 命令，并在本会话内对同前缀命令免确认（前缀须覆盖该命令；应用重启失效）
+  ResolveApprovalAllowPrefix(id: string, prefix: string): Promise<void>
   // 问答交互（ask_user）：答案原样回流给模型继续推理
   ResolveAsk(id: string, answer: string): Promise<void>
   ChannelPresets(): Promise<PresetDTO[] | null>
@@ -762,6 +764,7 @@ export function bridge(): WailsBridge {
         ApprovalPolicy: async () => [],
         SetApprovalPolicy: offlineWrite,
         ResolveApproval: offlineWrite,
+        ResolveApprovalAllowPrefix: offlineWrite,
         ResolveAsk: offlineWrite,
         ExportSessionMarkdown: async () => '',
         GetWorkspace: async () => '',

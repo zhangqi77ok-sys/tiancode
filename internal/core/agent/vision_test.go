@@ -81,6 +81,53 @@ func TestLoop_ModelImageReachesNextRequest(t *testing.T) {
 	}
 }
 
+// 截图消息必须排在本步**全部** tool 结果之后：assistant(tool_calls) 后紧跟各 tool 消息
+// （OpenAI 协议），图片 user 消息在最后（Anthropic 的 tool_result 块因此排在 user 消息最前）。
+// 此前图片插在 tool 结果之前，带图那一步上游必 400。
+func TestLoop_ModelImageAfterAllToolResults(t *testing.T) {
+	ledger, _ := newTestLedger(t)
+	defer ledger.Close()
+	shot := &scriptTool{name: "browser", result: tools.ToolResult{
+		Content: "已截图", ModelImage: "data:image/png;base64,CCCC",
+	}}
+	registry := tools.NewRegistry()
+	if err := registry.Register(shot); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRuntime{script: [][]llm.StreamChunk{
+		{
+			{ToolCalls: []llm.ToolCallChunk{{Index: 0, ID: "c1", Name: "browser", ArgumentsDelta: `{"action":"screenshot","for_model":true}`}}},
+			{ToolCalls: []llm.ToolCallChunk{{Index: 1, ID: "c2", Name: "browser", ArgumentsDelta: `{"action":"screenshot","for_model":true}`}}},
+			{EndReason: llm.EndDone},
+		},
+		{{Delta: "看到了"}, {EndReason: llm.EndDone}},
+	}}
+	ch, err := NewLoop(fr, "test-model", registry).Run(context.Background(), ledger, "截两张")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	msgs := fr.reqs[1].Messages
+	at := -1
+	for i, m := range msgs {
+		if m.Role == "assistant" && len(m.ToolCalls) == 2 {
+			at = i
+		}
+	}
+	if at < 0 || len(msgs) < at+5 {
+		t.Fatalf("消息序列不完整：%+v", msgs)
+	}
+	if msgs[at+1].Role != "tool" || msgs[at+2].Role != "tool" {
+		t.Fatalf("assistant(tool_calls) 之后必须紧跟两条 tool 结果：%q %q", msgs[at+1].Role, msgs[at+2].Role)
+	}
+	if msgs[at+3].Role != "user" || len(msgs[at+3].Parts) == 0 || msgs[at+4].Role != "user" || len(msgs[at+4].Parts) == 0 {
+		t.Fatalf("两张截图应排在 tool 结果之后：%+v", msgs[at+3:])
+	}
+}
+
 // IsError 的结果不送图：失败的工具调用不该把残缺画面喂给模型。
 func TestLoop_ModelImageSkippedOnError(t *testing.T) {
 	ledger, _ := newTestLedger(t)

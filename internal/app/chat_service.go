@@ -99,6 +99,12 @@ type ChatService struct {
 	approvalTools    []string                       // 需要审批的工具名（空 = 关闭）
 	approvalEmit     func(ApprovalEvent)            // 事件回调（壳层注入）
 	pendingApprovals map[string]chan agent.Decision // 未决请求：ID → 答复通道
+	// pendingApprovalInfo 是未决请求的会话与 shell 命令（「本会话总是允许此前缀」
+	// 校验前缀确实覆盖这条命令用）；与 pendingApprovals 同锁同生命周期。
+	pendingApprovalInfo map[string]pendingApproval
+	// sessionShellAllow 是用户在审批卡上授予的**本会话** shell 前缀（内存，不落盘；
+	// 应用重启即失效）。匹配规则与工作区白名单同一个 shellAllowMatched。
+	sessionShellAllow map[string][]string
 
 	// 问答交互状态（ask_user，0.2.15）：与审批同构的"问 → 等 → 答"配对
 	askEmit     func(AskEvent)         // 事件回调（壳层注入）
@@ -364,21 +370,24 @@ func (s *ChatService) applyExtensionPreface(ctx context.Context, ag *agent.Loop,
 			tone = mem
 		}
 	}
+	// 编程智能体基础说明（2026-10-19）排在最前：身份与做法先于能力清单与环境事实。
+	// 逐字常量，只随"有无工作区"二选一，不破坏 prompt cache。
+	base := codingPreface(root)
 	if s.extensions == nil {
-		ag.SetPreface(facts + "\n\n" + tone)
-		ag.SetPrefaceFn(func() string { return facts + "\n\n" + tone }) // 每步刷新语义一致（值固定）
+		ag.SetPreface(base + "\n\n" + facts + "\n\n" + tone)
+		ag.SetPrefaceFn(func() string { return base + "\n\n" + facts + "\n\n" + tone }) // 每步刷新语义一致（值固定）
 		return nil
 	}
 	file := s.mergedSkills(root)
 	// 只告诉模型有什么、怎么调用。不在发消息时启动 MCP：用不用由模型决定。
-	ag.SetPreface(exttools.Preface(file) + "\n\n" + facts + "\n\n" + tone)
+	ag.SetPreface(base + "\n\n" + exttools.Preface(file) + "\n\n" + facts + "\n\n" + tone)
 	// 动态 preface（0.2.33）：每个执行步骤实时取——扩展在回合内被 ManageTool
 	// 增删后，模型在后续步骤立即看到最新清单（添加当回合即可用，不必等下一轮）。
 	// 语气段不参与实时刷新（用上面的快照）：同一回合里它必须逐字不变。
 	ag.SetPrefaceFn(func() string {
 		// 清单读取失败时 mergedSkills 内部降级（记日志、能带上多少带多少）——
 		// 技能清单缺失应可见于读数，而不是整体静默退回"只有事实与语气"。
-		return exttools.Preface(s.mergedSkills(root)) + "\n\n" + facts + "\n\n" + tone
+		return base + "\n\n" + exttools.Preface(s.mergedSkills(root)) + "\n\n" + facts + "\n\n" + tone
 	})
 	return nil
 }
@@ -500,6 +509,7 @@ func (s *ChatService) DeleteSession(sessionID string) error {
 		// 运行中删除会让正在写账本的轮次踩空（句柄关闭/文件被删），显式拒绝
 		return errors.New("该会话正在运行：请先中断再删除")
 	}
+	delete(s.sessionShellAllow, sessionID) // 本会话授予的 shell 前缀随会话消失
 	if l, ok := s.ledgers[sessionID]; ok {
 		if err := l.Close(); err != nil {
 			return fmt.Errorf("关闭会话账本失败：%w", err)

@@ -55,7 +55,7 @@ func (l *Loop) tryCompact(ctx context.Context, ledger *session.Ledger, ctxInfo D
 	}); err != nil {
 		return nil, DeriveInfo{}, false
 	}
-	refreshed, info, err := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens})
+	refreshed, info, err := deriveMessagesWith(ledger, DeriveOptions{BudgetTokens: l.ctxBudgetTokens, CompactReads: l.compactReads})
 	if err != nil || info.Dropped {
 		// 压缩后仍超预算：不再追加压缩（上面已落账，下轮直接走"已压缩"放弃路径）
 		return nil, DeriveInfo{}, false
