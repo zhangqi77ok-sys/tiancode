@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -184,8 +185,8 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (tools.Tool
 	)
 	if strings.EqualFold(toolName, "list") {
 		out, err = t.listTools(ctx, spec)
-	} else if spec.Transport == "http" || (spec.Command == "" && spec.URL != "") {
-		out, err = mcpclient.CallHTTP(ctx, spec.URL, spec.Headers, toolName, p.Arguments)
+	} else if isHTTPServer(spec) {
+		out, err = callHTTP(ctx, spec, toolName, p.Arguments)
 	} else {
 		out, err = t.callStdio(ctx, spec, toolName, p.Arguments)
 	}
@@ -196,25 +197,70 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (tools.Tool
 }
 
 func (t *MCPTool) listTools(ctx context.Context, spec catalog.Server) (string, error) {
-	if spec.Transport == "http" || (strings.TrimSpace(spec.Command) == "" && strings.TrimSpace(spec.URL) != "") {
-		return "远程服务器 " + strings.TrimSpace(spec.URL) + "。请直接指定 tool。", nil
+	var list []mcpclient.Tool
+	if isHTTPServer(spec) {
+		// 远程服务器（2026-10-19）：经 Streamable HTTP 会话真正列出工具（此前只回一句
+		// "请直接指定 tool"，模型只能盲猜工具名与参数）
+		s, err := mcpclient.DialHTTP(ctx, spec.URL, spec.Headers)
+		if err != nil {
+			return "", err
+		}
+		defer closeHTTP(s)
+		if list, err = s.ListTools(ctx); err != nil {
+			return "", err
+		}
+	} else {
+		c, err := t.stdioClient(ctx, spec)
+		if err != nil {
+			return "", err
+		}
+		if list, err = c.ListTools(ctx); err != nil {
+			return "", err
+		}
 	}
-	c, err := t.stdioClient(ctx, spec)
-	if err != nil {
-		return "", err
-	}
-	tools, err := c.ListTools(ctx)
-	if err != nil {
-		return "", err
-	}
-	if len(tools) == 0 {
-		return "该服务器没有公布工具", nil
+	return formatToolList(list), nil
+}
+
+// toolSchemaLimit 是 list 输出里单个工具参数 schema 的字节上限（头尾保留）。
+const toolSchemaLimit = 1500
+
+// formatToolList 渲染工具清单：名字、说明与参数 schema（2026-10-19：此前只有名字与说明，
+// 模型调用时只能猜参数名）。schema 有界，避免一台大服务器撑爆上下文。
+func formatToolList(list []mcpclient.Tool) string {
+	if len(list) == 0 {
+		return "该服务器没有公布工具"
 	}
 	var b strings.Builder
-	for _, tool := range tools {
+	for _, tool := range list {
 		fmt.Fprintf(&b, "- %s：%s\n", tool.Name, strings.TrimSpace(tool.Description))
+		if s := strings.TrimSpace(string(tool.InputSchema)); s != "" && s != "null" {
+			fmt.Fprintf(&b, "  参数：%s\n", tools.HeadTail(s, toolSchemaLimit))
+		}
 	}
-	return strings.TrimSpace(b.String()), nil
+	return strings.TrimSpace(b.String())
+}
+
+// isHTTPServer 报告这台服务器走远程 HTTP 传输。
+func isHTTPServer(spec catalog.Server) bool {
+	return spec.Transport == "http" || (strings.TrimSpace(spec.Command) == "" && strings.TrimSpace(spec.URL) != "")
+}
+
+// callHTTP 对远程服务器建一次会话并调用工具（每次使用一个会话：tools/call 无状态，
+// 不在进程里长期持有远程会话，也就没有过期重连问题）。
+func callHTTP(ctx context.Context, spec catalog.Server, tool string, args json.RawMessage) (string, error) {
+	s, err := mcpclient.DialHTTP(ctx, spec.URL, spec.Headers)
+	if err != nil {
+		return "", err
+	}
+	defer closeHTTP(s)
+	return s.Call(ctx, tool, args)
+}
+
+// closeHTTP 结束远程会话；失败只记日志（调用结果已经拿到，DELETE 是礼貌性收尾）。
+func closeHTTP(s *mcpclient.HTTPSession) {
+	if err := s.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "mcp http session close: %v\n", err)
+	}
 }
 
 func (t *MCPTool) callStdio(ctx context.Context, spec catalog.Server, tool string, args json.RawMessage) (string, error) {
@@ -332,8 +378,21 @@ func (t *MCPTool) storeIfAbsent(name string, c *mcpclient.Client) (*mcpclient.Cl
 // ProbeServer 连接单台 stdio 服务器并返回其公布的工具名（ext_manage 添加后的验证用）。
 // 连接失败时把刚拉起的会话从 hub 摘掉：留着一个连不上的客户端只会让下次调用更难排查。
 func (t *MCPTool) ProbeServer(ctx context.Context, spec catalog.Server) ([]string, error) {
-	if spec.Transport == "http" || (spec.URL != "" && spec.Command == "") {
-		return nil, fmt.Errorf("远程服务器不支持自动列工具（%s），请直接指定 tool 调用", strings.TrimSpace(spec.URL))
+	if isHTTPServer(spec) {
+		s, err := mcpclient.DialHTTP(ctx, spec.URL, spec.Headers)
+		if err != nil {
+			return nil, err
+		}
+		defer closeHTTP(s)
+		list, err := s.ListTools(ctx)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, 0, len(list))
+		for _, tool := range list {
+			names = append(names, tool.Name)
+		}
+		return names, nil
 	}
 	c, err := t.stdioClient(ctx, spec)
 	if err != nil {

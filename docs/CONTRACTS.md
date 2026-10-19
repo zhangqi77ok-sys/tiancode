@@ -97,6 +97,7 @@
 | C-SEARCH-8 | `files_only=true` 只按工作区相对路径匹配、只返回路径（不读内容、不带行号、不受 1MiB 内容闸门约束）；忽略目录 / 越界检查 / 配额与内容搜索同一套 | `TestSearch_FilesOnlyByPath` / `TestSearch_FilesOnlyMaxMatches` |
 | C-SEARCH-9 | 并行扫描产出**确定性**（0.0.28）：两段式——遍历只做廉价判定收集候选，固定 worker pool（NumCPU 封顶 8）并行扫内容，产出按工作区相对路径排序——结果只由文件集合决定、与调度顺序无关；刻意不按命中配额早停（半路收手会让产出集合依赖调度顺序），扫描总量由超时/取消兜底 | `TestSearch_ParallelDeterministicOutput` / `TestSearch_ParallelMultiDirCorrectness` |
 | C-SEARCH-10 | 忽略目录**单一来源**（0.0.28）：`internal/platform/workspace` 定稿 9 项（.git .idea .vscode bin build dist node_modules obj vendor），大小写不敏感、只认单级目录名；search 与壳层 @ 引用（经编排层转出）共用同一份，不再各留一份硬编码 | `TestSearch_SkipsUnifiedIgnoreList` / `TestIgnoredDir_FinalList` / `TestIgnoredDir_CaseInsensitive` / `TestIgnoredDir_NoPrefixMatch` / `TestWorkspaceIgnoredDir_SingleSource` |
+| C-SEARCH-11 | git 仓库里按 git 自己的忽略规则过滤候选（`git ls-files --cached --others --exclude-standard`：任意层级 .gitignore、文件级规则、info/exclude、全局排除）；未跟踪未忽略的新文件照常可搜；非仓库/取不到时退回旧行为 | `TestSearch_RespectsNestedGitignore` |
 
 ## C-APP：编排纪律（M2 起持续生效）
 
@@ -343,3 +344,4 @@
 | 2026-10-19 | **新增编程基础系统说明；修订 C-AGT-2 / C-BR-9；新增 C-APR-9** | 编码能力审查前四项：① 主对话此前没有任何"怎么干活"的系统说明（只有技能清单/环境事实/语气/记忆），新增逐字常量的编程基础说明排在最前（有工作区：先读再改、小步精准、改完验证、诚实边界；纯对话版不提文件工具），`TestChatService_CodingPrefaceLeadsSystemPrompt` 锁定。② 跨轮 fs.read 一律截 4KB → "把刚才那个函数改一下"只能重读；改为按回合内上限保留并标注读后被改。③ 回合内截图消息插在 tool 结果之前，带图那一步上游必 400。④ 跑测试/构建每次都要点审批，新增本会话前缀授予 | 2026-10-19 编码能力审查 |
 | 2026-10-19 | **新增 C-SUB-5 / C-TOOL-6；修复零事件看门狗终态竞态** | 后端收尾第二批：子代理预算/过程/最终报告/独立 fs；shell PowerShell 与 cwd；看门狗先 cancel 再注入，取消终态常先到达，用户看到"已取消"而非"响应超时"——以 timedOut 标志为准改写（全量并行测试偶发抓到）；`TestShellRun_BackgroundLogBounded` 清理由固定 sleep 改为轮询 | 2026-10-19 后端收尾 |
 | 2026-10-19 | **新增 C-LLM-9 / C-LLM-10 / C-LLM-11** | 后端收尾第三批：OpenAI 流尾分片内容被丢；Anthropic thinking 签名不回传（开 thinking 用工具第二步必 400）；适配器解析的用量全被丢弃，看不到花费与缓存命中 | 2026-10-19 后端收尾 |
+| 2026-10-19 | **新增 C-SEARCH-11 / C-EXT-MCP-HTTP / C-GIT-1** | 后端收尾第四批：① MCP 远程服务器走 Streamable HTTP 会话（initialize → Mcp-Session-Id → initialized → list/call → DELETE；SSE 响应按 id 取、跳过通知；isError → 工具业务错误）；协议版本 2025-06-18；tool=list 带有界参数 schema（`TestHTTPSession_HandshakeListCall` / `TestFormatToolList_IncludesBoundedSchema`）。② git 新增 show（rev 必填）/ blame（path 必填、可限定行段），rev 拒绝以 - 开头与非修订字符（防选项注入，`TestGitTool_ShowAndBlame` / `TestGitTool_RevGuards`）。③ 搜索按 git 忽略规则过滤 | 2026-10-19 后端收尾 |

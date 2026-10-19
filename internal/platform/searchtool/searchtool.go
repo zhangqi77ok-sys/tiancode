@@ -111,6 +111,9 @@ type candidate struct {
 // 未解析都记入汇总）；contentMode 时套 1MiB 体积闸门（files_only 不读内容，
 // 几 MB 的源文件也该按名字找到）。返回按工作区相对路径排序的候选。
 func (t *Tool) walkCandidates(ctx context.Context, start, glob string, contentMode bool) (cands []candidate, skippedOutside, unresolvedLinks []string, err error) {
+	// git 可见集合（2026-10-19）：是 git 仓库时只收 git 不忽略的文件（嵌套 .gitignore、
+	// 文件级规则、info/exclude 全部生效）；不是仓库/取不到时为 nil，行为与旧版一致。
+	visible := gitVisible(ctx, t.root)
 	walkErr := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // 单个不可读条目不阻断遍历（尽力而为）
@@ -138,6 +141,9 @@ func (t *Tool) walkCandidates(ctx context.Context, start, glob string, contentMo
 			if ok, _ := filepath.Match(glob, d.Name()); !ok {
 				return nil
 			}
+		}
+		if visible != nil && !visible[visibleKey(t.relSlash(p))] {
+			return nil // 被 .gitignore（任意层级）/ info/exclude / 全局排除忽略
 		}
 		if contentMode {
 			info, err := d.Info()

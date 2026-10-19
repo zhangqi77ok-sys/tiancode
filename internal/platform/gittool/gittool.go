@@ -1,4 +1,4 @@
-// Package gittool 实现只读 git 工具（status / diff / log）。
+// Package gittool 实现只读 git 工具（status / diff / log / show / blame）。
 // 做什么：让模型查看仓库状态与变更，作为"跑测试→读输出→修文件"闭环的观察手段。
 // 被谁依赖：internal/app（装配进工具注册表）。
 // 依赖谁：core/tools 端口、stdlib（调用系统 git 可执行文件）。
@@ -11,10 +11,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -48,7 +50,8 @@ func (t *Tool) Name() string { return "git" }
 
 // Description 实现工具端口。
 func (t *Tool) Description() string {
-	return "只读查看 git 仓库：status（变更列表）/ diff（相对 HEAD 的差异：含已暂存，不含未跟踪；没有 path 时结果末尾另附未跟踪文件清单。仓库还没有提交时退回未暂存差异并写明）/ log（最近提交）"
+	return "只读查看 git 仓库：status（变更列表）/ diff（相对 HEAD 的差异：含已暂存，不含未跟踪；没有 path 时结果末尾另附未跟踪文件清单。仓库还没有提交时退回未暂存差异并写明）/ log（最近提交）" +
+		" / show（rev 必填：某次提交的说明、统计与补丁，可用 path 限定）/ blame（path 必填：逐行最后修改的提交与作者，可用 start_line/line_count 限定行段）"
 }
 
 // Schema 实现工具端口。
@@ -56,9 +59,12 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["status", "diff", "log"], "description": "diff 相对 HEAD（含已暂存，不含未跟踪；无 path 时结果末尾另附未跟踪清单）"},
-    "path": {"type": "string", "description": "可选：限定单个路径（status/diff/log 都支持）"},
-    "limit": {"type": "integer", "description": "log 时可选，返回条数上限（默认 10，最大 50）"}
+    "action": {"type": "string", "enum": ["status", "diff", "log", "show", "blame"], "description": "diff 相对 HEAD（含已暂存，不含未跟踪；无 path 时结果末尾另附未跟踪清单）"},
+    "path": {"type": "string", "description": "可选：限定单个路径（status/diff/log/show 支持；blame 必填）"},
+    "limit": {"type": "integer", "description": "log 时可选，返回条数上限（默认 10，最大 50）"},
+    "rev": {"type": "string", "description": "show 必填 / blame 可选：提交哈希、分支、标签或 HEAD~1 这类修订名"},
+    "start_line": {"type": "integer", "description": "blame 可选：起始行（1 起）"},
+    "line_count": {"type": "integer", "description": "blame 可选：行数（缺省 50）"}
   },
   "required": ["action"]
 }`)
@@ -67,9 +73,12 @@ func (t *Tool) Schema() json.RawMessage {
 // Execute 实现工具端口（内部超时 + 输出有界 + 业务失败走 IsError）。
 func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.ToolResult, err error) {
 	var a struct {
-		Action string `json:"action"`
-		Path   string `json:"path"`
-		Limit  int    `json:"limit"`
+		Action    string `json:"action"`
+		Path      string `json:"path"`
+		Limit     int    `json:"limit"`
+		Rev       string `json:"rev"`
+		StartLine int    `json:"start_line"`
+		LineCount int    `json:"line_count"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return businessErrf("invalid arguments: %v", err), nil
@@ -82,7 +91,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		}
 	}()
 
-	gitArgs, err := buildArgs(a.Action, a.Path, a.Limit)
+	gitArgs, err := buildArgsWith(a.Action, a.Path, a.Limit, a.Rev, a.StartLine, a.LineCount)
 	if err != nil {
 		return businessErrf("%v", err), nil
 	}
@@ -326,6 +335,11 @@ func checkRelPath(path string) error {
 // buildArgs 将动作映射为只读 git 参数（白名单式，绝不拼接任意用户输入到 shell）。
 // path 统一先过 checkRelPath（0.0.30 用户审查 R3）：../ 与绝对路径不进 git。
 func buildArgs(action, path string, limit int) ([]string, error) {
+	return buildArgsWith(action, path, limit, "", 0, 0)
+}
+
+// buildArgsWith 是带 show/blame 参数的完整形态（rev / 行段）。
+func buildArgsWith(action, path string, limit int, rev string, startLine, lineCount int) ([]string, error) {
 	if err := checkRelPath(path); err != nil {
 		return nil, err
 	}
@@ -345,6 +359,36 @@ func buildArgs(action, path string, limit int) ([]string, error) {
 			args = append(args, "--", path)
 		}
 		return args, nil
+	case "show":
+		// show（2026-10-19）：看某次提交改了什么（说明 + 统计 + 补丁）。rev 必填且只允许
+		// 修订名字符——绝不能以 - 开头被 git 当成选项（--output 之类会写文件）。
+		if err := checkRev(rev); err != nil {
+			return nil, err
+		}
+		args := []string{"show", "--stat", "--patch", "--format=fuller", "--no-color", rev}
+		if path != "" {
+			args = append(args, "--", path)
+		}
+		return args, nil
+	case "blame":
+		// blame（2026-10-19）：这几行是谁、哪次提交、为什么改的。可按行段限定。
+		if path == "" {
+			return nil, errors.New("blame 需要 path")
+		}
+		args := []string{"blame", "--date=short"}
+		if startLine > 0 {
+			if lineCount <= 0 {
+				lineCount = 50
+			}
+			args = append(args, "-L", fmt.Sprintf("%d,+%d", startLine, lineCount))
+		}
+		if rev != "" {
+			if err := checkRev(rev); err != nil {
+				return nil, err
+			}
+			args = append(args, rev)
+		}
+		return append(args, "--", path), nil
 	case "log":
 		if limit <= 0 {
 			limit = 10
@@ -362,8 +406,26 @@ func buildArgs(action, path string, limit int) ([]string, error) {
 		}
 		return args, nil
 	default:
-		return nil, fmt.Errorf("unknown action %q (want status/diff/log)", action)
+		return nil, fmt.Errorf("unknown action %q (want status/diff/log/show/blame)", action)
 	}
+}
+
+// revPattern 是允许的修订名字符（提交哈希、分支/标签名、HEAD~2、main^、@{1} 等）。
+var revPattern = regexp.MustCompile(`^[A-Za-z0-9_./~^@{}+-]+$`)
+
+// checkRev 校验修订名：非空、不以 - 开头（防选项注入）、只含修订名字符、不含 ".."
+// 以外的路径穿越形态无关紧要（rev 不是文件路径），长度有界。
+func checkRev(rev string) error {
+	rev = strings.TrimSpace(rev)
+	switch {
+	case rev == "":
+		return errors.New("需要 rev（提交哈希、分支或 HEAD~1 这类修订名）")
+	case strings.HasPrefix(rev, "-"):
+		return fmt.Errorf("rev 不能以 - 开头：%s", rev)
+	case len(rev) > 200 || !revPattern.MatchString(rev):
+		return fmt.Errorf("rev 含不允许的字符：%s", rev)
+	}
+	return nil
 }
 
 // truncateToBytes 截断到 n 字节并回退到 UTF-8 边界（0.2.35 审计#8）：

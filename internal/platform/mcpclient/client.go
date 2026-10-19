@@ -1,6 +1,6 @@
 // Package mcpclient 是最小的 MCP 客户端（stdio 帧 + JSON-RPC）。
 //
-// 做什么：initialize、tools/list、tools/call。远程 URL 用一次 HTTP POST。
+// 做什么：initialize、tools/list、tools/call。stdio 帧见本文件；远程服务器走 Streamable HTTP 会话（http.go）。
 // 被谁依赖：internal/platform/exttools。
 // 依赖谁：stdlib。
 package mcpclient
@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -22,12 +21,15 @@ import (
 	"sync"
 )
 
-const protocolVersion = "2024-11-05"
+// protocolVersion 是客户端请求的协议版本（2026-10-19 由 2024-11-05 升级；服务器回它支持的版本，
+// HTTP 传输把协商结果放进 MCP-Protocol-Version 头）。
+const protocolVersion = "2025-06-18"
 
 // Tool 是上游公布的一个工具。
 type Tool struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"` // 参数 schema（list 时给模型看，免得盲猜参数）
 }
 
 // ToolError 是 MCP 工具自身的业务错误（服务器正常响应 isError=true）。
@@ -249,33 +251,7 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (s
 	if err != nil {
 		return "", err
 	}
-	var payload struct {
-		IsError bool `json:"isError"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return string(raw), nil
-	}
-	var b strings.Builder
-	for _, part := range payload.Content {
-		if part.Text != "" {
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(part.Text)
-		}
-	}
-	text := b.String()
-	if text == "" {
-		text = string(raw)
-	}
-	if payload.IsError {
-		return "", &ToolError{Message: text}
-	}
-	return text, nil
+	return parseCallResult(raw)
 }
 
 // Close 关闭连接（幂等）：取消路径与上层清理可能重复调用，
@@ -415,85 +391,4 @@ func (c *Client) read() (json.RawMessage, error) {
 		return nil, err
 	}
 	return buf, nil
-}
-
-// CallHTTP 对远程 MCP 发一次 tools/call（JSON 响应；若是 SSE 则取第一条 data）。
-func CallHTTP(ctx context.Context, endpoint, headers, tool string, args json.RawMessage) (string, error) {
-	if len(args) == 0 {
-		args = json.RawMessage(`{}`)
-	}
-	body, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": tool, "arguments": json.RawMessage(args)},
-	})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	for _, line := range strings.Split(headers, "\n") {
-		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
-		if ok && k != "" {
-			req.Header.Set(k, v)
-		}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("mcp http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	payload := raw
-	if bytes.Contains(raw, []byte("data:")) {
-		for _, line := range bytes.Split(raw, []byte("\n")) {
-			line = bytes.TrimSpace(line)
-			if bytes.HasPrefix(line, []byte("data:")) {
-				payload = bytes.TrimSpace(line[len("data:"):])
-				break
-			}
-		}
-	}
-	var env struct {
-		Result json.RawMessage `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(payload, &env); err != nil {
-		return string(payload), nil
-	}
-	if env.Error != nil {
-		return "", fmt.Errorf("mcp: %s", env.Error.Message)
-	}
-	var result struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(env.Result, &result); err != nil {
-		return string(env.Result), nil
-	}
-	var b strings.Builder
-	for _, part := range result.Content {
-		if part.Text != "" {
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(part.Text)
-		}
-	}
-	if b.Len() == 0 {
-		return string(env.Result), nil
-	}
-	return b.String(), nil
 }
