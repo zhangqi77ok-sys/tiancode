@@ -14,8 +14,11 @@ package shelltool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -112,7 +115,8 @@ func (t *Tool) Name() string { return "shell" }
 // 为什么写明 shell 类型：模型曾把 PowerShell 语法（Get-ChildItem）喂给 cmd.exe
 // 导致 exit 255（0.2.4 实测）——工具描述必须显式告知 shell 类型，模型才能选对命令。
 func (t *Tool) Description() string {
-	return "执行命令（Windows 为 cmd.exe：用 dir/find/type 等内置命令，不要用 Get-ChildItem 等 PowerShell 语法；Unix 为 sh）。" +
+	return "执行命令。Windows 默认 cmd.exe（用 dir/find/type 等内置命令，不要混用 PowerShell 语法）；需要 PowerShell 语法时传 shell=powershell。Unix 为 sh。" +
+		"cwd 指定工作区内的子目录作为工作目录（不要写 cd x && ...）。" +
 		"run：前台，默认 120s 超时并返回部分输出；bg_start/bg_status/bg_kill：后台任务。" +
 		"输出已按系统代码页自动解码为 UTF-8。"
 }
@@ -124,6 +128,8 @@ func (t *Tool) Schema() json.RawMessage {
   "properties": {
     "action": {"type": "string", "enum": ["run", "bg_start", "bg_status", "bg_kill"]},
     "command": {"type": "string", "description": "run / bg_start 时必填"},
+    "shell": {"type": "string", "enum": ["cmd", "powershell"], "description": "可选：Windows 上的解释器，默认 cmd；powershell = Windows PowerShell（-NoProfile -NonInteractive）"},
+    "cwd": {"type": "string", "description": "可选：工作目录，相对工作区（默认工作区根）"},
     "task_id": {"type": "string", "description": "bg_status / bg_kill 时必填"},
     "timeout_seconds": {"type": "integer", "description": "run 时可选，覆盖默认超时（最大 600 秒，超出被钳制并在结果里写明）"}
   },
@@ -138,9 +144,23 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		Command        string `json:"command"`
 		TaskID         string `json:"task_id"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
+		Shell          string `json:"shell"`
+		Cwd            string `json:"cwd"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return businessErrf("invalid arguments: %v", err), nil
+	}
+	shell, serr := normalizeShell(a.Shell)
+	if serr != nil {
+		return businessErrf("%v", serr), nil
+	}
+	dir := t.root
+	if a.Action == "run" || a.Action == "bg_start" {
+		d, derr := t.resolveCwd(a.Cwd)
+		if derr != nil {
+			return businessErrf("%v", derr), nil
+		}
+		dir = d
 	}
 	// 超时硬顶（0.2.35 审计#6）：timeout_seconds 无上限会让一条命令挂死整个
 	// 回合；600s 覆盖 npm install 等重任务，更长的让模型分步处理。
@@ -166,13 +186,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	}
 	switch a.Action {
 	case "run":
-		res, err = t.run(ctx, a.Command, a.TimeoutSeconds)
+		res, err = t.run(ctx, a.Command, a.TimeoutSeconds, shell, dir)
 		if requestedTimeout > 600 {
 			res.Content = strings.TrimRight(res.Content, "\n") + fmt.Sprintf("\n（请求超时 %d 秒，已钳为 600）", requestedTimeout)
 		}
 		return res, err
 	case "bg_start":
-		return t.bg.start(a.Command, t.root)
+		return t.bg.start(a.Command, dir, shell)
 	case "bg_status":
 		return t.bg.status(a.TaskID)
 	case "bg_kill":
@@ -183,7 +203,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 }
 
 // run 执行前台命令：超时可配、超时返回部分输出、非零退出码为业务失败。
-func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int) (tools.ToolResult, error) {
+func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int, shell, dir string) (tools.ToolResult, error) {
 	if strings.TrimSpace(command) == "" {
 		return businessErrf("command is required"), nil
 	}
@@ -195,8 +215,11 @@ func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int) (too
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := newCommand(runCtx, command)
-	cmd.Dir = t.root
+	cmd := newCommand(runCtx, command, shell)
+	if dir == "" {
+		dir = t.root
+	}
+	cmd.Dir = dir
 	buf := newBoundedBuffer(t.bg.logLimit) // 输出同样有界，防内存失控
 	cmd.Stdout, cmd.Stderr = buf, buf
 	// C-TOOL-5：取消时终止整棵进程树（Windows 下 cmd 会派生孙进程）
@@ -271,15 +294,87 @@ func (t *Tool) run(ctx context.Context, command string, timeoutSeconds int) (too
 
 // newCommand 构造平台适配的 shell 命令（Windows: cmd /c；其余: sh -c），
 // 并施加平台进程属性（Windows 隐藏窗口 / Unix 独立进程组）。
-func newCommand(ctx context.Context, command string) *exec.Cmd {
+func newCommand(ctx context.Context, command, shell string) *exec.Cmd {
 	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
+	switch {
+	case runtime.GOOS == "windows" && shell == shellPowerShell:
+		// 绝对路径（与安装器 C-INS-6 同理）：精简 PATH 下 powershell.exe 可能解析不到；
+		// -NoProfile 不加载用户 profile（可复现、快）、-NonInteractive 防止等待输入挂死。
+		cmd = exec.CommandContext(ctx, powerShellExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command)
+	case runtime.GOOS == "windows":
 		cmd = exec.CommandContext(ctx, "cmd", "/d", "/s", "/c", command)
-	} else {
+	default:
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
 	setupProcAttr(cmd)
 	return cmd
+}
+
+// shellPowerShell 是 shell 参数取值：Windows 上用 Windows PowerShell 执行（2026-10-19）。
+// 为什么加：cmd.exe 的引号、管道与转义规则模型极易写错，而 PowerShell 是现代 Windows
+// 开发的常用 shell；默认仍是 cmd（行为与旧版逐字一致）。
+const shellPowerShell = "powershell"
+
+// powerShellExe 返回 Windows PowerShell 的绝对路径（找不到系统目录时退回 PATH 解析）。
+func powerShellExe() string {
+	if root := os.Getenv("SystemRoot"); root != "" {
+		p := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "powershell.exe"
+}
+
+// normalizeShell 校验 shell 参数：空 / cmd = 默认；powershell 仅 Windows。
+func normalizeShell(shell string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(shell)) {
+	case "", "cmd", "sh":
+		return "", nil
+	case shellPowerShell:
+		if runtime.GOOS != "windows" {
+			return "", errors.New("shell=powershell 只在 Windows 上可用")
+		}
+		return shellPowerShell, nil
+	default:
+		return "", fmt.Errorf("unknown shell %q (want cmd/powershell)", shell)
+	}
+}
+
+// resolveCwd 把 cwd 参数解析为工作区内的目录（空 = 工作区根）。绝对路径、../ 逃逸、
+// 经符号链接逃出工作区一律拒绝（与 fs 同纪律）。
+// 为什么加：此前只能写 `cd sub && cmd`，带 && 的命令永远不命中审批白名单/本会话前缀。
+func (t *Tool) resolveCwd(cwd string) (string, error) {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" || cwd == "." {
+		return t.root, nil
+	}
+	if filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("cwd 必须是相对工作区的路径：%s", cwd)
+	}
+	full := filepath.Clean(filepath.Join(t.root, cwd))
+	root := t.root
+	if real, err := filepath.EvalSymlinks(full); err == nil {
+		full = real
+	}
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		root = real
+	}
+	lf, lr := full, root
+	if runtime.GOOS == "windows" {
+		lf, lr = strings.ToLower(lf), strings.ToLower(lr)
+	}
+	if lf != lr && !strings.HasPrefix(lf, lr+string(filepath.Separator)) {
+		return "", fmt.Errorf("cwd 越出工作区：%s", cwd)
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return "", fmt.Errorf("cwd 不可用：%w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("cwd 不是目录：%s", cwd)
+	}
+	return full, nil
 }
 
 // killTreeFor 返回终止进程树的 Cancel 回调（exec.Cmd.Cancel 语义：无参、捕获 cmd）。

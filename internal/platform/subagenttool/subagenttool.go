@@ -11,7 +11,9 @@
 //   - 只读：写路径在工具包装层结构性排除（readOnlyTool），子代理改不了任何文件；
 //   - 不递归：子代理工具集里没有 task 自己；
 //   - 隔离：子代理账本建在临时目录，跑完即删，绝不污染主会话与侧栏；
-//   - 取消传播：主轮被中断时 ctx 取消，子代理随终态收束。
+//   - 取消传播：主轮被中断时 ctx 取消，子代理随终态收束；
+//   - 有界（2026-10-19）：子代理与主对话同一上下文预算（派生折叠/段内重折叠生效），
+//     执行过程经调用级回调推到主对话的工具卡，报告只取最终答复。
 package subagenttool
 
 import (
@@ -20,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"tiancode/internal/core/agent"
@@ -36,6 +39,12 @@ const taskTimeout = 15 * time.Minute
 // 必须有界——主上下文才是要保护的对象。
 const resultLimit = 16 << 10
 
+// progressEvery 是过程推送的最小间隔（ProgressSink 契约：实现方自行节流）。
+const progressEvery = 500 * time.Millisecond
+
+// progressLines 是过程视图保留的最近步骤行数。
+const progressLines = 12
+
 // subPreface 是子代理的系统说明。
 const subPreface = "你是一个只读调研子代理。你的最终回复是唯一的交付物，会被原样交还给主对话，" +
 	"所以它必须自包含：写清结论、依据（文件路径:行号）、未解决的疑问与建议的下一步。" +
@@ -47,6 +56,10 @@ type Tool struct {
 	runtime  llm.ChatRuntime
 	model    string
 	readonly []tools.ToolPort // 主装配的只读工具实例（fs/search/git/webfetch/memory）
+
+	budgetTokens  int    // 上下文预算（0 = 未配置）；与主对话同口径
+	budgetDefault bool   // 预算是否来自兜底默认值
+	facts         string // 环境事实（操作系统/工作区/项目规则），拼在系统说明后
 }
 
 // New 构造 task 工具。readonly 里出现的每个工具都会再包一层只读闸门
@@ -55,11 +68,24 @@ func New(rt llm.ChatRuntime, model string, readonly ...tools.ToolPort) *Tool {
 	return &Tool{runtime: rt, model: model, readonly: readonly}
 }
 
+// WithContextBudget 设置子代理的上下文预算（与主对话同一来源）。此前子代理预算为 0
+// ——不折叠、不重折叠，几十步读文件能把请求撑到上游拒收。
+func (t *Tool) WithContextBudget(tokens int, isDefault bool) *Tool {
+	t.budgetTokens, t.budgetDefault = tokens, isDefault
+	return t
+}
+
+// WithFacts 附上环境事实（此前子代理不知道操作系统与工作区根，路径与命令全靠猜）。
+func (t *Tool) WithFacts(facts string) *Tool {
+	t.facts = strings.TrimSpace(facts)
+	return t
+}
+
 func (t *Tool) Name() string { return "task" }
 
 func (t *Tool) Description() string {
 	return "派生一个只读子代理去执行独立的调研任务（翻代码、搜索、读文档），只把最终报告带回来。" +
-		"适合：大范围探索、多文件调研、需要大量中间读取但只要结论的工作。" +
+		"适合：大范围探索、多文件调研、需要大量中间读取但只要结论的工作；多个互不依赖的调研可在同一步并行派出。" +
 		"子代理看不到本对话的任何历史，prompt 必须自包含（背景、目标、路径、期望产出）。" +
 		"不能用它修改文件或执行命令——子代理只有只读工具。"
 }
@@ -91,6 +117,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 	if strings.TrimSpace(p.Expected) != "" {
 		prompt += "\n\n期望的报告形态：" + strings.TrimSpace(p.Expected)
 	}
+	progress := newProgress(tools.ProgressFrom(ctx))
 	ctx, cancel := context.WithTimeout(ctx, taskTimeout)
 	defer cancel()
 
@@ -116,12 +143,17 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 	defer ledger.Close()
 
 	loop := agent.NewLoop(t.runtime, t.model, registry)
-	loop.SetPreface(subPreface)
+	preface := subPreface
+	if t.facts != "" {
+		preface += "\n\n" + t.facts
+	}
+	loop.SetPreface(preface)
+	loop.SetContextBudget(t.budgetTokens, t.budgetDefault)
 	ch, err := loop.Run(ctx, ledger, prompt)
 	if err != nil {
 		return tools.ToolResult{Content: "子代理启动失败：" + err.Error(), IsError: true}, nil
 	}
-	var report strings.Builder
+	var streamed strings.Builder
 	var terminal llm.StreamChunk
 	for c := range ch {
 		if c.EndReason != llm.EndNone {
@@ -129,12 +161,21 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 			break
 		}
 		if c.Delta != "" {
-			report.WriteString(c.Delta)
+			streamed.WriteString(c.Delta)
+		}
+		if ev := c.ToolEvent; ev != nil && ev.Status != "running" {
+			progress.step(ev)
 		}
 	}
+	progress.flush()
 	switch terminal.EndReason {
 	case llm.EndDone:
-		content := strings.TrimSpace(report.String())
+		// 报告只取最终答复（账本最后一条助手锚点）：此前把每一步调工具前的
+		// 中间叙述也拼进报告，主对话拿到的是一段流水账。
+		content := strings.TrimSpace(finalAnswer(ledger))
+		if content == "" {
+			content = strings.TrimSpace(streamed.String())
+		}
 		if content == "" {
 			content = "子代理没有产出任何报告（可能没找到相关信息）。"
 		}
@@ -152,6 +193,79 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 		}
 		return tools.ToolResult{Content: "子代理执行失败（" + reason + "）。", IsError: true, TimedOut: terminal.EndReason == llm.EndIdleTimeout}, nil
 	}
+}
+
+// finalAnswer 返回账本里最后一条助手锚点（最终答复）；读不出返回空串（调用方回退）。
+func finalAnswer(ledger *session.Ledger) string {
+	last := ""
+	if err := ledger.Replay(func(ev session.Event) error {
+		if ev.Kind() != session.EventAssistantMsg {
+			return nil
+		}
+		var p struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(ev.Data(), &p) == nil && strings.TrimSpace(p.Text) != "" {
+			last = p.Text
+		}
+		return nil
+	}); err != nil {
+		return ""
+	}
+	return last
+}
+
+// progress 把子代理的工具步骤汇成过程视图推给主对话的工具卡（节流）。
+type progress struct {
+	cb    func(string)
+	mu    sync.Mutex
+	lines []string
+	steps int
+	last  time.Time
+	dirty bool
+}
+
+func newProgress(cb func(string)) *progress { return &progress{cb: cb} }
+
+func (p *progress) step(ev *llm.ToolEvent) {
+	if p.cb == nil {
+		return
+	}
+	p.mu.Lock()
+	p.steps++
+	label := ev.Name
+	if ev.Title != "" {
+		label += " " + ev.Title
+	}
+	if ev.Status == "error" {
+		label += "（失败）"
+	}
+	p.lines = append(p.lines, "- "+label)
+	if len(p.lines) > progressLines {
+		p.lines = p.lines[len(p.lines)-progressLines:]
+	}
+	p.dirty = true
+	due := time.Since(p.last) >= progressEvery
+	p.mu.Unlock()
+	if due {
+		p.flush()
+	}
+}
+
+func (p *progress) flush() {
+	if p.cb == nil {
+		return
+	}
+	p.mu.Lock()
+	if !p.dirty {
+		p.mu.Unlock()
+		return
+	}
+	text := fmt.Sprintf("子代理调研中：已完成 %d 次工具调用（最近 %d 次）\n%s", p.steps, len(p.lines), strings.Join(p.lines, "\n"))
+	p.dirty = false
+	p.last = time.Now()
+	p.mu.Unlock()
+	p.cb(text)
 }
 
 // buildRegistry 组装子代理的只读工具集：主装配的只读实例逐个包上闸门。

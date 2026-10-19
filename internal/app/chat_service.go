@@ -870,6 +870,12 @@ func (s *ChatService) sendCoreMode(ctx context.Context, sessionID, text string, 
 					return // 上游流关闭（契约保证终态已发）
 				}
 				watch.mark() // 任何块（增量/工具/清单）都算活动
+				// 看门狗竞态（2026-10-19）：看门狗先 cancelRun 再注入超时终态，取消引发的
+				// EndCancelled 常常先从 stream 到达——用户看到的是"已取消"而不是"响应超时"
+				// 的说明（全量并行测试偶发抓到）。timedOut 在 cancel 之前置位，这里以它为准。
+				if c.EndReason != llm.EndNone && c.EndReason != llm.EndError && watch.hasTimedOut() {
+					c = llm.StreamChunk{EndReason: llm.EndError, Err: errors.New(watch.timeoutMessage())}
+				}
 				out <- c
 				if c.EndReason != llm.EndNone {
 					ended = c.EndReason

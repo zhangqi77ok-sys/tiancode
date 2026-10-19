@@ -107,12 +107,12 @@ func (m *bgManager) get(id string) (*bgTask, bool) {
 
 // start 启动后台任务。为什么用独立 ctx：后台任务生命周期与单次工具调用解耦，
 // 由 bg_kill 显式终止。
-func (m *bgManager) start(command, root string) (tools.ToolResult, error) {
+func (m *bgManager) start(command, root, shell string) (tools.ToolResult, error) {
 	if strings.TrimSpace(command) == "" {
 		return businessErrf("command is required"), nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := newCommand(ctx, command)
+	cmd := newCommand(ctx, command, shell)
 	cmd.Dir = root
 	cmd.Cancel = killTreeFor(cmd)
 	cmd.WaitDelay = 3 * time.Second

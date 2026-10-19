@@ -82,6 +82,25 @@ type UndoData struct {
 	OldEncoding string `json:"old_encoding,omitempty"`
 }
 
+// progressKey 是 ctx 里的过程回调键（2026-10-19）。
+type progressKey struct{}
+
+// WithProgress 把"本次调用"的过程回调放进 ctx。与 ProgressSink 的区别：回调随调用
+// 走而不是挂在工具实例上——并行执行的同一工具（如多个 task 子代理同时跑）各推各的卡，
+// 不会互相串。cb 为 nil 时原样返回 ctx。
+func WithProgress(ctx context.Context, cb func(partial string)) context.Context {
+	if cb == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressKey{}, cb)
+}
+
+// ProgressFrom 取出本次调用的过程回调；没有则返回 nil（调用方必须判空）。
+func ProgressFrom(ctx context.Context) func(partial string) {
+	cb, _ := ctx.Value(progressKey{}).(func(string))
+	return cb
+}
+
 // ProgressSink 是可选的执行进度端口：实现它的工具可在**执行中**把已捕获的
 // 部分输出推给界面（0.0.07：长命令几分钟黑盒 → 卡片随过程增长）。
 // 契约：cb 可能为 nil（清除）；实现方必须自行节流（如 500ms/次）且在执行结束

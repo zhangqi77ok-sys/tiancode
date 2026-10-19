@@ -1041,6 +1041,14 @@ func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *sess
 	if call.Name == todoToolName {
 		return l.runTodo(call, ledger, forward)
 	}
+	// 调用级过程回调（2026-10-19）：随 ctx 走，并行的同名工具（多个 task 子代理）各推
+	// 各自的卡；ProgressSink（挂在实例上）保留给串行的 shell。
+	ctx = tools.WithProgress(ctx, func(partial string) {
+		forward(llm.StreamChunk{ToolEvent: &llm.ToolEvent{
+			Name: call.Name, Status: "running", Summary: "执行中…",
+			Content: partial, CallID: call.ID,
+		}})
+	})
 	if l.registry != nil {
 		if t, ok := l.registry.Get(call.Name); ok {
 			if ps, isSink := t.(tools.ProgressSink); isSink {

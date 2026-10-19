@@ -30,7 +30,7 @@ func sessionFacts(root string) string {
 	if runtime.GOOS == "windows" {
 		// 实际 shell 是 cmd.exe（shelltool.newCommand 用 cmd /d /s /c 执行）：
 		// 必须写明"不是 PowerShell"——模型曾把 Get-ChildItem 喂给 cmd（0.2.4 实测）
-		shell = "cmd.exe"
+		shell = "cmd.exe（默认；shell 工具传 shell=powershell 可改用 PowerShell，cwd 指定子目录）"
 	}
 	if root == "" {
 		return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：无——纯对话，没有本地文件工具", osName, shell)

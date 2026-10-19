@@ -355,7 +355,12 @@ func (s *ChatService) assembleRegistry(st *sessionTools, model string) (*tools.R
 		rt := llm.NewChatRuntime(s.gw, llm.TimeoutBudget{FirstByte: 3 * time.Minute, Total: 30 * time.Minute})
 		var readonly []tools.ToolPort
 		if st != nil {
-			for _, t := range []tools.ToolPort{st.fs, st.git, st.search} {
+			// fs 给子代理单独一个实例（2026-10-19）：fs 的"整读过"标记挂在实例上，
+			// 共用实例时子代理读过的文件会让主对话不读就能整文件覆盖（绕过整读门卫）。
+			if st.fs != nil {
+				readonly = append(readonly, fstool.New(st.root))
+			}
+			for _, t := range []tools.ToolPort{st.git, st.search} {
 				if t != nil {
 					readonly = append(readonly, t)
 				}
@@ -369,7 +374,17 @@ func (s *ChatService) assembleRegistry(st *sessionTools, model string) (*tools.R
 			}
 			readonly = append(readonly, memory.NewTool(s.memory, root))
 		}
-		if err := registry.Register(subagenttool.New(rt, model, readonly...)); err != nil {
+		// 子代理与主对话同一上下文预算与环境事实（2026-10-19：此前预算为 0、不知道
+		// 操作系统与工作区根）。
+		budget, byDefault := resolveContextBudget(s.pool.MinContextLimit())
+		root := ""
+		if st != nil {
+			root = st.root
+		}
+		task := subagenttool.New(rt, model, readonly...).
+			WithContextBudget(budget, byDefault).
+			WithFacts(sessionFacts(root))
+		if err := registry.Register(task); err != nil {
 			return nil, fmt.Errorf("register tool: %w", err)
 		}
 	}

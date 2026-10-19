@@ -167,7 +167,17 @@ func TestShellRun_BackgroundLogBounded(t *testing.T) {
 	// 无论断言是否失败都必须回收后台进程（否则进程泄漏 + TempDir 无法清理）
 	defer func() {
 		_, _ = tool.Execute(context.Background(), args(t, map[string]any{"action": "bg_kill", "task_id": start.TaskID}))
-		time.Sleep(300 * time.Millisecond)
+		// 轮询到任务确实结束（TESTING.md「时序敏感测试」：不用固定 sleep）——负载下
+		// taskkill 收树慢于 300ms，进程还占着工作目录，TempDir 清理就会失败。
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			r, _ := tool.Execute(context.Background(), args(t, map[string]any{"action": "bg_status", "task_id": start.TaskID}))
+			var s struct {
+				Running bool `json:"running"`
+			}
+			if json.Unmarshal([]byte(r.Content), &s) == nil && !s.Running {
+				break
+			}
+		}
 	}()
 
 	var st struct {

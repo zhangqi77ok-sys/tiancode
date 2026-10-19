@@ -34,6 +34,7 @@
 | C-SUB-2 | 写路径结构性排除：子代理工具集经只读闸门包装，`fs` 写类 action 与 `memory` 写 action 一律拒绝且原因可读（回给子代理模型）；search/git/webfetch 整体只读 | `TestSubagent_WriteActionsRejected` |
 | C-SUB-3 | 子代理最终回复作为 task 工具结果交还主对话（Title/Op 语义标签在案），报告有界（头尾保留） | `TestSubagent_RunsIsolatedAndReturnsReport` |
 | C-SUB-4 | 主轮取消经 ctx 传播，子代理以取消终态收束为可读业务失败；task 自带 15min 硬超时（C-TOOL-1） | `TestSubagent_CancelPropagates` |
+| C-SUB-5 | 子代理有界且可见（2026-10-19）：与主对话同一上下文预算（`WithContextBudget`，派生折叠/段内重折叠生效）、系统说明附环境事实；过程经调用级回调（`tools.WithProgress`，随 ctx 走、并行 task 各推各的卡）节流推送；报告只取最终答复（账本最后一条助手锚点）；子代理用独立 fs 实例（读不会替主对话通过整读门卫） | `TestSubagent_ReportIsFinalAnswerOnly` / `TestSubagent_ProgressViaContext` / `TestSubagent_BudgetAndFacts` |
 | C-SUB-5 | 子代理工具集里没有 task（不递归）、没有 shell/browser 写面；`task` 在内核只读白名单内（可 fan-out 并行） | `TestSubagent_RegistryHasNoTaskAndWrapsReadonly` |
 
 ## C-SES：事件账本与会话恢复（M1）
@@ -56,6 +57,7 @@
 | C-TOOL-3 | 业务失败 → `ToolResult.IsError=true` 且 Content 为可读原因；`error` 返回值仅用于机制故障 | `TestShellRun_BusinessError` |
 | C-TOOL-4 | 后台模式日志缓冲有界（超限截断并标注），无内存无界增长 | `TestShellRun_BackgroundLogBounded` |
 | C-TOOL-5 | 取消（ctx.Done）→ 立即返回 `TimedOut=true` 终态，进程树被终止 | `TestShellRun_CancelKillsTree` |
+| C-TOOL-6 | shell 选项（2026-10-19）：`shell=powershell`（仅 Windows，绝对路径 + -NoProfile -NonInteractive）；默认仍是 cmd，行为不变；`cwd` 只接受工作区内的相对目录（绝对路径、../ 逃逸、经链接逃逸、非目录一律拒绝），run 与 bg_start 同规则 | `TestShell_CwdInsideWorkspace` / `TestShell_PowerShellOption` |
 
 ## C-FS：文件编辑正确性（M3）
 
@@ -336,3 +338,4 @@
 | 2026-10-06 | **新增 C-BR-9** | 视觉反馈（清单第 4 位）：模型可以亲眼看自己改的页面——`screenshot` 带 `for_model=true` 时截图以 data URL 随工具结果返回，agent 回合内合成 user 消息送进模型上下文（Parts+Content 同源走三协议既有管线；仅本回合、不落账本、IsError 不送图、1.5MB 封顶）。UI 的 Visual 链路不变（Visual 给 UI、ModelImage 给模型，json:"-" 互不泄漏）；默认不带 for_model 零图像成本。UI 盲改 → 看着改 | 用户"继续"裁决按建议顺序交付（本批 4） |
 | 2026-10-19 | **修订 C-APP-6 / C-AGT-20；新增 C-AGT-21 / C-AGT-22 / C-LLM-8 / C-FS-14** | 体检 P0+P1：① AGENTS.md `check:` 曾在回合结束自动执行且不经审批，而 `fs.write`（不在审批清单）可改写 AGENTS.md——等于绕过 shell 审批执行任意命令；改为用户确认 + 原文逐字一致才执行。② CRLF 文件多行 replace 永远零匹配（read 输出去 `\r`）。③ 回合内工具结果无界、段内不折叠、一个会话只能压缩一次。④ max_tokens/length 截断被当作正常完成（正文静默缺尾、残缺参数被执行） | 2026-10-19 全量功能审查 |
 | 2026-10-19 | **新增编程基础系统说明；修订 C-AGT-2 / C-BR-9；新增 C-APR-9** | 编码能力审查前四项：① 主对话此前没有任何"怎么干活"的系统说明（只有技能清单/环境事实/语气/记忆），新增逐字常量的编程基础说明排在最前（有工作区：先读再改、小步精准、改完验证、诚实边界；纯对话版不提文件工具），`TestChatService_CodingPrefaceLeadsSystemPrompt` 锁定。② 跨轮 fs.read 一律截 4KB → "把刚才那个函数改一下"只能重读；改为按回合内上限保留并标注读后被改。③ 回合内截图消息插在 tool 结果之前，带图那一步上游必 400。④ 跑测试/构建每次都要点审批，新增本会话前缀授予 | 2026-10-19 编码能力审查 |
+| 2026-10-19 | **新增 C-SUB-5 / C-TOOL-6；修复零事件看门狗终态竞态** | 后端收尾第二批：子代理预算/过程/最终报告/独立 fs；shell PowerShell 与 cwd；看门狗先 cancel 再注入，取消终态常先到达，用户看到"已取消"而非"响应超时"——以 timedOut 标志为准改写（全量并行测试偶发抓到）；`TestShellRun_BackgroundLogBounded` 清理由固定 sleep 改为轮询 | 2026-10-19 后端收尾 |
