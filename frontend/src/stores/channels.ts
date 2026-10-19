@@ -21,6 +21,7 @@ export const useChannelStore = defineStore('channels', () => {
   const presets = ref<PresetDTO[]>([])
   const models = ref<string[]>([])
   const loading = ref(false)
+  const loaded = ref(false)
   const busy = ref(false)
   const error = ref('')
 
@@ -47,6 +48,7 @@ export const useChannelStore = defineStore('channels', () => {
       fail(e)
     } finally {
       loading.value = false
+      loaded.value = true
     }
   }
 
@@ -197,6 +199,7 @@ export const useChannelStore = defineStore('channels', () => {
     modelOptions,
     setActiveModel,
     loading,
+    loaded,
     busy,
     error,
     testing,

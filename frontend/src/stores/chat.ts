@@ -235,6 +235,8 @@ export const useChatStore = defineStore('chat', () => {
   const sessionId = ref('')
   const sessions = ref<string[]>([])
   const error = ref('')
+  // 当前受审批保护的工具清单（ADR-0007 / 0.0.45）：顶栏开关与审批面板共享
+  const approvalPolicy = ref<string[]>([])
   const { push: toast } = useToast()
   // 系统级通知（0.0.43）：应用内 toast 在用户切到别的应用时看不见——窗口失焦时
   // 补一条操作系统通知（后端全局限速 3s）。尽力而为：失败只记控制台，通知是
@@ -865,12 +867,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // 返回是否成功：失败时错误落 error 位（可见），调用方（顶栏开关）据此回滚
+  // 返回是否成功：失败时错误落 error 位（可见），调用方（顶栏开关/审批面板）据此回滚
   // 乐观状态——不回滚的话开关显示与实际策略相反。
   async function setApprovalPolicy(tools: string[]): Promise<boolean> {
     error.value = ''
     try {
       await bridge().app.SetApprovalPolicy(tools)
+      approvalPolicy.value = [...tools]
       return true
     } catch (e) {
       error.value = errText(e)
@@ -880,10 +883,24 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadApprovalPolicy(): Promise<string[]> {
     try {
-      return (await bridge().app.ApprovalPolicy()) ?? []
+      const p = (await bridge().app.ApprovalPolicy()) ?? []
+      approvalPolicy.value = p
+      return p
     } catch (e) {
       error.value = errText(e)
       return []
+    }
+  }
+
+  // 出厂默认审批清单（0.0.45）：单一来源在后端 DefaultApprovalPolicy()，
+  // 失败时记录 error 并上抛，调用方不得回退到任何写死的清单。
+  async function loadDefaultApprovalPolicy(): Promise<string[]> {
+    error.value = ''
+    try {
+      return (await bridge().app.DefaultApprovalPolicy()) ?? []
+    } catch (e) {
+      error.value = errText(e)
+      throw e
     }
   }
 
@@ -1785,6 +1802,8 @@ export const useChatStore = defineStore('chat', () => {
     resolveApprovalAllowPrefix,
     setApprovalPolicy,
     loadApprovalPolicy,
+    loadDefaultApprovalPolicy,
+    approvalPolicy,
     stop,
     init,
   }

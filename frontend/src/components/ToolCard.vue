@@ -199,9 +199,12 @@ watch(
         @click.stop="reviewable ? store.openFileDetail(m.title || '') : undefined"
       >
         <span v-if="pathParts" class="min-w-0 truncate text-[var(--c-text-faint)]">{{ pathParts.dir }}</span>
+        <!-- 当有路径时目录截断文件名保全；无路径时（如终端命令）自身截断，避免挤压右侧徽标 -->
         <span
-          class="shrink-0"
-          :class="reviewable ? 'underline decoration-dotted underline-offset-2' : ''"
+          :class="[
+            pathParts ? 'shrink-0' : 'min-w-0 truncate',
+            reviewable ? 'underline decoration-dotted underline-offset-2' : ''
+          ]"
           >{{ pathParts?.base ?? label }}</span
         >
       </span>

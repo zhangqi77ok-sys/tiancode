@@ -29,6 +29,7 @@ export type IconName =
   | 'book'
   | 'external'
   | 'command'
+  | 'info'
 </script>
 
 <script setup lang="ts">
@@ -80,6 +81,7 @@ const PATHS: Record<IconName, string[]> = {
   book: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z'],
   // 0.0.11：外部打开（用系统默认程序打开文件）
   external: ['M15 3h6v6', 'M10 14 21 3', 'M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5'],
+  info: ['M12 16v-4', 'M12 8h.01', 'M22 12A10 10 0 1 1 2 12a10 10 0 0 1 20 0Z'],
 }
 </script>
 

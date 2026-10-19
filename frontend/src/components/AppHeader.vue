@@ -26,7 +26,14 @@ const { push: toast } = useToast()
 const dialogs = useDialogs()
 const { copy } = useClipboard()
 
+const approvalPolicy = ref<string[]>([])
 const approvalOn = ref(false)
+const approvalTitle = computed(() => {
+  if (approvalPolicy.value.length > 0) {
+    return `需要确认：${approvalPolicy.value.join('、')}`
+  }
+  return '未开启命令确认（点击开启）'
+})
 
 // 顶栏工作区（0.0.07）：主标签 = **这场对话正在用的路**（已落账会话取账本归属；
 // 草稿取下一场的根），不再是笼统的"当前工作区"——ws.path 只影响还没落账的新对话，
@@ -141,7 +148,7 @@ function jumpToBusy() {
 
 // ---- 顶栏图标菜单（阶段 1 瘦身）----
 // 为什么收：导出 / 命令确认 / 主题 / 工作区四个 chip 加上油表长句，1280 宽会折成两行。
-// 行为一个不减（导出仍是复制与另存、审批仍覆盖 shell 与 ext_manage、主题仍三态循环、
+// 行为一个不减（导出仍是复制与另存、审批策略由后端清单给出、主题仍三态循环、
 // 工作区仍可进入/切换/退出），只是把入口从平铺换成一处菜单。
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
@@ -271,15 +278,39 @@ async function exportSave() {
   }
 }
 
-// 审批闸门开关（ADR-0007 默认关）：开启后 shell 命令执行前需你确认。
-// 0.2.27 起同时覆盖 ext_manage（MCP/Skill 增删会让本机执行新命令——它与 shell
-// 是同一类"执行面"，不纳入审批等于留了一条绕过确认的路径）。
-// 乐观翻转 + 失败回滚：SetApprovalPolicy 失败时开关若停在翻转态，显示与实际策略相反
+// 审批闸门开关（ADR-0007 默认关）：开启后敏感操作执行前需你确认。
+// 0.0.45：出厂默认清单由后端 DefaultApprovalPolicy() 提供（shell, ext_manage, mcp, browser 等），
+// 前端不再写死数组字面量；关闭则下发空数组 []。
+// 乐观翻转 + 失败回滚：DefaultApprovalPolicy 或 SetApprovalPolicy 任一失败 → 回滚到原状态，
+// 错误经 store.error 可见；失败时绝不退回任何写死的清单。
 async function toggleApproval() {
-  const next = !approvalOn.value
+  const prev = approvalOn.value
+  const next = !prev
   approvalOn.value = next
-  const ok = await store.setApprovalPolicy(next ? ['shell', 'ext_manage'] : [])
-  if (!ok) approvalOn.value = !next
+
+  if (!next) {
+    const ok = await store.setApprovalPolicy([])
+    if (!ok) {
+      approvalOn.value = prev
+      return
+    }
+    approvalPolicy.value = []
+    return
+  }
+
+  try {
+    const defaults = await store.loadDefaultApprovalPolicy()
+    const ok = await store.setApprovalPolicy(defaults)
+    if (!ok) {
+      approvalOn.value = prev
+      return
+    }
+    // 成功后由 ApprovalPolicy() 真相刷新
+    approvalPolicy.value = await store.loadApprovalPolicy()
+  } catch {
+    // DefaultApprovalPolicy 失败：回滚开关，SetApprovalPolicy 未被调用
+    approvalOn.value = prev
+  }
 }
 
 // ---- 主题切换（0.0.06 循环 → 0.0.19 三选一）：固定深色不该踩三下循环 ----
@@ -309,7 +340,17 @@ onMounted(async () => {
   } catch {
     /* workspace.refresh 已自吞错误，这里只兜意外 */
   }
-  approvalOn.value = (await store.loadApprovalPolicy()).length > 0
+  const initialPolicy = await store.loadApprovalPolicy()
+  approvalPolicy.value = initialPolicy
+  approvalOn.value = initialPolicy.length > 0
+  watch(
+    () => store.approvalPolicy,
+    (p) => {
+      approvalPolicy.value = p
+      approvalOn.value = p.length > 0
+    },
+    { deep: true },
+  )
   document.addEventListener('mousedown', onDocMousedown)
   document.addEventListener('mousedown', onWsMenuMousedown)
 })
@@ -469,12 +510,12 @@ onBeforeUnmount(() => {
             <span class="shrink-0 text-[10px] text-[var(--c-text-faint)]">导出</span>
           </button>
           <div class="my-1 h-px bg-[var(--c-border)]"></div>
-          <!-- 审批闸门（ADR-0007）：开启后仍同时覆盖 shell 与 ext_manage -->
+          <!-- 审批闸门（ADR-0007）：受保护的操作执行前需确认 -->
           <button
             role="menuitem"
             class="menu-item"
             :aria-pressed="approvalOn"
-            title="开启后 shell 命令与扩展增删（ext_manage）执行前需你确认"
+            :title="approvalTitle"
             @click="toggleApproval"
           >
             <AppIcon name="shield" :size="13" class="shrink-0 text-[var(--c-text-faint)]" />

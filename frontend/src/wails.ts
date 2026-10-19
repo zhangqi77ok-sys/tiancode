@@ -288,6 +288,17 @@ export interface ReplayPageDTO {
   from: number
 }
 
+// 会话 token 用量汇总（0.0.45 任务 10）：整场对话累计的 token
+export interface SessionUsageDTO {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  turns: number
+  reportedAll: boolean
+}
+
 // 时间线一轮（0.0.20）：锚点 = 用户消息（userSeq 供「回滚到此轮之前」定位），
 // files 是该轮检查点里的文件（revertable = 该检查点还没被回滚消费）。
 export interface RoundInfoDTO {
@@ -643,7 +654,15 @@ interface WailsApp {
   ListChannels(): Promise<ChannelListDTO | null>
   // 审批闸门（ADR-0007）：策略查询/设置 + 答复回传
   ApprovalPolicy(): Promise<string[] | null>
+  DefaultApprovalPolicy(): Promise<string[] | null>
   SetApprovalPolicy(tools: string[]): Promise<void>
+  // 可进入审批清单的工具全集（后端单一来源）
+  ApprovableTools(): Promise<string[] | null>
+  // 会话内已允许的命令前缀与撤销
+  SessionShellAllow(sessionID: string): Promise<string[] | null>
+  RevokeSessionShellAllow(sessionID: string, prefix: string): Promise<void>
+  // 会话 token 用量（0.0.45 任务 10）：只读扫描账本汇总用量
+  SessionUsage(sessionID: string): Promise<SessionUsageDTO | null>
   ResolveApproval(id: string, approved: boolean, reason: string): Promise<void>
   // 允许这条 shell 命令，并在本会话内对同前缀命令免确认（前缀须覆盖该命令；应用重启失效）
   ResolveApprovalAllowPrefix(id: string, prefix: string): Promise<void>
@@ -762,7 +781,20 @@ export function bridge(): WailsBridge {
         ListSessionSummaries: async () => [],
         RenameSession: offlineWrite,
         ApprovalPolicy: async () => [],
+        DefaultApprovalPolicy: async () => [],
         SetApprovalPolicy: offlineWrite,
+        ApprovableTools: async () => [],
+        SessionShellAllow: async () => [],
+        RevokeSessionShellAllow: offlineWrite,
+        SessionUsage: async () => ({
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          turns: 0,
+          reportedAll: true,
+        }),
         ResolveApproval: offlineWrite,
         ResolveApprovalAllowPrefix: offlineWrite,
         ResolveAsk: offlineWrite,

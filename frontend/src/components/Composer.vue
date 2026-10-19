@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useCatalogStore } from '../stores/catalog'
 import { useChannelStore } from '../stores/channels'
 import { useChatStore, type ForcedToolDTO, type PendingAttachment } from '../stores/chat'
@@ -11,7 +11,7 @@ import { useEscClose } from '../composables/useEsc'
 import { errText } from '../composables/errText'
 import { useToast } from '../composables/useToast'
 import { useContextGauge } from '../composables/useContextGauge'
-import { bridge } from '../wails'
+import { bridge, type SessionUsageDTO } from '../wails'
 import AppIcon from './AppIcon.vue'
 
 // 输入框高度（0.0.06）：默认约 3 行（72px）；可拖到大约半屏（50vh）。
@@ -412,16 +412,75 @@ defineExpose({ onPaste, onDrop })
 
 // ---- 模型选择器（0.2.28 用户反馈：这里的模型应该是已有的模型，可以支持选择）----
 // 数据源 = 全部可用渠道的模型列表；切换 = 激活对应渠道并指定模型（后端 SetActiveModel）。
-// 显示的模型即实际运行的模型（后端回传 defaultModel，不再各说各话）。
-// 0.3 驾驶位：选择器收进输入框左侧——当前模型就是驾驶位的第一读数；渠道/Key/代理
-// 仍只在「渠道管理」里维护，这里只负责"切模型"这一件事。
+// 0.3 驾驶位：单一模型控件（0.0.45 任务 3：合并默认与临时模型）。
+// 默认模型通过 channels.setActiveModel 切换；临时模型仅影响下一条消息，发送成功后清空。
 const modelMenuOpen = ref(false)
 const modelMenuRef = ref<HTMLElement | null>(null)
+const modelBtnRef = ref<HTMLElement | null>(null)
 const modelOptions = computed(() => channels.modelOptions)
 
 // 上下文余量（0.3）：与顶栏油表同一份数据、同一套文案（useContextGauge）。
 // 顶栏油表在 1280 以下被响应式隐藏，输入框上的这份必须始终可见。
 const { usage } = useContextGauge()
+
+// 会话累计 Token 用量（0.0.45 任务 10）：终态（chat:terminal）与切会话时刷新；totalTokens 为 0 时不显示。
+const sessionUsage = ref<SessionUsageDTO | null>(null)
+
+async function refreshSessionUsage() {
+  const sid = store.sessionId
+  try {
+    const res = await bridge().app.SessionUsage(sid)
+    if (store.sessionId === sid) {
+      sessionUsage.value = res ?? null
+    }
+  } catch {
+    if (store.sessionId === sid) {
+      sessionUsage.value = null
+    }
+  }
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000000) {
+    return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M'
+  }
+  if (n >= 1000) {
+    return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  }
+  return n.toLocaleString()
+}
+
+const sessionTokensText = computed(() => {
+  const u = sessionUsage.value
+  if (!u || !u.totalTokens) return ''
+  const prefix = u.reportedAll ? '' : '≥'
+  return `本会话 ${prefix}${formatTokens(u.totalTokens)} tok`
+})
+
+const sessionUsageTitle = computed(() => {
+  const u = sessionUsage.value
+  if (!u || !u.totalTokens) return ''
+  const lines = [
+    `本会话累计 Token：${u.reportedAll ? '' : '≥'}${u.totalTokens.toLocaleString()}`,
+    `输入：${u.promptTokens.toLocaleString()}`,
+    `输出：${u.completionTokens.toLocaleString()}`,
+    `缓存命中：${u.cacheReadTokens.toLocaleString()}`,
+    `缓存写入：${u.cacheWriteTokens.toLocaleString()}`,
+    `统计轮数：${u.turns}`,
+  ]
+  if (!u.reportedAll) {
+    lines.push('（部分轮次上游未报告用量，数字为下限）')
+  }
+  return lines.join('\n')
+})
+
+watch(
+  () => store.sessionId,
+  () => {
+    void refreshSessionUsage()
+  },
+  { immediate: true },
+)
 
 // Esc 关闭模型菜单（第 3 批）：经消费栈注册（原先只有点外部关闭）
 useEscClose(modelMenuOpen, () => {
@@ -434,14 +493,29 @@ function isCurrent(opt: { channelId: string; model: string }): boolean {
 
 async function pickModel(opt: { channelId: string; model: string }) {
   modelMenuOpen.value = false
+  overrideModel.value = '' // 设为默认模型时清空临时模型
   if (isCurrent(opt)) return
   await channels.setActiveModel(opt.channelId, opt.model)
 }
 
+// 设定本轮临时模型（0.0.45 任务 3）：仅下一条消息生效，不修改默认渠道
+function pickTemporaryModel(model: string) {
+  overrideModel.value = model
+  modelMenuOpen.value = false
+}
+
+// 清除本轮临时模型
+function clearOverrideModel() {
+  overrideModel.value = ''
+}
+
 function onDocMousedown(e: MouseEvent) {
   if (!modelMenuOpen.value) return
-  const el = modelMenuRef.value
-  if (el && !el.contains(e.target as Node)) modelMenuOpen.value = false
+  const menuEl = modelMenuRef.value
+  const btnEl = modelBtnRef.value
+  const target = e.target as Node
+  if (menuEl?.contains(target) || btnEl?.contains(target)) return
+  modelMenuOpen.value = false
 }
 
 // ---- 选中文字放进输入框（第 7 批）----
@@ -473,18 +547,99 @@ function putSelectionIntoDraft() {
   })
 }
 
+let offTerminal: (() => void) | undefined
+
 onMounted(() => {
   document.addEventListener('mousedown', onDocMousedown)
   document.addEventListener('selectionchange', refreshSelection)
+  // 终态事件（0.0.45 任务 10）：一轮对话结束时刷新会话累计 Token 用量
+  const off = bridge().runtime.EventsOn('chat:terminal', (p?: { sessionID?: string }) => {
+    if (!p?.sessionID || !store.sessionId || p.sessionID === store.sessionId) {
+      void refreshSessionUsage()
+    }
+  })
+  offTerminal = off as unknown as (() => void) | undefined
 })
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocMousedown)
   document.removeEventListener('selectionchange', refreshSelection)
+  offTerminal?.()
   if (atTimer) {
     clearTimeout(atTimer) // 卸载不再触发挂起的 @ 搜索：回调会写已脱离视图的菜单状态
     atTimer = null
   }
 })
+
+// ---- 输入框历史回溯（0.0.45 任务 8）----
+// 空输入框且无浮层时：按 ↑ 填入上一条用户消息，再按 ↑ 往前；↓ 往后，回到最新后清空。
+// 游标表示当前展示的历史记录在 userMessages 里的索引；-1 表示未处于历史回溯状态。
+const historyIndex = ref<number>(-1)
+
+const userMessages = computed(() =>
+  store.messages
+    .filter((m) => m.role === 'user' && m.content && m.content.trim().length > 0)
+    .map((m) => m.content),
+)
+
+watch(
+  () => store.sessionId,
+  () => {
+    historyIndex.value = -1
+  },
+)
+
+function handleHistoryUp(): boolean {
+  const msgs = userMessages.value
+  if (!msgs.length) return false
+
+  if (historyIndex.value === -1) {
+    historyIndex.value = msgs.length - 1
+  } else if (historyIndex.value > 0) {
+    historyIndex.value--
+  } else {
+    return true
+  }
+
+  draft.value = msgs[historyIndex.value]
+  void nextTick(() => {
+    if (box.value) {
+      const len = draft.value.length
+      box.value.setSelectionRange(len, len)
+      box.value.style.height = 'auto'
+      box.value.style.height = Math.min(box.value.scrollHeight, window.innerHeight / 2) + 'px'
+    }
+  })
+  return true
+}
+
+function handleHistoryDown(): boolean {
+  if (historyIndex.value === -1) return false
+  const msgs = userMessages.value
+
+  if (historyIndex.value < msgs.length - 1) {
+    historyIndex.value++
+    draft.value = msgs[historyIndex.value]
+  } else {
+    historyIndex.value = -1
+    draft.value = ''
+  }
+
+  void nextTick(() => {
+    if (box.value) {
+      const len = draft.value.length
+      box.value.setSelectionRange(len, len)
+      box.value.style.height = 'auto'
+      box.value.style.height = Math.min(box.value.scrollHeight, window.innerHeight / 2) + 'px'
+    }
+  })
+  return true
+}
+
+function onInput(e: Event) {
+  // 用户手动改动输入文本时复位历史游标
+  historyIndex.value = -1
+  autoGrow(e)
+}
 
 // 自动增高且不超过半屏；发送后复位到默认高度。输入同时刷新 @ 引用状态。
 function autoGrow(e: Event) {
@@ -494,14 +649,36 @@ function autoGrow(e: Event) {
   onCaretChange()
 }
 
+// 首次引导判定（0.0.45 任务 6）：仅在渠道加载完成且没有任何可用模型时禁用发送
+const hasNoModels = computed(() => channels.loaded && channels.modelOptions.length === 0 && channels.models.length === 0)
+
 // Enter 发送 / Shift+Enter 换行（ChatGPT/Cursor/Cline 通用惯例，替代旧版 Ctrl+Enter）。
 // isComposing 保护：中文输入法选词时的 Enter 是候选确认，不是发送意图——必须放行。
 // @ 浮层打开时：上下/Enter/Escape 归浮层（优先于发送）。
 function onComposerKeydown(e: KeyboardEvent) {
   if (slashKeydown(e)) return
   if (atKeydown(e)) return
+  if (modelMenuOpen.value) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') return
+  }
+  if (e.key === 'ArrowUp') {
+    if (draft.value === '' || historyIndex.value !== -1) {
+      if (handleHistoryUp()) {
+        e.preventDefault()
+        return
+      }
+    }
+  } else if (e.key === 'ArrowDown') {
+    if (historyIndex.value !== -1) {
+      if (handleHistoryDown()) {
+        e.preventDefault()
+        return
+      }
+    }
+  }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault()
+    if (hasNoModels.value) return
     void submit()
   }
 }
@@ -511,6 +688,8 @@ function resetBox() {
 }
 
 async function submit() {
+  if (hasNoModels.value) return
+  historyIndex.value = -1
   const text = draft.value.trim()
   const curAtts = atts.value
   if (!text && !curAtts.length) return
@@ -538,11 +717,14 @@ async function submit() {
   draft.value = ''
   atts.value = []
   resetBox()
+  const chosenModel = overrideModel.value || undefined
   try {
-    await store.send(text, curAtts, { throwOnError: true, forced, model: overrideModel.value || undefined })
+    await store.send(text, curAtts, { throwOnError: true, forced, model: chosenModel })
     forcedTool.value = null
+    // 临时模型只作用于下一条成功发出的消息：成功后自动清空（0.0.45 任务 3）
+    overrideModel.value = ''
   } catch {
-    // 发送失败：文字/附件/指定工具全部保留在输入区，允许重试
+    // 发送失败：文字/附件/指定工具全部保留在输入区，允许重试；临时模型保留
     draft.value = text
     atts.value = curAtts
   }
@@ -586,6 +768,7 @@ async function submitRerun(text: string, curAtts: PendingAttachment[], forced?: 
   draft.value = ''
   atts.value = []
   resetBox()
+  const chosenModel = overrideModel.value || undefined
   try {
     const res = await store.rerunFrom(r.seq)
     if (res.reverted.length || res.skipped.length) {
@@ -594,8 +777,10 @@ async function submitRerun(text: string, curAtts: PendingAttachment[], forced?: 
       toast(res.skipped.length ? 'error' : 'info', parts.join('；'))
     }
     emit('rerun-done')
-    await store.send(text, curAtts, { throwOnError: true, forced, model: overrideModel.value || undefined })
+    await store.send(text, curAtts, { throwOnError: true, forced, model: chosenModel })
     forcedTool.value = null
+    // 临时模型在重跑成功后同样清空
+    overrideModel.value = ''
   } catch (e) {
     toast('error', errText(e))
     // 失败：文字与附件放回输入区允许重试（与普通发送失败同款）
@@ -783,52 +968,59 @@ async function runQuick(slot: string, cmd: string) {
       <AppIcon name="plus" :size="11" /> 放进输入框
     </button>
 
-    <div class="relative flex items-end gap-2" :class="dragOver ? 'rounded-[var(--r-input)] ring-2 ring-[var(--c-primary)]' : ''"
+    <!-- 输入块（0.0.45 任务 2 两行布局）：整个块是统一圆角容器，textarea 占满内宽，底部是操作工具栏 -->
+    <div
+      class="relative flex flex-col rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] p-2 transition-colors focus-within:border-[var(--c-primary)]"
+      :class="dragOver ? 'ring-2 ring-[var(--c-primary)]' : ''"
       @dragover.prevent="dragOver = true"
       @dragleave.prevent="dragOver = false"
       @drop="onDrop"
     >
-      <!-- 模型选择器（0.3 驾驶位，从输入框上方收进输入行左侧）：当前模型是驾驶位
-           第一读数，点击只切换模型——渠道/Key/代理仍在「渠道管理」里，不搬进来 -->
-      <div ref="modelMenuRef" class="relative shrink-0">
-        <button
-          class="inline-flex max-w-[11rem] items-center gap-1.5 rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-2 text-xs text-[var(--c-text)] transition-colors hover:border-[var(--c-primary)] hover:text-[var(--c-primary)]"
-          aria-haspopup="menu"
-          :aria-expanded="modelMenuOpen"
-          :title="modelOptions.length ? '当前模型，点击切换（来自已配置的渠道）' : '尚未配置模型：请在侧栏底部打开「渠道管理」'"
-          @click="modelMenuOpen = !modelMenuOpen"
-        >
-          <AppIcon name="message" :size="12" class="shrink-0 text-[var(--c-text-dim)]" />
-          <span class="min-w-0 truncate font-medium">{{ channels.activeModel || '未选择模型' }}</span>
-          <AppIcon name="chevron-down" :size="10" class="shrink-0 text-[var(--c-text-dim)]" />
-        </button>
+      <!-- 浮层统一从输入块上方弹出，不被裁切、不遮挡输入光标所在行 -->
+      <!-- 模型菜单浮层（0.0.45 任务 3 合并后单模型菜单） -->
+      <div
+        v-if="modelMenuOpen"
+        ref="modelMenuRef"
+        role="menu"
+        class="absolute bottom-full left-2 z-40 mb-1 max-h-72 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+      >
+        <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">选择模型（来自已配置的渠道）</div>
+        <p v-if="!modelOptions.length" class="px-2 py-1.5 text-xs text-[var(--c-text-dim)]">
+          还没有可用模型——请在侧栏底部打开「渠道管理」添加渠道与模型
+        </p>
         <div
-          v-if="modelMenuOpen"
-          role="menu"
-          class="absolute bottom-full left-0 z-40 mb-1 max-h-72 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+          v-for="opt in modelOptions"
+          :key="`${opt.channelId}::${opt.model}`"
+          class="flex items-center justify-between gap-1 rounded-lg px-2 py-1.5 hover:bg-[var(--c-surface-soft)]"
         >
-          <div class="px-2 py-1 text-[11px] text-[var(--c-text-faint)]">选择模型（来自已配置的渠道）</div>
-          <p v-if="!modelOptions.length" class="px-2 py-1.5 text-xs text-[var(--c-text-dim)]">
-            还没有可用模型——请在侧栏底部打开「渠道管理」添加渠道与模型
-          </p>
           <button
-            v-for="opt in modelOptions"
-            :key="`${opt.channelId}::${opt.model}`"
+            type="button"
             role="menuitem"
-            class="menu-item"
+            class="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs transition-colors hover:text-[var(--c-primary)]"
+            title="设为默认模型"
             @click="pickModel(opt)"
           >
             <AppIcon name="message" :size="12" class="shrink-0 text-[var(--c-text-faint)]" />
-            <span class="min-w-0 flex-1 truncate text-left">{{ opt.model }}</span>
-            <span class="max-w-[8rem] shrink-0 truncate text-[10px] text-[var(--c-text-faint)]">{{ opt.channelName }}</span>
-            <span v-if="isCurrent(opt)" class="shrink-0 text-[10px] text-[var(--c-primary)]">当前</span>
+            <span class="min-w-0 truncate font-medium text-[var(--c-text)]">{{ opt.model }}</span>
+            <span class="max-w-[7rem] shrink-0 truncate text-[10px] text-[var(--c-text-faint)]">{{ opt.channelName }}</span>
+            <span v-if="isCurrent(opt)" class="shrink-0 rounded bg-[var(--c-primary-soft)] px-1 text-[10px] text-[var(--c-primary)]">默认</span>
+            <span v-if="overrideModel === opt.model" class="shrink-0 rounded bg-[var(--c-warn-soft)] px-1 text-[10px] text-[var(--c-warn-text)]">本轮</span>
+          </button>
+          <button
+            type="button"
+            class="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--c-text-dim)] hover:bg-[var(--c-primary-soft)] hover:text-[var(--c-primary)]"
+            title="仅下一条消息使用该模型（不修改默认渠道）"
+            @click.stop="pickTemporaryModel(opt.model)"
+          >
+            仅下一条用它
           </button>
         </div>
       </div>
+
       <!-- @ 文件引用浮层（0.0.09） -->
       <div
         v-if="atFile && atHits.length"
-        class="absolute bottom-full left-3 z-40 mb-1 max-h-64 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        class="absolute bottom-full left-2 z-40 mb-1 max-h-64 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
         role="listbox"
         aria-label="引用工作区文件"
       >
@@ -847,18 +1039,20 @@ async function runQuick(slot: string, cmd: string) {
           <span class="min-w-0 flex-1 truncate text-left">{{ h }}</span>
         </button>
       </div>
+
       <!-- @ 提示条（0.0.11）：无命中/无工作区时必须可见，不再静默失败 -->
       <div
         v-else-if="atFile && atNotice"
-        class="absolute bottom-full left-3 z-40 mb-1 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] px-3 py-2 text-xs text-[var(--c-text-dim)] shadow-lg"
+        class="absolute bottom-full left-2 z-40 mb-1 rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] px-3 py-2 text-xs text-[var(--c-text-dim)] shadow-lg"
         role="status"
       >
         {{ atNotice }}
       </div>
+
       <!-- / 技能与 MCP 菜单（第 7 批）：只列已启用项；MCP 先选服务器再选工具 -->
       <div
         v-if="slashMenuOpen"
-        class="absolute bottom-full left-3 z-40 mb-1 max-h-64 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
+        class="absolute bottom-full left-2 z-40 mb-1 max-h-64 w-80 overflow-y-auto rounded-xl border border-[var(--c-border)] bg-[var(--c-surface)] p-1.5 shadow-lg"
         role="listbox"
         aria-label="指定技能或 MCP"
       >
@@ -913,78 +1107,122 @@ async function runQuick(slot: string, cmd: string) {
           </div>
         </template>
       </div>
+
+      <!-- 第一行：textarea 占满容器内宽（0.0.45 任务 2） -->
       <textarea
         :ref="setBoxRef"
         v-model="draft"
         rows="3"
         aria-label="消息输入框"
-        class="min-w-0 flex-1 resize-y rounded-[var(--r-input)] border border-[var(--c-border)] bg-[var(--c-surface-soft)] px-4 py-2.5 text-sm leading-6 transition-colors focus:border-[var(--c-primary)]"
+        class="w-full resize-y border-0 bg-transparent px-2 py-1 text-sm leading-6 text-[var(--c-text)] placeholder-[var(--c-text-faint)] outline-none"
         :style="{ minHeight: MIN_INPUT_HEIGHT_PX + 'px', maxHeight: MAX_INPUT_HEIGHT }"
         placeholder="输入消息…（Enter 发送；@ 引用文件；/ 指定技能或 MCP；可粘贴/拖入图片和文件）"
         @keydown="onComposerKeydown"
-        @input="autoGrow"
+        @input="onInput"
         @click="onCaretChange"
         @keyup="onCaretChange"
         @paste="onPaste"
       ></textarea>
-      <!-- 上下文余量（0.3 驾驶位）：与顶栏油表同源；顶栏那份在 1280 以下被
-           sm:flex 隐藏，这一份始终可见。折叠明细在 hover title 里逐项写清。 -->
-      <span v-if="usage" class="mb-2 flex shrink-0 flex-col items-end gap-0.5" :title="usage.full">
-        <span class="flex items-center gap-1.5">
-          <span class="h-1.5 w-14 overflow-hidden rounded-full bg-[var(--c-surface-soft)]">
-            <span class="block h-full rounded-full" :class="usage.bar" :style="{ width: usage.pct + '%' }"></span>
+
+      <!-- 第二行（工具栏）：左侧 = 模型选择 + 上下文油表；右侧 = 方案、附件、发送 -->
+      <div class="mt-1 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--c-border)] pt-2">
+        <div class="flex min-w-0 items-center gap-2">
+          <!-- 单一模型选择控件（0.0.45 任务 3 合并） -->
+          <div
+            ref="modelBtnRef"
+            class="inline-flex max-w-[14rem] items-center rounded-[var(--r-pill)] border border-[var(--c-border)] bg-[var(--c-surface)] text-xs text-[var(--c-text)] transition-colors hover:border-[var(--c-primary)]"
+          >
+            <button
+              type="button"
+              class="inline-flex min-w-0 items-center gap-1.5 px-2.5 py-1.5 hover:text-[var(--c-primary)]"
+              aria-haspopup="menu"
+              :aria-expanded="modelMenuOpen"
+              :title="
+                overrideModel
+                  ? `本轮使用 ${overrideModel}（不改默认渠道）`
+                  : (modelOptions.length ? '当前模型，点击切换（来自已配置的渠道）' : '尚未配置模型：请在侧栏底部打开「渠道管理」')
+              "
+              @click="modelMenuOpen = !modelMenuOpen"
+            >
+              <AppIcon name="message" :size="12" class="shrink-0 text-[var(--c-text-dim)]" />
+              <span class="min-w-0 truncate font-medium">
+                {{ overrideModel ? `本轮：${overrideModel}` : (channels.activeModel || '未选择模型') }}
+              </span>
+              <AppIcon v-if="!overrideModel" name="chevron-down" :size="10" class="shrink-0 text-[var(--c-text-dim)]" />
+            </button>
+            <button
+              v-if="overrideModel"
+              type="button"
+              class="mr-1.5 grid h-4 w-4 shrink-0 place-items-center rounded-full text-[var(--c-text-faint)] hover:bg-[var(--c-primary-soft)] hover:text-[var(--c-primary)]"
+              title="清除本轮模型"
+              aria-label="清除本轮模型"
+              @click.stop="clearOverrideModel"
+            >
+              <AppIcon name="x" :size="10" />
+            </button>
+          </div>
+
+          <!-- 上下文余量（油表） -->
+          <span v-if="usage" class="flex shrink-0 items-center gap-1.5" :title="usage.full">
+            <span class="h-1.5 w-14 overflow-hidden rounded-full bg-[var(--c-surface)]">
+              <span class="block h-full rounded-full" :class="usage.bar" :style="{ width: usage.pct + '%' }"></span>
+            </span>
+            <span class="text-[11px] tabular-nums text-[var(--c-text-faint)]">{{ usage.short }}</span>
+            <span v-if="usage.foldNote" class="text-[10px] text-[var(--c-warn-text)]">（{{ usage.foldNote }}）</span>
           </span>
-          <span class="text-[11px] tabular-nums text-[var(--c-text-faint)]">{{ usage.short }}</span>
-        </span>
-        <span v-if="usage.foldNote" class="text-[10px] text-[var(--c-warn-text)]">折叠：{{ usage.foldNote }}</span>
-      </span>
-      <!-- 模型选择器（0.0.44）：空 = 跟随默认渠道；选定后发送（含重跑重答）用
-           指定模型，只影响单轮不改默认。模型列表来自全部可用渠道的并集。 -->
-      <select
-        v-model="overrideModel"
-        class="chip h-10 max-w-36 shrink-0 text-xs"
-        :title="overrideModel ? `本轮将用 ${overrideModel} 发送（不改默认渠道）` : '跟随默认渠道发送'"
-        aria-label="选择本轮使用的模型"
-      >
-        <option value="">跟随默认渠道</option>
-        <option v-for="o in channels.modelOptions" :key="o.channelId + '/' + o.model" :value="o.model">
-          {{ o.model }}
-        </option>
-      </select>
-      <!-- 方案模式：开着发送 = 只读调研。发出后开关关掉（免得别的会话也只读），
-           但这一轮按钮保持亮着，直到终态。确认后才进入真正的执行回合。 -->
-      <button
-        type="button"
-        class="chip h-10 shrink-0"
-        :aria-pressed="store.planMode || store.planTurn === store.sessionId"
-        :title="planTitle"
-        @click="togglePlan"
-      >
-        <AppIcon name="message" :size="14" /> {{ store.planTurn === store.sessionId ? '方案中' : '方案' }}
-      </button>
-      <button class="chip h-10 shrink-0" title="上传图片或文件（可多选）" aria-label="上传附件" @click="fileInput?.click()">
-        <AppIcon name="plus" :size="14" />
-      </button>
-      <input ref="fileInput" type="file" multiple class="hidden" @change="onFilePick" />
-      <button
-        v-if="store.running"
-        type="button"
-        class="btn-primary h-10 shrink-0 gap-2 px-4 text-sm"
-        :disabled="store.stopping"
-        @click="store.stop()"
-      >
-        <AppIcon name="stop" :size="14" /> {{ store.stopping ? '正在中断' : '中断' }}
-      </button>
-      <button
-        v-else
-        class="btn-icon shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
-        title="发送（Enter）"
-        aria-label="发送"
-        :disabled="!draft.trim() && !atts.length"
-        @click="submit"
-      >
-        <AppIcon name="send" :size="16" />
-      </button>
+
+          <!-- 本会话累计 Token 用量（0.0.45 任务 10） -->
+          <span
+            v-if="sessionTokensText"
+            data-testid="session-tokens"
+            class="shrink-0 text-[11px] text-[var(--c-text-faint)]"
+            :title="sessionUsageTitle"
+          >
+            {{ sessionTokensText }}
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <!-- 方案模式 -->
+          <button
+            type="button"
+            class="chip h-9 shrink-0 text-xs"
+            :aria-pressed="store.planMode || store.planTurn === store.sessionId"
+            :title="planTitle"
+            @click="togglePlan"
+          >
+            <AppIcon name="message" :size="13" /> {{ store.planTurn === store.sessionId ? '方案中' : '方案' }}
+          </button>
+          <button
+            class="chip h-9 shrink-0 text-xs"
+            title="上传图片或文件（可多选）"
+            aria-label="上传附件"
+            @click="fileInput?.click()"
+          >
+            <AppIcon name="plus" :size="13" />
+          </button>
+          <input ref="fileInput" type="file" multiple class="hidden" @change="onFilePick" />
+          <button
+            v-if="store.running"
+            type="button"
+            class="btn-primary h-9 shrink-0 gap-2 px-3 text-xs"
+            :disabled="store.stopping"
+            @click="store.stop()"
+          >
+            <AppIcon name="stop" :size="13" /> {{ store.stopping ? '正在中断' : '中断' }}
+          </button>
+          <button
+            v-else
+            class="btn-icon shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
+            :title="hasNoModels ? '请先配置模型渠道' : '发送（Enter）'"
+            aria-label="发送"
+            :disabled="hasNoModels || (!draft.trim() && !atts.length)"
+            @click="submit"
+          >
+            <AppIcon name="send" :size="16" />
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 工作区快捷命令（0.0.26）：已配置的槽才出现，整行未配置时不渲染。

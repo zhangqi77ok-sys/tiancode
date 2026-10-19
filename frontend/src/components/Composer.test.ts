@@ -5,12 +5,24 @@ import Composer from './Composer.vue'
 import DialogHost from './DialogHost.vue'
 import { useChatStore, type PendingAttachment } from '../stores/chat'
 import { useCatalogStore } from '../stores/catalog'
+import { useChannelStore } from '../stores/channels'
+import { consumeEsc } from '../composables/useEsc'
 
 // 第 7 批：重跑 = 回填 → 用户改字 → 按发送时确认分叉（RerunFrom）→ 发送**输入框里的文字**；
 // 取消确认时什么都不撤回。这里用真实 DialogHost 驱动确认框（点它的按钮），不 mock 对话框。
 
 const h2 = vi.hoisted(() => ({
   sends: [] as string[],
+  modelSends: [] as { text: string; model: string }[],
+  sendFails: false,
+  activeModelCalls: [] as { channelId: string; model: string }[],
+  channels: {
+    channels: [
+      { id: 'ch1', name: '官方渠道', protocol: 'openai', baseUrl: '', model: 'gpt-4o', apiKey: 'k1', models: ['gpt-4o', 'gpt-4o-mini'] },
+      { id: 'ch2', name: 'Claude渠道', protocol: 'anthropic', baseUrl: '', model: 'claude-3-5-sonnet', apiKey: 'k2', models: ['claude-3-5-sonnet'] },
+    ],
+    activeId: 'ch1',
+  },
   attach: [] as { text: string; attachments: string; forceTool: string }[],
   rerunCalls: [] as { seq: number }[],
   probes: [] as string[],
@@ -20,13 +32,29 @@ const h2 = vi.hoisted(() => ({
   atResult: [] as string[],
   // 工作区快捷命令（0.0.26）：null = 未配置
   quickCommands: null as { build: string; test: string; run: string } | null,
+  // 会话 Token 用量（0.0.45 任务 10）
+  sessionUsage: null as any,
+  sessionUsageCalls: [] as string[],
+  eventCallbacks: {} as Record<string, ((p?: any) => void)[]>,
 }))
 
 vi.mock('../wails', () => ({
   bridge: () => ({
     app: {
+      ListChannels: async () => JSON.parse(JSON.stringify(h2.channels)),
+      SetActiveModel: async (channelId: string, model: string) => {
+        h2.activeModelCalls.push({ channelId, model })
+        h2.channels.activeId = channelId
+        const ch = h2.channels.channels.find((c) => c.id === channelId)
+        if (ch) ch.model = model
+      },
       Send: async (_sid: string, text: string) => {
+        if (h2.sendFails) throw new Error('发送失败')
         h2.sends.push(text)
+      },
+      SendWithModel: async (_sid: string, text: string, model: string) => {
+        if (h2.sendFails) throw new Error('发送失败')
+        h2.modelSends.push({ text, model })
       },
       SendWithAttachments: async (_sid: string, text: string, attachments: string, forceTool: string) => {
         h2.attach.push({ text, attachments, forceTool })
@@ -51,9 +79,21 @@ vi.mock('../wails', () => ({
       },
       QuickCommands: async (_sid: string) => h2.quickCommands,
       RunQuickCommand: async (_sid: string, slot: string) => ({ isError: false, output: `${slot} ok` }),
+      SessionUsage: async (sid: string) => {
+        h2.sessionUsageCalls.push(sid)
+        return h2.sessionUsage
+      },
       Stop: async () => {},
     },
-    runtime: { EventsOn: () => {} },
+    runtime: {
+      EventsOn: (event: string, cb: (p?: any) => void) => {
+        if (!h2.eventCallbacks[event]) h2.eventCallbacks[event] = []
+        h2.eventCallbacks[event].push(cb)
+        return () => {
+          h2.eventCallbacks[event] = h2.eventCallbacks[event].filter((f) => f !== cb)
+        }
+      },
+    },
   }),
   winClose: async () => {},
   winMinimize: async () => {},
@@ -136,12 +176,25 @@ describe('Composer（第 7 批：重跑走输入框）', () => {
   beforeEach(() => {
     teardown()
     h2.sends = []
+    h2.modelSends = []
+    h2.sendFails = false
+    h2.activeModelCalls = []
+    h2.channels = {
+      channels: [
+        { id: 'ch1', name: '官方渠道', protocol: 'openai', baseUrl: '', model: 'gpt-4o', apiKey: 'k1', models: ['gpt-4o', 'gpt-4o-mini'] },
+        { id: 'ch2', name: 'Claude渠道', protocol: 'anthropic', baseUrl: '', model: 'claude-3-5-sonnet', apiKey: 'k2', models: ['claude-3-5-sonnet'] },
+      ],
+      activeId: 'ch1',
+    }
     h2.attach = []
     h2.rerunCalls = []
     h2.probes = []
     h2.atSearches = []
     h2.atGate = null
     h2.atResult = []
+    h2.sessionUsage = null
+    h2.sessionUsageCalls = []
+    h2.eventCallbacks = {}
   })
 
   it('确认后发送输入框里改过的文字（不是原文）', async () => {
@@ -442,5 +495,384 @@ describe('Composer（第 7 批：重跑走输入框）', () => {
     await nextTick()
     expect(store.planMode).toBe(true)
     expect((btn as HTMLElement).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  // 0.0.45 任务 2：输入区两行布局
+  it('两行布局：textarea 与发送按钮不在同一个 flex 行容器中', async () => {
+    mountComposer('', null)
+    await nextTick()
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    const send = host.querySelector('button[aria-label="发送"]') as HTMLButtonElement
+    expect(ta).toBeTruthy()
+    expect(send).toBeTruthy()
+    expect(ta.parentElement).not.toBe(send.parentElement)
+    const toolbar = send.closest('.border-t')
+    expect(toolbar).toBeTruthy()
+    expect(toolbar?.contains(ta)).toBe(false)
+  })
+
+  it('键盘交互：Enter 发送；Shift+Enter 不发送；isComposing 为真时不发送', async () => {
+    mountComposer('测试消息', null)
+    await nextTick()
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+
+    // Shift+Enter 换行不发送
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }))
+    await nextTick()
+    expect(h2.sends).toHaveLength(0)
+
+    // 输入法组词中 Enter 确认选词不发送
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }))
+    await nextTick()
+    expect(h2.sends).toHaveLength(0)
+
+    // 单独 Enter 发送
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: false, bubbles: true }))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h2.sends).toEqual(['测试消息'])
+  })
+
+  // 0.0.45 任务 3：模型选择器合并
+  it('模型选择器合并：DOM 中不再有“跟随默认渠道”下拉，只保留单一模型按钮', async () => {
+    mountComposer('', null)
+    await nextTick()
+    expect(host.querySelector('select[aria-label="选择本轮使用的模型"]')).toBeNull()
+    expect(host.textContent).not.toContain('跟随默认渠道')
+    const modelBtn = host.querySelector('button[aria-haspopup="menu"]')
+    expect(modelBtn).toBeTruthy()
+  })
+
+  it('点模型行：setActiveModel 被调用，发送时 store.send 的 model 为 undefined', async () => {
+    mountComposer('发默认', null)
+    const channels = useChannelStore()
+    await channels.load()
+    await nextTick()
+
+    const modelBtn = host.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement
+    modelBtn.click()
+    await nextTick()
+
+    const menu = host.querySelector('[role="menu"]')
+    expect(menu).toBeTruthy()
+    const items = Array.from(menu?.querySelectorAll('[role="menuitem"]') ?? []) as HTMLButtonElement[]
+    const claudeItem = items.find((btn) => btn.textContent?.includes('claude-3-5-sonnet'))
+    expect(claudeItem).toBeTruthy()
+    claudeItem?.click()
+    await nextTick()
+
+    expect(h2.activeModelCalls).toContainEqual({ channelId: 'ch2', model: 'claude-3-5-sonnet' })
+
+    const send = host.querySelector('button[aria-label="发送"]') as HTMLButtonElement
+    send.click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h2.sends).toEqual(['发默认'])
+    expect(h2.modelSends).toHaveLength(0)
+  })
+
+  it('选“仅下一条用它”：按钮显示“本轮：X” → 发送成功 → store.send 收到 model: X，之后恢复显示默认模型；再发送一条 model 为 undefined', async () => {
+    mountComposer('发临时', null)
+    const channels = useChannelStore()
+    await channels.load()
+    await nextTick()
+
+    const modelBtn = host.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement
+    modelBtn.click()
+    await nextTick()
+
+    const tempBtns = Array.from(host.querySelectorAll('button')).filter((b) => b.textContent?.trim() === '仅下一条用它')
+    expect(tempBtns.length).toBeGreaterThan(0)
+    ;(tempBtns[1] as HTMLButtonElement).click()
+    await nextTick()
+
+    expect(modelBtn.textContent).toContain('本轮：')
+    const chosenModelName = (modelBtn.textContent ?? '').replace(/.*本轮：\s*/, '').trim()
+    expect(chosenModelName).toBe('gpt-4o-mini')
+
+    const send = host.querySelector('button[aria-label="发送"]') as HTMLButtonElement
+    send.click()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(h2.modelSends).toHaveLength(1)
+    expect(h2.modelSends[0]).toEqual({ text: '发临时', model: 'gpt-4o-mini' })
+    await nextTick()
+    expect(modelBtn.textContent).not.toContain('本轮：')
+
+    // 模拟第一轮回合结束（后端推送 terminal 终态），再发一条：model 为 undefined
+    const store = useChatStore()
+    store.running = false
+    draftRef.value = '发第二条'
+    await nextTick()
+    send.click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h2.sends).toEqual(['发第二条'])
+  })
+
+  it('临时模型下发送失败：仍显示“本轮：X”', async () => {
+    mountComposer('测试失败', null)
+    const channels = useChannelStore()
+    await channels.load()
+    await nextTick()
+
+    const modelBtn = host.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement
+    modelBtn.click()
+    await nextTick()
+
+    const tempBtn = Array.from(host.querySelectorAll('button')).find((b) => b.textContent?.trim() === '仅下一条用它')
+    ;(tempBtn as HTMLButtonElement).click()
+    await nextTick()
+    expect(modelBtn.textContent).toContain('本轮：')
+
+    h2.sendFails = true
+    const send = host.querySelector('button[aria-label="发送"]') as HTMLButtonElement
+    send.click()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+
+    expect(modelBtn.textContent).toContain('本轮：')
+  })
+
+  it('点 ✕：临时模型清除，setActiveModel 未被调用', async () => {
+    mountComposer('', null)
+    const channels = useChannelStore()
+    await channels.load()
+    await nextTick()
+
+    const modelBtn = host.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement
+    modelBtn.click()
+    await nextTick()
+
+    const tempBtn = Array.from(host.querySelectorAll('button')).find((b) => b.textContent?.trim() === '仅下一条用它')
+    ;(tempBtn as HTMLButtonElement).click()
+    await nextTick()
+    expect(modelBtn.textContent).toContain('本轮：')
+
+    const clearBtn = host.querySelector('button[aria-label="清除本轮模型"]') as HTMLButtonElement
+    expect(clearBtn).toBeTruthy()
+    clearBtn.click()
+    await nextTick()
+
+    expect(modelBtn.textContent).not.toContain('本轮：')
+    expect(h2.activeModelCalls).toHaveLength(0)
+  })
+
+  it('模型菜单关闭：可用 Esc 关闭，点外部关闭', async () => {
+    mountComposer('', null)
+    await nextTick()
+
+    const modelBtn = host.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement
+    modelBtn.click()
+    await nextTick()
+    expect(host.querySelector('[role="menu"]')).toBeTruthy()
+
+    // 点击外部关闭
+    document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await nextTick()
+    expect(host.querySelector('[role="menu"]')).toBeNull()
+
+    // Esc 关闭
+    modelBtn.click()
+    await nextTick()
+    expect(host.querySelector('[role="menu"]')).toBeTruthy()
+    expect(consumeEsc()).toBe(true)
+    await nextTick()
+    expect(host.querySelector('[role="menu"]')).toBeNull()
+  })
+
+  it('首次引导：模型列表为空 → 发送按钮 disabled 且悬停提示"请先配置模型渠道"；非空时可用', async () => {
+    // 模拟无模型渠道
+    h2.channels = { channels: [], activeId: '' }
+    mountComposer('有草稿文字', null)
+    await useChannelStore().load()
+    await nextTick()
+
+    const sendBtn = host.querySelector('button[aria-label="发送"]') as HTMLButtonElement
+    expect(sendBtn.disabled).toBe(true)
+    expect(sendBtn.getAttribute('title')).toBe('请先配置模型渠道')
+
+    // 恢复渠道
+    h2.channels = {
+      channels: [
+        { id: 'ch1', name: '官方渠道', protocol: 'openai', baseUrl: '', model: 'gpt-4o', apiKey: 'k1', models: ['gpt-4o'] },
+      ],
+      activeId: 'ch1',
+    }
+    await useChannelStore().load()
+    await nextTick()
+
+    expect(sendBtn.disabled).toBe(false)
+    expect(sendBtn.getAttribute('title')).toBe('发送（Enter）')
+  })
+
+  it('输入框历史回溯：会话有两条用户消息，空输入框按 ↑ 得到第二条、再 ↑ 得到第一条、↓ 回到第二条、再 ↓ 为空', async () => {
+    mountComposer('', null)
+    await nextTick()
+    const store = useChatStore()
+    store.messages.push(
+      { id: '1', role: 'user', content: '第一条消息', at: 100 },
+      { id: '2', role: 'assistant', content: '助手回复', at: 101 },
+      { id: '3', role: 'user', content: '第二条消息', at: 102 },
+    )
+    await nextTick()
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(textarea.value).toBe('')
+
+    // 1. 空输入框按 ↑ → 得到第二条（最新的用户消息）
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await nextTick()
+    expect(textarea.value).toBe('第二条消息')
+
+    // 2. 再按 ↑ → 得到第一条
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await nextTick()
+    expect(textarea.value).toBe('第一条消息')
+
+    // 3. 按 ↓ → 回到第二条
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await nextTick()
+    expect(textarea.value).toBe('第二条消息')
+
+    // 4. 再按 ↓ → 恢复为空
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await nextTick()
+    expect(textarea.value).toBe('')
+  })
+
+  it('输入框历史回溯：输入框非空时按 ↑ 不改变内容；/ 菜单打开时按 ↑ 只移动菜单选中项', async () => {
+    mountComposer('已有用户输入', null)
+    seedCatalog()
+    await nextTick()
+    const store = useChatStore()
+    store.messages.push(
+      { id: '1', role: 'user', content: '历史消息', at: 100 },
+    )
+    await nextTick()
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(textarea.value).toBe('已有用户输入')
+
+    // 输入框非空时按 ↑ 不改变内容
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await nextTick()
+    expect(textarea.value).toBe('已有用户输入')
+
+    // / 菜单打开时按 ↑ 只移动菜单选中项，不触发历史回溯
+    draftRef.value = '/'
+    await nextTick()
+    textarea.dispatchEvent(new Event('keyup', { bubbles: true }))
+    await nextTick()
+
+    const menu = host.querySelector('[aria-label="指定技能或 MCP"]')
+    expect(menu).toBeTruthy()
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await nextTick()
+    // 输入框内容不被历史消息覆盖
+    expect(textarea.value).toBe('/')
+  })
+
+  it('会话 token 用量显示：mock 返回 12345 → 显示"12.3k"；reportedAll=false → 显示"≥"；全 0 → 不显示', async () => {
+    // 1. 全 0（离线桩或无用量）时：不显示
+    h2.sessionUsage = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      turns: 0,
+      reportedAll: true,
+    }
+    mountComposer('', null)
+    await nextTick()
+    await nextTick()
+    expect(host.querySelector('[data-testid="session-tokens"]')).toBeNull()
+
+    // 2. mock 返回 12345，reportedAll=true → 显示 "12.3k"
+    h2.sessionUsage = {
+      promptTokens: 8000,
+      completionTokens: 4345,
+      totalTokens: 12345,
+      cacheReadTokens: 1000,
+      cacheWriteTokens: 500,
+      turns: 3,
+      reportedAll: true,
+    }
+    const store = useChatStore()
+    // 切换会话 ID 触发刷新
+    store.sessionId = 'session-123'
+    await nextTick()
+    await nextTick()
+
+    const el = host.querySelector('[data-testid="session-tokens"]') as HTMLElement
+    expect(el).toBeTruthy()
+    expect(el.textContent).toContain('12.3k')
+    expect(el.textContent).not.toContain('≥')
+    expect(el.title).toContain('12,345')
+    expect(el.title).toContain('输入：8,000')
+    expect(el.title).toContain('输出：4,345')
+
+    // 3. reportedAll=false → 显示 "≥"
+    h2.sessionUsage = {
+      promptTokens: 8000,
+      completionTokens: 4345,
+      totalTokens: 12345,
+      cacheReadTokens: 1000,
+      cacheWriteTokens: 500,
+      turns: 3,
+      reportedAll: false,
+    }
+    // 切换会话 ID 再次刷新
+    store.sessionId = 'session-456'
+    await nextTick()
+    await nextTick()
+
+    const elIncomplete = host.querySelector('[data-testid="session-tokens"]') as HTMLElement
+    expect(elIncomplete).toBeTruthy()
+    expect(elIncomplete.textContent).toContain('12.3k')
+    expect(elIncomplete.textContent).toContain('≥')
+    expect(elIncomplete.title).toContain('（部分轮次上游未报告用量，数字为下限）')
+  })
+
+  it('会话 token 用量显示：触发终态事件（chat:terminal）后重新调用 SessionUsage', async () => {
+    h2.sessionUsage = {
+      promptTokens: 1000,
+      completionTokens: 500,
+      totalTokens: 1500,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      turns: 1,
+      reportedAll: true,
+    }
+    mountComposer('', null)
+    const store = useChatStore()
+    store.sessionId = 'session-terminal-test'
+    await nextTick()
+    await nextTick()
+
+    const initialCalls = h2.sessionUsageCalls.length
+    expect(initialCalls).toBeGreaterThan(0)
+
+    // 模拟终态事件触发
+    h2.sessionUsage = {
+      promptTokens: 2000,
+      completionTokens: 1000,
+      totalTokens: 3000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      turns: 2,
+      reportedAll: true,
+    }
+    const cbs = h2.eventCallbacks['chat:terminal'] ?? []
+    expect(cbs.length).toBeGreaterThan(0)
+    for (const cb of cbs) {
+      cb({ sessionID: 'session-terminal-test', endReason: 0, error: '' })
+    }
+    await nextTick()
+    await nextTick()
+
+    expect(h2.sessionUsageCalls.length).toBeGreaterThan(initialCalls)
+    const el = host.querySelector('[data-testid="session-tokens"]') as HTMLElement
+    expect(el).toBeTruthy()
+    expect(el.textContent).toContain('3k')
   })
 })

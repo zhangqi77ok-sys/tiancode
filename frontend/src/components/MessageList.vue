@@ -19,11 +19,15 @@ import AppIcon from './AppIcon.vue'
 const emit = defineEmits<{
   (e: 'suggest', text: string): void
   (e: 'rerun', payload: { seq: number; text: string; attachments: PendingAttachment[] }): void
+  (e: 'open-channels'): void
 }>()
 
 const store = useChatStore()
 const channels = useChannelStore()
 const ws = useWorkspaceStore()
+
+// 首次引导判定（0.0.45 任务 6）：仅在渠道加载完成且没有任何可用模型时触发
+const hasNoModels = computed(() => channels.loaded && channels.modelOptions.length === 0 && channels.models.length === 0)
 
 // 建议按"有没有工作区"分两组：无工作区时本地工具未注册（纯对话），
 // 给"读文件/跑测试"类提示词等于指引模型撞墙——文案必须与实际能力一致
@@ -284,11 +288,22 @@ onBeforeUnmount(() => {
             : '纯对话 · 直接提问即可；贴图与传文件照常可用'
         }}
       </p>
-      <div class="flex flex-col items-stretch gap-1 pt-1">
+      <!-- 首次使用引导（0.0.45 任务 6）：没有配置模型时显示说明与配置按钮，不显示示例问题 -->
+      <template v-if="hasNoModels">
+        <p class="text-xs text-[var(--c-text-dim)]">先添加一个模型渠道才能开始对话</p>
+        <button
+          class="btn-primary cursor-pointer rounded-lg px-4 py-2 text-xs font-medium"
+          type="button"
+          @click="emit('open-channels')"
+        >
+          配置模型渠道
+        </button>
+      </template>
+      <div v-else class="flex flex-col items-stretch gap-1 pt-1">
         <button
           v-for="s in suggestions"
           :key="s"
-          class="rounded-lg px-4 py-1.5 text-center text-[13px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-primary)]"
+          class="cursor-pointer rounded-lg px-4 py-1.5 text-center text-[13px] text-[var(--c-text-dim)] transition-colors hover:bg-[var(--c-surface-soft)] hover:text-[var(--c-primary)]"
           @click="emit('suggest', s)"
         >
           {{ s }}

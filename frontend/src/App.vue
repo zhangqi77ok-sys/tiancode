@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, provide, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, provide, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore, type PendingAttachment, type TodoItem } from './stores/chat'
 import type { ChatToolEventDTO, CheckResultDTO } from './wails'
 import { useCatalogStore } from './stores/catalog'
@@ -34,6 +34,8 @@ import BackupPanel from './components/BackupPanel.vue'
 import ToneSettings from './components/ToneSettings.vue'
 import TurnReview from './components/TurnReview.vue'
 import WorkspaceSettingsPanel from './components/WorkspaceSettingsPanel.vue'
+import ApprovalSettings from './components/ApprovalSettings.vue'
+import AboutModal from './components/AboutModal.vue'
 
 // 根组件退化为布局壳：顶栏/侧栏/对话/输入各自自治，事件桥在此统一接线。
 const store = useChatStore()
@@ -60,6 +62,8 @@ const tonesOpen = ref(false) // 语气设置（第 8 批）：侧栏底部入口
 const memoryOpen = ref(false) // 记忆管理（0.0.21）：侧栏底部入口，不进顶栏
 const backupOpen = ref(false) // 备份与恢复（0.0.23）：侧栏底部入口
 const wsSettingsOpen = ref(false) // 工作区设置（第 8 批）：在这一行打开 / 检查命令
+const approvalSettingsOpen = ref(false) // 审批与权限设置（0.0.45 任务 5）
+const aboutOpen = ref(false) // 关于 tiancode（0.0.45 任务 9）
 // 工作区检查结果（第 8 批）：最近一次自动检查的位置列表（只读展示）
 const checkResult = ref<CheckResultDTO | null>(null)
 
@@ -163,7 +167,9 @@ const anyModalOpen = computed(
     tonesOpen.value ||
     memoryOpen.value ||
     backupOpen.value ||
-    wsSettingsOpen.value,
+    wsSettingsOpen.value ||
+    approvalSettingsOpen.value ||
+    aboutOpen.value,
 )
 
 // 输入草稿**按会话各存一份**：此前是全局单例——在 A 里敲的半句话切到 B
@@ -245,6 +251,17 @@ const composerInput = ref<HTMLTextAreaElement | null>(null)
 provide('registerComposerInput', (el: HTMLTextAreaElement | null) => {
   composerInput.value = el
 })
+
+// 点击空状态建议问题（0.0.45）：回填草稿并聚焦输入框末尾，直接按 Enter 即可发送
+async function onSuggest(text: string) {
+  draft.value = text
+  await nextTick()
+  if (composerInput.value) {
+    composerInput.value.focus()
+    const len = text.length
+    composerInput.value.setSelectionRange(len, len)
+  }
+}
 
 function sessionSiblings(): string[] {
   // 侧栏顺序即会话顺序：按空间分组后的扁平 id 列表（含当前会话）
@@ -421,6 +438,9 @@ onBeforeUnmount(() => {
         @open-memory="openMemory"
         @open-backup="backupOpen = true"
         @open-workspace-settings="wsSettingsOpen = true"
+        @open-approval-settings="approvalSettingsOpen = true"
+        @open-shortcuts="shortcutsOpen = true"
+        @open-about="aboutOpen = true"
       />
 
       <!-- 对话列（0.3 工作台）：中列不再铺白底（body 渐变透出来），内容限宽居中——
@@ -430,7 +450,7 @@ onBeforeUnmount(() => {
              对话区保持可读最小宽度：右栏（文件/浏览器）打开时不把对话挤扁。 -->
         <div class="flex min-w-[320px] flex-1 flex-col">
           <div class="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
-            <MessageList @suggest="draft = $event" @rerun="startRerun" />
+            <MessageList @suggest="onSuggest" @rerun="startRerun" @open-channels="openChannels" />
             <!-- 本轮变更审查带（0.0.09；第 2 批默认折叠、按文件聚合）：点文件行开右侧详情 -->
             <TurnReview />
             <CheckResults :result="checkResult" />
@@ -503,6 +523,8 @@ onBeforeUnmount(() => {
       @open-workspace-settings="paletteOpen = false; wsSettingsOpen = true"
     />
     <ShortcutsOverlay v-if="shortcutsOpen" @close="shortcutsOpen = false" />
+    <ApprovalSettings v-if="approvalSettingsOpen" @close="approvalSettingsOpen = false" />
+    <AboutModal v-if="aboutOpen" @close="aboutOpen = false" />
     <GlobalSearch v-if="globalSearchOpen" @close="globalSearchOpen = false" />
     <DialogHost />
     <ToastHost />

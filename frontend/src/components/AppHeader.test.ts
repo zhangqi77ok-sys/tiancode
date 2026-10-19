@@ -12,9 +12,12 @@ const h = vi.hoisted(() => ({
   saved: [] as string[],
   markdown: '# 会话',
   branch: 'main',
-  // 审批策略（0.2.36+）：SetApprovalPolicy 可控失败（测开关失败回滚）
+  // 审批策略（0.2.36+；0.0.45 默认策略由后端给出）：
   policyCalls: [] as string[][],
   setPolicyFails: false,
+  currentPolicy: [] as string[],
+  defaultPolicy: ['shell', 'mcp', 'x'] as string[],
+  defaultPolicyFails: false,
 }))
 
 vi.mock('../wails', () => ({
@@ -22,11 +25,16 @@ vi.mock('../wails', () => ({
     app: {
       CurrentBranch: async () => h.branch,
       ListChannels: async () => ({ channels: [], activeId: '' }),
-      ApprovalPolicy: async () => [],
+      ApprovalPolicy: async () => h.currentPolicy,
+      DefaultApprovalPolicy: async () => {
+        if (h.defaultPolicyFails) throw new Error('读取默认策略失败')
+        return h.defaultPolicy
+      },
       GetWorkspace: async () => '',
       SetApprovalPolicy: async (tools: string[]) => {
         if (h.setPolicyFails) throw new Error('策略保存失败')
         h.policyCalls.push(tools)
+        h.currentPolicy = tools
       },
       ExportSessionMarkdown: async () => h.markdown,
       SaveTextFile: async (name: string, content: string) => {
@@ -75,6 +83,9 @@ beforeEach(() => {
   h.branch = 'main'
   h.policyCalls = []
   h.setPolicyFails = false
+  h.currentPolicy = []
+  h.defaultPolicy = ['shell', 'mcp', 'x']
+  h.defaultPolicyFails = false
 })
 
 afterEach(() => {
@@ -255,36 +266,91 @@ describe('AppHeader（阶段 1）', () => {
     expect(text()).toContain('已达上限')
   })
 
-  // 审批闸门开关：乐观翻转 + 失败回滚——SetApprovalPolicy 失败时若开关停在
-  // 翻转态，显示就与实际策略相反（用户以为开着的确认闸实际是关的）
-  it('命令确认开关：成功时保持新状态并下发策略', async () => {
+  // 审批闸门开关（0.0.45）：出厂默认清单由后端给出，开关关→开不再写死两项
+  it('命令确认开关：模拟当前策略非空 → 点开关关闭 → SetApprovalPolicy 收到 []；再点开启 → 收到的参数严格等于 mock 的 DefaultApprovalPolicy 返回值', async () => {
+    h.currentPolicy = ['shell', 'browser']
     mountHeader()
     await new Promise((r) => setTimeout(r, 0)) // 等挂载初始化链跑完（初值读取在前）
     await nextTick()
     await openMenu()
+
     const item = menuItems().find((b) => (b.textContent ?? '').includes('命令确认')) as HTMLButtonElement
+    expect(item.getAttribute('aria-pressed')).toBe('true')
+    expect(item.textContent).toContain('开')
+    expect(item.getAttribute('title')).toBe('需要确认：shell、browser')
+
+    // 点开关关闭：下发 []
+    item.click()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
     expect(item.getAttribute('aria-pressed')).toBe('false')
+    expect(item.textContent).toContain('关')
+    expect(h.policyCalls).toEqual([[]])
+    expect(item.getAttribute('title')).toBe('未开启命令确认（点击开启）')
+
+    // 再点开启：收到的参数严格等于 mock 的 DefaultApprovalPolicy 返回值（证明不是写死）
     item.click()
     await new Promise((r) => setTimeout(r, 0))
     await nextTick()
     expect(item.getAttribute('aria-pressed')).toBe('true')
     expect(item.textContent).toContain('开')
-    expect(h.policyCalls).toEqual([['shell', 'ext_manage']])
+    expect(h.policyCalls).toHaveLength(2)
+    expect(h.policyCalls[1]).toEqual(['shell', 'mcp', 'x'])
+    expect(h.policyCalls[1]).toEqual(h.defaultPolicy)
+    expect(item.getAttribute('title')).toBe('需要确认：shell、mcp、x')
   })
 
-  it('命令确认开关：下发失败回滚到原状态（不假装开成功）', async () => {
+  it('命令确认开关：DefaultApprovalPolicy reject → 开关保持关、出现错误提示、SetApprovalPolicy 未被调用', async () => {
+    h.currentPolicy = []
+    h.defaultPolicyFails = true
+    mountHeader()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await openMenu()
+
+    const item = menuItems().find((b) => (b.textContent ?? '').includes('命令确认')) as HTMLButtonElement
+    expect(item.getAttribute('aria-pressed')).toBe('false')
+
+    item.click()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+
+    // 保持关态
+    expect(item.getAttribute('aria-pressed')).toBe('false')
+    expect(item.textContent).toContain('关')
+    // 错误在通道中可见
+    expect(useChatStore().error).toContain('读取默认策略失败')
+    // SetApprovalPolicy 绝未被调用
+    expect(h.policyCalls).toEqual([])
+  })
+
+  it('命令确认开关：SetApprovalPolicy reject → 开关回滚', async () => {
+    h.currentPolicy = []
     h.setPolicyFails = true
     mountHeader()
     await new Promise((r) => setTimeout(r, 0))
     await nextTick()
     await openMenu()
+
     const item = menuItems().find((b) => (b.textContent ?? '').includes('命令确认')) as HTMLButtonElement
     item.click()
     await new Promise((r) => setTimeout(r, 0))
     await nextTick()
+
     expect(item.getAttribute('aria-pressed')).toBe('false') // 回滚
     expect(item.textContent).toContain('关')
     expect(h.policyCalls).toEqual([])
     expect(useChatStore().error).toContain('策略保存失败') // 失败可见
+  })
+
+  it('命令确认开关：悬停提示列出的工具与 ApprovalPolicy() 返回值一致', async () => {
+    h.currentPolicy = ['shell', 'ext_manage', 'mcp', 'browser']
+    mountHeader()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await openMenu()
+
+    const item = menuItems().find((b) => (b.textContent ?? '').includes('命令确认')) as HTMLButtonElement
+    expect(item.getAttribute('title')).toBe('需要确认：shell、ext_manage、mcp、browser')
   })
 })

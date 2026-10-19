@@ -30,6 +30,9 @@ const emit = defineEmits<{
   (e: 'open-memory'): void
   (e: 'open-backup'): void
   (e: 'open-workspace-settings'): void
+  (e: 'open-approval-settings'): void
+  (e: 'open-shortcuts'): void
+  (e: 'open-about'): void
   (e: 'toggle-collapsed'): void
 }>()
 
@@ -72,14 +75,17 @@ onMounted(() => {
 })
 onBeforeUnmount(() => document.removeEventListener('mousedown', onSettingsMousedown))
 
-function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones' | 'memory' | 'backup') {
+function openSettings(kind: 'channels' | 'mcp' | 'skills' | 'tones' | 'memory' | 'backup' | 'approval' | 'shortcuts' | 'about') {
   settingsMenuOpen.value = false
   if (kind === 'channels') emit('open-channels')
   else if (kind === 'mcp') emit('open-mcp')
   else if (kind === 'skills') emit('open-skills')
   else if (kind === 'memory') emit('open-memory')
   else if (kind === 'backup') emit('open-backup')
-  else emit('open-tones')
+  else if (kind === 'tones') emit('open-tones')
+  else if (kind === 'approval') emit('open-approval-settings')
+  else if (kind === 'shortcuts') emit('open-shortcuts')
+  else if (kind === 'about') emit('open-about')
 }
 
 const VIEW_LIMIT = 5
@@ -462,6 +468,22 @@ async function doMove(dir: string) {
         <button role="menuitem" class="menu-item" @click="openSettings('backup')">
           <AppIcon name="download" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
           <span class="min-w-0 flex-1">备份与恢复</span>
+        </button>
+        <!-- 审批与权限（0.0.45 任务 5）：敏感工具确认清单 + 会话允许前缀管理 -->
+        <button role="menuitem" class="menu-item" @click="openSettings('approval')">
+          <AppIcon name="shield" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">审批与权限</span>
+        </button>
+        <!-- 快捷键（0.0.45 任务 7）：快捷键速查浮层入口，后缀显示 ? -->
+        <button role="menuitem" class="menu-item" @click="openSettings('shortcuts')">
+          <AppIcon name="command" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">快捷键</span>
+          <span class="shrink-0 pl-2 text-[11px] text-[var(--c-text-faint)]">?</span>
+        </button>
+        <!-- 关于 tiancode（0.0.45 任务 9）：版本与更新检查 -->
+        <button role="menuitem" class="menu-item" @click="openSettings('about')">
+          <AppIcon name="info" :size="14" class="shrink-0 text-[var(--c-text-dim)]" />
+          <span class="min-w-0 flex-1">关于 tiancode</span>
         </button>
       </div>
     </div>

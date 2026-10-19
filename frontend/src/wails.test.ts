@@ -37,6 +37,19 @@ describe('wails bridge 绑定解析', () => {
 
   it('无 go 注入（浏览器调试）→ 读操作空数据、写操作显式报错', async () => {
     await expect(bridge().app.ListSessions()).resolves.toEqual([])
+    await expect(bridge().app.DefaultApprovalPolicy()).resolves.toEqual([]) // 默认审批读操作空数据
+    await expect(bridge().app.ApprovableTools()).resolves.toEqual([]) // 可审批工具列表读操作空数据
+    await expect(bridge().app.SessionShellAllow('s-1')).resolves.toEqual([]) // 会话允许前缀读操作空数据
+    await expect(bridge().app.SessionUsage('s-1')).resolves.toEqual({
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      turns: 0,
+      reportedAll: true,
+    }) // 会话用量读操作空数据
+    await expect(bridge().app.RevokeSessionShellAllow('s-1', 'git')).rejects.toThrow('浏览器调试模式') // 写操作报错
     await expect(bridge().app.ReadBrowserShot('s-1/shot-0001.png')).resolves.toBe('') // 读操作空数据
     await expect(
       bridge().app.AddChannel({ id: '', name: '', protocol: '', baseUrl: '', model: '', apiKey: '' }),
