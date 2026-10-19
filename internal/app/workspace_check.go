@@ -139,6 +139,10 @@ var checkRunner = func(ctx context.Context, name string, args []string, dir stri
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	hideCheckConsole(cmd)
+	// 超时收整棵进程树（2026-10-19），并给 I/O 收尾留上限——孙进程握着输出管道时
+	// CombinedOutput 否则会一直等到它们自己退出
+	cmd.Cancel = func() error { return killCheckTree(cmd) }
+	cmd.WaitDelay = 3 * time.Second
 	out, err := cmd.CombinedOutput()
 	return oemtext.Decode(out), err
 }

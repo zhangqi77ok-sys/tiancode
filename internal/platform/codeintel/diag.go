@@ -53,6 +53,9 @@ func Diagnose(ctx context.Context, root, relPath string, budget time.Duration) R
 	if isWebFile(relPath) {
 		return diagnoseWeb(ctx, root, relPath, budget)
 	}
+	if isPythonFile(relPath) {
+		return diagnosePython(ctx, root, relPath, budget)
+	}
 	return diagnoseGo(ctx, root, relPath, budget)
 }
 
@@ -79,6 +82,7 @@ func diagnoseGo(ctx context.Context, root, relPath string, budget time.Duration)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, "go", "vet", pkgDir)
 	cmd.Dir = root
+	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if runCtx.Err() != nil {
 		if errors.Is(runCtx.Err(), context.Canceled) {
