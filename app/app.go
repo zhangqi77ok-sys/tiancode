@@ -268,6 +268,11 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 // DefaultApprovalPolicy 返回出厂默认审批清单：界面"开启审批"恢复到这份完整清单。
 func (b *Bind) DefaultApprovalPolicy() []string { return b.chat.DefaultApprovalPolicy() }
 
+// SessionUsage 返回这场对话累计的 token 用量（上游报了才有；reportedAll=false 表示是下限）。
+func (b *Bind) SessionUsage(sessionID string) (app.SessionUsageSummary, error) {
+	return b.chat.SessionUsage(sessionID)
+}
+
 // ApprovableTools 返回可放进审批清单的工具名（设置面板勾选项）。
 func (b *Bind) ApprovableTools() []string { return b.chat.ApprovableTools() }
 

@@ -133,8 +133,11 @@ type StreamChunk struct {
 	Todo      *TodoEvent      // 任务清单动态（来自 agent）
 	Context   *ContextEvent   // 上下文治理读数（来自 agent，每轮一次）
 	Usage     *Usage          // token 用量（上游返回时非 nil）
-	Err       error           // 终态错误（仅 EndError 终态块非 nil）
-	EndReason EndReason       // 仅终态块非零
+	// ThinkingBlock 是一段完整的带签名思考块（content_block_stop 时发出；协议细节，
+	// 内核收集后回填到本步助手消息，不上抛 UI）。
+	ThinkingBlock *ThinkingBlock
+	Err           error     // 终态错误（仅 EndError 终态块非 nil）
+	EndReason     EndReason // 仅终态块非零
 	// Truncated 仅出现在 EndDone 终态块上：上游因输出长度上限停止（Anthropic
 	// stop_reason=max_tokens / OpenAI finish_reason=length / Responses incomplete）。
 	// 流是完整结束的，但内容不完整——正文被截断，最后一笔工具调用的参数可能残缺。
@@ -155,6 +158,20 @@ type Usage struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
+	// CacheReadTokens / CacheWriteTokens 是 prompt cache 命中与写入的 token（2026-10-19；
+	// Anthropic 的 cache_read_input_tokens / cache_creation_input_tokens）。上游不报为 0。
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+}
+
+// ThinkingBlock 是一段带签名的思考块（Anthropic extended thinking，2026-10-19）。
+// 为什么要保留：开启 thinking 且使用工具时，上游要求把**本轮工具循环**里助手消息的
+// thinking 块（含 signature）原样回传，否则第二步请求直接 400。Redacted 非空表示
+// redacted_thinking 块（内容加密，只回传 data）。
+type ThinkingBlock struct {
+	Thinking  string
+	Signature string
+	Redacted  string
 }
 
 // ProviderPort 是大模型供应商端口：适配器实现它，内核只依赖它。
@@ -192,6 +209,9 @@ type Message struct {
 	// Parts 非空时（仅 user 消息）content 用多模态数组形态（0.0.10）：
 	// 文本 + 图片 data URL。空 Parts = 纯文本字符串 content（不改变既有请求形态）。
 	Parts []ContentPart
+	// ThinkingBlocks 是该助手消息的带签名思考块（仅 assistant，仅本轮工具循环内由内核
+	// 回填）；只有 Anthropic 适配器使用，其它协议忽略。
+	ThinkingBlocks []ThinkingBlock
 }
 
 // ContentPart 是多模态消息的一个片段。

@@ -107,6 +107,54 @@ type Loop struct {
 	// compactReads 只在段内重折叠期间为真：其中触发的历史压缩重派生也要让出读全文
 	// （与 refoldMidTurn 同口径，见 DeriveOptions.CompactReads）。
 	compactReads bool
+	// stepThinking 是当前步收到的带签名思考块；thinkingByCall 按"该步第一笔工具调用 ID"
+	// 记下本轮各步的思考块（2026-10-19）：重派生（段内重折叠/续跑段）会丢掉它们，
+	// 每次请求前按 ID 回填——Anthropic thinking + 工具时缺了它们第二步就 400。
+	stepThinking   []llm.ThinkingBlock
+	thinkingByCall map[string][]llm.ThinkingBlock
+	// turnUsage 是本轮所有模型调用的 token 用量合计（上游报了才有；落 TurnEnd 账本）。
+	turnUsage llm.Usage
+}
+
+// reattachThinking 把本轮记下的思考块回填到对应的助手消息上（无记录时零开销）。
+func (l *Loop) reattachThinking(msgs []llm.Message) []llm.Message {
+	if len(l.thinkingByCall) == 0 {
+		return msgs
+	}
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 || len(m.ThinkingBlocks) > 0 {
+			continue
+		}
+		if blocks, ok := l.thinkingByCall[m.ToolCalls[0].ID]; ok {
+			m.ThinkingBlocks = blocks
+		}
+	}
+	return msgs
+}
+
+// addUsage 累计一次模型调用的用量。
+func (l *Loop) addUsage(u *llm.Usage) {
+	if u == nil {
+		return
+	}
+	l.turnUsage.PromptTokens += u.PromptTokens
+	l.turnUsage.CompletionTokens += u.CompletionTokens
+	l.turnUsage.TotalTokens += u.TotalTokens
+	l.turnUsage.CacheReadTokens += u.CacheReadTokens
+	l.turnUsage.CacheWriteTokens += u.CacheWriteTokens
+}
+
+// turnEndPayload 是 TurnEnd 账本载荷：上游报过用量才带 usage（旧账本/不报用量的上游零变化）。
+func (l *Loop) turnEndPayload() map[string]any {
+	p := map[string]any{"reason": "done"}
+	if u := l.turnUsage; u.TotalTokens > 0 || u.PromptTokens > 0 || u.CompletionTokens > 0 {
+		p["usage"] = map[string]int64{
+			"prompt": u.PromptTokens, "completion": u.CompletionTokens, "total": u.TotalTokens,
+			"cache_read": u.CacheReadTokens, "cache_write": u.CacheWriteTokens,
+		}
+	}
+	return p
 }
 
 // NewLoop 构造循环：构造期注入运行时、模型与工具注册表（nil = 无工具）。
@@ -688,6 +736,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			return
 		}
 		msgs = l.applyDynamicPreface(msgs) // 每步刷新：扩展回合内增删立即生效
+		msgs = l.reattachThinking(msgs)    // 重派生会丢带签名的思考块：每次请求前按调用 ID 回填
 		ch, err := l.runtime.Chat(ctx, llm.ChatRequest{
 			Model:    l.model,
 			Messages: msgs,
@@ -771,7 +820,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
 				return
 			}
-			if _, err := ledger.Append(session.EventTurnEnd, map[string]string{"reason": "done"}); err != nil {
+			if _, err := ledger.Append(session.EventTurnEnd, l.turnEndPayload()); err != nil {
 				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist turn end: %w", err)})
 				return
 			}
@@ -795,7 +844,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				return
 			}
 		}
-		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ToolCalls: calls})
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ToolCalls: calls, ThinkingBlocks: l.stepThinking})
 		// 0.0.09：只读工具并行圈速——好模型一次要读五个文件、搜两处，串行
 		// 每本都要等上一本读完再请求下一次模型，圈速浪费在等不在模型。
 		// 分段规则：**连续**的只读调用为一组并发执行；写类（write/replace/shell/
@@ -806,6 +855,12 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 			if calls[i].ID == "" {
 				calls[i].ID = fmt.Sprintf("call-%d", ledger.NextSeq())
 			}
+		}
+		if len(l.stepThinking) > 0 {
+			if l.thinkingByCall == nil {
+				l.thinkingByCall = map[string][]llm.ThinkingBlock{}
+			}
+			l.thinkingByCall[calls[0].ID] = l.stepThinking
 		}
 		i := 0
 		for i < len(calls) {
@@ -1000,6 +1055,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 	msgs = append(msgs, llm.Message{Role: "user", Content: fmt.Sprintf(
 		"已达到单轮步数上限（%d 步）。本轮不再提供任何工具。请立即总结：1) 已完成什么；2) 未完成什么；3) 建议的下一步。不要再尝试调用工具。", MaxStepsPerTurn)})
 	msgs = l.applyDynamicPreface(msgs)
+	msgs = l.reattachThinking(msgs)
 	ch, err := l.runtime.Chat(ctx, llm.ChatRequest{
 		Model:    l.model,
 		Messages: msgs,
@@ -1024,7 +1080,7 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant message: %w", err)})
 		return
 	}
-	if _, err := ledger.Append(session.EventTurnEnd, map[string]string{"reason": "done"}); err != nil {
+	if _, err := ledger.Append(session.EventTurnEnd, l.turnEndPayload()); err != nil {
 		emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist turn end: %w", err)})
 		return
 	}
@@ -1076,7 +1132,14 @@ func (l *Loop) dispatchTool(ctx context.Context, call llm.ToolCall, ledger *sess
 // deltaMergeLimit 时由本函数就地刷一次——崩溃时未持久化的内容有界。
 func (l *Loop) consumeStream(ctx context.Context, ledger *session.Ledger, ch <-chan llm.StreamChunk, out chan llm.StreamChunk, sb, deltaText, deltaThink *strings.Builder) (string, []llm.ToolCall, llm.StreamChunk, bool) {
 	acc := newCallAccumulator()
+	l.stepThinking = nil
 	for chunk := range ch {
+		l.addUsage(chunk.Usage)
+		if chunk.ThinkingBlock != nil {
+			// 协议细节（带签名的思考块）：收进本步，回填到助手消息；不上抛 UI
+			l.stepThinking = append(l.stepThinking, *chunk.ThinkingBlock)
+			continue
+		}
 		if chunk.EndReason != llm.EndNone {
 			if chunk.EndReason != llm.EndDone {
 				return sb.String(), acc.list(), chunk, true

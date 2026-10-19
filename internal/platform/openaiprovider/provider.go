@@ -378,14 +378,10 @@ func (p *Provider) handleLine(ctx context.Context, out chan llm.StreamChunk, lin
 		return false
 	}
 	choice := sse.Choices[0]
-
-	if choice.FinishReason != nil && *choice.FinishReason != "" {
-		st.finishSeen = true
-		st.truncated = *choice.FinishReason == "length"
-		p.terminal(out, llm.EndDone, nil, st)
-		st.finishing = true
-		return false
-	}
+	// 终态块之前先把同一分片里的内容发出去（2026-10-19）：不少上游/网关把最后一段
+	// 文本或最后一个工具调用分片与 finish_reason 放在**同一个**分片里，此前先判终态
+	// 直接 return，那段内容被静默丢掉（答复缺尾、工具参数残缺）。
+	finished := choice.FinishReason != nil && *choice.FinishReason != ""
 
 	chunk := llm.StreamChunk{
 		Delta:    choice.Delta.Content,
@@ -417,10 +413,18 @@ func (p *Provider) handleLine(ctx context.Context, out chan llm.StreamChunk, lin
 		}
 	}
 	// 全空块跳过：避免无意义流量干扰消费方的终态统计
-	if chunk.Delta == "" && chunk.Thinking == "" && chunk.ToolCalls == nil && chunk.Usage == nil {
-		return false
+	if chunk.Delta != "" || chunk.Thinking != "" || chunk.ToolCalls != nil || chunk.Usage != nil {
+		if p.send(ctx, out, chunk) {
+			return true
+		}
 	}
-	return p.send(ctx, out, chunk)
+	if finished {
+		st.finishSeen = true
+		st.truncated = *choice.FinishReason == "length"
+		p.terminal(out, llm.EndDone, nil, st)
+		st.finishing = true
+	}
+	return false
 }
 
 // send 发送数据块；消费方离开（ctx 取消期间发送受阻）时返回 true。

@@ -72,7 +72,7 @@ func TestBind_SurfaceIsExpected(t *testing.T) {
 		"ExportBackupTo",
 		"ExportSessionMarkdown", "FlashWindow", "GetExtensions", "GetProxy", "GetTones", "GetWorkspace", "GitFileDiff", "GitStageAndCommit", "GitStatusFiles", "HideToTray", "ImportCodexCredential", "ListChannels", "ListCredentials", "ListSessionSummaries",
 		"ListSessions", "ListWorkspaceDir", "MemoryClear", "MemoryDelete", "MemoryLines", "MoveSession", "OpenAtLine", "OpenInDefaultApp", "OpenLogDir", "PickBackupFile", "PickImport", "PickWorkspace", "PinSession", "PollCodexOAuth", "PreviewBackup", "ProbeMcpServer", "ProposeFileWrite", "QuickCommands", "ReadBrowserShot", "ReadSessionFile", "RenameSession", "Replay", "ReplayOlder", "ReplayTail", "RerunFrom", "ResolveApproval", "ResolveApprovalAllowPrefix", "ResolveAsk", "RestoreToolWrite", "RevealInExplorer", "RevertRound", "RevertToRound", "RevokeSessionShellAllow", "RoundTimeline", "RunQuickCommand", "RunUserCommand", "SaveExtensions", "SaveTextFile", "SaveTones", "SaveWorkspaceSettings", "SearchSessions", "SearchWorkspaceFiles", "Send", "SendNotification",
-		"SendPlan", "SendWithAttachments", "SendWithModel", "SessionShellAllow", "SetActiveChannel", "SetActiveModel",
+		"SendPlan", "SendWithAttachments", "SendWithModel", "SessionShellAllow", "SessionUsage", "SetActiveChannel", "SetActiveModel",
 		"SetApprovalPolicy", "SetCredentialEnabled", "SetProxy", "SetWorkspace", "StartCodexOAuth", "Stop", "SuggestCommitMessage", "TestChannel", "TrustAgentsCheck", "UpdateChannel", "WorkspaceSettings",
 	}
 	bindType := reflect.TypeOf(&Bind{})

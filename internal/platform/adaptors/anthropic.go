@@ -65,6 +65,9 @@ type antBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result
 	Content   string          `json:"content,omitempty"`     // tool_result
+	Thinking  string          `json:"thinking,omitempty"`    // thinking
+	Signature string          `json:"signature,omitempty"`   // thinking
+	Data      string          `json:"data,omitempty"`        // redacted_thinking
 	// CacheControl 是 prompt cache 断点（0.0.41）：非 nil 时上游把截至该块的
 	// 前缀写入缓存，下一轮同前缀的请求按缓存价读取。nil = 不打点（默认）。
 	CacheControl *antCacheControl `json:"cache_control,omitempty"`
@@ -157,6 +160,19 @@ func (a Anthropic) ConvertRequest(rc RouteContext, req llm.ChatRequest) ([]byte,
 				pendingRole, pendingBlocks = "", nil
 			}
 			blocks := []antBlock{}
+			// 带签名的思考块排在助手消息最前（上游要求的顺序；2026-10-19）
+			if m.Role == "assistant" {
+				for _, tb := range m.ThinkingBlocks {
+					if tb.Redacted != "" {
+						blocks = append(blocks, antBlock{Type: "redacted_thinking", Data: tb.Redacted})
+						continue
+					}
+					if tb.Signature == "" {
+						continue // 没有签名的思考文本不能回传（上游会拒），丢弃
+					}
+					blocks = append(blocks, antBlock{Type: "thinking", Thinking: tb.Thinking, Signature: tb.Signature})
+				}
+			}
 			if m.Role == "user" && len(m.Parts) > 0 {
 				// 多模态（0.0.25）：文字段 → text block，图片 data URL → base64 image block。
 				// 此前只读 m.Content，而附件轮的正文、内联文件内容与图片都在 Parts 里
@@ -279,6 +295,12 @@ type antStreamState struct {
 	stopSeen     bool
 	truncated    bool // stop_reason=max_tokens（随 EndDone 终态上报）
 	promptTokens int64
+	cacheRead    int64
+	cacheWrite   int64
+	// 思考块聚合（thinking_delta / signature_delta；redacted_thinking 的 data）
+	thinking  strings.Builder
+	signature strings.Builder
+	redacted  string
 	// 当前内容块：tool_use 聚合 input_json_delta
 	blockType string
 	toolID    string
@@ -380,7 +402,9 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 		// message_start
 		Message struct {
 			Usage struct {
-				InputTokens int64 `json:"input_tokens"`
+				InputTokens         int64 `json:"input_tokens"`
+				CacheReadTokens     int64 `json:"cache_read_input_tokens"`
+				CacheCreationTokens int64 `json:"cache_creation_input_tokens"`
 			} `json:"usage"`
 		} `json:"message"`
 		// content_block_start / content_block_delta / content_block_stop
@@ -388,12 +412,14 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 			Type string `json:"type"`
 			ID   string `json:"id"`
 			Name string `json:"name"`
+			Data string `json:"data"` // redacted_thinking
 		} `json:"content_block"`
 		Index int `json:"index"`
 		Delta struct {
 			Type        string `json:"type"`
 			Text        string `json:"text"`
 			Thinking    string `json:"thinking"`
+			Signature   string `json:"signature"` // signature_delta
 			PartialJSON string `json:"partial_json"`
 			StopReason  string `json:"stop_reason"` // message_delta
 		} `json:"delta"`
@@ -411,12 +437,17 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 		return false
 	case "message_start":
 		st.promptTokens = ev.Message.Usage.InputTokens
+		st.cacheRead = ev.Message.Usage.CacheReadTokens
+		st.cacheWrite = ev.Message.Usage.CacheCreationTokens
 		return false
 	case "content_block_start":
 		st.blockType = ev.ContentBlock.Type
 		st.toolID = ev.ContentBlock.ID
 		st.toolName = ev.ContentBlock.Name
 		st.toolArgs.Reset()
+		st.thinking.Reset()
+		st.signature.Reset()
+		st.redacted = ev.ContentBlock.Data
 		return false
 	case "content_block_delta":
 		switch ev.Delta.Type {
@@ -429,7 +460,10 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 			if ev.Delta.Thinking == "" {
 				return false
 			}
+			st.thinking.WriteString(ev.Delta.Thinking)
 			return a.send(ctx, out, llm.StreamChunk{Thinking: ev.Delta.Thinking})
+		case "signature_delta":
+			st.signature.WriteString(ev.Delta.Signature)
 		case "input_json_delta":
 			st.toolArgs.WriteString(ev.Delta.PartialJSON)
 		}
@@ -450,6 +484,16 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 			st.blockType = ""
 			return left
 		}
+		// 带签名的思考块（2026-10-19）：整块收齐后交给内核，回填到本步助手消息——
+		// thinking + 工具时上游要求原样回传，否则下一步请求 400。
+		if st.blockType == "thinking" || st.blockType == "redacted_thinking" {
+			blk := &llm.ThinkingBlock{Thinking: st.thinking.String(), Signature: st.signature.String()}
+			if st.blockType == "redacted_thinking" {
+				blk = &llm.ThinkingBlock{Redacted: st.redacted}
+			}
+			st.blockType = ""
+			return a.send(ctx, out, llm.StreamChunk{ThinkingBlock: blk})
+		}
 		st.blockType = ""
 		return false
 	case "message_delta":
@@ -458,6 +502,8 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 				PromptTokens:     st.promptTokens,
 				CompletionTokens: ev.Usage.OutputTokens,
 				TotalTokens:      st.promptTokens + ev.Usage.OutputTokens,
+				CacheReadTokens:  st.cacheRead,
+				CacheWriteTokens: st.cacheWrite,
 			}}) {
 				return true
 			}

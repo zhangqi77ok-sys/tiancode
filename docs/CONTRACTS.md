@@ -14,6 +14,9 @@
 | C-LLM-5 | 连接中断（scanner 错误）→ `EndError` 终态块，不静默结束 | `TestProviderStream_ConnReset` |
 | C-LLM-6 | 消费方停止读取 → 发送方经 select 逃生退出（`ctx.Done`），不永久阻塞在 channel 发送 | `TestProviderStream_SlowConsumerEscape` |
 | C-LLM-8 | 长度上限停止（Anthropic `stop_reason=max_tokens` / OpenAI 兼容 `finish_reason=length`）→ `EndDone` 终态块带 `Truncated=true`；其余正常完成不带（Codex `response.incomplete` 维持 `EndError`） | `TestAnthropic_MaxTokensMarksTruncated` / `TestProviderStream_LengthMarksTruncated` |
+| C-LLM-9 | 流尾内容不丢（2026-10-19）：OpenAI 兼容分片里内容/工具调用与 finish_reason 同在时，先发内容再给终态 | `TestProviderStream_ContentInFinishChunkNotDropped` |
+| C-LLM-10 | 带签名思考块（2026-10-19）：Anthropic thinking/redacted_thinking 块整块交给内核（`StreamChunk.ThinkingBlock`，不上抛 UI）；内核回填到本步助手(tool_calls)消息并在每次请求前按首个调用 ID 重新回填（重派生不丢）；适配器把它们排在助手消息最前回传，无签名的不回传。Usage 带 cache 读写 token | `TestAnthropic_ParsesSignedThinkingAndCacheUsage` / `TestAnthropic_ConvertRequestSendsThinkingFirst` / `TestAgent_ThinkingBlocksSurviveRefold` |
+| C-LLM-11 | 用量落账（2026-10-19）：本轮各次调用的用量合计写入 TurnEnd 的 `usage`（上游报了才写，旧载荷零变化）；`SessionUsage` 汇总，有轮次未报用量时 `reportedAll=false`（数字是下限）。OpenAI 兼容上游不主动请求 `stream_options`（部分网关拒收未知参数），报了才记 | `TestAgent_TurnUsagePersisted` / `TestSessionUsage_SumsTurnEnds` |
 | C-LLM-7 | 终态互斥且唯一：整流 EndReason != EndNone 的块恰好 1 个（EndNone 为零值=非终态） | `TestProviderStream_SingleTerminal` |
 
 ## C-RT：模型调用运行时（M2，ADR-0005；纪律借 new-api"流前重试、流中不换渠道"）
@@ -339,3 +342,4 @@
 | 2026-10-19 | **修订 C-APP-6 / C-AGT-20；新增 C-AGT-21 / C-AGT-22 / C-LLM-8 / C-FS-14** | 体检 P0+P1：① AGENTS.md `check:` 曾在回合结束自动执行且不经审批，而 `fs.write`（不在审批清单）可改写 AGENTS.md——等于绕过 shell 审批执行任意命令；改为用户确认 + 原文逐字一致才执行。② CRLF 文件多行 replace 永远零匹配（read 输出去 `\r`）。③ 回合内工具结果无界、段内不折叠、一个会话只能压缩一次。④ max_tokens/length 截断被当作正常完成（正文静默缺尾、残缺参数被执行） | 2026-10-19 全量功能审查 |
 | 2026-10-19 | **新增编程基础系统说明；修订 C-AGT-2 / C-BR-9；新增 C-APR-9** | 编码能力审查前四项：① 主对话此前没有任何"怎么干活"的系统说明（只有技能清单/环境事实/语气/记忆），新增逐字常量的编程基础说明排在最前（有工作区：先读再改、小步精准、改完验证、诚实边界；纯对话版不提文件工具），`TestChatService_CodingPrefaceLeadsSystemPrompt` 锁定。② 跨轮 fs.read 一律截 4KB → "把刚才那个函数改一下"只能重读；改为按回合内上限保留并标注读后被改。③ 回合内截图消息插在 tool 结果之前，带图那一步上游必 400。④ 跑测试/构建每次都要点审批，新增本会话前缀授予 | 2026-10-19 编码能力审查 |
 | 2026-10-19 | **新增 C-SUB-5 / C-TOOL-6；修复零事件看门狗终态竞态** | 后端收尾第二批：子代理预算/过程/最终报告/独立 fs；shell PowerShell 与 cwd；看门狗先 cancel 再注入，取消终态常先到达，用户看到"已取消"而非"响应超时"——以 timedOut 标志为准改写（全量并行测试偶发抓到）；`TestShellRun_BackgroundLogBounded` 清理由固定 sleep 改为轮询 | 2026-10-19 后端收尾 |
+| 2026-10-19 | **新增 C-LLM-9 / C-LLM-10 / C-LLM-11** | 后端收尾第三批：OpenAI 流尾分片内容被丢；Anthropic thinking 签名不回传（开 thinking 用工具第二步必 400）；适配器解析的用量全被丢弃，看不到花费与缓存命中 | 2026-10-19 后端收尾 |
