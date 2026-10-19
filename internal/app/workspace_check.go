@@ -47,7 +47,45 @@ type CheckResult struct {
 	Failed    bool       `json:"failed"`
 	TimedOut  bool       `json:"timedOut"`
 	Skipped   bool       `json:"skipped"`
-	At        int64      `json:"at"` // Unix 毫秒
+	// NeedsTrust：命令来自 AGENTS.md 且用户尚未确认（或确认后命令被改过）——
+	// 没有执行任何进程，界面据此给出"信任并运行"入口。Skipped 同时为 true。
+	NeedsTrust bool  `json:"needsTrust"`
+	At         int64 `json:"at"` // Unix 毫秒
+}
+
+// resolveCheckCommand 决定这个工作区该跑哪条检查命令及其来源。
+// 工作区设置（用户在本机显式配置）永远可信；AGENTS.md 的 check 来自仓库内容
+// （克隆来的仓库、或模型经 fs 写入），只有与用户确认过的原文逐字一致才可信。
+func resolveCheckCommand(root string) (cmd string, fromAgents, trusted bool) {
+	ws := loadWorkspaceSettings(root)
+	if c := strings.TrimSpace(ws.CheckCommand); c != "" {
+		return c, false, true
+	}
+	c := agentsCheckCommand(root)
+	if c == "" {
+		return "", false, false
+	}
+	return c, true, c == strings.TrimSpace(ws.TrustedAgentsCheck)
+}
+
+// TrustAgentsCheck 记录用户对 AGENTS.md 检查命令的确认（P0 体检修复）。
+// command 必须与此刻 AGENTS.md 里的原文一致：用户看到的和将要执行的必须是同一条，
+// 确认卡发出后文件又被改过就拒绝，要求重新确认。
+func (s *ChatService) TrustAgentsCheck(sessionID, command string) error {
+	root := s.sessionWorkspace(sessionID)
+	if strings.TrimSpace(root) == "" {
+		return errors.New("这场对话没有工作区")
+	}
+	current := agentsCheckCommand(root)
+	if current == "" {
+		return errors.New("AGENTS.md 里没有 check 命令")
+	}
+	if current != strings.TrimSpace(command) {
+		return fmt.Errorf("AGENTS.md 的检查命令已变化（现在是 %q），请重新确认", current)
+	}
+	ws := loadWorkspaceSettings(root)
+	ws.TrustedAgentsCheck = current
+	return saveWorkspaceSettings(root, ws)
 }
 
 // checkNoteRawLimit 是"失败但解析不出位置"时附给模型的原文上限（头尾保留）。
@@ -110,15 +148,15 @@ var checkRunner = func(ctx context.Context, name string, args []string, dir stri
 // 超时与命令失败都把已捕获的 stdout/stderr 原样带回（不编诊断）。
 func (s *ChatService) RunWorkspaceCheck(sessionID string) (CheckResult, error) {
 	root := s.sessionWorkspace(sessionID)
-	ws := loadWorkspaceSettings(root)
-	tmpl := strings.TrimSpace(ws.CheckCommand)
-	if tmpl == "" {
-		// 工作区设置没配：回退项目级默认（AGENTS.md frontmatter 的 check，0.0.43）。
-		// 设置显式配置永远优先——用户机器上的临时覆盖高于仓库声明。
-		tmpl = agentsCheckCommand(root)
-	}
+	// 设置显式配置优先；没配时回退 AGENTS.md frontmatter 的 check（0.0.43），
+	// 但仓库声明的命令必须经用户确认才执行（P0：否则 fs 写一行 AGENTS.md 即可绕过 shell 审批）。
+	tmpl, fromAgents, trusted := resolveCheckCommand(root)
 	if tmpl == "" {
 		return CheckResult{Skipped: true}, nil
+	}
+	if fromAgents && !trusted {
+		return CheckResult{SessionID: sessionID, Command: tmpl, Skipped: true, NeedsTrust: true,
+			At: time.Now().UnixMilli()}, nil
 	}
 	tokens := SplitArgv(tmpl)
 	if len(tokens) == 0 {
@@ -178,7 +216,7 @@ func (s *ChatService) afterTurnCheck(sessionID string, ended llm.EndReason) {
 		applog.Errorf("workspace check session=%s err=%v", sessionID, err)
 		return
 	}
-	if !res.Skipped {
+	if !res.Skipped || res.NeedsTrust {
 		s.checkMu.Lock()
 		emit := s.checkEmit
 		s.checkMu.Unlock()
@@ -258,7 +296,7 @@ func (s *ChatService) RunCheckAndEmit(sessionID string) {
 		applog.Errorf("workspace check session=%s err=%v", sessionID, err)
 		return
 	}
-	if res.Skipped {
+	if res.Skipped && !res.NeedsTrust {
 		return
 	}
 	s.checkMu.Lock()

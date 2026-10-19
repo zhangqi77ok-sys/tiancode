@@ -367,7 +367,7 @@ onMounted(() => {
   // 工作区检查结果（第 8 批）：回合收尾后自动跑的命令，结果只给当前会话显示
   bridge().runtime.EventsOn('workspace:check', (p: CheckResultDTO) => {
     if (p?.sessionID && p.sessionID !== store.sessionId) return // 后台会话的结果不插进当前视图
-    checkResult.value = p?.refs?.length ? p : null
+    checkResult.value = p?.refs?.length || p?.needsTrust ? p : null
   })
   // 托盘"新建对话"（0.0.24）：唤回主窗口并回草稿态
   bridge().runtime.EventsOn('tray:new-session', () => {

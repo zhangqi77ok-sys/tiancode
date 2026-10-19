@@ -36,9 +36,14 @@ func sessionFacts(root string) string {
 		return fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：无——纯对话，没有本地文件工具", osName, shell)
 	}
 	facts := fmt.Sprintf("## 运行环境（事实，非守则）\n- 操作系统：%s\n- Shell：%s\n- 本会话工作区：%s（本地文件工具的根，相对路径都相对它）", osName, shell, root)
-	if check := agentsCheckCommand(root); check != "" {
-		// 项目检查命令（0.0.43）：模型知道它的存在才会主动跑；回合终态系统也会自动执行
-		facts += fmt.Sprintf("\n- 项目检查命令：`%s`（回合结束会自动运行；改动后你也可以主动用 shell 执行它确认）", check)
+	if check, fromAgents, trusted := resolveCheckCommand(root); check != "" && fromAgents {
+		// 项目检查命令（0.0.43）：模型知道它的存在才会主动跑。只有用户确认过才自动执行（P0）——
+		// 未确认时如实告诉模型，避免它以为检查已经跑过。
+		if trusted {
+			facts += fmt.Sprintf("\n- 项目检查命令：`%s`（回合结束会自动运行；改动后你也可以主动用 shell 执行它确认）", check)
+		} else {
+			facts += fmt.Sprintf("\n- 项目检查命令：`%s`（来自 AGENTS.md，用户尚未确认，不会自动运行；需要时用 shell 执行）", check)
+		}
 	}
 	return facts + agentsRulesSection(root)
 }

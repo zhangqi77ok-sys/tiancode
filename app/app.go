@@ -244,6 +244,16 @@ func (b *Bind) SaveWorkspaceSettings(sessionID string, ws app.WorkspaceSettings)
 	return b.chat.SaveWorkspaceSettings(sessionID, ws)
 }
 
+// TrustAgentsCheck 记录用户对 AGENTS.md 检查命令的确认，并立即跑一次（结果走 workspace:check）。
+// command 必须与当前 AGENTS.md 原文一致，否则报错要求重新确认。
+func (b *Bind) TrustAgentsCheck(sessionID, command string) error {
+	if err := b.chat.TrustAgentsCheck(sessionID, command); err != nil {
+		return err
+	}
+	go b.chat.RunCheckAndEmit(sessionID)
+	return nil
+}
+
 // SetApprovalPolicy 设置需要审批的工具清单；传空数组即关闭审批（ADR-0007 默认关）。
 func (b *Bind) SetApprovalPolicy(tools []string) error { return b.chat.SetApprovalPolicy(tools) }
 

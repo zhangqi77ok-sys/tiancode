@@ -135,6 +135,10 @@ type StreamChunk struct {
 	Usage     *Usage          // token 用量（上游返回时非 nil）
 	Err       error           // 终态错误（仅 EndError 终态块非 nil）
 	EndReason EndReason       // 仅终态块非零
+	// Truncated 仅出现在 EndDone 终态块上：上游因输出长度上限停止（Anthropic
+	// stop_reason=max_tokens / OpenAI finish_reason=length / Responses incomplete）。
+	// 流是完整结束的，但内容不完整——正文被截断，最后一笔工具调用的参数可能残缺。
+	Truncated bool
 }
 
 // ToolCallChunk 是流式工具调用的增量分片；

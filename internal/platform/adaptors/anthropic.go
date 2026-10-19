@@ -277,6 +277,7 @@ type antStreamState struct {
 	terminalSent bool
 	finishing    bool
 	stopSeen     bool
+	truncated    bool // stop_reason=max_tokens（随 EndDone 终态上报）
 	promptTokens int64
 	// 当前内容块：tool_use 聚合 input_json_delta
 	blockType string
@@ -394,6 +395,7 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 			Text        string `json:"text"`
 			Thinking    string `json:"thinking"`
 			PartialJSON string `json:"partial_json"`
+			StopReason  string `json:"stop_reason"` // message_delta
 		} `json:"delta"`
 		// message_delta
 		Usage struct {
@@ -460,7 +462,9 @@ func (a Anthropic) handleEvent(ctx context.Context, out chan llm.StreamChunk, li
 				return true
 			}
 		}
-		// stop_reason 到达即完成（tool_use 的调用块已在 content_block_stop 转发）
+		// stop_reason 到达即完成（tool_use 的调用块已在 content_block_stop 转发）。
+		// max_tokens = 输出被长度上限截断：如实标在终态上（P1），不当作正常写完。
+		st.truncated = ev.Delta.StopReason == "max_tokens"
 		st.stopSeen = true
 		a.terminal(out, llm.EndDone, nil, st)
 		st.finishing = true
@@ -497,7 +501,7 @@ func (a Anthropic) terminal(out chan llm.StreamChunk, reason llm.EndReason, err 
 		return
 	}
 	st.terminalSent = true
-	c := llm.StreamChunk{EndReason: reason, Err: err}
+	c := llm.StreamChunk{EndReason: reason, Err: err, Truncated: reason == llm.EndDone && st.truncated}
 	select {
 	case out <- c:
 	case <-time.After(500 * time.Millisecond):

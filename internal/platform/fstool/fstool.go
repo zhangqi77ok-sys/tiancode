@@ -562,6 +562,7 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 			if strings.TrimSpace(e.Target) == "" {
 				return bizErrf("edits[%d].target is required", i), nil
 			}
+			e.Target, e.Replacement = matchFileEOL(updated, e.Target, e.Replacement)
 			// 每段在**前序段应用后**的内容上匹配——后面的段可以引用前面段刚改出的文本
 			c := strings.Count(updated, e.Target)
 			switch {
@@ -582,6 +583,7 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		}
 		count, summary = total, fmt.Sprintf("applied %d edit(s) (%d occurrence(s)) in %s", len(edits), total, path)
 	} else {
+		target, replacement = matchFileEOL(old, target, replacement)
 		count = strings.Count(old, target)
 		if count == 0 {
 			// C-FS-3：零匹配报错，文件零修改。0.0.07：不再只说 "not found"——
@@ -635,6 +637,27 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	}
 	t.appendDiagnostics(ctx, &res, path)
 	return res, nil
+}
+
+// matchFileEOL 让多行 target 适配文件的换行风格（P1 体检修复）。
+// read 输出把 CRLF 的 \r 去掉了，模型照抄出来的多行 target 只含 \n——在 CRLF 文件里
+// 永远零匹配（Windows 仓库的常态）。只在"原样匹配不上、文件含 \r\n、target 跨行、
+// 换成 CRLF 后能匹配"时才转换，replacement 同步转成 CRLF，不把 LF 混进 CRLF 文件。
+// 原样能匹配 / LF 文件 / 单行 target 一律原样返回（行为与旧版一致）。
+func matchFileEOL(content, target, replacement string) (string, string) {
+	if !strings.Contains(target, "\n") || strings.Contains(content, target) || !strings.Contains(content, "\r\n") {
+		return target, replacement
+	}
+	crlf := toCRLF(target)
+	if !strings.Contains(content, crlf) {
+		return target, replacement
+	}
+	return crlf, toCRLF(replacement)
+}
+
+// toCRLF 把文本统一成 CRLF（先归一成 LF，避免已有的 \r\n 变成 \r\r\n）。
+func toCRLF(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
 }
 
 // appendDiagnostics 是 write/replace 成功后的自动编译诊断钩子（C-FS-8）：

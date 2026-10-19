@@ -43,6 +43,11 @@ type WorkspaceSettings struct {
 	// 执行复用既有 RunUserCommand（同一执行器、同一超时、同一审批闸门）——
 	// 快捷命令**不新增任何执行能力**，只是把用户自己写的命令放到一个可点的位置。
 	QuickCommands QuickCommands `json:"quickCommands,omitempty"`
+	// TrustedAgentsCheck 是用户确认过的 AGENTS.md check 命令原文（P0 体检修复）。
+	// AGENTS.md 随仓库走、模型也能经 fs 改写——它声明的命令必须逐字等于这里才会
+	// 自动执行，否则等于绕过 shell 审批执行任意命令。只经 TrustAgentsCheck 写入：
+	// 普通的 SaveWorkspaceSettings 不接受前端传来的值（保留盘上原值）。
+	TrustedAgentsCheck string `json:"trustedAgentsCheck,omitempty"`
 }
 
 // QuickCommands 是三个快捷命令槽（空 = 未配置，不出现在面板提示里）。
@@ -133,7 +138,8 @@ func saveWorkspaceSettings(root string, ws WorkspaceSettings) error {
 	// QuickCommands（0.0.26）也是有效设置，重建结构体时必须带上（漏了会让保存
 	// 悄悄丢配置——测试抓到过）。
 	if strings.TrimSpace(ws.OpenAtLine) == "" && strings.TrimSpace(ws.CheckCommand) == "" &&
-		len(ws.ShellAllow) == 0 && ws.ShellTimeoutSeconds == 0 && ws.QuickCommands.Empty() {
+		len(ws.ShellAllow) == 0 && ws.ShellTimeoutSeconds == 0 && ws.QuickCommands.Empty() &&
+		strings.TrimSpace(ws.TrustedAgentsCheck) == "" {
 		delete(all, key)
 	} else {
 		all[key] = WorkspaceSettings{
@@ -142,6 +148,7 @@ func saveWorkspaceSettings(root string, ws WorkspaceSettings) error {
 			ShellAllow:          ws.ShellAllow,
 			ShellTimeoutSeconds: ws.ShellTimeoutSeconds,
 			QuickCommands:       ws.QuickCommands.normalize(),
+			TrustedAgentsCheck:  strings.TrimSpace(ws.TrustedAgentsCheck),
 		}
 	}
 	data, err := json.MarshalIndent(all, "", "  ")
@@ -180,6 +187,8 @@ func (s *ChatService) SaveWorkspaceSettings(sessionID string, ws WorkspaceSettin
 	if strings.TrimSpace(root) == "" {
 		root = s.Workspace()
 	}
+	// 信任记录不经这条通用写路径改动：前端传什么都以盘上原值为准
+	ws.TrustedAgentsCheck = loadWorkspaceSettings(root).TrustedAgentsCheck
 	return saveWorkspaceSettings(root, ws)
 }
 

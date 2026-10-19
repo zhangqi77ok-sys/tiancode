@@ -491,6 +491,10 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		}
 	}
 
+	// 本步工具结果（P1 回合内治理）：段内重折叠后按 callID 原样回填（stepFresh），
+	// 本步截图消息重折叠后补回末尾（stepImages）——模型马上要依据它们决策。
+	stepFresh := map[string]string{}
+	var stepImages []llm.Message
 	// 工具调用落账 + 终态卡（0.0.06）：提到步循环外定义——第 7 批的"强制工具"要在模型
 	// 开口前先跑一次，走的是同一套落账/上报路径（结果形态与模型自发调用完全一致）。
 	finishCall := func(call llm.ToolCall, result tools.ToolResult) error {
@@ -532,18 +536,23 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 		// Visual.Shot 路径与结果正文，之后的回合模型可再次截图。
 		if !result.IsError && result.ModelImage != "" {
 			note := "（系统）你要求的页面截图如下（仅本回合可见）。请直接依据画面内容判断页面状态与 UI 效果，不要凭想象描述。"
-			msgs = append(msgs, llm.Message{
+			img := llm.Message{
 				Role:    "user",
 				Content: note,
 				Parts: []llm.ContentPart{
 					{Type: "text", Text: note},
 					{Type: "image_url", ImageURL: result.ModelImage, Name: "page-screenshot"},
 				},
-			})
+			}
+			msgs = append(msgs, img)
+			stepImages = append(stepImages, img)
 		}
 		// OpenAI 协议：assistant(tool_calls) 之后必须回填 role=tool 结果消息，
-		// 下一续步请求才合法（结果经 ToolCallID 与调用配对）
-		msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content})
+		// 下一续步请求才合法（结果经 ToolCallID 与调用配对）。
+		// 回合内单条上限（P1）：账本存全文，模型视图头尾保留，单次 read 撑不爆请求。
+		inTurn := capInTurnToolResult(result.Content)
+		stepFresh[call.ID] = inTurn
+		msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: inTurn})
 		status := "success"
 		if result.IsError {
 			status = "error"
@@ -706,6 +715,47 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				return
 			}
 		}
+		// 输出被长度上限截断（P1）：此前当作正常写完——正文静默缺尾，残缺的工具参数
+		// 被原样执行或报"参数非法"让模型困惑。现在：参数不完整的最后一笔调用不执行，
+		// 落账留痕并告诉模型拆小重来；纯文本被截断则在答复末尾如实注明。
+		truncNote := ""
+		if terminal.Truncated {
+			var dropped string
+			calls, dropped = dropTruncatedCall(calls)
+			if dropped != "" {
+				truncNote = fmt.Sprintf("（系统）上一步输出达到模型长度上限被截断：最后一笔 %s 调用的参数不完整，没有执行。"+
+					"请把大段内容拆小（如用 replace/edits 分多次修改、分多次写入）后继续。", dropped)
+				if len(calls) == 0 {
+					// 这一步什么都没执行：落正文锚点与留痕，带着说明进入下一步（不是最终回答）
+					if err := flushDeltas(); err != nil {
+						emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist assistant delta: %w", err)})
+						return
+					}
+					for _, t := range []string{text, truncNote} {
+						if t == "" {
+							continue
+						}
+						if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": t}); err != nil {
+							emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist truncation note: %w", err)})
+							return
+						}
+					}
+					if text != "" {
+						msgs = append(msgs, llm.Message{Role: "assistant", Content: text})
+					}
+					msgs = append(msgs, llm.Message{Role: "user", Content: truncNote})
+					sb.Reset()
+					continue
+				}
+			} else if len(calls) == 0 {
+				notice := "\n\n（输出达到模型长度上限被截断；回复「继续」可以接着写。）"
+				deltaText.WriteString(notice)
+				text += notice
+				if forward(llm.StreamChunk{Delta: notice}) {
+					return
+				}
+			}
+		}
 		if len(calls) == 0 {
 			// 最终回答：段内增量先合并落一行，再落锚点（write-ahead）后上抛 EndDone
 			if err := flushDeltas(); err != nil {
@@ -825,6 +875,28 @@ func (l *Loop) turn(ctx context.Context, ledger *session.Ledger, msgs []llm.Mess
 				return
 			}
 			i = j
+		}
+		// 段内重折叠（P1）：本步结果落完后估算一次，超预算水位就从账本重新派生
+		// （必要时压缩历史），本步结果与截图原样保留。未超水位时零开销、零行为变化。
+		if refolded, info, ok := l.refoldMidTurn(ctx, ledger, msgs, stepFresh); ok {
+			msgs = append(refolded, stepImages...)
+			if ev := l.contextEvent(info); ev != nil {
+				if forward(llm.StreamChunk{Context: ev}) {
+					return
+				}
+			}
+		}
+		stepFresh = map[string]string{}
+		stepImages = nil
+		// 截断留痕（P1）：前面的调用照常执行完，被丢弃的最后一笔在这里说明。
+		// 账本记 assistant 留痕（界面/Replay 可见），本回合内存消息用 user 角色
+		// （不以 assistant 结尾，避免被协议当成预填充）。
+		if truncNote != "" {
+			if _, err := ledger.Append(session.EventAssistantMsg, map[string]string{"text": truncNote}); err != nil {
+				emitTerminal(llm.StreamChunk{EndReason: llm.EndError, Err: fmt.Errorf("persist truncation note: %w", err)})
+				return
+			}
+			msgs = append(msgs, llm.Message{Role: "user", Content: truncNote})
 		}
 		// 清单过期提醒（阶段 4-1，只存在于本轮内存）：本步干过活（除 todo 以外的调用）
 		// 而清单还是旧快照 → 下一步请求前附一句提醒，让模型先重交清单再写最终答复。

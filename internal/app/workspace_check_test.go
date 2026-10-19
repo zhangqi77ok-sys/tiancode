@@ -187,36 +187,72 @@ func newCheckFixture(t *testing.T, sessionID string) (*ChatService, string) {
 }
 
 // 0.0.43（C-APP-6）：工作区设置未配 CheckCommand 时，回退 AGENTS.md frontmatter
-// 的 check 命令；设置显式配置优先。
+// 的 check 命令；设置显式配置优先。P0 体检修复：AGENTS.md 的命令必须经用户确认
+// （TrustAgentsCheck）且原文逐字一致才执行——未确认 / 确认后被改写都不起进程。
 func TestRunWorkspaceCheck_AgentsFallback(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"),
-		[]byte("---\ncheck: fake-check stub\n---\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s := newChannelService(t, Config{})
-	defer s.Close()
-	l, err := s.ledgerFor("s-agents-check")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := l.Append(session.EventWorkspace, map[string]string{"path": root}); err != nil {
-		t.Fatal(err)
-	}
 	sess := "s-agents-check"
+	s, root := newCheckFixture(t, sess)
+	agents := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(agents, []byte("---\ncheck: fake-check stub\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
+	runs := 0
 	old := checkRunner
 	checkRunner = func(_ context.Context, name string, args []string, _ string) (string, error) {
+		runs++
 		return strings.Join(append([]string{name}, args...), " ") + " OK", nil
 	}
 	defer func() { checkRunner = old }()
 
+	// 未确认：不执行，标记 NeedsTrust 供界面给入口
 	res, err := s.RunWorkspaceCheck(sess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Skipped || res.Command != "fake-check stub" {
-		t.Fatalf("应回退到 AGENTS.md 声明的命令：%+v", res)
+	if runs != 0 || !res.Skipped || !res.NeedsTrust || res.Command != "fake-check stub" {
+		t.Fatalf("未确认的 AGENTS.md 命令绝不能执行：runs=%d res=%+v", runs, res)
+	}
+	if facts := sessionFacts(root); !strings.Contains(facts, "尚未确认") {
+		t.Fatalf("环境事实应如实告诉模型命令不会自动跑：%s", facts)
+	}
+
+	// 确认的原文与文件不一致：拒绝
+	if err := s.TrustAgentsCheck(sess, "something else"); err == nil {
+		t.Fatal("确认原文与 AGENTS.md 不一致时必须拒绝")
+	}
+	if err := s.TrustAgentsCheck(sess, "fake-check stub"); err != nil {
+		t.Fatal(err)
+	}
+	res, err = s.RunWorkspaceCheck(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 || res.Skipped || res.Command != "fake-check stub" {
+		t.Fatalf("确认后应执行 AGENTS.md 声明的命令：runs=%d res=%+v", runs, res)
+	}
+
+	// 通用设置保存不能清掉/伪造信任记录
+	if err := s.SaveWorkspaceSettings(sess, WorkspaceSettings{OpenAtLine: "code -g {path}:{line}", TrustedAgentsCheck: "evil"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadWorkspaceSettings(root).TrustedAgentsCheck; got != "fake-check stub" {
+		t.Fatalf("SaveWorkspaceSettings 不得改写信任记录：%q", got)
+	}
+
+	// 模型（或任何人）改写 AGENTS.md 的命令：信任失效，再次不执行
+	if err := os.WriteFile(agents, []byte("---\ncheck: cmd /c del important\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err = s.RunWorkspaceCheck(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 || !res.NeedsTrust {
+		t.Fatalf("命令变化后必须重新确认：runs=%d res=%+v", runs, res)
+	}
+	if err := os.WriteFile(agents, []byte("---\ncheck: fake-check stub\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	// 设置显式配置优先于仓库声明

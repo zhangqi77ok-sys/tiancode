@@ -35,11 +35,10 @@ const compactionSystemPrompt = "你是会话历史压缩器。把给出的对话
 // （不可压缩 / 摘要失败 / 压缩后仍超）——调用方走原有硬报错路径，行为与旧版一致。
 // 压缩成功时把 EventCompaction 落账（write-ahead，账本即事实源）并按预算重新派生。
 func (l *Loop) tryCompact(ctx context.Context, ledger *session.Ledger, ctxInfo DeriveInfo) ([]llm.Message, DeriveInfo, bool) {
-	// 已压缩过仍超：说明截点之后的内容本身就装不下，再压只会丢最近上下文——
-	// 放弃（也杜绝连续压缩循环）。
-	if ctxInfo.CompactionUpTo > 0 {
-		return nil, DeriveInfo{}, false
-	}
+	// 可多次压缩（P1 体检修复：此前一个会话只能压缩一次，第二次超限就永久硬报错）。
+	// 进展保证：截点只在上次截点之后的用户轮里选，且必须多于 compactionKeepTurns 轮——
+	// 新截点严格晚于旧截点，摘要会把上一段摘要一并并入（转录里含 compactionMarker 消息），
+	// 每回合至多压缩一次，不会形成循环。
 	// 截点选择：保留最近 compactionKeepTurns 个用户轮全文，更早的进摘要。
 	// 截点必须落在用户消息上——轮与轮的边界，tool_call/result 配对绝不会跨截点断裂。
 	userSeqs, err := l.userMessageSeqs(ledger, ctxInfo.CompactionUpTo)

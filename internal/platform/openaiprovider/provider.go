@@ -229,6 +229,7 @@ type streamState struct {
 	terminalSent bool // 是否已发出终态块（恰好一个，C-LLM-7）
 	finishing    bool // 已决定终态：继续读行仅为排空 scanner
 	finishSeen   bool // 已收到非空 finish_reason（EOF 无 [DONE] 时据此判 EndDone）
+	truncated    bool // finish_reason=length：输出被长度上限截断（随 EndDone 终态上报）
 }
 
 // stream 消费上游 SSE 并向 out 输出块；返回前保证 close(out) 恰好一次。
@@ -380,6 +381,7 @@ func (p *Provider) handleLine(ctx context.Context, out chan llm.StreamChunk, lin
 
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
 		st.finishSeen = true
+		st.truncated = *choice.FinishReason == "length"
 		p.terminal(out, llm.EndDone, nil, st)
 		st.finishing = true
 		return false
@@ -439,7 +441,7 @@ func (p *Provider) terminal(out chan llm.StreamChunk, reason llm.EndReason, err 
 		return
 	}
 	st.terminalSent = true
-	c := llm.StreamChunk{EndReason: reason, Err: err}
+	c := llm.StreamChunk{EndReason: reason, Err: err, Truncated: reason == llm.EndDone && st.truncated}
 	select {
 	case out <- c:
 	case <-time.After(terminalGrace):

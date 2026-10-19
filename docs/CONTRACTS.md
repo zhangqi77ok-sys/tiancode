@@ -13,6 +13,7 @@
 | C-LLM-4 | 流内上游错误报文 → `EndError` 终态块且 `Err` 携带可读原因（fail-closed，不吞） | `TestProviderStream_UpstreamError` |
 | C-LLM-5 | 连接中断（scanner 错误）→ `EndError` 终态块，不静默结束 | `TestProviderStream_ConnReset` |
 | C-LLM-6 | 消费方停止读取 → 发送方经 select 逃生退出（`ctx.Done`），不永久阻塞在 channel 发送 | `TestProviderStream_SlowConsumerEscape` |
+| C-LLM-8 | 长度上限停止（Anthropic `stop_reason=max_tokens` / OpenAI 兼容 `finish_reason=length`）→ `EndDone` 终态块带 `Truncated=true`；其余正常完成不带（Codex `response.incomplete` 维持 `EndError`） | `TestAnthropic_MaxTokensMarksTruncated` / `TestProviderStream_LengthMarksTruncated` |
 | C-LLM-7 | 终态互斥且唯一：整流 EndReason != EndNone 的块恰好 1 个（EndNone 为零值=非终态） | `TestProviderStream_SingleTerminal` |
 
 ## C-RT：模型调用运行时（M2，ADR-0005；纪律借 new-api"流前重试、流中不换渠道"）
@@ -72,6 +73,7 @@
 | C-FS-10 | `fs.symbols` 大纲有界（≤300 条）：Go 走 parser（签名=源码原文切片，坏函数 AST 名字兜底）；其余扩展名正则启发式**必须标注**；无引擎的扩展名显式报错 | `TestSymbols_GoOutline` / `TestSymbols_RegexFallbackAndUnknown` / `TestSymbols_Bounded` |
 | C-FS-11 | vet 输出解析只认 `file:line[:col]`（exe 前缀剥离、盘符路径重组、`./` 归一），认不出的行宁可漏报不误报 | `TestParseVetLine` / `TestDiagnose_BrokenAndClean` |
 | C-FS-13 | 前端类型诊断（0.0.42）：.ts/.tsx/.mts/.cts/.vue 走工程级 vue-tsc/tsc --noEmit（按 package.json+node_modules 定位工程、tsconfig 可在上一层）；**只展开本文件**的诊断、其它文件只计数；全干净静默通过（带检查器名）；退出异常且无输出 = Inconclusive 绝不冒充通过；无工程/无检查器/无 tsconfig = Attempted=false（自动钩子静默、手动明说） | `TestWebDiag_ProjectRunFiltersToFile` / `TestWebDiag_CleanFileOthersDirty` / `TestWebDiag_AllClean` / `TestWebDiag_InconclusiveOnSilentFailure` / `TestWebDiag_SkipsWithoutProject` / `TestWrite_AutoDiagnoseTypeScript` |
+| C-FS-14 | CRLF 文件的多行 replace：原样零匹配且文件含 `\r\n` 时，target 换成 CRLF 能匹配即按 CRLF 替换（replacement 同步转 CRLF，不混入 LF）；单段与 `edits` 同规则；LF 文件/原样可匹配行为不变 | `TestReplace_MultilineTargetOnCRLFFile` / `TestReplace_LFFileUnchangedBehavior` |
 | C-FS-12 | replace 多段编辑（`edits`，与单段参数互斥）：一次调用逐段原子应用——任一段零匹配/多处未放行 → 整次失败文件零修改；每段在**前序段应用后**的内容上匹配（顺序依赖合法）；回执汇总段数 | `TestReplaceEdits_AppliesAll` / `TestReplaceEdits_AnyMissFailsAtomically` / `TestReplaceEdits_SequentialDependency` / `TestReplaceEdits_MultiMatchPolicy` / `TestReplaceEdits_Guards` |
 
 ## C-SEARCH：工作区内容搜索（M6）
@@ -96,7 +98,7 @@
 | C-APP-1 | 持久化/流式任何错误必须上抛到 UI 层（守卫 R2 静态强制 + 用例测试） | `TestChatService_PersistErrorPropagates` |
 | C-APP-2 | 用户中断 → `EndCancelled` 终态 + 账本保留已产生事件，UI 显示"已取消" | `TestChatService_CancelKeepsEvents` |
 | C-APP-3 | `Replay` 投影含 tool 卡（name/status/content）与 assistant thinking | `TestChatService_ReplayIncludesTools` |
-| C-APP-6 | 项目检查命令的项目级默认（0.0.43）：AGENTS.md frontmatter `check:` 作为工作区检查命令的回退——设置显式配置优先；命令同时注入环境事实（模型知道它存在）；解析不出 = 与"未配置"完全一致（绝不猜命令） | `TestSessionFacts_AgentsCheckCommand` / `TestRunWorkspaceCheck_AgentsFallback` |
+| C-APP-6 | 项目检查命令的项目级默认（0.0.43）：AGENTS.md frontmatter `check:` 作为工作区检查命令的回退——设置显式配置优先；命令同时注入环境事实（模型知道它存在）；解析不出 = 与"未配置"完全一致（绝不猜命令）。**2026-10-19 修订（P0）**：AGENTS.md 的命令必须经用户「信任并运行」确认且原文与确认值逐字一致才执行——未确认/确认后被改写 → 不起任何进程、`needsTrust` 上报界面、环境事实写明"尚未确认，不会自动运行"；信任记录只经 `TrustAgentsCheck` 写入（通用设置保存不得改写） | `TestSessionFacts_AgentsCheckCommand` / `TestRunWorkspaceCheck_AgentsFallback` |
 | C-APP-7 | 系统通知绑定（0.0.43）：`SendNotification` 文本有界（标题 80/正文 200 字节，UTF-8 安全）、XML 转义防注入、全局限速 3s（窗口内静默丢弃不报错）、执行失败上抛；触发判定在前端（窗口失焦才发，后端无前台会话概念）；旧内核缺方法时前端降级为无通知 | `TestSendNotification_RateLimited` / `TestSendNotification_Runs` / `TestSendNotification_ErrorPropagates` / `TestSendNotification_TextBoundaries` |
 | C-APP-9 | 指定模型单轮发送（0.0.44）：`SendWithModel` 只影响本轮不改默认渠道；模型必须属于某条已配置渠道（校验拒绝非法名，不产生回合）；绑定端点清单同步 | `TestChatService_SendWithModelValidation` / `TestBind_SurfaceIsExpected` |
 | C-APP-10 | 工作区技能（0.0.44）：`<root>/.tiancode/skills/*.md`（frontmatter name/description，name 缺省用文件名）进技能清单与 skill 工具；**同名工作区覆盖全局**；目录缺失零噪声；文件数 ≤50、正文 ≤32KB 有界；空文件丢弃 | `TestWorkspaceSkills_MergedIntoPrefaceAndTool` / `TestWorkspaceSkills_ParseDiscipline` |
@@ -127,7 +129,9 @@
 | C-AGT-17 | 核账路径比对走 Windows 归一（大小写不敏感、斜杠等价、去 `./`）；空白路径与归一后重复的路径在解析期即拒绝 | `TestNormalizePathKey` / `TestTodoItems_ParsesFiles` |
 | C-AGT-18 | 核账只认 `fs.write` / `fs.replace` 的**成功**结果；shell 重定向、MCP 写操作、解析不出的调用一律不认定（宁可漏判不误判）；`written` 每轮 Run 重建，只认本轮 | `TestWriteTargetOf` |
 | C-AGT-19 | 历史压缩（0.0.41）：账本存在 `EventCompaction` 时，`seq < up_to_seq` 的叙事事件不投影，摘要以 `【历史摘要】` user 消息开头；截点后的轮次完整保留；`EventTodo` 是状态不是叙事，截点前的最新清单照常注入；多次压缩后一次覆盖前一次；落在 fork 丢弃区间的压缩事件不生效 | `TestDerive_CompactionReplacesOldTurns` / `TestDerive_CompactionLatestWins` |
-| C-AGT-20 | 折叠到底仍超预算（声明上限）→ 先尝试 LLM 压缩（截点=保留最近 3 轮，摘要只覆盖对话叙事，工具输出仍走确定性单行）并落账 `EventCompaction`，成功则带摘要继续；摘要调用失败或压缩后仍超 → 回退旧超限错误终态；不可压缩（用户轮不足）不发起任何模型调用 | `TestAgent_OverflowTriggersCompaction` / `TestAgent_OverflowCompactionFailureFallsBack` / `TestAgent_OverflowTooFewTurnsFallsBack` |
+| C-AGT-20 | 折叠到底仍超预算（声明上限）→ 先尝试 LLM 压缩（截点=保留最近 3 轮，摘要只覆盖对话叙事，工具输出仍走确定性单行）并落账 `EventCompaction`，成功则带摘要继续；摘要调用失败或压缩后仍超 → 回退旧超限错误终态；不可压缩（用户轮不足）不发起任何模型调用。**2026-10-19 修订**：压缩可多次发生（新截点只在上次截点之后选、须多于 3 轮——严格前进，摘要并入上一段摘要） | `TestAgent_OverflowTriggersCompaction` / `TestAgent_OverflowCompactionFailureFallsBack` / `TestAgent_OverflowTooFewTurnsFallsBack` / `TestAgent_CompactionCanRepeat` |
+| C-AGT-21 | 回合内上下文有界：单条工具结果进本回合模型消息前按 96KiB 头尾保留（账本全文）；每步工具执行后估算超预算水位即从账本重新派生（声明上限仍超再压缩），**本步结果与截图原样回填**；未超水位零行为变化 | `TestAgent_InTurnToolResultCapped` / `TestAgent_MidTurnRefoldKeepsFreshResult` / `TestAgent_MidTurnNoRefoldUnderBudget` |
+| C-AGT-22 | 输出截断（终态 `Truncated`）：参数非合法 JSON 的最后一笔工具调用**绝不执行、不落账**，落 assistant 留痕并以 user 说明带进下一步；之前完整的调用照常执行；纯文本截断在答复末尾注明 | `TestAgent_TruncatedToolCallNotExecuted` / `TestAgent_TruncatedKeepsCompleteCalls` / `TestAgent_TruncatedTextAnnotated` |
 
 ## C-CH：模型渠道管理
 
@@ -326,3 +330,4 @@
 | 2026-10-05 | **新增 C-APP-8 / C-FS-12** | 编程循环强化批（用户批准的"AI 干活能力"清单第 1、3 位）：① **检查自愈循环**——检查红且上一回合正常收尾时自动启动定向修复回合（`Loop.RunSystemTurn` 系统留痕开局，事件经壳层 drainTurn 与 Send 同一条桥），逻辑验证从"模型自觉"变成"循环保证"；预算 2 轮封顶、中断/错误收尾绝不触发、用户消息重置——自动修复绝不与用户抢方向盘。② **replace 多段编辑**——`edits` 多 hunk 一次调用原子应用，大文件多点修改省 N 次往返 | 本次评审结论（自愈循环/多段编辑/Plan 模式/视觉反馈/子代理五项，按序交付；本批 1、3） |
 | 2026-10-06 | **新增 C-APP-9** | 方案模式（清单第 2 位）：SendPlan 一轮 = 只读调研 + 实施方案。写路径**结构性不在场**（planRegistry 重建工具集：shell/browser/memory/ext 不注册、fs 白名单只读包装），系统说明带方案段（逐字常量保 prompt cache）；方案 = 普通助手消息，确认后的执行是新的一手普通回合——审批闸门/自愈循环/审批白名单等全部既有机制在执行回合照常生效。前端：Composer"方案"开关（一次性）+ 终态后方案确认卡（执行/取消） | 用户"继续"裁决按建议顺序交付（形态按与现有交互最一致的最小闭环定案） |
 | 2026-10-06 | **新增 C-BR-9** | 视觉反馈（清单第 4 位）：模型可以亲眼看自己改的页面——`screenshot` 带 `for_model=true` 时截图以 data URL 随工具结果返回，agent 回合内合成 user 消息送进模型上下文（Parts+Content 同源走三协议既有管线；仅本回合、不落账本、IsError 不送图、1.5MB 封顶）。UI 的 Visual 链路不变（Visual 给 UI、ModelImage 给模型，json:"-" 互不泄漏）；默认不带 for_model 零图像成本。UI 盲改 → 看着改 | 用户"继续"裁决按建议顺序交付（本批 4） |
+| 2026-10-19 | **修订 C-APP-6 / C-AGT-20；新增 C-AGT-21 / C-AGT-22 / C-LLM-8 / C-FS-14** | 体检 P0+P1：① AGENTS.md `check:` 曾在回合结束自动执行且不经审批，而 `fs.write`（不在审批清单）可改写 AGENTS.md——等于绕过 shell 审批执行任意命令；改为用户确认 + 原文逐字一致才执行。② CRLF 文件多行 replace 永远零匹配（read 输出去 `\r`）。③ 回合内工具结果无界、段内不折叠、一个会话只能压缩一次。④ max_tokens/length 截断被当作正常完成（正文静默缺尾、残缺参数被执行） | 2026-10-19 全量功能审查 |

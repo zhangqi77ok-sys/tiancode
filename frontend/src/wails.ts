@@ -194,6 +194,8 @@ export interface CheckResultDTO {
   failed: boolean
   timedOut: boolean
   skipped: boolean
+  // 命令来自 AGENTS.md 且用户尚未确认：什么都没执行，界面给"信任并运行"入口
+  needsTrust?: boolean
   at: number
 }
 
@@ -566,6 +568,8 @@ interface WailsApp {
   // 工作区可选项（第 8 批）：在这条对话的工作区上读写 workspace-settings.json。
   WorkspaceSettings(sessionID: string): Promise<WorkspaceSettingsDTO>
   SaveWorkspaceSettings(sessionID: string, ws: WorkspaceSettingsDTO): Promise<void>
+  // 确认 AGENTS.md 的检查命令（原文须与当前文件一致）并立即跑一次；结果走 workspace:check
+  TrustAgentsCheck(sessionID: string, command: string): Promise<void>
   // 读取这场对话工作区内某文件的正文（第 8 批：文件详情面板只读浏览）。
   // 超限只给前半（truncated + limit 说明上限）；越界/缺失/二进制显式报错。
   ReadSessionFile(sessionID: string, path: string): Promise<FileBodyDTO>
@@ -833,6 +837,7 @@ export function bridge(): WailsBridge {
         OpenAtLine: offlineWrite,
         WorkspaceSettings: async () => ({ openAtLine: '', checkCommand: '', shellTimeoutSeconds: 0 }),
         SaveWorkspaceSettings: offlineWrite,
+        TrustAgentsCheck: offlineWrite,
         ProbeMcpServer: async () => [],
         GetTones: async () => ({ mode: 'fixed', default: 'plain', disabled: [], builtin: [] }),
         SaveTones: offlineWrite,
