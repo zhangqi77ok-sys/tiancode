@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 
 	"tiancode/internal/core/tools"
 	"tiancode/internal/platform/atomicfile"
@@ -79,7 +83,7 @@ func (t *Tool) EndRound() []tools.RoundCheckpoint {
 
 // noteRound 记录本轮首次修改该文件前的快照；已记录的文件只更新"最后写入哈希"
 // （撤回前校验用），绝不覆盖首次快照——那才是"本轮开始前"的状态。
-func (t *Tool) noteRound(path, old string, existed, haveOld bool, newSHA string) {
+func (t *Tool) noteRound(path, old, enc string, existed, haveOld bool, newSHA string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.roundOn {
@@ -94,6 +98,7 @@ func (t *Tool) noteRound(path, old string, existed, haveOld bool, newSHA string)
 		cp.Note = "无法撤回：写入前的内容超过上限，未保存快照"
 	} else {
 		cp.OldContent = old
+		cp.OldEncoding = enc
 	}
 	t.roundCP[path] = cp
 	t.roundOrder = append(t.roundOrder, path)
@@ -117,19 +122,36 @@ func (t *Tool) RestoreCheckpoint(cp tools.RoundCheckpoint) error {
 			return errors.New("文件在本轮之后被改过，已跳过（不覆盖你的改动）")
 		}
 	case os.IsNotExist(err):
-		if cp.OldExists {
+		if !cp.OldExists {
+			return nil // 本轮新建且现在不存在：无需恢复
+		}
+		if cp.LastSHA256 != deletedMarker {
 			return errors.New("文件已被删除，已跳过")
 		}
-		return nil // 本轮新建且现在不存在：无需恢复
+		// 本轮由 fs.delete/move 删掉的文件：撤回 = 按原内容重建（下面统一写回）
+		if mkErr := os.MkdirAll(filepath.Dir(full), 0o755); mkErr != nil {
+			return mkErr
+		}
 	default:
 		return err
+	}
+	if err == nil && cp.LastSHA256 == deletedMarker {
+		return errors.New("文件在本轮删除后又被重新创建，已跳过（不覆盖你的改动）")
 	}
 	if !cp.OldExists {
 		// 本轮新建的文件：撤回 = 删除（与单文件撤销的 OldExists=false 语义一致）
 		return os.Remove(full)
 	}
-	return atomicfile.WriteFileAtomic(full, []byte(cp.OldContent), 0o600)
+	raw, encErr := EncodeText(cp.OldContent, cp.OldEncoding)
+	if encErr != nil {
+		return encErr
+	}
+	return atomicfile.WriteFileAtomic(full, raw, 0o600)
 }
+
+// deletedMarker 是检查点 LastSHA256 的特殊值：本轮最后一次动作是删除（fs.delete /
+// fs.move 的源路径）。撤回时"文件不存在"正是预期状态，按原内容重建。
+const deletedMarker = "deleted"
 
 // UndoSnapshot 与 tools.UndoData 同一类型（结果字段直接透传）。
 type UndoSnapshot = tools.UndoData
@@ -160,7 +182,9 @@ func (t *Tool) Name() string { return "fs" }
 func (t *Tool) Description() string {
 	return "读写工作区文件（read/write）、精准局部替换（replace，多处匹配默认拒绝；同一文件多处修改推荐 edits 多段形态——一次调用原子应用，省往返）、非递归目录列表（list，最多 500 条）与目录骨架（tree，深度 2、最多 500 条——先 tree 了解项目结构，再 list 看某个目录的确切内容，不要对大目录用 list 逐层摸）。" +
 		"read 输出带 \"行号|正文\" 前缀（如 12|func main() {）：replace 的 target 必须是不含行号前缀的文件原文。write 只能覆盖本会话整读过的文件——没读过或只读过片段的已有文件会被拒绝，请先整读或改用 replace。" +
-		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go，只覆盖该文件所在包）；写完 .ts/.tsx/.vue 会自动做工程级类型诊断（vue-tsc/tsc --noEmit，只展开本文件的错误，其它文件错误给计数）；需要时自行跑完整构建或测试。action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。"
+		"写完 .go 文件系统会自动做编译级诊断（go vet，含 _test.go，只覆盖该文件所在包）；写完 .ts/.tsx/.vue 会自动做工程级类型诊断（vue-tsc/tsc --noEmit，只展开本文件的错误，其它文件错误给计数）；需要时自行跑完整构建或测试。action=diagnose 手动触发；action=symbols 看文件符号大纲（函数/方法/类型带行号，先读大纲再精读，别盲猜行号）。" +
+		"action=delete 删除文件或空目录、action=move 把文件移到 to（目标须不存在）——两者都进轮次检查点，可「撤回本轮」恢复；不要用 shell 的 del/move。" +
+		"GBK 编码的文件会转成 UTF-8 显示、按 GBK 写回；二进制文件拒绝按文本读写。"
 }
 
 // Schema 实现工具端口：参数 JSON Schema。
@@ -168,8 +192,9 @@ func (t *Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["read", "write", "replace", "list", "tree", "diagnose", "symbols"]},
+    "action": {"type": "string", "enum": ["read", "write", "replace", "list", "tree", "diagnose", "symbols", "delete", "move"]},
     "path": {"type": "string", "description": "相对工作区的路径"},
+    "to": {"type": "string", "description": "move 时的目标路径（相对工作区；目标必须不存在）"},
     "content": {"type": "string", "description": "write 时的完整文件内容"},
     "target": {"type": "string", "description": "replace 时的精确目标文本（文件原文，不含 read 输出的行号前缀）"},
     "replacement": {"type": "string", "description": "replace 时的替换文本"},
@@ -201,6 +226,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 	var args struct {
 		Action        string   `json:"action"`
 		Path          string   `json:"path"`
+		To            string   `json:"to"`
 		Content       string   `json:"content"`
 		Target        string   `json:"target"`
 		Replacement   string   `json:"replacement"`
@@ -251,8 +277,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (res tools.Tool
 		return t.diagnose(ctx, args.Path)
 	case "symbols":
 		return t.symbols(args.Path)
+	case "delete":
+		return t.deleteEntry(args.Path)
+	case "move":
+		return t.moveEntry(args.Path, args.To)
 	default:
-		return bizErrf("unknown action %q (want read/write/replace/list/tree/diagnose/symbols)", args.Action), nil
+		return bizErrf("unknown action %q (want read/write/replace/list/tree/diagnose/symbols/delete/move)", args.Action), nil
 	}
 }
 
@@ -336,12 +366,24 @@ func (t *Tool) read(path string, startLine, lineCount int64) (tools.ToolResult, 
 
 	// 流式逐行扫描：collect 收集 [startLine, startLine+wanted) 内的行（字节预算
 	// 内），total 统计总行数——大文件也不整份进内存，多字节字符按整行返回。
+	if info.IsDir() {
+		return bizErrf("%s 是目录，不能 read；看目录内容用 list 或 tree", path), nil
+	}
+	// 编码识别（2026-10-19）：二进制/未知编码拒绝；GBK 转 UTF-8 给模型并注明。
+	enc, encErr := detectFileEncoding(full, info.Size())
+	if encErr != nil {
+		return bizErrf("%s", encodingRefusal(path, info.Size(), encErr)), nil
+	}
 	f, err := os.Open(full)
 	if err != nil {
 		return bizErrf("read failed: %v", err), nil
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	var src io.Reader = f
+	if enc == encGBK {
+		src = transform.NewReader(f, simplifiedchinese.GBK.NewDecoder())
+	}
+	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 0, 64*1024), maxScanLineBytes)
 
 	wanted := int64(-1) // 无限
@@ -395,7 +437,7 @@ func (t *Tool) read(path string, startLine, lineCount int64) (tools.ToolResult, 
 		}
 		out = fmt.Sprintf("[start_line=%d 读取 %d 行 / 共 %d 行%s]\n", startLine, collected, total, note) + out
 	}
-	return tools.ToolResult{Content: out}, nil
+	return tools.ToolResult{Content: encodingNote(enc) + out}, nil
 }
 
 // maxScanLineBytes 是按行读取的单行缓冲上限（超过 = 行太长无法按行处理，
@@ -415,6 +457,7 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 	}
 	// 整读门卫（0.0.07）：已存在的文件必须本会话整读过
 	var old string
+	enc := encUTF8 // 写回编码：已存在文件沿用原编码（GBK 写回 GBK、带 BOM 保留 BOM）
 	haveDiff := false
 	existed := false
 	var sizeAtPropose int64
@@ -431,12 +474,19 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 		existed = true
 		sizeAtPropose, modAtPropose = info.Size(), info.ModTime()
 		if info.Size() <= maxWriteBytes {
-			if data, readErr := os.ReadFile(full); readErr == nil {
-				old = string(data)
-				haveDiff = true
-			} else {
+			data, readErr := os.ReadFile(full)
+			if readErr != nil {
 				return bizErrf("read before write failed: %v", readErr), nil
 			}
+			e, encErr := detectEncoding(data)
+			if encErr != nil {
+				return bizErrf("%s", encodingRefusal(path, info.Size(), encErr)), nil
+			}
+			text, decErr := decodeText(data, e)
+			if decErr != nil {
+				return bizErrf("decode before write failed: %v", decErr), nil
+			}
+			enc, old, haveDiff = e, text, true
 		}
 		// 超限：跳过 diff 与撤销快照（不为恢复多读一份超大文件）
 	case os.IsNotExist(statErr):
@@ -448,6 +498,10 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 
 	// applyFn 是真正的落盘：内部自验外部改动（快照到落盘之间文件被其他程序
 	// 改过 → 拒绝且原文件不动），原子写，更新整读标记，产出撤销快照。
+	raw, encErr := EncodeText(content, enc)
+	if encErr != nil {
+		return bizErrf("write failed: %v", encErr), nil
+	}
 	applyFn := func() (*UndoSnapshot, error) {
 		if existed {
 			info2, err := os.Stat(full)
@@ -455,19 +509,19 @@ func (t *Tool) write(ctx context.Context, path, content string) (tools.ToolResul
 				return nil, errors.New("文件已被其他程序修改，应用失败（原文件未动）")
 			}
 		}
-		if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
+		if err := atomicfile.WriteFileAtomic(full, raw, 0o600); err != nil {
 			return nil, err
 		}
 		// 写入成功：模型刚给全了内容，视为"已知全文"（后续 write 无需重读）
 		t.mu.Lock()
 		t.lastRead[full] = true
 		t.mu.Unlock()
-		u := &UndoSnapshot{Path: path, OldExists: existed, OldContent: old, NewSHA256: sha256Hex([]byte(content))}
+		u := &UndoSnapshot{Path: path, OldExists: existed, OldContent: old, NewSHA256: sha256Hex(raw), OldEncoding: enc}
 		if !existed || !haveDiff {
 			u.OldContent = old // 超限时为空串（无法恢复语义由 UndoNote 表达）
 		}
 		// 第 6 批：轮次检查点（本轮首次修改前快照，供「撤回本轮」）
-		t.noteRound(path, old, existed, haveDiff, u.NewSHA256)
+		t.noteRound(path, old, enc, existed, haveDiff, u.NewSHA256)
 		return u, nil
 	}
 
@@ -541,7 +595,15 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	if err != nil {
 		return bizErrf("read before replace failed: %v", err), nil
 	}
-	old := string(data)
+	// 编码（2026-10-19）：在 UTF-8 文本上匹配替换，按原编码写回（GBK 文件此前永远零匹配）
+	enc, encErr := detectEncoding(data)
+	if encErr != nil {
+		return bizErrf("%s", encodingRefusal(path, int64(len(data)), encErr)), nil
+	}
+	old, decErr := decodeText(data, enc)
+	if decErr != nil {
+		return bizErrf("decode before replace failed: %v", decErr), nil
+	}
 	// 形态选择（0.0.34）：edits 非空 = 多段编辑，单段参数必须为空——两套混用只会
 	// 制造歧义。多段的原子性是**整次调用**的：任一段失败文件零修改（与单段
 	// C-FS-2/3 同语义），绝不留下"改了一半"的文件。
@@ -606,6 +668,10 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 	}
 	sizeAtPropose, modAtPropose := info0.Size(), info0.ModTime()
 	fullDiff := diffText(path, old, updated)
+	raw, rawErr := EncodeText(updated, enc)
+	if rawErr != nil {
+		return bizErrf("replace write failed: %v", rawErr), nil
+	}
 
 	// applyFn 是真正的落盘：自验外部改动（快照到落盘间文件被改 → 拒绝）
 	applyFn := func() (*UndoSnapshot, error) {
@@ -613,16 +679,16 @@ func (t *Tool) replace(ctx context.Context, path, target, replacement string, al
 		if err != nil || info2.Size() != sizeAtPropose || !info2.ModTime().Equal(modAtPropose) {
 			return nil, errors.New("文件已被其他程序修改，应用失败（原文件未动）")
 		}
-		if err := atomicfile.WriteFileAtomic(full, []byte(updated), 0o600); err != nil {
+		if err := atomicfile.WriteFileAtomic(full, raw, 0o600); err != nil {
 			return nil, err
 		}
 		// 文件已被 replace 改变：此前的"整读过"标记失效（后续 write 需重新整读）
 		t.mu.Lock()
 		t.lastRead[full] = false
 		t.mu.Unlock()
-		u := &UndoSnapshot{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex([]byte(updated))}
+		u := &UndoSnapshot{Path: path, OldExists: true, OldContent: old, NewSHA256: sha256Hex(raw), OldEncoding: enc}
 		// 第 6 批：轮次检查点（本轮首次修改前快照，供「撤回本轮」）
-		t.noteRound(path, old, true, true, u.NewSHA256)
+		t.noteRound(path, old, enc, true, true, u.NewSHA256)
 		return u, nil
 	}
 

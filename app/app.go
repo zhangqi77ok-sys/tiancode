@@ -268,6 +268,19 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 // DefaultApprovalPolicy 返回出厂默认审批清单：界面"开启审批"恢复到这份完整清单。
 func (b *Bind) DefaultApprovalPolicy() []string { return b.chat.DefaultApprovalPolicy() }
 
+// ApprovableTools 返回可放进审批清单的工具名（设置面板勾选项）。
+func (b *Bind) ApprovableTools() []string { return b.chat.ApprovableTools() }
+
+// SessionShellAllow 返回本会话已授予「总是允许」的 shell 前缀。
+func (b *Bind) SessionShellAllow(sessionID string) []string {
+	return b.chat.SessionShellAllow(sessionID)
+}
+
+// RevokeSessionShellAllow 撤销本会话的一条 shell 前缀授予（立即生效）。
+func (b *Bind) RevokeSessionShellAllow(sessionID, prefix string) error {
+	return b.chat.RevokeSessionShellAllow(sessionID, prefix)
+}
+
 // ResolveApprovalAllowPrefix 允许这条 shell 命令，并在本会话内对同前缀命令免确认（应用重启失效）。
 // 前缀必须覆盖这条命令，否则报错——授予的规则与卡片上显示的必须是同一条。
 func (b *Bind) ResolveApprovalAllowPrefix(id string, prefix string) error {

@@ -84,6 +84,25 @@ func TestApproval_SessionAllowPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-done3
+
+	// 设置面板：查看与撤销（撤销立即生效，下一条同前缀命令重新询问）
+	if got := s.SessionShellAllow("s-a"); len(got) != 1 || got[0] != "go test" {
+		t.Fatalf("本会话授予列表不符：%v", got)
+	}
+	if err := s.RevokeSessionShellAllow("s-a", "npm test"); err == nil {
+		t.Fatal("撤销不存在的前缀应报错")
+	}
+	if err := s.RevokeSessionShellAllow("s-a", "go test"); err != nil {
+		t.Fatal(err)
+	}
+	ev4, done4 := reviewAsync(t, ap, events, "go test ./...")
+	if err := s.ResolveApproval(ev4.ID, false, "no"); err != nil {
+		t.Fatal(err)
+	}
+	<-done4
+	if tools := s.ApprovableTools(); len(tools) == 0 || tools[0] != "shell" {
+		t.Fatalf("可审批工具清单不符：%v", tools)
+	}
 }
 
 // 2026-10-19：界面"开启审批"恢复的清单必须是出厂默认的完整四项（此前前端写死

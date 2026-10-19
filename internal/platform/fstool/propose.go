@@ -18,6 +18,8 @@ type ProposeResult struct {
 	// 账本 EventUserEdit 携带它，供撤回与审计。
 	OldExists  bool
 	OldContent string
+	// OldEncoding 是写入前文件的编码（空 = UTF-8）：新内容按它写回，撤回也按它恢复。
+	OldEncoding string
 	// Note 非空表示撤回数据不可用（写入前内容超限）。
 	Note string
 }
@@ -38,6 +40,7 @@ func (t *Tool) ProposeWrite(path, content string) (ProposeResult, error) {
 	}
 	existed := false
 	var old string
+	enc := encUTF8
 	var note string
 	var sizeAtPropose int64
 	var modAtPropose int64
@@ -48,7 +51,16 @@ func (t *Tool) ProposeWrite(path, content string) (ProposeResult, error) {
 			// 超限：不为撤回多读一份超大文件（与单文件撤销同一上限）
 			note = "写入前的内容超过上限，未保存撤回数据"
 		} else if data, readErr := os.ReadFile(full); readErr == nil {
-			old = string(data)
+			// 编码沿用（2026-10-19）：GBK 文件写回 GBK、带 BOM 的保留 BOM；二进制/未知编码拒绝
+			e, encErr := detectEncoding(data)
+			if encErr != nil {
+				return ProposeResult{}, fmt.Errorf("%s", encodingRefusal(path, info.Size(), encErr))
+			}
+			text, decErr := decodeText(data, e)
+			if decErr != nil {
+				return ProposeResult{}, fmt.Errorf("decode before write failed: %w", decErr)
+			}
+			enc, old = e, text
 		} else {
 			return ProposeResult{}, fmt.Errorf("read before write failed: %w", readErr)
 		}
@@ -62,7 +74,11 @@ func (t *Tool) ProposeWrite(path, content string) (ProposeResult, error) {
 			return ProposeResult{}, fmt.Errorf("文件已被其他程序修改，写入失败（原文件未动）")
 		}
 	}
-	if err := atomicfile.WriteFileAtomic(full, []byte(content), 0o600); err != nil {
+	raw, err := EncodeText(content, enc)
+	if err != nil {
+		return ProposeResult{}, err
+	}
+	if err := atomicfile.WriteFileAtomic(full, raw, 0o600); err != nil {
 		return ProposeResult{}, err
 	}
 	// 写入成功：内容已知全文，后续模型 write 无需重读
@@ -71,6 +87,6 @@ func (t *Tool) ProposeWrite(path, content string) (ProposeResult, error) {
 	t.mu.Unlock()
 	return ProposeResult{
 		Path: path, IsNew: !existed, Diff: diffText(path, old, content), Bytes: len(content),
-		OldExists: existed, OldContent: old, Note: note,
+		OldExists: existed, OldContent: old, OldEncoding: enc, Note: note,
 	}, nil
 }

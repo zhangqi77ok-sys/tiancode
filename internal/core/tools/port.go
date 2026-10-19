@@ -77,6 +77,9 @@ type UndoData struct {
 	OldExists  bool   `json:"old_exists"` // 写入前文件是否存在（false = 新建，恢复=删除）
 	OldContent string `json:"old_content"`
 	NewSHA256  string `json:"new_sha256"` // hex
+	// OldEncoding 是写入前文件的编码（空 = UTF-8；"gbk" 时 OldContent 是解码后的
+	// UTF-8 文本，恢复时按它编码回去——账本是 JSON，原始 GBK 字节放不进去）。
+	OldEncoding string `json:"old_encoding,omitempty"`
 }
 
 // ProgressSink 是可选的执行进度端口：实现它的工具可在**执行中**把已捕获的

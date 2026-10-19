@@ -11,6 +11,7 @@ import (
 
 	"tiancode/internal/core/session"
 	"tiancode/internal/platform/atomicfile"
+	"tiancode/internal/platform/fstool"
 )
 
 // restore 是账本 tool_result 事件里 undo 字段的形态（0.0.07）。
@@ -20,6 +21,8 @@ type restore struct {
 	OldExists  bool   `json:"old_exists"`
 	OldContent string `json:"old_content"`
 	NewSHA256  string `json:"new_sha256"`
+	// OldEncoding：写入前文件的编码（空 = UTF-8；gbk 时按 GBK 写回，恢复后编码不变）
+	OldEncoding string `json:"old_encoding"`
 }
 
 // RestoreToolWrite 恢复一次 write/replace **写入前**的内容（0.0.07）。
@@ -102,7 +105,11 @@ func (s *ChatService) RestoreToolWrite(sessionID, callID string) (string, error)
 
 	// 执行恢复：旧存在 → 写回旧全文；新建 → 删除这次创建的文件
 	if found.OldExists {
-		if err := atomicfile.WriteFileAtomic(full, []byte(found.OldContent), 0o600); err != nil {
+		raw, encErr := fstool.EncodeText(found.OldContent, found.OldEncoding)
+		if encErr != nil {
+			return "", fmt.Errorf("恢复编码失败：%w", encErr)
+		}
+		if err := atomicfile.WriteFileAtomic(full, raw, 0o600); err != nil {
 			return "", fmt.Errorf("恢复写入失败：%w", err)
 		}
 	} else if err := os.Remove(full); err != nil {

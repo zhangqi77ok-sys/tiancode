@@ -14,6 +14,8 @@ type RoundCheckpoint struct {
 	LastSHA256 string `json:"last_sha256,omitempty"`
 	// Note 非空表示该文件撤不回（如写入前内容超过上限、未保存快照）。
 	Note string `json:"note,omitempty"`
+	// OldEncoding 同 UndoData.OldEncoding：撤回时按它把 OldContent 编码回原编码。
+	OldEncoding string `json:"old_encoding,omitempty"`
 }
 
 // RoundCheckpointer 是可选能力：工具支持轮次检查点收集（fstool 实现）。

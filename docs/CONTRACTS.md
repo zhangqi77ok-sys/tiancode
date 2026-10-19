@@ -73,6 +73,8 @@
 | C-FS-10 | `fs.symbols` 大纲有界（≤300 条）：Go 走 parser（签名=源码原文切片，坏函数 AST 名字兜底）；其余扩展名正则启发式**必须标注**；无引擎的扩展名显式报错 | `TestSymbols_GoOutline` / `TestSymbols_RegexFallbackAndUnknown` / `TestSymbols_Bounded` |
 | C-FS-11 | vet 输出解析只认 `file:line[:col]`（exe 前缀剥离、盘符路径重组、`./` 归一），认不出的行宁可漏报不误报 | `TestParseVetLine` / `TestDiagnose_BrokenAndClean` |
 | C-FS-13 | 前端类型诊断（0.0.42）：.ts/.tsx/.mts/.cts/.vue 走工程级 vue-tsc/tsc --noEmit（按 package.json+node_modules 定位工程、tsconfig 可在上一层）；**只展开本文件**的诊断、其它文件只计数；全干净静默通过（带检查器名）；退出异常且无输出 = Inconclusive 绝不冒充通过；无工程/无检查器/无 tsconfig = Attempted=false（自动钩子静默、手动明说） | `TestWebDiag_ProjectRunFiltersToFile` / `TestWebDiag_CleanFileOthersDirty` / `TestWebDiag_AllClean` / `TestWebDiag_InconclusiveOnSilentFailure` / `TestWebDiag_SkipsWithoutProject` / `TestWrite_AutoDiagnoseTypeScript` |
+| C-FS-15 | 文本编码：前 8000 字节含 NUL → 二进制，read/write/replace 拒绝并说明；合法 UTF-8 原样（带 BOM 的写回保留 BOM）；严格往返的 GBK → read 转 UTF-8 并注明、write/replace/应用到文件按 GBK 写回，GBK 无法表示的字符显式拒绝且文件不动；其余未知编码拒绝。撤销快照/检查点带 `old_encoding`，恢复按原编码写回 | `TestRead_BinaryRefused` / `TestGBK_ReadReplaceKeepsEncoding` / `TestWrite_KeepsUTF8BOM` |
+| C-FS-16 | `fs.delete` 只删文件或空目录（非空目录、工作区根拒绝）；`fs.move` 只移文件、目标须不存在。两者进轮次检查点（`last_sha256=deleted` 标记删除），「撤回本轮」按原编码重建源、删除 move 目标；二进制/超限文件照常执行但注明无法撤回 | `TestDelete_RecoverableAndGuarded` / `TestMove_AndRevert` |
 | C-FS-14 | CRLF 文件的多行 replace：原样零匹配且文件含 `\r\n` 时，target 换成 CRLF 能匹配即按 CRLF 替换（replacement 同步转 CRLF，不混入 LF）；单段与 `edits` 同规则；LF 文件/原样可匹配行为不变 | `TestReplace_MultilineTargetOnCRLFFile` / `TestReplace_LFFileUnchangedBehavior` |
 | C-FS-12 | replace 多段编辑（`edits`，与单段参数互斥）：一次调用逐段原子应用——任一段零匹配/多处未放行 → 整次失败文件零修改；每段在**前序段应用后**的内容上匹配（顺序依赖合法）；回执汇总段数 | `TestReplaceEdits_AppliesAll` / `TestReplaceEdits_AnyMissFailsAtomically` / `TestReplaceEdits_SequentialDependency` / `TestReplaceEdits_MultiMatchPolicy` / `TestReplaceEdits_Guards` |
 
@@ -214,6 +216,7 @@
 | ID | 契约 | 锁定测试 |
 | --- | --- | --- |
 | C-APR-9 | shell 审批卡「本会话总是允许「前缀」」：前缀由后端建议（程序名 + 普通子命令；含组合/重定向/求值记号的命令不给建议），授予时必须覆盖当前命令且自身不含组合记号；授予后**本会话**同前缀命令免确认（匹配规则与工作区白名单同一个 `shellAllowMatched`），别的会话不受影响；内存态，应用重启或会话删除即失效 | `TestApproval_SessionAllowPrefix` / `TestSuggestShellPrefix` / `ApprovalCard.test.ts` |
+| C-APR-10 | 审批设置端点：`ApprovableTools` 是勾选项单一来源；`SessionShellAllow` 返回本会话已授予前缀的副本；`RevokeSessionShellAllow` 撤销立即生效（下一条同前缀命令重新询问），不存在的前缀报错；`DefaultApprovalPolicy` 等于新装清单 | `TestApproval_SessionAllowPrefix` / `TestDefaultApprovalPolicy_MatchesFreshInstall` |
 | C-APR-1 | 未配置审批清单时不干预（approver 为 nil，行为与历史版本完全一致） | `TestExecTool_NoApproverRunsDirectly` |
 | C-APR-2 | 拒绝必须产生**模型可见**的失败结果（含工具名与原因），且工具零执行；无原因时补默认说明 | `TestExecTool_Denied` / `TestExecTool_DeniedWithoutReason` |
 | C-APR-3 | 审批通道故障按**拒绝**处理（故障时放行最危险） | `TestExecTool_ApproverErrorDenies` |

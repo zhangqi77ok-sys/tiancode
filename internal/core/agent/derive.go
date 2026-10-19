@@ -814,7 +814,7 @@ func markStaleReads(msgs []llm.Message, refs []toolRef) {
 			continue
 		}
 		switch r.fsAction {
-		case "write", "replace":
+		case "write", "replace", "delete", "move":
 			writtenAfter[r.title] = true
 		case "read":
 			if writtenAfter[r.title] {

@@ -58,6 +58,9 @@ func (s *ChatService) ProposeFileWrite(sessionID, path, content string) (Propose
 		// 写入前全文（上限内）随账本落盘：供撤回与审计（超限时由 note 说明）
 		payload["old_exists"] = true
 		payload["old_content"] = res.OldContent
+		if res.OldEncoding != "" {
+			payload["old_encoding"] = res.OldEncoding
+		}
 	}
 	if _, aerr := ledger.Append(session.EventUserEdit, payload); aerr != nil {
 		return out, fmt.Errorf("写入成功，但落账失败（这张卡重启后会丢失）：%w", aerr)

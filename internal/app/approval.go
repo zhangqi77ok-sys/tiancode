@@ -114,6 +114,37 @@ func (s *ChatService) ResolveApprovalAllowPrefix(id, prefix string) error {
 	return s.ResolveApproval(id, true, "用户允许本会话执行以「"+prefix+"」开头的命令")
 }
 
+// SessionShellAllow 返回本会话已授予的 shell 前缀（副本；设置面板展示与撤销用）。
+func (s *ChatService) SessionShellAllow(sessionID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string{}, s.sessionShellAllow[sessionID]...)
+}
+
+// RevokeSessionShellAllow 撤销本会话的一条 shell 前缀授予；不存在显式报错（不静默成功）。
+// 撤销立即生效：下一条同前缀命令重新弹确认卡（Review 每次读活列表）。
+func (s *ChatService) RevokeSessionShellAllow(sessionID, prefix string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.sessionShellAllow[sessionID]
+	for i, p := range list {
+		if p == prefix {
+			s.sessionShellAllow[sessionID] = append(list[:i:i], list[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("本会话没有授予过前缀 %q", prefix)
+}
+
+// approvableTools 是可以放进审批清单的工具名（设置面板的勾选项来源；单一来源在后端）。
+// 与工具注册表的名字一致：todo / ask_user / skill 是交互或喂料工具，审批没有意义，不列。
+var approvableTools = []string{"shell", "ext_manage", "mcp", "browser", "fs", "git", "search", "webfetch", "memory", "task"}
+
+// ApprovableTools 返回可审批工具名清单（副本）。
+func (s *ChatService) ApprovableTools() []string {
+	return append([]string{}, approvableTools...)
+}
+
 // approvalReplyTimeout 是审批等待的独立上限（0.2.36 审计 R3）：审批只跟随
 // 本轮 ctx 会让"后台会话的确认卡"无限挂住整轮（用户没在看那个会话，队列也
 // 不会动）。超时按**拒绝**处理——保护默认在，用户没确认就不执行（绝不放行）。
