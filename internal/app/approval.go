@@ -13,6 +13,7 @@ import (
 
 	"tiancode/internal/core/agent"
 	"tiancode/internal/core/session"
+	"tiancode/internal/platform/channels"
 )
 
 // ApprovalEvent 是发给 UI 的审批请求（UI 渲染确认卡片）。
@@ -143,6 +144,12 @@ func (s *ChatService) ApprovalPolicy() []string {
 	out := make([]string, len(s.approvalTools))
 	copy(out, s.approvalTools)
 	return out
+}
+
+// DefaultApprovalPolicy 返回出厂默认审批清单（界面"开启审批"恢复到它；单一来源
+// channels.DefaultApprovalTools，前端不得自己写死一份）。
+func (s *ChatService) DefaultApprovalPolicy() []string {
+	return channels.DefaultApprovalTools()
 }
 
 // SetApprovalPolicy 设置需要审批的工具清单；传空即关闭审批（默认关，ADR-0007 第 1 条）。

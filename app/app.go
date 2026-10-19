@@ -265,6 +265,9 @@ func (b *Bind) ResolveApproval(id string, approved bool, reason string) error {
 	return b.chat.ResolveApproval(id, approved, reason)
 }
 
+// DefaultApprovalPolicy 返回出厂默认审批清单：界面"开启审批"恢复到这份完整清单。
+func (b *Bind) DefaultApprovalPolicy() []string { return b.chat.DefaultApprovalPolicy() }
+
 // ResolveApprovalAllowPrefix 允许这条 shell 命令，并在本会话内对同前缀命令免确认（应用重启失效）。
 // 前缀必须覆盖这条命令，否则报错——授予的规则与卡片上显示的必须是同一条。
 func (b *Bind) ResolveApprovalAllowPrefix(id string, prefix string) error {

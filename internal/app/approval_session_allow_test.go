@@ -86,6 +86,32 @@ func TestApproval_SessionAllowPrefix(t *testing.T) {
 	<-done3
 }
 
+// 2026-10-19：界面"开启审批"恢复的清单必须是出厂默认的完整四项（此前前端写死
+// [shell, ext_manage]，关→开一次就永久丢掉 mcp/browser 保护）；返回副本。
+func TestDefaultApprovalPolicy_MatchesFreshInstall(t *testing.T) {
+	s := newChannelService(t, Config{})
+	defer s.Close()
+	def := s.DefaultApprovalPolicy()
+	fresh := s.ApprovalPolicy()
+	if strings.Join(def, ",") != strings.Join(fresh, ",") || strings.Join(def, ",") != "shell,ext_manage,mcp,browser" {
+		t.Fatalf("默认清单 %v 应等于新装清单 %v（四项）", def, fresh)
+	}
+	def[0] = "被篡改"
+	if s.DefaultApprovalPolicy()[0] != "shell" {
+		t.Fatal("DefaultApprovalPolicy 必须返回副本")
+	}
+	// 关→用默认清单开：四项完整恢复
+	if err := s.SetApprovalPolicy(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApprovalPolicy(s.DefaultApprovalPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(s.ApprovalPolicy(), ","); got != "shell,ext_manage,mcp,browser" {
+		t.Fatalf("关→开后应恢复完整默认清单：%s", got)
+	}
+}
+
 func TestSuggestShellPrefix(t *testing.T) {
 	cases := map[string]string{
 		"go test ./...":       "go test",

@@ -54,6 +54,11 @@ var defaultApprovalTools = func() []string {
 	return []string{"shell", "ext_manage", "mcp", "browser"}
 }
 
+// DefaultApprovalTools 返回新装默认审批清单的副本（2026-10-19）：界面"开启审批"
+// 必须恢复到这份完整清单——此前前端写死 [shell, ext_manage]，关→开一次就把
+// mcp/browser 的保护永久丢掉。单一来源在这里，前端不再复制一份。
+func DefaultApprovalTools() []string { return defaultApprovalTools() }
+
 // withApprovalTools 把新增工具追加进既有审批清单：保留用户已有项与顺序、去重。
 func withApprovalTools(list []string, add ...string) []string {
 	seen := make(map[string]bool, len(list)+len(add))
