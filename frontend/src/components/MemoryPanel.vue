@@ -29,7 +29,12 @@ async function load() {
   error.value = ''
   try {
     const v = await bridge().app.MemoryLines(store.sessionId)
-    if (v) view.value = v
+    if (v) {
+      view.value = {
+        global: v.global ?? [],
+        project: v.project ?? [],
+      }
+    }
   } catch (e) {
     error.value = errText(e)
   } finally {
@@ -92,7 +97,7 @@ async function clearAll(scope: 'global' | 'workspace') {
         <div class="flex items-center gap-2 px-1 pb-1">
           <h3 class="min-w-0 flex-1 text-xs font-semibold text-[var(--c-text)]">全局（用户偏好）</h3>
           <button
-            v-if="view.global.length"
+            v-if="view.global?.length"
             class="chip px-2 py-0.5 text-[10px]"
             :disabled="busy"
             title="删除全部全局记忆（先确认）"
@@ -101,12 +106,12 @@ async function clearAll(scope: 'global' | 'workspace') {
             清空
           </button>
         </div>
-        <p v-if="!view.global.length" class="rounded-lg bg-[var(--c-surface-soft)] px-2.5 py-2 text-xs text-[var(--c-text-faint)]">
+        <p v-if="!view.global?.length" class="rounded-lg bg-[var(--c-surface-soft)] px-2.5 py-2 text-xs text-[var(--c-text-faint)]">
           还没有全局记忆——在对话里让模型"记住"偏好后，这里就能看到。
         </p>
         <ul v-else class="space-y-1">
           <li
-            v-for="(line, i) in view.global"
+            v-for="(line, i) in (view.global || [])"
             :key="`g${i}`"
             class="flex items-start gap-2 rounded-lg border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-1.5"
           >
@@ -128,7 +133,7 @@ async function clearAll(scope: 'global' | 'workspace') {
         <div class="flex items-center gap-2 px-1 pb-1">
           <h3 class="min-w-0 flex-1 text-xs font-semibold text-[var(--c-text)]">本项目（工作区约定）</h3>
           <button
-            v-if="view.project.length"
+            v-if="view.project?.length"
             class="chip px-2 py-0.5 text-[10px]"
             :disabled="busy"
             title="删除本项目全部记忆（先确认）"
@@ -137,13 +142,13 @@ async function clearAll(scope: 'global' | 'workspace') {
             清空
           </button>
         </div>
-        <p v-if="!view.project.length" class="rounded-lg bg-[var(--c-surface-soft)] px-2.5 py-2 text-xs text-[var(--c-text-faint)]">
+        <p v-if="!view.project?.length" class="rounded-lg bg-[var(--c-surface-soft)] px-2.5 py-2 text-xs text-[var(--c-text-faint)]">
           <template v-if="ws.path">这个项目还没有记忆。</template>
           <template v-else>纯对话没有项目记忆；挂上工作区后再让模型记项目约定。</template>
         </p>
         <ul v-else class="space-y-1">
           <li
-            v-for="(line, i) in view.project"
+            v-for="(line, i) in (view.project || [])"
             :key="`p${i}`"
             class="flex items-start gap-2 rounded-lg border border-[var(--c-border)] bg-[var(--c-surface)] px-2.5 py-1.5"
           >
