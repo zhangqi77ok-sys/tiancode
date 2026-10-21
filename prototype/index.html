@@ -570,11 +570,290 @@
       0% { height: 4px; }
       100% { height: 18px; }
     }
+
+    /* 首次进入年月日引导弹层 (Onboarding Birthday Overlay) */
+    .onboarding-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(28, 25, 23, 0.78);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      opacity: 1;
+      visibility: visible;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .onboarding-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .onboarding-modal {
+      background: #FAF7F2;
+      border-radius: 24px;
+      padding: 24px 20px;
+      width: 100%;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      animation: modalSlideUp 0.35s ease-out;
+    }
+
+    @keyframes modalSlideUp {
+      from { transform: translateY(24px) scale(0.96); opacity: 0; }
+      to { transform: translateY(0) scale(1); opacity: 1; }
+    }
+
+    .onboarding-header {
+      text-align: center;
+    }
+
+    .onboarding-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      height: 52px;
+      border-radius: 18px;
+      background: #FFEAD9;
+      font-size: 26px;
+      margin-bottom: 8px;
+    }
+
+    .onboarding-title {
+      font-size: calc(20px * var(--font-scale));
+      font-weight: 800;
+      color: #1C1917;
+      margin-bottom: 6px;
+    }
+
+    .onboarding-desc {
+      font-size: 13px;
+      color: #78716C;
+      line-height: 1.5;
+    }
+
+    /* 日期选择交互卡片 */
+    .date-pick-card {
+      background: #FFFFFF;
+      border: 2px solid #E7E5E4;
+      border-radius: 18px;
+      padding: 14px 12px;
+      position: relative;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .date-pick-card:hover, .date-pick-card:focus-within {
+      border-color: #D9532F;
+      box-shadow: 0 4px 16px rgba(217, 83, 47, 0.15);
+    }
+
+    .date-pick-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #A8A29E;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .date-pills-row {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    .date-pill-item {
+      background: #F5F3EF;
+      border-radius: 12px;
+      padding: 10px 4px;
+      text-align: center;
+      font-weight: 800;
+      font-size: 16px;
+      color: #1C1917;
+      border: 1px solid #E7E5E4;
+    }
+
+    .date-pill-item span:last-child {
+      font-size: 11px;
+      font-weight: normal;
+      color: #78716C;
+      margin-left: 2px;
+    }
+
+    /* 真正触发移动端原生轮选器的不可见 input */
+    .native-date-input {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      z-index: 5;
+    }
+
+    /* 快速测试预设标签 */
+    .quick-presets-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .preset-chip {
+      background: #FFFFFF;
+      border: 1px solid #E7E5E4;
+      border-radius: 14px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #57534E;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .preset-chip:hover, .preset-chip.active {
+      border-color: #D9532F;
+      color: #D9532F;
+      background: #FBF0EB;
+    }
+
+    /* 智能识别结果展示卡 */
+    .rec-result-card {
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: #FBF0EB;
+      border: 1.5px solid #F5D3C4;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: all 0.25s ease;
+    }
+
+    .rec-result-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .rec-age-badge {
+      font-size: 13px;
+      font-weight: 800;
+      color: #D9532F;
+      background: #FFFFFF;
+      padding: 3px 10px;
+      border-radius: 12px;
+    }
+
+    .rec-mode-name {
+      font-size: 15px;
+      font-weight: 800;
+      color: #1C1917;
+    }
+
+    .rec-features-list {
+      font-size: 12px;
+      color: #57534E;
+      line-height: 1.6;
+    }
+
+    .onboarding-btn {
+      height: 52px;
+      border-radius: 26px;
+      background: #D9532F;
+      color: white;
+      font-size: 16px;
+      font-weight: 800;
+      border: none;
+      box-shadow: 0 4px 14px rgba(217, 83, 47, 0.35);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .onboarding-btn:active {
+      transform: scale(0.98);
+      background: #B83E1E;
+    }
+
+    .birthday-pill {
+      background: var(--accent-soft);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
   </style>
 </head>
 <body class="mode-elder">
 
   <div class="mobile-frame">
+    <!-- 首次年月日填写引导层 (Onboarding Modal) -->
+    <div class="onboarding-overlay" id="onboardingOverlay">
+      <div class="onboarding-modal">
+        <div class="onboarding-header">
+          <div class="onboarding-badge">🎂</div>
+          <h2 class="onboarding-title">请问您的出生年月日？</h2>
+          <p class="onboarding-desc">「伴暖」将根据您的年龄，自动适配舒适字号、语速与陪伴功能。</p>
+        </div>
+
+        <!-- 年月日选择卡片 (点击调起原生 DatePicker) -->
+        <div class="date-pick-card" title="点击更改出生日期">
+          <div class="date-pick-label">
+            <span>📅 出生日期（点击下方选择）</span>
+            <span style="color:#D9532F;">点击调起滚轮 ▾</span>
+          </div>
+          <div class="date-pills-row">
+            <div class="date-pill-item"><span id="dispYear">1958</span><span>年</span></div>
+            <div class="date-pill-item"><span id="dispMonth">06</span><span>月</span></div>
+            <div class="date-pill-item"><span id="dispDay">18</span><span>日</span></div>
+          </div>
+          <input type="date" class="native-date-input" id="birthDateInput" value="1958-06-18" onchange="onBirthDateChange(this.value)">
+        </div>
+
+        <!-- 快速测试预设标签 -->
+        <div class="quick-presets-row">
+          <button type="button" class="preset-chip active" id="chipElder" onclick="applyPreset('1958-06-18')">👵 1958年 (长辈 68岁)</button>
+          <button type="button" class="preset-chip" id="chipKids" onclick="applyPreset('2018-09-01')">👶 2018年 (萌娃 8岁)</button>
+          <button type="button" class="preset-chip" id="chipFamily" onclick="applyPreset('1995-04-12')">🏡 1995年 (守护者 31岁)</button>
+        </div>
+
+        <!-- 模式匹配预览卡片 -->
+        <div class="rec-result-card" id="recResultCard">
+          <div class="rec-result-top">
+            <span class="rec-mode-name" id="recModeName">👵 为您适配：长辈关爱模式</span>
+            <span class="rec-age-badge" id="recAgeBadge">68 岁 · 银发长辈</span>
+          </div>
+          <div class="rec-features-list" id="recFeaturesList">
+            • 22px 超大字号与 WCAG AAA 护眼高对比度<br>
+            • 慢速语音（0.85x）温情唠嗑与语音大对讲岛<br>
+            • 用药打卡守护与老戏曲、节气养生建议
+          </div>
+        </div>
+
+        <button class="onboarding-btn" id="confirmBtn" onclick="confirmBirthday()">进入专属温情陪伴 ➔</button>
+      </div>
+    </div>
+
     <!-- 顶部状态与模式导航 -->
     <header class="app-header">
       <div class="top-bar">
@@ -582,7 +861,10 @@
           <div class="brand-badge">伴</div>
           <span>伴暖 WarmCompanion</span>
         </div>
-        <button class="font-btn" id="fontBtn" onclick="toggleZoom()">大字号</button>
+        <div class="top-actions">
+          <button class="birthday-pill" id="birthdayBadge" onclick="openOnboarding()">🎂 <span id="badgeAgeText">68岁 · 长辈</span></button>
+          <button class="font-btn" id="fontBtn" onclick="toggleZoom()">大字号</button>
+        </div>
       </div>
 
       <!-- 手机滑动分段选择 -->
@@ -718,6 +1000,112 @@
     let currentMode = 'elder';
     let isListening = false;
     let zoomLevel = 1; // 0: 标准, 1: 大字, 2: 超大字
+    let selectedBirthDate = '1958-06-18';
+
+    // 计算实际周岁年龄
+    function calcAge(birthDateString) {
+      if (!birthDateString) return 68;
+      const today = new Date();
+      const birthDate = new Date(birthDateString);
+      let age = today.getFullYear() - birthDate.getFullYear();
+      const m = today.getMonth() - birthDate.getMonth();
+      if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+        age--;
+      }
+      return Math.max(0, age);
+    }
+
+    // 根据年龄推荐模式
+    function getModeByAge(age) {
+      if (age >= 60) return 'elder';
+      if (age <= 12) return 'kids';
+      return 'family';
+    }
+
+    // 日期变更联动
+    function onBirthDateChange(dateStr) {
+      if (!dateStr) return;
+      selectedBirthDate = dateStr;
+      const [y, m, d] = dateStr.split('-');
+      document.getElementById('dispYear').innerText = y || '1958';
+      document.getElementById('dispMonth').innerText = m || '06';
+      document.getElementById('dispDay').innerText = d || '18';
+
+      const age = calcAge(dateStr);
+      const mode = getModeByAge(age);
+
+      // 高亮选中的 preset chip
+      document.querySelectorAll('.preset-chip').forEach(c => c.classList.remove('active'));
+      if (dateStr === '1958-06-18') document.getElementById('chipElder').classList.add('active');
+      else if (dateStr === '2018-09-01') document.getElementById('chipKids').classList.add('active');
+      else if (dateStr === '1995-04-12') document.getElementById('chipFamily').classList.add('active');
+
+      const card = document.getElementById('recResultCard');
+      const modeName = document.getElementById('recModeName');
+      const ageBadge = document.getElementById('recAgeBadge');
+      const featList = document.getElementById('recFeaturesList');
+
+      if (mode === 'elder') {
+        modeName.innerText = '👵 为您适配：长辈关爱模式';
+        ageBadge.innerText = `${age} 岁 · 银发长辈`;
+        ageBadge.style.color = '#D9532F';
+        card.style.background = '#FBF0EB';
+        card.style.borderColor = '#F5D3C4';
+        featList.innerHTML = '• 22px 超大字号与 WCAG AAA 护眼高对比度<br>• 慢速语音（0.85x）温情唠嗑与语音大对讲岛<br>• 用药打卡守护与老戏曲、节气养生建议';
+      } else if (mode === 'kids') {
+        modeName.innerText = '👶 为您适配：童趣启蒙模式';
+        ageBadge.innerText = `${age} 岁 · 萌趣宝贝`;
+        ageBadge.style.color = '#F97316';
+        card.style.background = '#F0F9FF';
+        card.style.borderColor = '#BAE6FD';
+        featList.innerHTML = '• 柔和护眼马卡龙配色与大圆角卡通交互<br>• 豆豆熊玩伴互动、睡前奇妙绘本故事机<br>• 好习惯打卡任务与童心百科万物问答';
+      } else {
+        modeName.innerText = '🏡 为您适配：家庭中控模式';
+        ageBadge.innerText = `${age} 岁 · 家庭守护者`;
+        ageBadge.style.color = '#0284C7';
+        card.style.background = '#F8FAFC';
+        card.style.borderColor = '#E2E8F0';
+        featList.innerHTML = '• 家庭成员陪伴状态一屏总览与关怀简报<br>• 远程配置父母用药提醒与留声便签<br>• 孩子睡前故事与生活作息状态同步';
+      }
+    }
+
+    // 应用快捷预设
+    function applyPreset(dateStr) {
+      document.getElementById('birthDateInput').value = dateStr;
+      onBirthDateChange(dateStr);
+    }
+
+    // 确认生日并关闭弹层进入系统
+    function confirmBirthday() {
+      const age = calcAge(selectedBirthDate);
+      const mode = getModeByAge(age);
+      
+      // 更新顶部胶囊
+      let label = '长辈';
+      if (mode === 'kids') label = '宝贝';
+      else if (mode === 'family') label = '守护者';
+      document.getElementById('badgeAgeText').innerText = `${age}岁 · ${label}`;
+
+      // 切换到对应模式
+      switchMode(mode);
+
+      // 关闭引导弹层
+      document.getElementById('onboardingOverlay').classList.add('hidden');
+
+      // 语音欢迎播报
+      const welcomeMsg = mode === 'elder' 
+        ? `欢迎您！已为您开启大字关爱模式，我是您的温情陪伴小助手，有任何想唠的随时点下方说话！`
+        : (mode === 'kids' ? `太棒啦！小熊豆豆来和你做朋友啦！今天想听什么好玩的故事呢？` : `欢迎家庭守护者，已为您同步今日家庭看护看板。`);
+      
+      setTimeout(() => {
+        speakContent(welcomeMsg);
+      }, 400);
+    }
+
+    // 重新打开引导弹层
+    function openOnboarding() {
+      document.getElementById('onboardingOverlay').classList.remove('hidden');
+    }
 
     // 模式切换
     function switchMode(mode) {
