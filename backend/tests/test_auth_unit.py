@@ -16,7 +16,7 @@ SECRET_KEY = "test-secret-key-for-unit-tests-32bytes-min!"
 
 
 def test_jwt_encode_and_decode_success():
-    """正常路径：验证 JWT 签发与解码能够完整无损还原载荷"""
+    """正常路径：验证 JWT 签发与解码能够完整无损还原载荷，且默认有效期严格为 30 天"""
     payload = {
         "sub": "usr_elder_1001",
         "fam": "fam_beijing_01",
@@ -24,7 +24,8 @@ def test_jwt_encode_and_decode_success():
         "name": "外婆",
         "birth": "1958-06-18",
     }
-    token = encode_jwt(payload, SECRET_KEY, expires_in=3600)
+    # 使用默认有效期（30 天）
+    token = encode_jwt(payload, SECRET_KEY)
     assert isinstance(token, str)
     assert len(token.split(".")) == 3
 
@@ -35,6 +36,24 @@ def test_jwt_encode_and_decode_success():
     assert decoded["name"] == "外婆"
     assert decoded["birth"] == "1958-06-18"
     assert "exp" in decoded
+    # 验证有效期恰好为 30 天 (30 * 86400 = 2,592,000 秒)
+    assert decoded["exp"] - decoded["iat"] == 86400 * 30
+
+
+def test_satoken_header_support():
+    """Sa-Token 协议验证：支持使用 satoken 请求头提取身份"""
+    from app.api.deps import get_current_user, JWT_SECRET
+    payload = {"sub": "usr_sa_01", "fam": "fam_01", "role": "guardian", "name": "测试用户"}
+    token = encode_jwt(payload, JWT_SECRET)
+
+    # 1. 模拟标准 Sa-Token header: satoken: <token>
+    ctx = get_current_user(satoken=token)
+    assert ctx.user_id == "usr_sa_01"
+    assert ctx.role == UserRole.GUARDIAN
+
+    # 2. 模拟标准 Authorization: Bearer <token>
+    ctx_bearer = get_current_user(authorization=f"Bearer {token}")
+    assert ctx_bearer.user_id == "usr_sa_01"
 
 
 def test_jwt_expired_token_fails():

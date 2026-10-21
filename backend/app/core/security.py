@@ -1,17 +1,54 @@
-"""核心安全与鉴权工具模块：提供标准 HS256 JWT 签发与解码、密码哈希与防时序攻击验证。
+"""核心安全与鉴权工具模块：基于工业级 PyJWT 提供 HS256 JWT 签发与 30 天超长会话校验。
 
-设计理念（Code Judo）：
-采用 Python 标准库 hmac, hashlib, base64 实现无第三方依赖的 RFC 7519 规范 JWT，
-杜绝环境依赖飘移与漏洞风险。
+包含：
+1. RFC 7519 规范标准 HS256 JWT 签发（默认 30 天过期，支持家庭端免频密登录）
+2. JWT 签名与过期完整性验证（基于 PyJWT 工业级内核）
+3. PBKDF2-HMAC-SHA256 安全密码哈希与防时序攻击验证
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
-import json
 import time
 from typing import Any, Dict
+import jwt
+
+# 默认 30 天超长有效期 (30 * 24 * 3600 秒 = 2,592,000 秒)
+DEFAULT_EXPIRES_IN = 86400 * 30
+JWT_ALGORITHM = "HS256"
+
+
+def encode_jwt(payload: Dict[str, Any], secret: str, expires_in: int = DEFAULT_EXPIRES_IN) -> str:
+    """使用 PyJWT 签发标准 HS256 JWT 令牌（默认 30 天超长有效期）。
+
+    :param payload: 载荷数据（必须包含 sub 与 fam）
+    :param secret: 签名密钥（建议至少 32 字节）
+    :param expires_in: 有效期（秒），默认 30 天
+    :return: JWT 字符串
+    """
+    now = int(time.time())
+    data = dict(payload)
+    data.setdefault("iat", now)
+    data.setdefault("exp", now + expires_in)
+
+    return jwt.encode(data, secret, algorithm=JWT_ALGORITHM)
+
+
+def decode_jwt(token: str, secret: str) -> Dict[str, Any]:
+    """验证并解码 HS256 JWT 令牌。
+
+    :param token: 待验证的 JWT 字符串
+    :param secret: 签名密钥
+    :return: 解密后的载荷字典
+    :raises ValueError: 格式错误、签名不匹配或已过期
+    """
+    try:
+        return jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError as e:
+        raise ValueError("JWT token has expired") from e
+    except jwt.InvalidTokenError as e:
+        raise ValueError(f"JWT signature verification failed: {str(e)}") from e
 
 
 def b64url_encode(data: bytes) -> str:
@@ -23,59 +60,6 @@ def b64url_decode(s: str) -> bytes:
     """Base64Url 解码（自动补全末尾填充符）"""
     padding = "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s + padding)
-
-
-def encode_jwt(payload: Dict[str, Any], secret: str, expires_in: int = 86400 * 7) -> str:
-    """签发标准 HS256 JWT 令牌。
-
-    :param payload: 载荷数据（必须包含 sub 与 fam）
-    :param secret: 签名密钥（建议至少 32 字节）
-    :param expires_in: 有效期（秒），默认 7 天
-    :return: JWT 字符串
-    """
-    header = {"alg": "HS256", "typ": "JWT"}
-    now = int(time.time())
-    data = dict(payload)
-    data.setdefault("iat", now)
-    data.setdefault("exp", now + expires_in)
-
-    h_str = b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
-    p_str = b64url_encode(json.dumps(data, separators=(",", ":")).encode("utf-8"))
-    signing_input = f"{h_str}.{p_str}".encode("utf-8")
-
-    signature = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    sig_str = b64url_encode(signature)
-
-    return f"{h_str}.{p_str}.{sig_str}"
-
-
-def decode_jwt(token: str, secret: str) -> Dict[str, Any]:
-    """验证并解码 HS256 JWT 令牌。
-
-    :param token: 待验证的 JWT 字符串
-    :param secret: 签名密钥
-    :return: 解密后的载荷字典
-    :raises ValueError: 格式错误、签名不匹配或已过期
-    """
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise ValueError("Invalid JWT token format")
-
-    h_str, p_str, sig_str = parts
-    signing_input = f"{h_str}.{p_str}".encode("utf-8")
-    expected_sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
-
-    actual_sig = b64url_decode(sig_str)
-    if not hmac.compare_digest(actual_sig, expected_sig):
-        raise ValueError("JWT signature verification failed")
-
-    payload = json.loads(b64url_decode(p_str).decode("utf-8"))
-    now = time.time()
-
-    if "exp" in payload and payload["exp"] < now:
-        raise ValueError("JWT token has expired")
-
-    return payload
 
 
 def hash_password(password: str, salt: str | None = None) -> str:

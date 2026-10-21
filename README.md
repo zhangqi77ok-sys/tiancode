@@ -4,14 +4,14 @@
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue.svg?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-10%2F10%20Passing-success.svg?logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-11%2F11%20Passing-success.svg?logo=pytest&logoColor=white)
 ![Architecture](https://img.shields.io/badge/Architecture-Plugin--Based%20%26%20Multi--Tenant-6366F1.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 **面向现代家庭的轻量级一老一小双向温情陪伴与智能看护平台**  
 *语音优先 · 适老化超大字 · 双向互动童趣 · 可插拔微插件 · 全域安全中控*
 
-[📱 手机端体验原型](prototype/index.html) · [🛠️ 平台管理控制台](prototype/admin.html) · [📖 产品需求文档 (PRD)](docs/PRD_FAMILY_COMPANION.md)
+[🔑 独立登录与注册门户](prototype/login.html) · [📱 手机端体验原型](prototype/index.html) · [🛠️ 平台管理控制台](prototype/admin.html) · [📖 产品需求文档 (PRD)](docs/PRD_FAMILY_COMPANION.md)
 
 </div>
 
@@ -103,10 +103,12 @@ flowchart TD
     API --> AiManager & Safety
 ```
 
-### 1. Code Judo 零外部依赖安全工程
-- **RFC 7519 HS256 JWT**：采用 Python 标准库 `hmac` + `hashlib` + `base64` 原生实现，拒绝任何重型外部三方库依赖，恒定时间比对防御时序攻击；
-- **PBKDF2-HMAC-SHA256**：密码存储采用 100,000 次加盐迭代哈希；
-- **Pin 码免密极速入家**：长辈与儿童设备只需输入【6 位家庭邀请码 + 4 位简易 Pin 码】，即可一键换取专属 JWT 身份凭据，彻底破除老年人与幼童记不住账号密码的痛点。
+### 1. 工业级 PyJWT 与 Sa-Token 协议 30 天持久会话体系
+- **工业级 PyJWT 内核**：采用 Python 社区事实标准 `PyJWT` 提供标准 RFC 7519 HS256 JWT 签发与完整性校验；
+- **30 天超长会话保障**：默认签发有效期达 `30 天`（`2,592,000` 秒），彻底避免老人和儿童因频繁掉线需重新登录的痛点；
+- **Sa-Token 协议双通道 Header 兼容**：原生支持 `satoken: <token>`（Sa-Token 规范）与 `Authorization: Bearer <token>`（RFC 规范）双模式解析；
+- **PBKDF2-HMAC-SHA256**：密码存储采用 100,000 次加盐迭代哈希，恒定时间比对防御时序攻击；
+- **Pin 码免密极速入家**：长辈与儿童设备只需输入【6 位家庭邀请码 + 4 位简易 Pin 码】，即可一键换取专属 30 天凭据，破除密码与短信门槛。
 
 ### 2. 可插拔微插件架构 (Micro-Plugin Architecture)
 - 每个功能卡片均为继承 `BasePlugin` 的独立单元，强约束声明 `PluginManifest`；
@@ -157,6 +159,7 @@ tiancode/
 │   ├── PRD_FAMILY_COMPANION.md       # 伴暖完整产品需求文档 (PRD)
 │   └── deploy.md                     # Jenkins 部署说明
 ├── prototype/
+│   ├── login.html                    # 独立温情认证中心 (守护者手机注册/登录 + 老幼大字 Pin 免密入家)
 │   ├── index.html                    # 移动端一老一小双模陪伴与家庭看板交互原型
 │   └── admin.html                    # 现代化 Enterprise SaaS 平台管理控制台中枢
 ├── Dockerfile
@@ -171,6 +174,9 @@ tiancode/
 ## 🚀 快速上手与运行体验
 
 ### 1. 交互原型秒开体验 (无需任何运行环境)
+- **独立登录与注册门户**：使用浏览器直接打开 [`prototype/login.html`](prototype/login.html)
+  - 体验守护者手机号/密码注册与建家，或长辈/儿童 6 位家庭码 + 4 位大方格 Pin 码免密极速进入；
+  - 登录成功激活 Sa-Token 协议 30 天持久免登会话，并平滑转跳至主页；
 - **老幼陪伴与家庭看板移动端原型**：使用手机或电脑浏览器直接打开 [`prototype/index.html`](prototype/index.html)
   - 初次进入通过出生年月日自适应锁定身份；
   - 体验大字戏曲旋转播报、双向故事分幕二选一、好习惯星星点亮与 Pin 码快速登录；

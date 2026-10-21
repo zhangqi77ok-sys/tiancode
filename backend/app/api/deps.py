@@ -14,18 +14,33 @@ from app.schemas.auth import UserContext, UserRole
 JWT_SECRET = os.getenv("JWT_SECRET", "tiancode-family-secret-32-bytes-min!")
 
 
-def get_current_user(authorization: str = Header(default="")) -> UserContext:
-    """从请求头提取 Bearer JWT 并解析为强类型用户上下文。
+def get_current_user(
+    authorization: str = Header(default=""),
+    satoken: str = Header(default=""),
+) -> UserContext:
+    """提取访问令牌并解析为强类型用户上下文。
 
-    身份仅来自 JWT 载荷，绝不允许在 Body 或 Query 中伪造。
+    全面支持 Sa-Token 规范双通道头：
+    1. Header `satoken: <token>` (Sa-Token 官方默认风格)
+    2. Header `Authorization: Bearer <token>` (RFC 6750 标准规范)
     """
-    if not authorization.startswith("Bearer "):
+    auth_val = authorization if isinstance(authorization, str) else ""
+    sa_val = satoken if isinstance(satoken, str) else ""
+
+    token = ""
+    if sa_val.strip():
+        token = sa_val.strip()
+    elif auth_val.strip():
+        if auth_val.startswith("Bearer "):
+            token = auth_val[7:].strip()
+        else:
+            token = auth_val.strip()
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少或无效的认证头 (Authorization: Bearer <token>)",
+            detail="缺少或无效的认证头 (支持 satoken 或 Authorization: Bearer <token>)",
         )
-
-    token = authorization[7:].strip()
     try:
         claims = decode_jwt(token, JWT_SECRET)
     except ValueError as e:

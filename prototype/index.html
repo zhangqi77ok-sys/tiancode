@@ -1169,6 +1169,7 @@
           <span>伴暖 WarmCompanion</span>
         </div>
         <div class="top-actions">
+          <a href="login.html" class="font-btn" style="text-decoration:none; display:inline-flex; align-items:center; background:#FFF; color:var(--accent); border:1px solid #FED7AA;" title="前往独立认证中心或切换账号">🔑 登录/入家</a>
           <a href="admin.html" target="_blank" class="font-btn" style="text-decoration:none; display:inline-flex; align-items:center; background:#1E293B; color:#F8FAFC; border:1px solid #475569;" title="进入平台超级管理控制台">🛠️ 管理后台</a>
           <button class="birthday-pill" id="birthdayBadge" onclick="openOnboarding()">🎂 <span id="badgeAgeText">68岁 · 长辈</span></button>
           <button class="font-btn" id="fontBtn" onclick="toggleZoom()">大字号</button>
@@ -2118,6 +2119,15 @@
         const el = document.querySelector('.habits-card');
         if (el) el.style.display = isEnabled ? 'block' : 'none';
       }
+    }
+
+    // 检查并恢复 Sa-Token 登录会话
+    const savedUserStr = localStorage.getItem('satoken_user');
+    if (savedUserStr) {
+      try {
+        const u = JSON.parse(savedUserStr);
+        if (u.birth_date) selectedBirthDate = u.birth_date;
+      } catch (e) {}
     }
 
     // 初始化首屏角色与双 Tab

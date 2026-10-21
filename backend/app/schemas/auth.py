@@ -53,9 +53,10 @@ class MemberLoginRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    """JWT 令牌响应"""
-    access_token: str = Field(..., description="Bearer JWT 访问令牌")
+    """JWT / Sa-Token 令牌响应契约"""
+    access_token: str = Field(..., description="访问令牌 (Bearer / satoken)")
     token_type: str = Field("bearer", description="令牌类型")
+    expires_in: int = Field(2592000, description="令牌有效期（秒），默认 30 天 (2,592,000 秒)")
     role: UserRole = Field(..., description="当前使用者角色")
     user_id: str = Field(..., description="用户唯一标识 ID")
     family_id: str = Field(..., description="所属家庭空间 ID")
