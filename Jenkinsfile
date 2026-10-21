@@ -95,21 +95,17 @@ pipeline {
         sshagent(['deploy-ssh']) {
           script {
             env.COMMIT12 = env.GIT_COMMIT.take(12)
-            def out = sh(returnStdout: true, script: '''
-              ssh -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" \
-                "APP_DIR='$APP_DIR' COMMIT12='$COMMIT12' bash -s" <<'REMOTE' || echo SSH_FAIL
-set -eu
-cd "$APP_DIR" 2>/dev/null || { echo NO_DIR; exit 0; }
-[ -s .last_tag ] || { echo NO_TAG; exit 0; }
-L=$(cat .last_tag)
-LT=${L##*:}
-[ "${LT%-b*}" = "$COMMIT12" ] || { echo DIFF "$LT"; exit 0; }
-P=$(grep ^API_PORT= .env | cut -d= -f2 || true)
-c=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${P:-8092}/readyz")
-[ "$c" = 200 ] || { echo UNHEALTHY "readyz=$c"; exit 0; }
-echo SAME "$LT"
-REMOTE
-            ''').trim()
+            // 不用 ssh bash -s <<heredoc：Jenkins sh 不会把这段 stdin 交给远端，冒烟会在零点几秒内以 curl 56 失败且没有日志。
+            def out = sh(returnStdout: true, script: """
+              ssh -o StrictHostKeyChecking=accept-new \$DEPLOY_USER@\$DEPLOY_HOST 'cd ${env.APP_DIR} 2>/dev/null || { echo NO_DIR; exit 0; }
+              [ -s .last_tag ] || { echo NO_TAG; exit 0; }
+              L=\$(cat .last_tag); LT=\${L##*:}
+              [ "\${LT%-b*}" = "${env.COMMIT12}" ] || { echo DIFF \$LT; exit 0; }
+              P=\$(grep ^API_PORT= .env | cut -d= -f2 || true)
+              c=\$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:\${P:-8092}/readyz || true)
+              [ "\$c" = 200 ] || { echo UNHEALTHY readyz=\$c; exit 0; }
+              echo SAME \$LT' || echo SSH_FAIL
+            """).trim()
             echo "dedup: ${out}"
             if (out.readLines().any { it.startsWith('SAME ') }) {
               env.SKIP_DEPLOY = 'true'
@@ -152,30 +148,9 @@ REMOTE
       when { expression { env.DO_DEPLOY == 'true' && env.SKIP_DEPLOY != 'true' } }
       steps {
         sshagent(['deploy-ssh']) {
+          // 整段命令写在 ssh 参数里，和 agent-memory 一样。curl 失败也要先打出状态码，再由 ok 决定退出码。
           sh '''
-            set -eu
-            ssh -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" \
-              "APP_DIR='$APP_DIR' SMOKE_PATH='$SMOKE_PATH' bash -s" <<'REMOTE'
-set -eu
-cd "$APP_DIR"
-P=$(grep ^API_PORT= .env | cut -d= -f2 || true)
-P=${P:-8092}
-ok=0
-for i in $(seq 1 30); do
-  c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${P}${SMOKE_PATH}")
-  echo "smoke api $i $c"
-  if [ "$c" = 200 ]; then ok=1; break; fi
-  sleep 3
-done
-[ "$ok" = 1 ]
-if [ "$SMOKE_PATH" = /readyz ]; then
-  for path in / /admin.html; do
-    c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${P}${path}")
-    echo "smoke prototype $path $c"
-    [ "$c" = 200 ]
-  done
-fi
-REMOTE
+            ssh -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST "cd $APP_DIR && P=\\$(grep ^API_PORT= .env | cut -d= -f2 || true); P=\\${P:-8092}; ok=0; for i in \\$(seq 1 30); do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P$SMOKE_PATH || true); echo smoke api \\$i \\$c; [ \\"\\$c\\" = 200 ] && ok=1 && break; sleep 3; done; [ \\"\\$ok\\" = 1 ] || exit 1; if [ '$SMOKE_PATH' = /readyz ]; then for path in / /admin.html; do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P\\$path || true); echo smoke prototype \\$path \\$c; [ \\"\\$c\\" = 200 ] || exit 1; done; fi"
           '''
         }
       }
@@ -189,30 +164,7 @@ REMOTE
           // 冒烟失败则回到上一次成功的镜像。没有 .last_tag 时只报错，不猜一个 latest。
           sshagent(['deploy-ssh']) {
             sh '''
-              ssh -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" \
-                "APP_DIR='$APP_DIR' bash -s" <<'REMOTE'
-set -eu
-cd "$APP_DIR"
-rm -f .last_tag.new
-if [ ! -s .last_tag ]; then
-  echo "ROLLBACK: 没有上一个成功版本，无法回滚"
-  exit 1
-fi
-PREV=$(cat .last_tag)
-PI=${PREV%:*}
-PT=${PREV##*:}
-echo "ROLLBACK to $PREV"
-docker image inspect "$PI:$PT" >/dev/null 2>&1 || docker pull "$PI:$PT"
-IMAGE="$PI" TAG="$PT" docker compose -p tiancode up -d --remove-orphans
-P=$(grep ^API_PORT= .env | cut -d= -f2 || true)
-P=${P:-8092}
-for i in $(seq 1 30); do
-  c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${P}/readyz")
-  if [ "$c" = 200 ]; then echo "ROLLBACK OK readyz=200"; exit 0; fi
-  sleep 3
-done
-exit 1
-REMOTE
+              ssh -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST "cd $APP_DIR && rm -f .last_tag.new && if [ ! -s .last_tag ]; then echo 'ROLLBACK: 没有上一个成功版本，无法回滚'; exit 1; fi && PREV=\\$(cat .last_tag) && PI=\\${PREV%:*} && PT=\\${PREV##*:} && echo ROLLBACK to \\$PREV && (docker image inspect \\$PI:\\$PT >/dev/null 2>&1 || docker pull \\$PI:\\$PT) && IMAGE=\\$PI TAG=\\$PT docker compose -p $COMPOSE_PROJECT up -d --remove-orphans && P=\\$(grep ^API_PORT= .env | cut -d= -f2 || true) && P=\\${P:-8092} && ok=0 && for i in \\$(seq 1 30); do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P/readyz || true); echo rollback readyz \\$i \\$c; [ \\"\\$c\\" = 200 ] && ok=1 && break; sleep 3; done && [ \\"\\$ok\\" = 1 ]"
             '''
           }
         }
