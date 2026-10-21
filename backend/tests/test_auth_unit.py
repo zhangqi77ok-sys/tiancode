@@ -2,7 +2,6 @@
 
 验证 HS256 JWT 生成/验证、密码哈希与防篡改、以及 Pydantic 契约校验。
 """
-import time
 import pytest
 from pydantic import ValidationError
 
@@ -101,6 +100,17 @@ def test_schema_register_validation():
             nickname="小敏",
             birth_date="1992-05-10",
         )
+
+
+def test_get_family_by_id_annotation_resolves():
+    """回归：注解里的 Optional 必须已导入，否则 get_type_hints 会 NameError。"""
+    from typing import get_type_hints
+
+    from app.api.v1.auth import get_family_by_id
+
+    hints = get_type_hints(get_family_by_id)
+    assert hints["return"] == (dict | None)
+    assert get_family_by_id("fam_missing") is None
 
 
 def test_schema_member_add_validation():

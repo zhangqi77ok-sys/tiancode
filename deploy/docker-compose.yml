@@ -1,0 +1,18 @@
+# 伴暖 API（内存存储，无数据库）。
+# 变量来自同目录 .env：compose 插值与 env_file 读的是同一个文件。
+# Jenkins 部署时额外注入 IMAGE / TAG，不必写进 .env。
+
+x-log: &log
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  api:
+    image: ${IMAGE:-ghcr.io/zhangqi77ok-sys/tiancode}:${TAG:-latest}
+    env_file: .env
+    ports:
+      - "127.0.0.1:${API_PORT:-8092}:8000"
+    logging: *log
+    restart: unless-stopped

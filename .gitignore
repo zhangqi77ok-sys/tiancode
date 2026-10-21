@@ -11,6 +11,7 @@ env/
 dist/
 build/
 bin/
+*.egg-info/
 *.exe
 *.zip
 *.png
@@ -22,3 +23,8 @@ nul
 # IDE
 .idea/
 .vscode/
+
+# Test / lint
+.pytest_cache/
+.ruff_cache/
+report*.xml
