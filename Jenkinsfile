@@ -24,6 +24,7 @@ pipeline {
     LOCAL_IMAGE = 'tiancode'
     APP_DIR = '/opt/tiancode'
     COMPOSE_PROJECT = 'tiancode'
+    CI_NET = 'jenkins_default'   // Jenkins 容器所在网络；CI 临时 Postgres 也挂这里
   }
   stages {
     stage('Init') {
@@ -52,20 +53,21 @@ pipeline {
     }
 
     stage('Lint & Test') {
+      // Jenkins 在容器里：临时 Postgres 挂同一 docker 网络，用容器名连 5432（不要 -p 到宿主 127.0.0.1）。
       steps {
         sh '''
           set -eu
-          docker rm -f tiancode-pytest-pg >/dev/null 2>&1 || true
-          docker run -d --name tiancode-pytest-pg \
+          PGC=tiancode-pytest-pg-$BUILD_NUMBER
+          docker rm -f "$PGC" >/dev/null 2>&1 || true
+          docker run -d --rm --name "$PGC" --network "$CI_NET" \
             -e POSTGRES_USER=tiancode \
             -e POSTGRES_PASSWORD=tiancode_test_pw \
             -e POSTGRES_DB=tiancode_test \
-            -p 127.0.0.1:55432:5432 \
             postgres:16-alpine
-          trap 'docker rm -f tiancode-pytest-pg >/dev/null 2>&1 || true' EXIT
+          trap 'docker rm -f "$PGC" >/dev/null 2>&1 || true' EXIT
           ready=0
           for i in $(seq 1 40); do
-            if docker exec tiancode-pytest-pg pg_isready -U tiancode -d tiancode_test; then
+            if docker exec "$PGC" pg_isready -U tiancode -d tiancode_test; then
               ready=1
               break
             fi
@@ -75,7 +77,7 @@ pipeline {
           python3 -m venv .venv && . .venv/bin/activate
           pip install -q -e '.[dev]'
           ruff check backend
-          export TEST_DATABASE_URL=postgresql://tiancode:tiancode_test_pw@127.0.0.1:55432/tiancode_test
+          export TEST_DATABASE_URL=postgresql://tiancode:tiancode_test_pw@$PGC:5432/tiancode_test
           pytest -q --junitxml=report.xml
         '''
       }
