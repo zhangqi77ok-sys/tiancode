@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>伴暖 (WarmCompanion) · 移动端家庭温情陪伴</title>
+  <style>
+    /* 核心设计系统与色彩 (CSS Custom Properties) */
+    :root {
+      --app-max-width: 440px;
+      --bg-canvas: #EDEAE5;
+      --bg-mobile: #FAF7F2;
+      --card-bg: #FFFFFF;
+      --text-main: #1C1917;
+      --text-sub: #57534E;
+      --text-muted: #78716C;
+      --border-subtle: #E7E5E4;
+      --accent: #D9532F;
+      --accent-active: #B83E1E;
+      --accent-soft: #FBF0EB;
+      --success: #059669;
+      --success-soft: #ECFDF5;
+      --radius-card: 20px;
+      --radius-btn: 28px;
+      --font-scale: 1;
+      --safe-bottom: env(safe-area-inset-bottom, 16px);
+    }
+
+    /* 长辈关怀模式 (Elder Care) */
+    body.mode-elder {
+      --bg-mobile: #FAF7F2;
+      --card-bg: #FFFFFF;
+      --text-main: #18181B;
+      --text-sub: #3F3F46;
+      --text-muted: #52525B;
+      --border-subtle: #E4E4E7;
+      --accent: #C2410C;
+      --accent-active: #9A3412;
+      --accent-soft: #FFF7ED;
+      --success: #047857;
+      --font-scale: 1.2;
+    }
+
+    /* 童趣启蒙模式 (Kids Play) */
+    body.mode-kids {
+      --bg-canvas: #E0F2FE;
+      --bg-mobile: #F0F9FF;
+      --card-bg: #FFFFFF;
+      --text-main: #0F172A;
+      --text-sub: #334155;
+      --text-muted: #64748B;
+      --border-subtle: #BAE6FD;
+      --accent: #F97316;
+      --accent-active: #EA580C;
+      --accent-soft: #FFF7ED;
+      --success: #10B981;
+      --radius-card: 24px;
+      --font-scale: 1.05;
+    }
+
+    /* 家庭中控模式 (Family Dashboard) */
+    body.mode-family {
+      --bg-canvas: #E2E8F0;
+      --bg-mobile: #F8FAFC;
+      --card-bg: #FFFFFF;
+      --text-main: #0F172A;
+      --text-sub: #334155;
+      --text-muted: #64748B;
+      --border-subtle: #E2E8F0;
+      --accent: #0284C7;
+      --accent-active: #0369A1;
+      --accent-soft: #F0F9FF;
+      --success: #059669;
+      --font-scale: 1;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+
+    body {
+      background-color: var(--bg-canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      color: var(--text-main);
+      overflow-x: hidden;
+    }
+
+    /* 手机端外框外壳（在桌面端呈现精致手机视口，在手机真机上占满 100%） */
+    .mobile-frame {
+      width: 100%;
+      max-width: var(--app-max-width);
+      min-height: 100vh;
+      background: var(--bg-mobile);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.12);
+      transition: background-color 0.3s ease;
+    }
+
+    @media (max-width: 480px) {
+      body {
+        background-color: var(--bg-mobile);
+      }
+      .mobile-frame {
+        box-shadow: none;
+        max-width: 100%;
+      }
+    }
+
+    /* 顶部导航控制栏 (Sticky Header) */
+    .app-header {
+      position: sticky;
+      top: 0;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 12px 16px;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand-title {
+      font-size: calc(18px * var(--font-scale));
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-main);
+    }
+
+    .brand-badge {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent) 0%, #FF7043 100%);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: bold;
+    }
+
+    .font-btn {
+      background: var(--accent-soft);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* 手机端滑动式模式切换器 */
+    .mode-slider {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      background: #F1EFEA;
+      border-radius: 20px;
+      padding: 3px;
+      gap: 4px;
+    }
+
+    body.mode-kids .mode-slider {
+      background: #E0F2FE;
+    }
+
+    body.mode-family .mode-slider {
+      background: #E2E8F0;
+    }
+
+    .mode-item {
+      border: none;
+      background: transparent;
+      padding: 8px 4px;
+      border-radius: 16px;
+      font-size: calc(13px * var(--font-scale));
+      font-weight: 700;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: all 0.2s ease;
+    }
+
+    .mode-item.active {
+      background: var(--card-bg);
+      color: var(--text-main);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+
+    .mode-item.active.elder { color: #C2410C; }
+    .mode-item.active.kids { color: #F97316; }
+    .mode-item.active.family { color: #0284C7; }
+
+    /* 中段主要内容滚动区 */
+    .content-scroll {
+      flex: 1;
+      padding: 16px;
+      padding-bottom: calc(140px + var(--safe-bottom));
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* 沉浸式问候与状态气泡卡片 */
+    .status-card {
+      background: var(--card-bg);
+      border-radius: var(--radius-card);
+      padding: 18px;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .status-avatar {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      flex-shrink: 0;
+      border: 2px solid var(--accent);
+    }
+
+    .status-info {
+      flex: 1;
+    }
+
+    .status-title {
+      font-size: calc(17px * var(--font-scale));
+      font-weight: 800;
+      color: var(--text-main);
+      margin-bottom: 4px;
+    }
+
+    .status-desc {
+      font-size: calc(13px * var(--font-scale));
+      color: var(--text-sub);
+      line-height: 1.4;
+    }
+
+    /* 移动端卡片通用样式 */
+    .app-card {
+      background: var(--card-bg);
+      border-radius: var(--radius-card);
+      padding: 18px;
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title {
+      font-size: calc(15px * var(--font-scale));
+      font-weight: 800;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-badge {
+      font-size: calc(12px * var(--font-scale));
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    /* 手机单列对话流 */
+    .chat-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .chat-bubble-wrap {
+      display: flex;
+      gap: 10px;
+      max-width: 90%;
+    }
+
+    .chat-bubble-wrap.ai {
+      align-self: flex-start;
+    }
+
+    .chat-bubble-wrap.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .bubble-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .bubble-text {
+      background: var(--card-bg);
+      border: 1px solid var(--border-subtle);
+      padding: 12px 16px;
+      border-radius: 18px;
+      font-size: calc(15px * var(--font-scale));
+      line-height: 1.5;
+      color: var(--text-main);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+    }
+
+    .chat-bubble-wrap.user .bubble-text {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    .read-aloud-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--bg-mobile);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 4px 10px;
+      font-size: calc(12px * var(--font-scale));
+      font-weight: 700;
+      color: var(--accent);
+      margin-top: 6px;
+      cursor: pointer;
+    }
+
+    /* 手机端适老化打卡项（高灵敏点击大卡片） */
+    .task-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: var(--bg-mobile);
+      border: 1px solid var(--border-subtle);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .task-item:active {
+      transform: scale(0.98);
+    }
+
+    .task-item.checked {
+      background: var(--success-soft);
+      border-color: var(--success);
+    }
+
+    .task-item.checked .task-label {
+      text-decoration: line-through;
+      color: var(--text-muted);
+    }
+
+    .task-checkbox {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 2px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: white;
+      transition: all 0.2s ease;
+    }
+
+    .task-item.checked .task-checkbox {
+      background: var(--success);
+      border-color: var(--success);
+    }
+
+    .task-details {
+      flex: 1;
+      margin-left: 12px;
+    }
+
+    .task-label {
+      font-size: calc(15px * var(--font-scale));
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .task-time {
+      font-size: calc(12px * var(--font-scale));
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* 手机端九宫格/四宫格工具栏 */
+    .tools-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .tool-btn {
+      background: var(--bg-mobile);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 16px 10px;
+      text-align: center;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      transition: transform 0.15s ease;
+    }
+
+    .tool-btn:active {
+      transform: scale(0.96);
+      background: var(--card-bg);
+    }
+
+    .tool-icon {
+      font-size: 28px;
+    }
+
+    .tool-text {
+      font-size: calc(13px * var(--font-scale));
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    /* 底部悬浮对讲岛 (Floating Voice Bar - 手机端极佳单手操作) */
+    .bottom-bar {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: var(--app-max-width);
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-top: 1px solid var(--border-subtle);
+      padding: 12px 16px;
+      padding-bottom: calc(12px + var(--safe-bottom));
+      box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.08);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      z-index: 90;
+    }
+
+    /* 超大单手对讲按钮 */
+    .voice-main-btn {
+      width: 100%;
+      height: 58px;
+      border-radius: var(--radius-btn);
+      background: linear-gradient(135deg, var(--accent) 0%, #EA580C 100%);
+      border: none;
+      color: white;
+      font-size: calc(17px * var(--font-scale));
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 4px 14px rgba(217, 83, 47, 0.35);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .voice-main-btn:active, .voice-main-btn.active {
+      transform: scale(0.97);
+      background: #DC2626;
+      box-shadow: 0 0 0 8px rgba(220, 38, 38, 0.2);
+    }
+
+    .quick-text-box {
+      width: 100%;
+      display: flex;
+      gap: 8px;
+    }
+
+    .quick-input {
+      flex: 1;
+      height: 38px;
+      border-radius: 19px;
+      border: 1px solid var(--border-subtle);
+      padding: 0 14px;
+      font-size: calc(13px * var(--font-scale));
+      background: var(--bg-mobile);
+      outline: none;
+    }
+
+    .quick-send {
+      height: 38px;
+      padding: 0 16px;
+      border-radius: 19px;
+      background: var(--text-main);
+      color: white;
+      border: none;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* 声波微动效 */
+    .mic-wave {
+      display: none;
+      gap: 3px;
+      align-items: center;
+      height: 18px;
+    }
+
+    .voice-main-btn.active .mic-wave {
+      display: flex;
+    }
+
+    .bar {
+      width: 3px;
+      height: 6px;
+      background: white;
+      border-radius: 2px;
+      animation: wave 0.8s infinite ease-in-out alternate;
+    }
+
+    .bar:nth-child(2) { animation-delay: 0.2s; }
+    .bar:nth-child(3) { animation-delay: 0.4s; }
+    .bar:nth-child(4) { animation-delay: 0.1s; }
+
+    @keyframes wave {
+      0% { height: 4px; }
+      100% { height: 18px; }
+    }
+  </style>
+</head>
+<body class="mode-elder">
+
+  <div class="mobile-frame">
+    <!-- 顶部状态与模式导航 -->
+    <header class="app-header">
+      <div class="top-bar">
+        <div class="brand-title">
+          <div class="brand-badge">伴</div>
+          <span>伴暖 WarmCompanion</span>
+        </div>
+        <button class="font-btn" id="fontBtn" onclick="toggleZoom()">大字号</button>
+      </div>
+
+      <!-- 手机滑动分段选择 -->
+      <nav class="mode-slider" role="tablist">
+        <button class="mode-item active elder" id="btnElder" onclick="switchMode('elder')">
+          <span>👵</span> <span>长辈关爱</span>
+        </button>
+        <button class="mode-item kids" id="btnKids" onclick="switchMode('kids')">
+          <span>👶</span> <span>童趣启蒙</span>
+        </button>
+        <button class="mode-item family" id="btnFamily" onclick="switchMode('family')">
+          <span>🏡</span> <span>家庭看板</span>
+        </button>
+      </nav>
+    </header>
+
+    <!-- 主滚动区域 -->
+    <main class="content-scroll" id="contentScroll">
+      
+      <!-- 问候与今日重点提示 -->
+      <div class="status-card">
+        <div class="status-avatar" id="avatarIcon">👵</div>
+        <div class="status-info">
+          <div class="status-title" id="greetingTitle">上午好，外婆！</div>
+          <div class="status-desc" id="greetingDesc">今日霜降 · 18℃ 晴 · 降压药已到点，记得喝温水哦</div>
+        </div>
+      </div>
+
+      <!-- 对话流卡片区 -->
+      <div class="chat-flow" id="chatFlow">
+        <div class="chat-bubble-wrap ai">
+          <div class="bubble-avatar" id="bubbleAvatar">👵</div>
+          <div>
+            <div class="bubble-text" id="bubbleMsg">
+              外婆，早上吃了降压药没有呀？今天天气很好，要不要听两段您最爱听的黄梅戏《女驸马》？
+            </div>
+            <button class="read-aloud-btn" onclick="speakText(this)">
+              <span>🔊</span> <span>朗读这段话</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 今日打卡日程 -->
+      <section class="app-card">
+        <div class="card-head">
+          <div class="card-title">
+            <span id="taskIcon">💊</span>
+            <span id="taskTitle">今日关爱日程</span>
+          </div>
+          <span class="card-badge" id="taskStat">已完成 1/3</span>
+        </div>
+
+        <div class="task-list">
+          <div class="task-item checked" onclick="toggleTask(this)">
+            <div class="task-checkbox">✓</div>
+            <div class="task-details">
+              <div class="task-label" id="t1">早晨温水一杯 + 降压药</div>
+              <div class="task-time">08:00 · 饭后半小时</div>
+            </div>
+          </div>
+
+          <div class="task-item" onclick="toggleTask(this)">
+            <div class="task-checkbox"></div>
+            <div class="task-details">
+              <div class="task-label" id="t2">公园散步晒晒背 20分钟</div>
+              <div class="task-time">10:00 · 舒筋活络</div>
+            </div>
+          </div>
+
+          <div class="task-item" onclick="toggleTask(this)">
+            <div class="task-checkbox"></div>
+            <div class="task-details">
+              <div class="task-label" id="t3">午饭后闭目小憩半小时</div>
+              <div class="task-time">13:00 · 养心安神</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 快捷百宝箱 -->
+      <section class="app-card">
+        <div class="card-head">
+          <div class="card-title">
+            <span>🎁</span>
+            <span id="boxTitle">长辈暖心百宝箱</span>
+          </div>
+        </div>
+
+        <div class="tools-grid">
+          <div class="tool-btn" onclick="quickAsk('music')">
+            <span class="tool-icon">📻</span>
+            <span class="tool-text" id="b1">听老歌戏曲</span>
+          </div>
+          <div class="tool-btn" onclick="quickAsk('health')">
+            <span class="tool-icon">🍵</span>
+            <span class="tool-text" id="b2">节气养生建议</span>
+          </div>
+          <div class="tool-btn" onclick="quickAsk('story')">
+            <span class="tool-icon">📖</span>
+            <span class="tool-text" id="b3">忆苦思甜老故事</span>
+          </div>
+          <div class="tool-btn" onclick="quickAsk('call')">
+            <span class="tool-icon">📞</span>
+            <span class="tool-text" id="b4">给女儿语音留言</span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 底部常驻单手对讲控制台 -->
+    <footer class="bottom-bar">
+      <button class="voice-main-btn" id="voiceBtn" onclick="toggleVoice()">
+        <span id="voiceIcon">🎤</span>
+        <span id="voiceLabel">按住 / 点击开始对讲</span>
+        <div class="mic-wave">
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+        </div>
+      </button>
+
+      <div class="quick-text-box">
+        <input type="text" class="quick-input" id="textInput" placeholder="打字说话点这里..." onkeydown="onEnter(event)">
+        <button class="quick-send" onclick="sendInput()">发送</button>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    let currentMode = 'elder';
+    let isListening = false;
+    let zoomLevel = 1; // 0: 标准, 1: 大字, 2: 超大字
+
+    // 模式切换
+    function switchMode(mode) {
+      currentMode = mode;
+      document.body.className = 'mode-' + mode;
+
+      document.querySelectorAll('.mode-item').forEach(b => b.classList.remove('active'));
+      document.getElementById('btnElder').classList.toggle('active', mode === 'elder');
+      document.getElementById('btnKids').classList.toggle('active', mode === 'kids');
+      document.getElementById('btnFamily').classList.toggle('active', mode === 'family');
+
+      const avatar = document.getElementById('avatarIcon');
+      const bubbleAvatar = document.getElementById('bubbleAvatar');
+      const gTitle = document.getElementById('greetingTitle');
+      const gDesc = document.getElementById('greetingDesc');
+      const bMsg = document.getElementById('bubbleMsg');
+
+      if (mode === 'elder') {
+        avatar.innerText = '👵';
+        bubbleAvatar.innerText = '👵';
+        gTitle.innerText = '上午好，外婆！';
+        gDesc.innerText = '今日霜降 · 18℃ 晴 · 降压药已到点，记得喝温水哦';
+        bMsg.innerText = '外婆，早上吃了降压药没有呀？今天天气很好，要不要听两段您最爱听的黄梅戏《女驸马》？';
+        
+        document.getElementById('taskIcon').innerText = '💊';
+        document.getElementById('taskTitle').innerText = '今日关爱日程';
+        document.getElementById('t1').innerText = '早晨温水一杯 + 降压药';
+        document.getElementById('t2').innerText = '公园散步晒晒背 20分钟';
+        document.getElementById('t3').innerText = '午饭后闭目小憩半小时';
+
+        document.getElementById('boxTitle').innerText = '长辈暖心百宝箱';
+        document.getElementById('b1').innerText = '听老歌戏曲';
+        document.getElementById('b2').innerText = '节气养生建议';
+        document.getElementById('b3').innerText = '忆苦思甜老故事';
+        document.getElementById('b4').innerText = '给女儿语音留言';
+      } else if (mode === 'kids') {
+        avatar.innerText = '🐻';
+        bubbleAvatar.innerText = '🐻';
+        gTitle.innerText = '嗨！我是小熊豆豆！';
+        gDesc.innerText = '今天想听哪个宇宙大冒险？还有好习惯任务等你挑战！';
+        bMsg.innerText = '今天在幼儿园乖不乖？晚上准备了《彩虹独角兽与魔法泡泡》的故事，现在想听吗？';
+
+        document.getElementById('taskIcon').innerText = '⭐';
+        document.getElementById('taskTitle').innerText = '好习惯养成挑战';
+        document.getElementById('t1').innerText = '早起乖乖刷牙洗脸';
+        document.getElementById('t2').innerText = '喝一大杯纯牛奶 🥛';
+        document.getElementById('t3').innerText = '晚上 21:00 准时听睡前故事';
+
+        document.getElementById('boxTitle').innerText = '童趣奇妙游乐园';
+        document.getElementById('b1').innerText = '睡前互动绘本';
+        document.getElementById('b2').innerText = '万物为什么问答';
+        document.getElementById('b3').innerText = '趣味成语小剧场';
+        document.getElementById('b4').innerText = '给爸爸妈妈留语音';
+      } else if (mode === 'family') {
+        avatar.innerText = '🏡';
+        bubbleAvatar.innerText = '🤖';
+        gTitle.innerText = '家庭看护中控看板';
+        gDesc.innerText = '今日长辈与孩子各项指标正常 · 守护简报已同步';
+        bMsg.innerText = '【看护简报】外婆早晨 08:30 已打卡降压药，对讲 12 分钟，情绪平稳；孩子已完成早起喝牛奶任务。';
+
+        document.getElementById('taskIcon').innerText = '📊';
+        document.getElementById('taskTitle').innerText = '家庭看护监控项';
+        document.getElementById('t1').innerText = '外婆降压药按时打卡确认（已完成）';
+        document.getElementById('t2').innerText = '孩子睡前故事配额监控';
+        document.getElementById('t3').innerText = '全家周末探望日历配置';
+
+        document.getElementById('boxTitle').innerText = '远程看护与中控工具';
+        document.getElementById('b1').innerText = '远程配置用药提醒';
+        document.getElementById('b2').innerText = '录制亲情提醒语音';
+        document.getElementById('b3').innerText = '老人情绪状态周报';
+        document.getElementById('b4').innerText = '一键呼叫紧急联络人';
+      }
+    }
+
+    // 语音对讲触发
+    function toggleVoice() {
+      const btn = document.getElementById('voiceBtn');
+      const label = document.getElementById('voiceLabel');
+      const icon = document.getElementById('voiceIcon');
+
+      // 触感反馈（如果移动端支持震动 API）
+      if ('vibrate' in navigator) navigator.vibrate(40);
+
+      if (!isListening) {
+        isListening = true;
+        btn.classList.add('active');
+        icon.innerText = '🔴';
+        label.innerText = '正在用心倾听您说话...';
+
+        // 模拟对讲录音 2.6 秒
+        setTimeout(() => {
+          if (isListening) {
+            isListening = false;
+            btn.classList.remove('active');
+            icon.innerText = '🎤';
+            label.innerText = '按住 / 点击开始对讲';
+
+            const userText = currentMode === 'elder' ? "今天中午喝点什么热汤好呀？" : "天上为什么会有小鸟飞呢？";
+            appendChat('user', userText);
+
+            setTimeout(() => {
+              const aiText = currentMode === 'elder' 
+                ? "外婆，今天霜降有点风，中午炖点山药排骨汤或者百合莲子汤最润肺了，记得稍微少放点盐哦！"
+                : "因为小鸟的羽毛非常轻巧，两只翅膀像小飞机的机翼一样，扇动空气就能带它们飞上天空啦！";
+              appendChat('ai', aiText);
+            }, 700);
+          }
+        }, 2600);
+      } else {
+        isListening = false;
+        btn.classList.remove('active');
+        icon.innerText = '🎤';
+        label.innerText = '按住 / 点击开始对讲';
+      }
+    }
+
+    // 发送文字消息
+    function sendInput() {
+      const input = document.getElementById('textInput');
+      const text = input.value.trim();
+      if (!text) return;
+      appendChat('user', text);
+      input.value = '';
+
+      setTimeout(() => {
+        let reply = "";
+        if (currentMode === 'elder') {
+          reply = `听清楚啦外婆！“${text}”，我都帮您牢牢记在备忘本里了，有什么想唠的随时找我！`;
+        } else if (currentMode === 'kids') {
+          reply = `哇！你的脑筋转得真快！豆豆马上给你变出一个关于“${text}”的奇妙小故事！`;
+        } else {
+          reply = `已为您在家庭日程备忘录中同步更新：“${text}”。`;
+        }
+        appendChat('ai', reply);
+      }, 600);
+    }
+
+    function onEnter(e) {
+      if (e.key === 'Enter') sendInput();
+    }
+
+    // 动态追加对话气泡
+    function appendChat(role, message) {
+      const flow = document.getElementById('chatFlow');
+      const wrap = document.createElement('div');
+      wrap.className = 'chat-bubble-wrap ' + role;
+
+      const avatar = document.createElement('div');
+      avatar.className = 'bubble-avatar';
+      if (role === 'user') {
+        avatar.innerText = currentMode === 'elder' ? '👵' : (currentMode === 'kids' ? '👶' : '👤');
+      } else {
+        avatar.innerText = currentMode === 'elder' ? '👵' : (currentMode === 'kids' ? '🐻' : '🤖');
+      }
+
+      const body = document.createElement('div');
+      const text = document.createElement('div');
+      text.className = 'bubble-text';
+      text.innerText = message;
+      body.appendChild(text);
+
+      if (role === 'ai') {
+        const btn = document.createElement('button');
+        btn.className = 'read-aloud-btn';
+        btn.innerHTML = '<span>🔊</span> <span>朗读这段话</span>';
+        btn.onclick = function() { speakText(this); };
+        body.appendChild(btn);
+      }
+
+      wrap.appendChild(avatar);
+      wrap.appendChild(body);
+      flow.appendChild(wrap);
+
+      // 滚动到底部
+      const scroller = document.getElementById('contentScroll');
+      scroller.scrollTop = scroller.scrollHeight;
+
+      if (role === 'ai') {
+        speakContent(message);
+      }
+    }
+
+    // 语音播报 Web Speech API
+    function speakText(btn) {
+      const text = btn.previousElementSibling.innerText;
+      speakContent(text);
+    }
+
+    function speakContent(text) {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = 'zh-CN';
+        utter.rate = currentMode === 'elder' ? 0.85 : 1.0;
+        window.speechSynthesis.speak(utter);
+      }
+    }
+
+    // 任务打卡
+    function toggleTask(item) {
+      if ('vibrate' in navigator) navigator.vibrate(25);
+      item.classList.toggle('checked');
+      const box = item.querySelector('.task-checkbox');
+      box.innerText = item.classList.contains('checked') ? '✓' : '';
+
+      const total = document.querySelectorAll('.task-item').length;
+      const checked = document.querySelectorAll('.task-item.checked').length;
+      document.getElementById('taskStat').innerText = `已完成 ${checked}/${total}`;
+    }
+
+    // 快捷百宝箱
+    function quickAsk(type) {
+      let q = "";
+      if (type === 'music') q = "我想听一段喜庆的黄梅戏名段";
+      else if (type === 'health') q = "霜降节气长辈吃什么最养生？";
+      else if (type === 'story') q = "给我讲一个童话故事";
+      else if (type === 'call') q = "我要给家里留一段语音";
+
+      appendChat('user', q);
+      setTimeout(() => {
+        let ans = "";
+        if (type === 'music') ans = "好嘞！马上为您播放《女驸马·谁料皇榜中状元》，老艺术家严凤英经典原版，声音已经为您调大啦！";
+        else if (type === 'health') ans = "霜降养生防秋燥，多吃白萝卜、银耳、雪梨，早起一杯温开水，脚腕要注意保暖避风寒哦！";
+        else if (type === 'story') ans = "很久很久以前，在云朵城堡里住着一只会打喷嚏变出棉花糖的小松鼠……今天它要举办一场派对！";
+        else if (type === 'call') ans = "语音留言通道已开启，请对准手机说话，我会自动转录并推送到家人的微信上！";
+        appendChat('ai', ans);
+      }, 700);
+    }
+
+    // 字号缩放
+    function toggleZoom() {
+      const scales = [1.0, 1.2, 1.4];
+      const titles = ["标准字", "大字号", "特大字"];
+      zoomLevel = (zoomLevel + 1) % 3;
+      document.documentElement.style.setProperty('--font-scale', scales[zoomLevel]);
+      document.getElementById('fontBtn').innerText = titles[zoomLevel];
+    }
+  </script>
+</body>
+</html>

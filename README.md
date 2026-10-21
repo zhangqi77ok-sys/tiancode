@@ -1,50 +1,35 @@
-# 湉码 / tiancode
+# 伴暖 (WarmCompanion) · 移动端家庭一老一小双模陪伴平台
 
-**Windows 桌面 AI 编程工作台**——单 exe、本地数据，模型渠道 / MCP / 技能均可在对话中热插拔。
+面向家庭移动端 Web 的轻量级温情陪伴系统，采用 **Python (FastAPI) + 响应式移动端 Web** 架构，聚焦**银发长辈关爱**与**幼童启蒙成长**双向陪伴。
 
-架构与分层、行为契约、工程规范、版本里程碑见 [docs/](docs/) 下对应文档。
+## 🌟 核心特色 (Mobile-First 手机自适应)
 
-## 功能
+1. **👵 长辈关爱模式 (Elder Care)**
+   - 适老化超大字体（可一键切换特大字号）、WCAG AAA 级高对比度护眼排版。
+   - 语音优先：单手大触控对讲岛，支持 0.85x 低频温和语速朗读。
+   - 日常健康关怀：降压药/慢病定时打卡、节气养生常识、经典戏曲老歌点播。
 
-- **对话**：流式回复、多会话并行、本地账本（JSONL）崩溃恢复、消息队列、Esc 中断、时间线回滚（按任意轮回滚且保留对话历史）、后台会话主动提示（终态/等审批 toast + 任务栏闪烁）
-- **模型渠道**：OpenAI 兼容 / Anthropic / ChatGPT 订阅；多渠道选路故障切换、多 Key 轮询、连通性测试、OAuth 自动续期
-- **工作台**：右栏目录树 / 文件详情（可编辑，撤回走「应用到文件」）/ 浏览器驾驶舱 / 后台任务；输入框即仪表（模型切换 + 上下文余量）；代码高亮、生成提交说明（确认后才 git commit）、输入框下命令行
-- **上下文治理**：按预算分级折叠（旧工具输出 → 图片 → 重复读去重 → 旧回复正文），界面逐项写明折了什么；流式增量合并成单条账本事件，长会话秒开
-- **工具与扩展**：内置 fs / shell / git / search / webfetch（读网页正文）/ browser（驱动本机 Edge/Chrome 看页面与报错）；MCP 与技能在对话中热安装，保存即生效，无需重启
-- **记忆**：两级长期记忆（全局偏好 + 本项目事实），模型在对话中增量记忆，每轮注入系统提示
-- **安全**：审批闸门默认拦 shell / ext_manage / mcp / browser（清单可增减）、文件命令锁定在工作区内（未选工作区 = 纯对话）、密钥只存本机、后台有轮次在跑时关窗先确认
-- **代理**：全局 http(s) 代理，配置无效显式报错而非静默直连
-- **自动更新**（0.0.20 起）：启动后可从 GitHub Release 检查并一键升级（安装器覆盖安装并重启）
+2. **👶 童趣启蒙模式 (Kids Play)**
+   - 柔和马卡龙天空蓝与暖阳橙配色，大圆角趣味卡片，防沉迷与护眼设计。
+   - AI 睡前互动故事机、万物为什么百科问答、早晚好习惯打卡。
+   - 严苛的儿童内容安全拦截与正向价值观引导。
 
-规划中（尚未实现）：多 Agent 编排、Claude 订阅 OAuth、Gemini/Bedrock 适配。
+3. **🏡 家庭看护中控看板 (Family Dashboard)**
+   - 极简卡片流，直观展示老人健康用药与作息打卡。
+   - 孩子睡前故事与成长动态。
+   - 远程亲情留言便签与紧急呼叫配置。
 
-## 快速开始
+## 📁 目录结构
 
-从 `dist/` 运行 `tiancode-setup-vX.Y.Z.exe` 安装。首次启动在侧栏底部「渠道管理」添加渠道（BaseURL / API Key / 模型），需要海外上游时在同一面板配置全局代理。
-
-从源码构建（Go 1.22+、Node 20.19+）：
-
-```bash
-cd frontend && npm install && npm run build && cd ..   # 前端必须先于 Go 编译（go:embed）
-go build ./... && go test ./...                        # vendor 已入库，离线可跑
-go build -o bin/tiancode.exe . && ./bin/tiancode.exe
+```text
+├── docs/
+│   └── PRD_FAMILY_COMPANION.md     # 完整产品需求文档 (PRD)
+├── prototype/
+│   └── index.html                  # 交互式手机端自适应网页原型 (可直接在手机/浏览器打开)
+├── .gitignore
+└── README.md
 ```
 
-> `npm run build` 会清空 `frontend/dist/`，构建后执行 `git checkout -- frontend/dist/.gitkeep` 复原占位文件。
+## 📱 原型体验
 
-## 开发与发布
-
-```powershell
-# 发布（门禁 + 安装器 + 便携包，版本号取自 VERSION）
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1
-
-# 安装/卸载冒烟
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-smoke.ps1
-
-# 架构守卫（提交前必须通过）
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/arch_check.ps1
-```
-
-## 提交白名单例外（必须入库，勿清理）
-
-`vendor/`（离线构建）、`frontend/wailsjs/`（Wails 生成绑定）、`build/windows/icon.ico`（图标源资源）。
+直接在手机或电脑浏览器中打开 `prototype/index.html` 即可完整体验长辈模式、儿童模式与家庭看板的动态切换与语音对讲功能。
