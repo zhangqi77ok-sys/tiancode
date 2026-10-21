@@ -146,7 +146,6 @@
       font-weight: 700;
       color: var(--text-sub);
     }
-    .input-wrap { position: relative; }
     input {
       width: 100%;
       height: 48px;
@@ -232,10 +231,6 @@
       margin-top: 8px;
     }
     .submit-btn:active { transform: scale(0.98); }
-    .submit-btn.kids {
-      background: linear-gradient(135deg, var(--kids-blue) 0%, #0284C7 100%);
-      box-shadow: 0 6px 18px rgba(2, 132, 199, 0.25);
-    }
 
     .token-badge {
       display: flex;
@@ -251,7 +246,6 @@
       border: 1px solid #A7F3D0;
     }
 
-    /* 右上角管理员快捷登录角标 */
     .admin-link {
       position: absolute;
       top: 18px;
@@ -268,7 +262,6 @@
     }
     .admin-link:hover { color: var(--text-main); border-color: var(--text-sub); }
 
-    /* Toast 通知 */
     #toast {
       position: fixed;
       top: 20px;
@@ -335,48 +328,49 @@
     <div id="channelGuardian" style="display:none;">
       <div class="sub-switch">
         <button class="sub-btn active" id="subBtnLogin" onclick="switchGuardianSub('login')">守护者登录</button>
-        <button class="sub-btn" id="subBtnRegister" onclick="switchGuardianSub('register')">创建家庭空间</button>
+        <button class="sub-btn" id="subBtnRegister" onclick="switchGuardianSub('register')">创建家庭注册</button>
       </div>
 
       <!-- 守护者登录表单 -->
       <form id="formGuardianLogin" onsubmit="event.preventDefault(); submitGuardianLogin();">
         <div class="form-group">
-          <label class="form-label">手机号</label>
+          <label class="form-label">📱 手机号</label>
           <input type="tel" id="loginPhone" value="13800138000" placeholder="请输入11位手机号" maxlength="11">
         </div>
         <div class="form-group">
-          <label class="form-label">登录密码</label>
+          <label class="form-label">🔒 登录密码</label>
           <input type="password" id="loginPassword" value="Password123!" placeholder="请输入密码">
         </div>
         <button type="submit" class="submit-btn">
-          <span>🔐</span> <span>登 录</span>
+          <span>🔐</span> <span>登 录 并 进 入</span>
         </button>
       </form>
 
-      <!-- 守护者注册表单 -->
+      <!-- 守护者注册表单 (必须填写真实姓名/称呼) -->
       <form id="formGuardianRegister" style="display:none;" onsubmit="event.preventDefault(); submitGuardianRegister();">
         <div class="form-group">
-          <label class="form-label">手机号</label>
-          <input type="tel" id="regPhone" placeholder="请输入11位手机号" maxlength="11">
+          <label class="form-label">👤 您的姓名 / 称呼 <span style="color:#DC2626;">* (必填)</span></label>
+          <input type="text" id="regNickname" placeholder="例如：女儿小敏、张伯伯" required style="font-weight:700; border-color:#FED7AA;">
+          <div style="font-size:11px; color:var(--accent);">注册成功后，此名称将醒目展示在主页顶部和温情问候中</div>
         </div>
         <div class="form-group">
-          <label class="form-label">登录密码</label>
-          <input type="password" id="regPassword" placeholder="设置6位以上密码">
+          <label class="form-label">📱 手机号 <span style="color:#DC2626;">* (必填)</span></label>
+          <input type="tel" id="regPhone" placeholder="请输入11位手机号" maxlength="11" required>
         </div>
         <div class="form-group">
-          <label class="form-label">家庭空间名称</label>
-          <input type="text" id="regFamilyName" placeholder="例如：常青温馨一家">
+          <label class="form-label">🔒 设置登录密码 <span style="color:#DC2626;">* (必填)</span></label>
+          <input type="password" id="regPassword" placeholder="设置6位以上密码" required>
         </div>
         <div class="form-group">
-          <label class="form-label">您的称呼</label>
-          <input type="text" id="regNickname" placeholder="例如：女儿小敏">
+          <label class="form-label">🏡 家庭空间名称 <span style="color:#DC2626;">* (必填)</span></label>
+          <input type="text" id="regFamilyName" placeholder="例如：常青温馨一家" required>
         </div>
         <div class="form-group">
-          <label class="form-label">出生年月日 (用于智能适老测算)</label>
-          <input type="date" id="regBirthDate" value="1992-05-15">
+          <label class="form-label">🎂 出生年月日 (用于智能适老测算) <span style="color:#DC2626;">* (必填)</span></label>
+          <input type="date" id="regBirthDate" value="1992-05-15" required>
         </div>
         <button type="submit" class="submit-btn">
-          <span>✨</span> <span>创建家庭并进入</span>
+          <span>✨</span> <span>完成注册并进入伴暖</span>
         </button>
       </form>
     </div>
@@ -437,14 +431,14 @@
       }
     }
 
-    // 保存 30 天 Sa-Token 会话
-    function saveSessionAndRedirect(token, user) {
+    // 保存 30 天 Sa-Token 会话并携带用户名称跳转
+    function saveSessionAndRedirect(token, user, welcomeMsg) {
       localStorage.setItem('satoken', token);
       localStorage.setItem('satoken_user', JSON.stringify(user));
-      showToast("✅ 登录成功！30天持久免登已激活，正在进入伴暖空间...");
+      showToast(welcomeMsg || ("✅ 登录成功！欢迎回来，" + user.nickname + "！"));
       setTimeout(() => {
         window.location.href = 'index.html';
-      }, 1000);
+      }, 900);
     }
 
     // 1. 长辈/儿童 Pin 码免密入家
@@ -457,7 +451,7 @@
         return;
       }
 
-      // 演示状态自适应（外婆 8888，豆豆 6666）
+      // 演示预设：8888 对应外婆，6666 对应豆豆
       let role = 'elder';
       let name = '外婆';
       let birth = '1958-06-18';
@@ -471,7 +465,8 @@
       const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_" + role, fam: inviteCode, role: role, exp: Date.now() + 86400 * 30 * 1000 }));
       const user = { user_id: "usr_" + role, family_id: "fam_" + inviteCode, role: role, nickname: name, birth_date: birth };
 
-      saveSessionAndRedirect(mockToken, user);
+      const greeting = (role === 'elder' ? "👵 欢迎回家，" : "👶 欢迎回家，") + name + "！";
+      saveSessionAndRedirect(mockToken, user, greeting);
     }
 
     // 2. 守护者密码登录
@@ -484,29 +479,51 @@
         return;
       }
 
-      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_guardian", fam: "fam_demo", role: "guardian", exp: Date.now() + 86400 * 30 * 1000 }));
-      const user = { user_id: "usr_guardian", family_id: "fam_demo", role: "guardian", nickname: "女儿小敏", birth_date: "1992-05-15" };
+      let name = "女儿小敏";
+      const prevUser = localStorage.getItem('satoken_user');
+      if (prevUser) {
+        try {
+          const parsed = JSON.parse(prevUser);
+          if (parsed.nickname) name = parsed.nickname;
+        } catch(e) {}
+      }
 
-      saveSessionAndRedirect(mockToken, user);
+      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_guardian", fam: "fam_demo", role: "guardian", exp: Date.now() + 86400 * 30 * 1000 }));
+      const user = { user_id: "usr_guardian", family_id: "fam_demo", role: "guardian", nickname: name, birth_date: "1992-05-15" };
+
+      saveSessionAndRedirect(mockToken, user, "✅ 欢迎回来，" + name + "！");
     }
 
-    // 3. 守护者建家注册
+    // 3. 守护者建家注册 (姓名必填)
     function submitGuardianRegister() {
+      const nickname = document.getElementById('regNickname').value.trim();
       const phone = document.getElementById('regPhone').value.trim();
       const pass = document.getElementById('regPassword').value.trim();
       const famName = document.getElementById('regFamilyName').value.trim();
-      const nickname = document.getElementById('regNickname').value.trim();
       const birth = document.getElementById('regBirthDate').value;
 
-      if (!phone || !pass || !famName || !nickname) {
-        showToast("⚠️ 请将注册信息填写完整");
+      if (!nickname) {
+        showToast("⚠️ 注册必须填写您的姓名或称呼！");
+        document.getElementById('regNickname').focus();
+        return;
+      }
+      if (!phone || phone.length !== 11) {
+        showToast("⚠️ 请输入合法的 11 位手机号");
+        return;
+      }
+      if (!pass || pass.length < 6) {
+        showToast("⚠️ 登录密码不能少于 6 位");
+        return;
+      }
+      if (!famName) {
+        showToast("⚠️ 请输入家庭空间名称");
         return;
       }
 
-      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_new_guardian", fam: "fam_new", role: "guardian", exp: Date.now() + 86400 * 30 * 1000 }));
-      const user = { user_id: "usr_new_guardian", family_id: "fam_new", role: "guardian", nickname: nickname, birth_date: birth };
+      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_" + Date.now(), fam: "fam_" + famName, role: "guardian", exp: Date.now() + 86400 * 30 * 1000 }));
+      const user = { user_id: "usr_" + Date.now(), family_id: "fam_" + famName, role: "guardian", nickname: nickname, birth_date: birth };
 
-      saveSessionAndRedirect(mockToken, user);
+      saveSessionAndRedirect(mockToken, user, "🎉 注册成功！欢迎加入伴暖，" + nickname + "！");
     }
   </script>
 </body>

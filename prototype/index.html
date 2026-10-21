@@ -4,6 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>伴暖 (WarmCompanion) · 移动端家庭温情陪伴</title>
+  <script>
+    // 门禁守卫：未登录时强制跳转至独立登录注册门户
+    (function() {
+      try {
+        const token = localStorage.getItem('satoken');
+        const userStr = localStorage.getItem('satoken_user');
+        if (!token || !userStr) {
+          window.location.replace('login.html');
+        }
+      } catch (e) {}
+    })();
+  </script>
   <style>
     /* 核心设计系统与色彩 (CSS Custom Properties) */
     :root {
@@ -1169,10 +1181,14 @@
           <span>伴暖 WarmCompanion</span>
         </div>
         <div class="top-actions">
-          <a href="login.html" class="font-btn" style="text-decoration:none; display:inline-flex; align-items:center; background:#FFF; color:var(--accent); border:1px solid #FED7AA;" title="前往独立认证中心或切换账号">🔑 登录/入家</a>
-          <a href="admin.html" target="_blank" class="font-btn" style="text-decoration:none; display:inline-flex; align-items:center; background:#1E293B; color:#F8FAFC; border:1px solid #475569;" title="进入平台超级管理控制台">🛠️ 管理后台</a>
-          <button class="birthday-pill" id="birthdayBadge" onclick="openOnboarding()">🎂 <span id="badgeAgeText">68岁 · 长辈</span></button>
-          <button class="font-btn" id="fontBtn" onclick="toggleZoom()">大字号</button>
+          <div class="user-pill" id="userPillBadge" style="display:inline-flex; align-items:center; gap:4px; background:#FFF; border:1.5px solid #FED7AA; border-radius:20px; padding:3px 10px; font-size:12px; font-weight:800; color:var(--accent);" title="当前登录身份">
+            <span id="userPillIcon">👤</span>
+            <span id="userPillName">女儿小敏</span>
+            <span style="color:var(--text-muted); font-size:11px;" id="userPillRole">· 守护者</span>
+          </div>
+          <button class="font-btn" onclick="logoutAndRedirect()" style="background:#FEE2E2; color:#DC2626; border:1px solid #FCA5A5; padding:4px 8px;" title="退出当前账号并返回登录页">🚪 退出</button>
+          <a href="admin.html" target="_blank" class="font-btn" style="text-decoration:none; display:inline-flex; align-items:center; background:#1E293B; color:#F8FAFC; border:1px solid #475569; padding:4px 8px;" title="进入平台超级管理控制台">🛠️ 后台</a>
+          <button class="font-btn" id="fontBtn" onclick="toggleZoom()" style="padding:4px 8px;">大字</button>
         </div>
       </div>
 
@@ -1331,7 +1347,7 @@
         <div class="status-card" style="margin-top:12px;">
           <div class="status-avatar" style="background:#FFF7ED; border-color:#F97316;">🐻</div>
           <div class="status-info">
-            <div class="status-title">嗨！我是小熊豆豆！</div>
+            <div class="status-title" id="kidsGreetingTitle">嗨，宝贝！我是小熊豆豆！</div>
             <div class="status-desc">今天准备了超棒的探险故事，今晚我们一起出发吧！</div>
           </div>
         </div>
@@ -1431,6 +1447,14 @@
 
       <!-- ================= 🏡 家庭中控看板子视图 ================= -->
       <div id="viewFamily" class="mode-view" style="display: none;">
+        <!-- 守护者欢迎状态卡 -->
+        <div class="status-card" style="margin-bottom:12px;">
+          <div class="status-avatar" style="background:#EEF2FF; border-color:#6366F1;">🏡</div>
+          <div class="status-info">
+            <div class="status-title" id="familyGreetingTitle">您好，女儿小敏！</div>
+            <div class="status-desc">今日家庭老幼看护动态一切平稳，随时可为家人留言</div>
+          </div>
+        </div>
         <!-- 30秒温情看护简报 Bento Grid -->
         <div class="bento-grid">
           <div class="bento-card full-width">
@@ -1722,32 +1746,66 @@
       const icon = document.getElementById('personalTabIcon');
       const text = document.getElementById('personalTabText');
       const famText = document.getElementById('familyTabText');
-      const badgeText = document.getElementById('badgeAgeText');
+
+      // 从 localStorage 中提取已登录的用户信息与真实名称
+      let displayName = role === 'elder' ? '外婆' : (role === 'kids' ? '豆豆' : '女儿小敏');
+      const savedUserStr = localStorage.getItem('satoken_user');
+      if (savedUserStr) {
+        try {
+          const u = JSON.parse(savedUserStr);
+          if (u.nickname) displayName = u.nickname;
+        } catch (e) {}
+      }
+
+      // 更新顶部胶囊名称
+      const userPillName = document.getElementById('userPillName');
+      const userPillRole = document.getElementById('userPillRole');
+      const userPillIcon = document.getElementById('userPillIcon');
+      if (userPillName) userPillName.innerText = displayName;
 
       if (role === 'elder') {
-        if (badgeText) badgeText.innerText = `${age}岁 · 长辈`;
+        if (userPillIcon) userPillIcon.innerText = '👵';
+        if (userPillRole) userPillRole.innerText = `· ${age}岁长辈`;
         if (icon) icon.innerText = '👵';
         if (text) text.innerText = '我的暖心主页';
         if (famText) famText.innerText = '家庭看板';
         if (btnPersonal) btnPersonal.style.display = 'flex';
         if (btnFamily) btnFamily.style.display = 'flex';
+
+        const elderGreeting = document.getElementById('elderGreetingTitle');
+        if (elderGreeting) elderGreeting.innerText = `上午好，${displayName}！`;
       } else if (role === 'kids') {
-        if (badgeText) badgeText.innerText = `${age}岁 · 宝贝`;
+        if (userPillIcon) userPillIcon.innerText = '👶';
+        if (userPillRole) userPillRole.innerText = '· 宝贝';
         if (icon) icon.innerText = '👶';
         if (text) text.innerText = '豆豆熊乐园';
         if (famText) famText.innerText = '亲情便签看板';
         if (btnPersonal) btnPersonal.style.display = 'flex';
         if (btnFamily) btnFamily.style.display = 'flex';
+
+        const kidsGreeting = document.getElementById('kidsGreetingTitle');
+        if (kidsGreeting) kidsGreeting.innerText = `嗨，${displayName}！我是小熊豆豆！`;
       } else {
-        if (badgeText) badgeText.innerText = `${age}岁 · 守护者`;
+        if (userPillIcon) userPillIcon.innerText = '🏡';
+        if (userPillRole) userPillRole.innerText = '· 守护者';
         if (icon) icon.innerText = '🏡';
         if (text) text.innerText = '家庭中控全景看板';
         if (btnPersonal) btnPersonal.style.display = 'flex';
-        if (btnFamily) btnFamily.style.display = 'none'; // 守护者主打看板单屏
+        if (btnFamily) btnFamily.style.display = 'none';
+
+        const famGreeting = document.getElementById('familyGreetingTitle');
+        if (famGreeting) famGreeting.innerText = `您好，${displayName}！`;
       }
 
-      // 默认切换到个人专属主页
       switchPersonalOrFamily('personal');
+    }
+
+    function logoutAndRedirect() {
+      if (confirm("确定要退出当前账号并返回登录注册门户吗？")) {
+        localStorage.removeItem('satoken');
+        localStorage.removeItem('satoken_user');
+        window.location.href = 'login.html';
+      }
     }
 
     // 切换【我的主页】与【家庭看板】
