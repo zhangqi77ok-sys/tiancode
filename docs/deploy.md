@@ -2,7 +2,9 @@
 
 公开仓库不写真实 IP、密码或 Token。部署机地址只放在 Jenkins 全局环境变量 `DEPLOY_HOST` 里。
 
-伴暖目前是进程内内存存储，没有数据库。流水线不启动 Postgres。
+家庭、成员、设置、插件开关和插件进度在 SQLite 文件 `/srv/data/warmcompanion.sqlite`，由 compose 卷 `tiancode-data` 保住。流水线不启动 Postgres。重启容器不会清空这个文件。清空：`docker compose -p tiancode down` 之后删除卷 `tiancode_tiancode-data`。登录失败计数仍在进程内存里，重启后清零。
+
+这台练习机的公开地址是 HTTP。令牌会经过这条链路。在 nginx 前面加上 TLS 之前，不要把它当成公网生产入口。uvicorn 的 `--forwarded-allow-ips` 默认是 `127.0.0.1`，不再使用 `*`。容器里看到的对端通常是 Docker 网桥而不是 127.0.0.1，所以默认不会采信 `X-Forwarded-*`。只有在 TLS 终结的那一跳地址写进 `FORWARDED_ALLOW_IPS` 时才放行。
 
 ## 拓扑
 
@@ -45,12 +47,12 @@ Jenkins 全局环境变量沿用现有的 `DEPLOY_HOST` 与 `DEPLOY_USER=deploy`
 |---|---|
 | Init | 分支等于参数 `DEPLOY_BRANCH`（默认 `main`）才部署。`TAG=<提交前 12 位>-b<构建号>` |
 | Secrets scan | gitleaks 扫仓库 |
-| Lint & Test | `pip install -e '.[dev]'`、`ruff check backend`、`pytest`。没有 Postgres 阶段 |
+| Lint & Test | `pip install -e '.[dev]'`、`ruff check backend`、`pytest`（临时 SQLite）。没有 Postgres 阶段 |
 | Build image | 所有分支都 `docker build` |
 | Push GHCR | 仅部署分支。凭据缺失或过期则失败，不会静默改用别的镜像 |
 | Dedup check | 同一提交已部署且 `/readyz` 为 200 时跳过。`FORCE_DEPLOY` 可强制重来 |
 | Deploy | `scp` compose 与 `.env`，`docker compose -p tiancode up -d` |
-| Smoke | 部署机上 `curl 127.0.0.1:$API_PORT$SMOKE_PATH`（默认 `/readyz`）。默认路径时再检查 `/` 与 `/admin.html`。失败则回滚到 `.last_tag` |
+| Smoke | 部署机执行 `deploy/smoke.sh`。默认 `/readyz` 就绪后检查 `/`、`/login.html`、`/admin.html`，匿名管理接口为 401，注册一个守护者后 `/auth/me` 为 200，该令牌访问 `/api/v1/admin/ai/config` 为 403。`SMOKE_PATH` 不是 `/readyz` 时只探测那一条路径。失败则回滚到 `.last_tag` |
 
 ## `.env`
 
@@ -62,6 +64,8 @@ Jenkins 全局环境变量沿用现有的 `DEPLOY_HOST` 与 `DEPLOY_USER=deploy`
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理登录。`ADMIN_PASSWORD` 至少 12 位。`change-me` 和 `AdminPassword123!` 会拒绝启动 |
 | `API_PORT` | 宿主端口，默认 `8092`，前面固定 `127.0.0.1` |
 | `ROOT_PATH` | `/tiancode` |
+| `TIANCODE_DB` | 本地数据库文件。容器内由 compose 设为 `/srv/data/warmcompanion.sqlite` |
+| `FORWARDED_ALLOW_IPS` | 允许设置转发头的地址，默认 `127.0.0.1`。不要写 `*` |
 
 改密钥时同时改 Jenkins 凭据 `tiancode-deploy-env`。下次部署会用凭据覆盖部署机上的 `.env`。
 
@@ -85,6 +89,9 @@ docker build -t tiancode:dev .
 docker run --rm -d --name tiancode-dev -p 127.0.0.1:8092:8000 \
   -e JWT_SECRET="$(openssl rand -hex 32)" -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD="$(openssl rand -base64 24)" \
+  -e TIANCODE_DB=/srv/data/warmcompanion.sqlite \
+  -e FORWARDED_ALLOW_IPS=127.0.0.1 \
+  -v tiancode-dev-data:/srv/data \
   -e ROOT_PATH=/tiancode tiancode:dev
 curl -sf http://127.0.0.1:8092/healthz
 curl -sf http://127.0.0.1:8092/readyz

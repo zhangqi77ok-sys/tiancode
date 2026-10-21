@@ -80,7 +80,7 @@ def test_admin_rbac_ai_config_and_global_killswitch(client):
     ai_cfg_resp = client.get("/api/v1/admin/ai/config", headers=admin_headers)
     assert ai_cfg_resp.status_code == 200
     ai_cfg = ai_cfg_resp.json()
-    assert "sk-" in ai_cfg["api_key_masked"]
+    assert ai_cfg["api_key_masked"] == "未配置"
 
     # 6. 管理员热更新 AI 配置
     update_resp = client.put(

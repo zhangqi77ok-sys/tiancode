@@ -1,17 +1,24 @@
 # WarmCompanion (伴暖) — severity-ranked code review
 
-## Phase 1 status
+## Phase 1 and 2 status
 
-This branch now implements the auth and family-member fixes. The findings below are the original review of `5debeec`; they are not all still open.
+Phase 1 closed auth and member management. Phase 2 stores families in SQLite, points the prototype at those APIs, and extends deploy smoke. The findings below are the original review of `5debeec`.
 
 | Item | Status |
 | :--- | :--- |
 | C1 privilege escalation | Fixed. Member create accepts only `elder` / `child`. PIN login ignores any other role. `require_roles` guards guardian and admin routes. |
 | C2 fail-open secrets | Fixed. `create_app()` refuses a missing or published `JWT_SECRET` / `ADMIN_PASSWORD`. README no longer prints a live admin password. |
-| H3 settings wipe plugin toggles | Fixed. Settings update merges into the existing dict. |
-| M1 family plugin off still runs the action | Fixed. `dispatch_action` receives family settings and returns 403. |
-| M2 PIN storage, invite oracle, age/role, per-test state | Partially fixed: PIN is hashed, invite codes use `secrets`, bad invite and bad PIN share one 401, age must match role, deleted users fail `get_current_user`, and tests reset the in-memory stores. A 5-failure / 5-minute lockout covers member, guardian, and admin login. |
-| H1, H2, H4, H5, M3 coverage gaps beyond the cases above, M4 session revocation, M5 TLS, L1–L4 | Still open. Phase 2: database, real `login.html` API calls, remove fake admin metrics, extend Jenkins smoke past `/readyz`. |
+| H1 smoke and the test badge | Smoke in `deploy/smoke.sh` registers a guardian, checks `/auth/me`, and expects 403 on the admin config route. The static 11/11 badge is gone. |
+| H2 memory-only families | Fixed for accounts, settings, plugin toggles, kill-switch, and plugin progress. They live in `TIANCODE_DB`. Login lockout counters are still process memory. |
+| H3 settings wipe plugin toggles | Fixed. Settings update merges. Medication check-in honors `medication_reminder_enabled`. The curfew flag is stored and does not change behavior by clock time. |
+| H4 model, voice, safety | Not implemented. Admin metrics come from the API and stay at 0 dialogues. Saved provider fields are not used to call a model. |
+| H5 prototype session | Fixed. `login.html` stores the server JWT. `index.html` uses `/auth/me` and `child`. `admin.html` logs in and loads stats, config, and the kill switch. |
+| M1 family plugin off | Fixed. |
+| M2 PIN, invite, age | Fixed in phase 1, with hashed PINs now in SQLite. |
+| M4 Sa-Token / revocation | Header is a JWT alias. Deleted users fail the lookup. There is still no logout denylist; a live user’s 30-day token stays valid. |
+| M5 TLS and forwarded IPs | Documented as HTTP on the practice host. `forwarded-allow-ips` defaults to `127.0.0.1`. |
+| L1 license and README | `LICENSE` is MIT. README describes the SQLite app, not TTS or a model. |
+| L4 copy forks | The home page renders cards from `/plugins/active` and hides the old static plugin copy. |
 
 Reviewed tree: `5debeec` (`feat: enforce auth route guard, require user name on registration, and dynamically display name post-login`), 2026-10-21. The original pass did not change application code. Phase 1 did.
 

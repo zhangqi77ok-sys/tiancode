@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, require_roles
-from app.api.v1.auth import get_family_by_id
+from app.api.v1.auth import get_family_by_id, save_family
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.auth import UserContext, UserRole
@@ -110,6 +110,7 @@ def toggle_family_plugin(
     if not plugin:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"未找到插件: {plugin_id}")
 
-    fam_plugins = fam.get("settings", {}).setdefault("plugins", {})
+    fam_plugins = fam.setdefault("settings", {}).setdefault("plugins", {})
     fam_plugins[plugin_id] = req.enabled
+    save_family(fam)
     return {"status": "ok", "plugin_id": plugin_id, "enabled": req.enabled}

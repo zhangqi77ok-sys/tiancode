@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.core.store import store
 from app.plugins.base import BasePlugin
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import PluginActionResult, PluginCardData, PluginManifest
@@ -29,16 +30,26 @@ class PluginRegistry:
         """管理员设置插件全局开启/熔断状态"""
         if plugin_id not in self._plugins:
             raise ValueError(f"未找到插件: {plugin_id}")
+        store.kv_set(f"plugin_global:{plugin_id}", "1" if enabled else "0")
         self._global_enabled[plugin_id] = enabled
         logger.warning(f"管理员变更插件全局状态: [{plugin_id}] -> enabled={enabled}")
 
     def is_global_enabled(self, plugin_id: str) -> bool:
-        """检查插件是否处于全局开启状态（未显式关闭时默认为 True）"""
-        return self._global_enabled.get(plugin_id, True)
+        """检查插件是否处于全局开启状态（未显式关闭时默认为 True）。开关在 SQLite。"""
+        raw = store.kv_get(f"plugin_global:{plugin_id}")
+        if raw is None:
+            return True
+        return raw == "1"
 
     def get_invocation_count(self, plugin_id: str) -> int:
-        """获取插件历史调用量"""
-        return self._invocations.get(plugin_id, 0)
+        """获取插件历史调用量。次数写在 SQLite，重启后还在。"""
+        raw = store.kv_get(f"plugin_invocations:{plugin_id}")
+        if raw is None:
+            return 0
+        try:
+            return int(raw)
+        except ValueError:
+            return 0
 
     def register(self, plugin: BasePlugin) -> None:
         """注册插件到中心
@@ -51,12 +62,6 @@ class PluginRegistry:
             raise ValueError(f"插件 ID 已存在，禁止重复注册: {pid}")
         self._plugins[pid] = plugin
         logger.info(f"成功注册伴暖插件: [{pid}] {plugin.name}")
-
-    def unregister(self, plugin_id: str) -> None:
-        """卸载插件"""
-        if plugin_id in self._plugins:
-            del self._plugins[plugin_id]
-            logger.info(f"已卸载伴暖插件: [{plugin_id}]")
 
     def get_plugin(self, plugin_id: str) -> Optional[BasePlugin]:
         """按 ID 检索插件实例"""
@@ -140,7 +145,9 @@ class PluginRegistry:
                 f"权限不足：当前角色 [{context.role.value}] 无权操作插件 [{plugin.name}]"
             )
 
-        self._invocations[plugin_id] = self._invocations.get(plugin_id, 0) + 1
+        count = self.get_invocation_count(plugin_id) + 1
+        store.kv_set(f"plugin_invocations:{plugin_id}", str(count))
+        self._invocations[plugin_id] = count
         return await plugin.execute_action(action_name, payload, context)
 
 

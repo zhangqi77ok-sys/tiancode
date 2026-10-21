@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.api.deps import require_roles
 from app.core.runtime_secrets import jwt_secret
 from app.core.security import encode_jwt, hash_password, verify_password
+from app.core.store import store
 from app.schemas.auth import (
     FamilyMemberOut,
     FamilyMemberRole,
@@ -38,12 +39,7 @@ from app.schemas.auth import (
 
 router = APIRouter(prefix="/api/v1")
 
-# 内存数据。重启即清空。Phase 2 再换数据库。
-_FAMILIES: Dict[str, dict] = {}
-_USERS: Dict[str, dict] = {}
-_PHONE_TO_USER: Dict[str, str] = {}
-_INVITE_TO_FAMILY: Dict[str, str] = {}
-
+# 登录失败计数留在进程里。账号、家庭和插件开关在 SQLite。
 # key -> 失败时间戳（monotonic）。超过窗口的记录在检查时丢掉。
 _LOGIN_FAILS: Dict[str, List[float]] = {}
 LOGIN_FAIL_LIMIT = 5
@@ -65,7 +61,7 @@ def _generate_invite_code() -> str:
     alphabet = string.ascii_uppercase + string.digits
     for _ in range(32):
         code = "".join(secrets.choice(alphabet) for _ in range(6))
-        if code not in _INVITE_TO_FAMILY:
+        if store.get_family_by_invite(code) is None:
             return code
     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法分配家庭邀请码")
 
@@ -108,7 +104,7 @@ def _assert_age_for_role(role: str, birth_date_str: str) -> int:
 
 
 def _pin_taken(family_id: str, pin: str, except_user_id: Optional[str] = None) -> bool:
-    for user in _USERS.values():
+    for user in store.list_users():
         if user.get("family_id") != family_id or user.get("id") == except_user_id:
             continue
         pin_hash = user.get("pin_hash")
@@ -182,7 +178,7 @@ def _member_out(user: dict, pin_code: Optional[str] = None) -> FamilyMemberOut:
 
 
 def _family_member_or_404(member_id: str, family_id: str) -> dict:
-    user = _USERS.get(member_id)
+    user = store.get_user(member_id)
     if not user or user.get("family_id") != family_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="家庭成员不存在")
     return user
@@ -201,7 +197,7 @@ def ensure_platform_admin() -> dict:
         "pin_hash": None,
         "pin_code": None,
     }
-    _USERS[ADMIN_USER_ID] = user
+    store.upsert_user(user)
     return user
 
 
@@ -211,22 +207,23 @@ def ensure_platform_admin() -> dict:
 def register_guardian(req: RegisterRequest):
     """守护者注册账号并同时创建专属家庭空间。"""
     _assert_age_for_role(UserRole.GUARDIAN.value, req.birth_date)
-    if req.phone in _PHONE_TO_USER:
+    if store.get_user_by_phone(req.phone):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该手机号已注册，请直接登录")
 
     family_id = f"fam_{uuid.uuid4().hex[:10]}"
     invite_code = _generate_invite_code()
-    _FAMILIES[family_id] = {
-        "id": family_id,
-        "name": req.family_name,
-        "invite_code": invite_code,
-        "settings": {"medication_reminder_enabled": True, "kids_curfew_enabled": True},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _INVITE_TO_FAMILY[invite_code] = family_id
+    store.upsert_family(
+        {
+            "id": family_id,
+            "name": req.family_name,
+            "invite_code": invite_code,
+            "settings": {"medication_reminder_enabled": True, "kids_curfew_enabled": True},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
     user_id = f"usr_{uuid.uuid4().hex[:10]}"
-    _USERS[user_id] = {
+    user = {
         "id": user_id,
         "family_id": family_id,
         "nickname": req.nickname,
@@ -237,8 +234,8 @@ def register_guardian(req: RegisterRequest):
         "pin_hash": None,
         "pin_code": None,
     }
-    _PHONE_TO_USER[req.phone] = user_id
-    return _issue_token(_USERS[user_id])
+    store.upsert_user(user)
+    return _issue_token(user)
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -246,8 +243,7 @@ def login_guardian(req: LoginRequest):
     """守护者手机号 + 密码登录。"""
     key = f"guardian:{req.phone}"
     enforce_login_attempt(key)
-    user_id = _PHONE_TO_USER.get(req.phone)
-    user = _USERS.get(user_id) if user_id else None
+    user = store.get_user_by_phone(req.phone)
     if not user or not user.get("password_hash") or not verify_password(req.password, user["password_hash"]):
         record_login_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="手机号或密码错误")
@@ -284,7 +280,7 @@ def add_family_member(
         "pin_hash": hash_password(pin),
         "pin_code": None,
     }
-    _USERS[user_id] = user
+    store.upsert_user(user)
     created = _member_out(user, pin_code=pin)
     created.age = age
     return created
@@ -315,6 +311,7 @@ def update_family_member(
         user["pin_hash"] = hash_password(req.pin_code)
         user["pin_code"] = None
         revealed_pin = req.pin_code
+    store.upsert_user(user)
     return _member_out(user, pin_code=revealed_pin)
 
 
@@ -329,10 +326,7 @@ def remove_family_member(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足：不能移除当前登录账号")
     if user.get("role") == UserRole.ADMIN.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足：不能移除平台管理员")
-    phone = user.get("phone")
-    if phone and _PHONE_TO_USER.get(phone) == user["id"]:
-        _PHONE_TO_USER.pop(phone, None)
-    _USERS.pop(user["id"], None)
+    store.delete_user(user["id"])
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -347,10 +341,11 @@ def member_quick_login(req: MemberLoginRequest):
     key = f"member:{invite}"
     enforce_login_attempt(key)
 
-    family_id = _INVITE_TO_FAMILY.get(invite)
+    family = store.get_family_by_invite(invite)
+    family_id = family["id"] if family else None
     matched_user = None
     if family_id:
-        for user in _USERS.values():
+        for user in store.list_users():
             if user.get("family_id") != family_id or user.get("role") not in PIN_LOGIN_ROLES:
                 continue
             pin_hash = user.get("pin_hash")
@@ -369,9 +364,9 @@ def member_quick_login(req: MemberLoginRequest):
 @router.get("/auth/me")
 def get_my_profile(u: UserContext = Depends(require_roles(list(UserRole)))):
     """获取当前登录使用者的上下文。邀请码只返回给守护者。"""
-    fam = _FAMILIES.get(u.family_id, {})
+    fam = store.get_family(u.family_id) or {}
     invite_code = fam.get("invite_code", "") if u.role == UserRole.GUARDIAN else ""
-    return {
+    profile = {
         "user_id": u.user_id,
         "family_id": u.family_id,
         "family_name": fam.get("name", "我的温馨家"),
@@ -381,13 +376,16 @@ def get_my_profile(u: UserContext = Depends(require_roles(list(UserRole)))):
         "birth_date": u.birth_date,
         "age": _calc_age(u.birth_date),
     }
+    if u.role == UserRole.GUARDIAN:
+        profile["settings"] = fam.get("settings", {})
+    return profile
 
 
 @router.get("/family/members", response_model=List[FamilyMemberOut])
 def list_family_members(u: UserContext = Depends(require_roles(list(UserRole)))):
     """列出当前家庭的成员。Pin 不以明文返回。"""
     results = []
-    for user in _USERS.values():
+    for user in store.list_users():
         if user.get("family_id") == u.family_id:
             results.append(_member_out(user, pin_code=None))
     return results
@@ -399,27 +397,33 @@ def update_family_settings(
     u: UserContext = Depends(require_roles([UserRole.GUARDIAN])),
 ):
     """合并家庭看护设置。不会清掉 settings.plugins。"""
-    fam = _FAMILIES.get(u.family_id)
+    fam = store.get_family(u.family_id)
     if not fam:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="家庭空间不存在")
 
     settings = fam.setdefault("settings", {})
     settings.update(req.model_dump())
+    store.upsert_family(fam)
     return {"status": "ok", "settings": settings}
 
 
 # ================= 跨模块辅助查询函数 =================
 
 def get_family_by_id(family_id: str) -> Optional[dict]:
-    """获取指定家庭对象引用"""
-    return _FAMILIES.get(family_id)
+    """读取家庭。返回的是副本，改完要 save_family。"""
+    return store.get_family(family_id)
+
+
+def save_family(family: dict) -> None:
+    """把家庭名称、邀请码和 settings（含插件开关）写回 SQLite。"""
+    store.upsert_family(family)
 
 
 def get_all_families_count() -> int:
     """获取平台已注册家庭总数"""
-    return len(_FAMILIES)
+    return store.count_families()
 
 
 def get_all_users() -> List[dict]:
     """获取全平台用户列表副本"""
-    return list(_USERS.values())
+    return store.list_users()

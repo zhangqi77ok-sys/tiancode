@@ -42,12 +42,12 @@ def test_jwt_encode_and_decode_success():
 
 
 def test_satoken_header_support():
-    """支持使用 satoken 请求头提取身份，且用户必须仍在内存表中。"""
+    """支持使用 satoken 请求头提取身份，且用户必须仍在数据库中。"""
     from app.api.deps import get_current_user
-    from app.api.v1.auth import _USERS
     from app.core.runtime_secrets import jwt_secret
+    from app.core.store import store
 
-    _USERS["usr_sa_01"] = {
+    store.upsert_user({
         "id": "usr_sa_01",
         "family_id": "fam_01",
         "nickname": "测试用户",
@@ -57,7 +57,7 @@ def test_satoken_header_support():
         "password_hash": None,
         "pin_hash": None,
         "pin_code": None,
-    }
+    })
     payload = {
         "sub": "usr_sa_01",
         "fam": "fam_01",

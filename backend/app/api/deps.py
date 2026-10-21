@@ -56,10 +56,9 @@ def get_current_user(
             detail="令牌缺失必要身份字段 (sub/fam/role)",
         )
 
-    # 延迟导入，避免 deps ↔ auth 循环依赖。
-    from app.api.v1.auth import _USERS
+    from app.core.store import store
 
-    user = _USERS.get(str(claims["sub"]))
+    user = store.get_user(str(claims["sub"]))
     if (
         not user
         or str(user.get("family_id")) != str(claims.get("fam"))

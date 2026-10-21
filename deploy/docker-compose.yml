@@ -1,4 +1,4 @@
-# 伴暖 API（内存存储，无数据库）。
+# 伴暖 API。家庭数据在容器内 SQLite：/srv/data/warmcompanion.sqlite。
 # 变量来自同目录 .env：compose 插值与 env_file 读的是同一个文件。
 # Jenkins 部署时额外注入 IMAGE / TAG，不必写进 .env。
 
@@ -12,7 +12,14 @@ services:
   api:
     image: ${IMAGE:-ghcr.io/zhangqi77ok-sys/tiancode}:${TAG:-latest}
     env_file: .env
+    environment:
+      TIANCODE_DB: /srv/data/warmcompanion.sqlite
     ports:
       - "127.0.0.1:${API_PORT:-8092}:8000"
+    volumes:
+      - tiancode-data:/srv/data
     logging: *log
     restart: unless-stopped
+
+volumes:
+  tiancode-data:

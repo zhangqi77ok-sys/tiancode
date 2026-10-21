@@ -1,12 +1,15 @@
-"""AI 模型与运行态管控中枢 (AI Runtime Configuration Manager)
+"""已保存的模型与语音配置。本进程不会调用大模型或 TTS 服务。
 
-负责管理大模型服务商通道、系统人设 Prompt、TTS/ASR 语速音色以及安全告警度量。
-支持平台管理员在运行时免重启热更新。
+管理员可以改这些字段，值写在 SQLite 里。对话次数和安全告警保持 0，
+因为没有任何请求会去调用模型。
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List
+
+from app.core.store import store
 from app.schemas.admin import AiConfigSchema, AiConfigUpdateRequest, LLMProviderType
 
 logger = logging.getLogger(__name__)
@@ -26,26 +29,84 @@ class AiConfigManager:
     """平台 AI 运行态配置单例管理器"""
 
     def __init__(self) -> None:
+        self._apply_defaults()
+        self._load()
+
+    def _apply_defaults(self) -> None:
         self._provider: LLMProviderType = LLMProviderType.MOCK
-        self._api_key: str = "sk-demo-antigravity-warmcompanion-key"
-        self._base_url: str = "https://api.deepseek.com/v1"
+        self._api_key: str = ""
+        self._base_url: str = ""
         self._elder_prompt: str = DEFAULT_ELDER_PROMPT
         self._child_prompt: str = DEFAULT_CHILD_PROMPT
-        self._safety_filter_enabled: bool = True
-        self._tts_elder_voice: str = "zh-CN-YunyangNeural"
-        self._tts_elder_rate: str = "-15%"
-        self._tts_child_voice: str = "zh-CN-XiaoyiNeural"
-        self._tts_child_rate: str = "+5%"
+        self._safety_filter_enabled: bool = False
+        self._tts_elder_voice: str = ""
+        self._tts_elder_rate: str = ""
+        self._tts_child_voice: str = ""
+        self._tts_child_rate: str = ""
         self._temperature: float = 0.7
         self._max_tokens: int = 800
-
-        # 度量统计
         self._dialogue_count: int = 0
         self._safety_alerts: List[Dict[str, Any]] = []
 
+    def _load(self) -> None:
+        raw = store.kv_get("ai_config")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(data, dict):
+            return
+        if data.get("llm_provider"):
+            self._provider = LLMProviderType(data["llm_provider"])
+        self._api_key = str(data.get("api_key") or "")
+        self._base_url = str(data.get("base_url") or "")
+        if data.get("elder_prompt") is not None:
+            self._elder_prompt = str(data["elder_prompt"])
+        if data.get("child_prompt") is not None:
+            self._child_prompt = str(data["child_prompt"])
+        if data.get("safety_filter_enabled") is not None:
+            self._safety_filter_enabled = bool(data["safety_filter_enabled"])
+        self._tts_elder_voice = str(data.get("tts_elder_voice") or "")
+        self._tts_elder_rate = str(data.get("tts_elder_rate") or "")
+        self._tts_child_voice = str(data.get("tts_child_voice") or "")
+        self._tts_child_rate = str(data.get("tts_child_rate") or "")
+        if data.get("temperature") is not None:
+            self._temperature = float(data["temperature"])
+        if data.get("max_tokens") is not None:
+            self._max_tokens = int(data["max_tokens"])
+
+    def _save(self) -> None:
+        store.kv_set(
+            "ai_config",
+            json.dumps(
+                {
+                    "llm_provider": self._provider.value,
+                    "api_key": self._api_key,
+                    "base_url": self._base_url,
+                    "elder_prompt": self._elder_prompt,
+                    "child_prompt": self._child_prompt,
+                    "safety_filter_enabled": self._safety_filter_enabled,
+                    "tts_elder_voice": self._tts_elder_voice,
+                    "tts_elder_rate": self._tts_elder_rate,
+                    "tts_child_voice": self._tts_child_voice,
+                    "tts_child_rate": self._tts_child_rate,
+                    "temperature": self._temperature,
+                    "max_tokens": self._max_tokens,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
     def get_config_schema(self) -> AiConfigSchema:
-        """获取脱敏配置契约输出"""
-        masked = f"{self._api_key[:3]}******" if len(self._api_key) > 6 else "sk-******"
+        """获取脱敏配置契约输出。空密钥表示还没有配置，也不会拿去调用模型。"""
+        if not self._api_key:
+            masked = "未配置"
+        elif len(self._api_key) > 6:
+            masked = f"{self._api_key[:3]}******"
+        else:
+            masked = "******"
         return AiConfigSchema(
             llm_provider=self._provider,
             api_key_masked=masked,
@@ -88,7 +149,8 @@ class AiConfigManager:
         if req.max_tokens is not None:
             self._max_tokens = req.max_tokens
 
-        logger.info(f"管理员热更新 AI 配置成功: provider={self._provider.value}")
+        self._save()
+        logger.info(f"管理员已保存模型配置: provider={self._provider.value}")
         return self.get_config_schema()
 
     def record_dialogue(self) -> None:
@@ -108,8 +170,9 @@ class AiConfigManager:
         return len(self._safety_alerts)
 
     def reset(self) -> None:
-        """测试隔离：恢复进程内默认配置与计数。"""
-        self.__init__()
+        """测试隔离：恢复默认配置，并覆盖 SQLite 里的旧值。"""
+        self._apply_defaults()
+        self._save()
 
 
 # 全局单例

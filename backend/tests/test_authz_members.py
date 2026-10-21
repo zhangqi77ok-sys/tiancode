@@ -9,7 +9,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.v1.admin import router as admin_router
-from app.api.v1.auth import _USERS, router as auth_router
+from app.api.v1.auth import router as auth_router
+from app.core.store import store
 from app.api.v1.plugins import router as plugins_router
 from app.core.security import hash_password, verify_password
 from app.main import create_app
@@ -70,7 +71,7 @@ def test_guardian_cannot_mint_admin_or_guardian_member(client):
 
 def test_poisoned_admin_row_cannot_pin_login(client):
     headers, invite, family_id = _register(client, "13900001112")
-    _USERS["usr_poison_admin"] = {
+    store.upsert_user({
         "id": "usr_poison_admin",
         "family_id": family_id,
         "nickname": "poison",
@@ -80,7 +81,7 @@ def test_poisoned_admin_row_cannot_pin_login(client):
         "password_hash": None,
         "pin_code": "9999",
         "pin_hash": hash_password("9999"),
-    }
+    })
     # headers unused; the row is planted directly
     assert headers
     login = client.post(
@@ -185,7 +186,7 @@ def test_pin_is_hashed_and_invite_errors_do_not_enumerate(client):
         client, headers, nickname="外婆", role="elder", birth_date="1952-04-04", pin_code="8888"
     )
     assert created.status_code == 201
-    stored = next(user for user in _USERS.values() if user["nickname"] == "外婆" and user["family_id"] == family_id)
+    stored = next(user for user in store.list_users() if user["nickname"] == "外婆" and user["family_id"] == family_id)
     assert stored.get("pin_code") in (None, "")
     assert stored.get("pin_hash")
     assert stored["pin_hash"] != "8888"

@@ -309,13 +309,13 @@
 
         <div class="form-group">
           <label class="form-label">家庭邀请码 (6 位大写)</label>
-          <input type="text" id="memberInviteCode" value="HAPPY8" placeholder="例如：HAPPY8" style="text-transform:uppercase; font-weight:700;">
+          <input type="text" id="memberInviteCode" placeholder="注册后在主页看到的 6 位码" style="text-transform:uppercase; font-weight:700;">
         </div>
 
         <div class="form-group">
           <label class="form-label">个人专属 Pin 码 (4~6 位数字)</label>
-          <input type="password" id="memberPinCode" class="pin-input" value="8888" placeholder="••••" maxlength="6">
-          <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">预设演示：外婆 Pin 码为 8888，豆豆 Pin 码为 6666</div>
+          <input type="password" id="memberPinCode" class="pin-input" placeholder="••••" maxlength="6">
+          <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Pin 只在守护者添加成员时出现一次，这里没有预置账号。</div>
         </div>
       </div>
 
@@ -335,11 +335,11 @@
       <form id="formGuardianLogin" onsubmit="event.preventDefault(); submitGuardianLogin();">
         <div class="form-group">
           <label class="form-label">📱 手机号</label>
-          <input type="tel" id="loginPhone" value="13800138000" placeholder="请输入11位手机号" maxlength="11">
+          <input type="tel" id="loginPhone" placeholder="请输入11位手机号" maxlength="11">
         </div>
         <div class="form-group">
           <label class="form-label">🔒 登录密码</label>
-          <input type="password" id="loginPassword" value="Password123!" placeholder="请输入密码">
+          <input type="password" id="loginPassword" placeholder="请输入密码">
         </div>
         <button type="submit" class="submit-btn">
           <span>🔐</span> <span>登 录 并 进 入</span>
@@ -377,7 +377,7 @@
 
     <!-- Sa-Token 30 天持久会话保障标识 -->
     <div class="token-badge">
-      <span>🛡️</span> <span>Sa-Token 协议驱动 · 30天持久免登会话保障 (2,592,000s)</span>
+      <span>🛡️</span> <span>登录后保存服务器签发的 JWT。请求会同时带 Authorization 和 satoken。</span>
     </div>
   </div>
 
@@ -432,98 +432,112 @@
     }
 
     // 保存 30 天 Sa-Token 会话并携带用户名称跳转
+    function apiUrl(path) {
+      return 'api/v1' + path;
+    }
+
+    function errorText(data) {
+      const detail = data && data.detail;
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) return detail.map((item) => item.msg || '').join(' ');
+      return '请求失败。请通过正在运行的服务打开本页，不要直接双击 html 文件。';
+    }
+
     function saveSessionAndRedirect(token, user, welcomeMsg) {
       localStorage.setItem('satoken', token);
       localStorage.setItem('satoken_user', JSON.stringify(user));
-      showToast(welcomeMsg || ("✅ 登录成功！欢迎回来，" + user.nickname + "！"));
+      localStorage.removeItem('warm_jwt_token');
+      showToast(welcomeMsg || ("登录成功，" + (user.nickname || user.name || "")));
       setTimeout(() => {
         window.location.href = 'index.html';
       }, 900);
     }
 
-    // 1. 长辈/儿童 Pin 码免密入家
-    function submitMemberLogin() {
+    async function postJson(path, body) {
+      const resp = await fetch(apiUrl(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(errorText(data));
+      return data;
+    }
+
+    async function submitMemberLogin() {
       const inviteCode = document.getElementById('memberInviteCode').value.trim().toUpperCase();
       const pinCode = document.getElementById('memberPinCode').value.trim();
-
       if (!inviteCode || !pinCode) {
-        showToast("⚠️ 请完整填写家庭码和专属 Pin 码");
+        showToast("请完整填写家庭码和专属 Pin 码");
         return;
       }
-
-      // 演示预设：8888 对应外婆，6666 对应豆豆
-      let role = 'elder';
-      let name = '外婆';
-      let birth = '1958-06-18';
-
-      if (pinCode === '6666') {
-        role = 'child';
-        name = '豆豆';
-        birth = '2019-09-01';
+      try {
+        const data = await postJson('/auth/member-login', { invite_code: inviteCode, pin_code: pinCode });
+        saveSessionAndRedirect(data.access_token, {
+          user_id: data.user_id,
+          family_id: data.family_id,
+          role: data.role,
+          nickname: data.name,
+        }, "欢迎回来，" + data.name);
+      } catch (err) {
+        showToast(err.message);
       }
-
-      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_" + role, fam: inviteCode, role: role, exp: Date.now() + 86400 * 30 * 1000 }));
-      const user = { user_id: "usr_" + role, family_id: "fam_" + inviteCode, role: role, nickname: name, birth_date: birth };
-
-      const greeting = (role === 'elder' ? "👵 欢迎回家，" : "👶 欢迎回家，") + name + "！";
-      saveSessionAndRedirect(mockToken, user, greeting);
     }
 
-    // 2. 守护者密码登录
-    function submitGuardianLogin() {
+    async function submitGuardianLogin() {
       const phone = document.getElementById('loginPhone').value.trim();
       const pass = document.getElementById('loginPassword').value.trim();
-
       if (!phone || !pass) {
-        showToast("⚠️ 请输入手机号与密码");
+        showToast("请输入手机号与密码");
         return;
       }
-
-      let name = "女儿小敏";
-      const prevUser = localStorage.getItem('satoken_user');
-      if (prevUser) {
-        try {
-          const parsed = JSON.parse(prevUser);
-          if (parsed.nickname) name = parsed.nickname;
-        } catch(e) {}
+      try {
+        const data = await postJson('/auth/login', { phone: phone, password: pass });
+        saveSessionAndRedirect(data.access_token, {
+          user_id: data.user_id,
+          family_id: data.family_id,
+          role: data.role,
+          nickname: data.name,
+        }, "欢迎回来，" + data.name);
+      } catch (err) {
+        showToast(err.message);
       }
-
-      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_guardian", fam: "fam_demo", role: "guardian", exp: Date.now() + 86400 * 30 * 1000 }));
-      const user = { user_id: "usr_guardian", family_id: "fam_demo", role: "guardian", nickname: name, birth_date: "1992-05-15" };
-
-      saveSessionAndRedirect(mockToken, user, "✅ 欢迎回来，" + name + "！");
     }
 
-    // 3. 守护者建家注册 (姓名必填)
-    function submitGuardianRegister() {
+    async function submitGuardianRegister() {
       const nickname = document.getElementById('regNickname').value.trim();
       const phone = document.getElementById('regPhone').value.trim();
       const pass = document.getElementById('regPassword').value.trim();
       const famName = document.getElementById('regFamilyName').value.trim();
       const birth = document.getElementById('regBirthDate').value;
-
-      if (!nickname) {
-        showToast("⚠️ 注册必须填写您的姓名或称呼！");
-        document.getElementById('regNickname').focus();
+      if (!nickname || !phone || !pass || !famName || !birth) {
+        showToast("请填写姓名、手机号、密码、家庭名称和出生日期");
         return;
       }
-      if (!phone || phone.length !== 11) {
-        showToast("⚠️ 请输入合法的 11 位手机号");
-        return;
+      try {
+        const data = await postJson('/auth/register', {
+          nickname: nickname,
+          phone: phone,
+          password: pass,
+          family_name: famName,
+          birth_date: birth,
+        });
+        const me = await fetch(apiUrl('/auth/me'), {
+          headers: { satoken: data.access_token, Authorization: 'Bearer ' + data.access_token },
+        });
+        const profile = me.ok ? await me.json() : {};
+        const invite = profile.invite_code ? " 邀请码 " + profile.invite_code : "";
+        saveSessionAndRedirect(data.access_token, {
+          user_id: data.user_id,
+          family_id: data.family_id,
+          role: data.role,
+          nickname: data.name,
+          birth_date: birth,
+          invite_code: profile.invite_code || "",
+        }, "注册成功，" + data.name + invite);
+      } catch (err) {
+        showToast(err.message);
       }
-      if (!pass || pass.length < 6) {
-        showToast("⚠️ 登录密码不能少于 6 位");
-        return;
-      }
-      if (!famName) {
-        showToast("⚠️ 请输入家庭空间名称");
-        return;
-      }
-
-      const mockToken = "satoken_" + btoa(JSON.stringify({ sub: "usr_" + Date.now(), fam: "fam_" + famName, role: "guardian", exp: Date.now() + 86400 * 30 * 1000 }));
-      const user = { user_id: "usr_" + Date.now(), family_id: "fam_" + famName, role: "guardian", nickname: nickname, birth_date: birth };
-
-      saveSessionAndRedirect(mockToken, user, "🎉 注册成功！欢迎加入伴暖，" + nickname + "！");
     }
   </script>
 </body>

@@ -14,13 +14,17 @@ COPY prototype ./prototype
 
 RUN pip install --no-cache-dir . \
     && useradd -r app \
-    && chown -R app:app /srv/prototype
+    && mkdir -p /srv/data \
+    && chown -R app:app /srv/prototype /srv/data
 
 USER app
 EXPOSE 8000
+ENV TIANCODE_DB=/srv/data/warmcompanion.sqlite \
+    FORWARDED_ALLOW_IPS=127.0.0.1
 
 # --root-path 只影响 OpenAPI/Swagger 的对外地址，不把路由挂到该前缀下。
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*' --root-path \"${ROOT_PATH:-}\""]
+# forwarded-allow-ips 默认只信 127.0.0.1，不要用 *。
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips=\"${FORWARDED_ALLOW_IPS:-127.0.0.1}\" --root-path \"${ROOT_PATH:-}\""]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD ["python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT','8000') + '/healthz')"]

@@ -1,4 +1,4 @@
-// tiancode（伴暖）CI/CD。Jenkins 与应用在同一台练习机上，模式对齐 agent-memory，但没有数据库。
+// tiancode（伴暖）CI/CD。Jenkins 与应用在同一台练习机上。家庭数据在容器卷里的 SQLite。
 // 凭据（Jenkins Credentials，仓库里只出现 ID）：
 //   deploy-ssh            SSH 私钥，登录部署机 deploy 用户（与 agent-memory 共用）
 //   ghcr-token            用户名 + PAT（write:packages），部署分支必需（与 agent-memory 共用）
@@ -131,6 +131,7 @@ pipeline {
                 SSH="ssh -o StrictHostKeyChecking=accept-new"
                 $SSH "$T" "mkdir -p $APP_DIR"
                 scp -o StrictHostKeyChecking=accept-new -q deploy/docker-compose.yml "$T:$APP_DIR/docker-compose.yml"
+                scp -o StrictHostKeyChecking=accept-new -q deploy/smoke.sh "$T:$APP_DIR/smoke.sh"
                 scp -o StrictHostKeyChecking=accept-new -q "$ENVF" "$T:$APP_DIR/.env"
                 if [ "$DEPLOY_IMAGE" = "$GHCR_IMAGE" ] && [ -n "${GHCR_P:-}" ]; then
                   echo "$GHCR_P" | $SSH "$T" "docker login ghcr.io -u '$GHCR_U' --password-stdin"
@@ -150,7 +151,7 @@ pipeline {
         sshagent(['deploy-ssh']) {
           // 整段命令写在 ssh 参数里，和 agent-memory 一样。curl 失败也要先打出状态码，再由 ok 决定退出码。
           sh '''
-            ssh -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST "cd $APP_DIR && P=\\$(grep ^API_PORT= .env | cut -d= -f2 || true); P=\\${P:-8092}; ok=0; for i in \\$(seq 1 30); do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P$SMOKE_PATH || true); echo smoke api \\$i \\$c; [ \\"\\$c\\" = 200 ] && ok=1 && break; sleep 3; done; [ \\"\\$ok\\" = 1 ] || exit 1; if [ '$SMOKE_PATH' = /readyz ]; then for path in / /admin.html; do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P\\$path || true); echo smoke prototype \\$path \\$c; [ \\"\\$c\\" = 200 ] || exit 1; done; fi"
+            ssh -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST "SMOKE_PATH='$SMOKE_PATH' bash $APP_DIR/smoke.sh"
           '''
         }
       }

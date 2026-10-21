@@ -1,7 +1,8 @@
-"""测试进程使用固定的非公开密钥，并在每条用例前清空内存状态。"""
+"""测试进程使用固定的非公开密钥，并在每条用例前清空 SQLite。"""
 from __future__ import annotations
 
 import os
+import tempfile
 
 import pytest
 
@@ -9,24 +10,17 @@ import pytest
 os.environ["JWT_SECRET"] = "test-jwt-secret-for-local-suite-32bytes!"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "TestAdminPassword!"
+os.environ["TIANCODE_DB"] = tempfile.mktemp(suffix=".sqlite")
 
 
 @pytest.fixture(autouse=True)
-def _reset_in_memory_state():
-    from app.api.v1.auth import (
-        _FAMILIES,
-        _INVITE_TO_FAMILY,
-        _LOGIN_FAILS,
-        _PHONE_TO_USER,
-        _USERS,
-    )
+def _reset_stored_state():
+    from app.api.v1.auth import _LOGIN_FAILS
     from app.core.ai_config import ai_config_manager
+    from app.core.store import store
     from app.plugins.registry import plugin_registry
 
-    _FAMILIES.clear()
-    _USERS.clear()
-    _PHONE_TO_USER.clear()
-    _INVITE_TO_FAMILY.clear()
+    store.wipe()
     _LOGIN_FAILS.clear()
     plugin_registry._global_enabled.clear()
     plugin_registry._invocations.clear()
