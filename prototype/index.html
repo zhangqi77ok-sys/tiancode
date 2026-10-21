@@ -1140,6 +1140,24 @@
         </div>
 
         <button class="onboarding-btn" id="confirmBtn" onclick="confirmBirthday()">进入专属温情陪伴 ➔</button>
+
+        <!-- 家庭邀请码 + 4位Pin码极速免密登录选项 -->
+        <div style="text-align: center; margin-top: 2px;">
+          <button type="button" style="background:none; border:none; color:var(--accent); font-size:12px; font-weight:700; cursor:pointer; text-decoration:underline;" onclick="togglePinLoginBox()">
+            🔑 使用家庭邀请码 + Pin码免密登入 ▾
+          </button>
+        </div>
+
+        <div id="pinLoginBox" style="display:none; background:#FFFFFF; border-radius:16px; padding:12px; border:1px solid #E7E5E4; margin-top:4px;">
+          <div style="font-size:12px; color:#57534E; margin-bottom:8px; font-weight:700;">长辈/儿童快速入家：</div>
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <input type="text" id="inputInviteCode" placeholder="6位家庭码(HAPPY8)" style="flex:1; height:36px; border-radius:18px; border:1px solid #CBD5E1; padding:0 10px; font-size:12px; text-transform:uppercase;">
+            <input type="text" id="inputPinCode" placeholder="4位Pin码(8888)" style="width:110px; height:36px; border-radius:18px; border:1px solid #CBD5E1; padding:0 10px; font-size:12px; text-align:center;">
+          </div>
+          <button type="button" style="width:100%; height:38px; border-radius:19px; background:#0284C7; color:white; border:none; font-size:13px; font-weight:700; cursor:pointer;" onclick="submitPinLogin()">
+            免密换取 JWT 登录 ➔
+          </button>
+        </div>
       </div>
     </div>
 
@@ -1615,6 +1633,39 @@
     // 重新打开引导弹层
     function openOnboarding() {
       document.getElementById('onboardingOverlay').classList.remove('hidden');
+    }
+
+    // 展开/收起 Pin 码免密登录卡片
+    function togglePinLoginBox() {
+      const box = document.getElementById('pinLoginBox');
+      box.style.display = box.style.display === 'none' ? 'block' : 'none';
+    }
+
+    // 提交家庭邀请码 + 4位Pin码换取 JWT 令牌
+    function submitPinLogin() {
+      const inviteInput = document.getElementById('inputInviteCode');
+      const pinInput = document.getElementById('inputPinCode');
+      const invite = (inviteInput && inviteInput.value.trim().toUpperCase()) || 'HAPPY8';
+      const pin = (pinInput && pinInput.value.trim()) || '8888';
+
+      // 模拟 /api/v1/auth/member-login 契约
+      const isElder = pin === '8888' || pin.startsWith('8');
+      const role = isElder ? 'elder' : 'kids';
+      const age = isElder ? 68 : 8;
+      const bdate = isElder ? '1958-06-18' : '2018-09-01';
+
+      // 本地存储 JWT Token
+      const fakePayload = { sub: isElder ? 'usr_elder_01' : 'usr_child_01', fam: 'fam_' + invite, role: role, name: isElder ? '外婆' : '豆豆' };
+      try {
+        localStorage.setItem('warm_jwt_token', `ey.header.${btoa(JSON.stringify(fakePayload))}.signature`);
+      } catch (e) {}
+
+      selectedBirthDate = bdate;
+      applyUserRole(role, age);
+      document.getElementById('onboardingOverlay').classList.add('hidden');
+
+      alert(`🎉 登录成功！已根据家庭邀请码【${invite}】与专属Pin码【${pin}】签发 JWT 并进入【${isElder ? '外婆' : '宝贝'}】专属主页！`);
+      speakContent(isElder ? "外婆好！已为您开启大字关爱模式！" : "宝贝好！豆豆熊乐园为你开启啦！");
     }
 
     // 根据身份自适应配置顶部双 Tab
