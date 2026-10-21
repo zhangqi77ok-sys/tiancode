@@ -802,6 +802,294 @@
       align-items: center;
       gap: 6px;
     }
+
+    /* 亲情语音便签横幅 */
+    .memo-banner {
+      background: linear-gradient(135deg, #FFF7ED 0%, #FFEDD5 100%);
+      border: 1.5px solid #FDBA74;
+      border-radius: 18px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(249, 115, 22, 0.08);
+      transition: transform 0.15s ease;
+    }
+    .memo-banner:active { transform: scale(0.98); }
+    .memo-info { display: flex; align-items: center; gap: 10px; }
+    .memo-badge { width: 36px; height: 36px; border-radius: 50%; background: #F97316; color: white; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .memo-title { font-size: calc(14px * var(--font-scale)); font-weight: 800; color: #9A3412; }
+    .memo-sub { font-size: calc(12px * var(--font-scale)); color: #C2410C; }
+    .memo-play-pill { background: #EA580C; color: white; border: none; border-radius: 14px; padding: 6px 12px; font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+    /* 经典戏曲留声机卡片 (Opera Player) */
+    .opera-card {
+      background: #FFFFFF;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-card);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+    }
+    .opera-head { display: flex; align-items: center; justify-content: space-between; }
+    .opera-player-body { display: flex; align-items: center; gap: 14px; background: #FAF7F2; border-radius: 16px; padding: 12px; }
+    .vinyl-disk {
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #292524 30%, #44403C 31%, #1C1917 60%, #0C0A09 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+      position: relative;
+      flex-shrink: 0;
+    }
+    .vinyl-inner { width: 20px; height: 20px; border-radius: 50%; background: #D9532F; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: bold; }
+    .vinyl-disk.playing { animation: spinDisk 4s linear infinite; }
+    @keyframes spinDisk { 100% { transform: rotate(360deg); } }
+    .opera-meta { flex: 1; min-width: 0; }
+    .opera-name { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: #1C1917; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .opera-aria { font-size: calc(13px * var(--font-scale)); color: #C2410C; margin-top: 2px; font-weight: 600; }
+    .opera-controls { display: flex; align-items: center; gap: 8px; }
+    .opera-ctrl-btn { width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--border-subtle); background: white; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .opera-ctrl-btn.play-btn { width: 44px; height: 44px; background: #C2410C; color: white; border: none; font-size: 18px; }
+
+    /* 忆苦思甜回忆录卡片 */
+    .memory-card {
+      background: #FFFFFF;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-card);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .memory-prompt {
+      background: #FFF7ED;
+      border-radius: 14px;
+      padding: 12px;
+      border-left: 4px solid #C2410C;
+      font-size: calc(14px * var(--font-scale));
+      color: #7C2D12;
+      line-height: 1.5;
+    }
+    .memory-record-btn {
+      width: 100%;
+      height: 48px;
+      border-radius: 24px;
+      background: #FFF;
+      border: 2px dashed #C2410C;
+      color: #C2410C;
+      font-size: calc(14px * var(--font-scale));
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .memory-record-btn:active { background: #FFF7ED; }
+    .memory-journal-item {
+      background: #FAF7F2;
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      border: 1px solid #E7E5E4;
+    }
+    .memory-journal-tag { font-size: 11px; font-weight: 700; color: #C2410C; }
+    .memory-journal-text { font-size: calc(13px * var(--font-scale)); color: #1C1917; line-height: 1.5; }
+
+    /* 醒目大红紧急求助/亲情一键拨打按钮 */
+    .sos-bar {
+      margin-top: 4px;
+    }
+    .sos-btn {
+      width: 100%;
+      height: 56px;
+      border-radius: 28px;
+      background: #DC2626;
+      color: white;
+      border: none;
+      font-size: calc(16px * var(--font-scale));
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 14px rgba(220, 38, 38, 0.3);
+      cursor: pointer;
+    }
+    .sos-btn:active { transform: scale(0.98); background: #B91C1C; }
+
+    /* 童趣互动共创故事机卡片 (Story Machine) */
+    .story-card {
+      background: #FFFFFF;
+      border-radius: 24px;
+      padding: 18px;
+      border: 1.5px solid #BAE6FD;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 4px 14px rgba(186, 230, 253, 0.25);
+    }
+    .story-bubble {
+      background: #F0F9FF;
+      border-radius: 18px;
+      padding: 14px;
+      border: 1px solid #BAE6FD;
+      font-size: calc(15px * var(--font-scale));
+      line-height: 1.6;
+      color: #0369A1;
+      position: relative;
+    }
+    .story-branches-label {
+      font-size: 12px;
+      font-weight: 800;
+      color: #0284C7;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .story-branches {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .branch-btn {
+      background: #FFFFFF;
+      border: 2px solid #38BDF8;
+      border-radius: 18px;
+      padding: 12px 14px;
+      font-size: calc(14px * var(--font-scale));
+      font-weight: 700;
+      color: #0284C7;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+    .branch-btn:active, .branch-btn:hover {
+      background: #E0F2FE;
+      border-color: #0284C7;
+      transform: translateX(3px);
+    }
+
+    /* 好习惯收集星星卡片 */
+    .habits-card {
+      background: #FFFFFF;
+      border-radius: 24px;
+      padding: 18px;
+      border: 1.5px solid #FEF08A;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 4px 12px rgba(254, 240, 138, 0.3);
+    }
+    .star-progress-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #FEF9C3;
+      border-radius: 16px;
+      padding: 8px 14px;
+      font-size: calc(13px * var(--font-scale));
+      font-weight: 800;
+      color: #854D0E;
+    }
+    .stars-display { display: flex; gap: 4px; font-size: 18px; }
+
+    /* 万物为什么好问百科卡片 */
+    .why-card {
+      background: #FFFFFF;
+      border-radius: 24px;
+      padding: 18px;
+      border: 1.5px solid #E2E8F0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .why-item {
+      background: #F8FAFC;
+      border-radius: 16px;
+      padding: 12px 14px;
+      border: 1px solid #E2E8F0;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: all 0.2s ease;
+    }
+    .why-item:active { background: #F1F5F9; }
+    .why-q { font-size: calc(14px * var(--font-scale)); font-weight: 800; color: #0F172A; display: flex; align-items: center; justify-content: space-between; }
+    .why-a { font-size: calc(13px * var(--font-scale)); color: #0284C7; line-height: 1.4; display: none; }
+    .why-item.open .why-a { display: block; }
+
+    /* 家庭中控 Bento 看板样式 */
+    .bento-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .bento-card {
+      background: #FFFFFF;
+      border: 1px solid #E2E8F0;
+      border-radius: 20px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.03);
+    }
+    .bento-card.full-width { grid-column: span 2; }
+    .bento-title { font-size: 13px; font-weight: 800; color: #64748B; display: flex; align-items: center; gap: 6px; }
+    .bento-big-stat { font-size: 22px; font-weight: 900; color: #0F172A; display: flex; align-items: baseline; gap: 4px; }
+    .bento-note { font-size: 12px; color: #475569; line-height: 1.4; }
+
+    /* 亲情留声机录音箱 */
+    .voice-recorder-card {
+      background: #FFFFFF;
+      border: 1px solid #E2E8F0;
+      border-radius: 20px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .recorder-input {
+      width: 100%;
+      height: 40px;
+      border-radius: 20px;
+      border: 1px solid #CBD5E1;
+      padding: 0 14px;
+      font-size: 13px;
+      outline: none;
+      background: #F8FAFC;
+    }
+    .recorder-actions { display: flex; gap: 8px; }
+    .record-voice-btn {
+      flex: 1;
+      height: 42px;
+      border-radius: 21px;
+      background: #0284C7;
+      color: white;
+      border: none;
+      font-weight: 700;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .record-voice-btn:active { background: #0369A1; }
   </style>
 </head>
 <body class="mode-elder">
@@ -884,95 +1172,318 @@
     <!-- 主滚动区域 -->
     <main class="content-scroll" id="contentScroll">
       
-      <!-- 问候与今日重点提示 -->
-      <div class="status-card">
-        <div class="status-avatar" id="avatarIcon">👵</div>
-        <div class="status-info">
-          <div class="status-title" id="greetingTitle">上午好，外婆！</div>
-          <div class="status-desc" id="greetingDesc">今日霜降 · 18℃ 晴 · 降压药已到点，记得喝温水哦</div>
-        </div>
-      </div>
-
-      <!-- 对话流卡片区 -->
-      <div class="chat-flow" id="chatFlow">
-        <div class="chat-bubble-wrap ai">
-          <div class="bubble-avatar" id="bubbleAvatar">👵</div>
-          <div>
-            <div class="bubble-text" id="bubbleMsg">
-              外婆，早上吃了降压药没有呀？今天天气很好，要不要听两段您最爱听的黄梅戏《女驸马》？
+      <!-- ================= 👵 长辈关爱模式子视图 ================= -->
+      <div id="viewElder" class="mode-view">
+        <!-- 亲情语音便签彩蛋 -->
+        <div class="memo-banner" onclick="playVoiceMemo('elder')">
+          <div class="memo-info">
+            <div class="memo-badge">💌</div>
+            <div>
+              <div class="memo-title">女儿小敏留了 1 条语音便签</div>
+              <div class="memo-sub">10 分钟前 · 点击听听女儿对您说的话</div>
             </div>
-            <button class="read-aloud-btn" onclick="speakText(this)">
-              <span>🔊</span> <span>朗读这段话</span>
+          </div>
+          <button class="memo-play-pill"><span>▶</span> <span>收听</span></button>
+        </div>
+
+        <!-- 长辈今日问候 -->
+        <div class="status-card" style="margin-top:12px;">
+          <div class="status-avatar">👵</div>
+          <div class="status-info">
+            <div class="status-title">上午好，外婆！</div>
+            <div class="status-desc">今日霜降 · 18℃ 晴 · 降压药已到点，记得喝温水哦</div>
+          </div>
+        </div>
+
+        <!-- 对话流卡片区 (外婆温情对讲) -->
+        <div class="chat-flow" id="chatFlowElder" style="margin-top:12px;">
+          <div class="chat-bubble-wrap ai">
+            <div class="bubble-avatar">👵</div>
+            <div>
+              <div class="bubble-text">
+                外婆，早上好！今天天气晴朗，您想听一段黄梅戏，还是和我唠两句年轻时的趣事呀？
+              </div>
+              <button class="read-aloud-btn" onclick="speakText(this)">
+                <span>🔊</span> <span>大字朗读</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 经典戏曲随身听 (Opera Player) -->
+        <section class="opera-card" style="margin-top:12px;">
+          <div class="opera-head">
+            <div class="card-title"><span>📻</span> <span>老戏曲随身听</span></div>
+            <span class="card-badge" id="operaTrackIndex">1 / 3 首</span>
+          </div>
+          <div class="opera-player-body">
+            <div class="vinyl-disk" id="vinylDisk">
+              <div class="vinyl-inner">戏</div>
+            </div>
+            <div class="opera-meta">
+              <div class="opera-name" id="operaTitle">黄梅戏 · 女驸马</div>
+              <div class="opera-aria" id="operaAria">“为救李郎离家园，谁料皇榜中状元~”</div>
+            </div>
+          </div>
+          <div class="opera-controls" style="justify-content: center; gap: 16px;">
+            <button class="opera-ctrl-btn" onclick="prevOpera()" title="上一首">⏮</button>
+            <button class="opera-ctrl-btn play-btn" id="operaPlayBtn" onclick="toggleOperaPlay()" title="播放/暂停">▶</button>
+            <button class="opera-ctrl-btn" onclick="nextOpera()" title="下一首">⏭</button>
+            <button class="opera-ctrl-btn" onclick="speakContent(document.getElementById('operaAria').innerText)" title="大字念唱词">🔊</button>
+          </div>
+        </section>
+
+        <!-- 忆苦思甜·老故事时光册 (Memory Keeper) -->
+        <section class="memory-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title"><span>📖</span> <span>忆苦思甜 · 人生时光册</span></div>
+            <span class="card-badge">温情倾听</span>
+          </div>
+          <div class="memory-prompt" id="memoryPromptText">
+            “外婆，您年轻时那会儿最拿手的一道家常手艺是什么呀？教教我呗！”
+          </div>
+          <button class="memory-record-btn" onclick="recordElderMemory()">
+            <span>🎙️</span> <span>按住录音，口述当年的老故事</span>
+          </button>
+          <div class="memory-journal-item" id="memorySavedItem">
+            <div class="memory-journal-tag">📜 已收录回忆 · 1968年冬</div>
+            <div class="memory-journal-text" id="memorySavedText">
+              外婆回忆：“那会儿大雪封路，家里院子里腌了一大缸雪里蕻，一家人围着炭盆吃热窝头，又香又暖和……”
+            </div>
+            <button class="read-aloud-btn" style="align-self: flex-start; margin-top: 4px;" onclick="speakContent(document.getElementById('memorySavedText').innerText)">
+              <span>🔊</span> <span>重温这段回忆</span>
             </button>
           </div>
+        </section>
+
+        <!-- 今日用药与关怀打卡 -->
+        <section class="app-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title"><span>💊</span> <span>今日关怀与用药</span></div>
+            <span class="card-badge" id="elderTaskStat">已完成 1/3</span>
+          </div>
+          <div class="task-list">
+            <div class="task-item checked" onclick="toggleElderTask(this)">
+              <div class="task-checkbox">✓</div>
+              <div class="task-details">
+                <div class="task-label">早晨温水一杯 + 降压药（硝苯地平）</div>
+                <div class="task-time">08:00 · 饭后已按时打卡</div>
+              </div>
+            </div>
+            <div class="task-item" onclick="toggleElderTask(this)">
+              <div class="task-checkbox"></div>
+              <div class="task-details">
+                <div class="task-label">公园散步晒晒背 20分钟</div>
+                <div class="task-time">10:00 · 舒筋活络避风寒</div>
+              </div>
+            </div>
+            <div class="task-item" onclick="toggleElderTask(this)">
+              <div class="task-checkbox"></div>
+              <div class="task-details">
+                <div class="task-label">午睡小憩半小时 + 罗汉果润肺茶</div>
+                <div class="task-time">13:30 · 养心安神</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 醒目红色亲情直达 / 紧急一键按键 -->
+        <div class="sos-bar">
+          <button class="sos-btn" onclick="callDaughter()">
+            <span>📞</span> <span>一键呼叫女儿 (小敏) · 紧急留言</span>
+          </button>
         </div>
       </div>
 
-      <!-- 今日打卡日程 -->
-      <section class="app-card">
-        <div class="card-head">
-          <div class="card-title">
-            <span id="taskIcon">💊</span>
-            <span id="taskTitle">今日关爱日程</span>
+      <!-- ================= 👶 童趣启蒙模式子视图 ================= -->
+      <div id="viewKids" class="mode-view" style="display: none;">
+        <!-- 爸爸留言彩蛋便签 -->
+        <div class="memo-banner" style="background: linear-gradient(135deg, #E0F2FE 0%, #BAE6FD 100%); border-color: #38BDF8;" onclick="playVoiceMemo('kids')">
+          <div class="memo-info">
+            <div class="memo-badge" style="background:#0284C7;">🧸</div>
+            <div>
+              <div class="memo-title" style="color:#0369A1;">爸爸给你留了一条语音便签</div>
+              <div class="memo-sub" style="color:#0284C7;">刚刚 · 点我听听爸爸说了什么神秘小秘密</div>
+            </div>
           </div>
-          <span class="card-badge" id="taskStat">已完成 1/3</span>
+          <button class="memo-play-pill" style="background:#0284C7;"><span>▶</span> <span>收听</span></button>
         </div>
 
-        <div class="task-list">
-          <div class="task-item checked" onclick="toggleTask(this)">
-            <div class="task-checkbox">✓</div>
-            <div class="task-details">
-              <div class="task-label" id="t1">早晨温水一杯 + 降压药</div>
-              <div class="task-time">08:00 · 饭后半小时</div>
+        <!-- 豆豆熊伙伴问候卡 -->
+        <div class="status-card" style="margin-top:12px;">
+          <div class="status-avatar" style="background:#FFF7ED; border-color:#F97316;">🐻</div>
+          <div class="status-info">
+            <div class="status-title">嗨！我是小熊豆豆！</div>
+            <div class="status-desc">今天准备了超棒的探险故事，今晚我们一起出发吧！</div>
+          </div>
+        </div>
+
+        <!-- 对话流卡片区 (豆豆熊伴聊) -->
+        <div class="chat-flow" id="chatFlowKids" style="margin-top:12px;">
+          <div class="chat-bubble-wrap ai">
+            <div class="bubble-avatar">🐻</div>
+            <div>
+              <div class="bubble-text">
+                宝贝，今天我们不仅要听冒险故事，还有好习惯挑战哦！准备好出发了吗？
+              </div>
+              <button class="read-aloud-btn" onclick="speakText(this)">
+                <span>🔊</span> <span>伴读说话</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 豆豆熊双向共创故事机 (Interactive Story Machine) -->
+        <section class="story-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title" style="color:#0284C7;"><span>✨</span> <span>今晚的睡前互动故事</span></div>
+            <span class="card-badge" style="background:#E0F2FE; color:#0284C7;" id="storySceneBadge">第 1 幕</span>
+          </div>
+          <div class="story-bubble" id="storySceneText">
+            小熊豆豆坐着草莓味的热气球飞上了蓝天，突然看见前方有一座七彩的云朵，云朵上有一座会唱歌的城堡！豆豆转过头问你：
+          </div>
+          <div class="story-branches-label">
+            <span>👉 宝贝，你来帮豆豆做决定：</span>
+          </div>
+          <div class="story-branches">
+            <button class="branch-btn" onclick="chooseStoryBranch('A')">
+              <span>🏰 A. 降落到棉花糖城堡做客</span>
+            </button>
+            <button class="branch-btn" onclick="chooseStoryBranch('B')">
+              <span>🌈 B. 穿过彩虹桥去找闪烁的小星星</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- 好习惯收集星星挑战箱 -->
+        <section class="habits-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title" style="color:#854D0E;"><span>⭐</span> <span>好习惯星星挑战箱</span></div>
+            <span class="card-badge" style="background:#FEF9C3; color:#854D0E;" id="habitBadge">已获 2 颗星</span>
+          </div>
+          <div class="star-progress-bar">
+            <span>集齐 3 颗星点亮【晚安小勇士】勋章</span>
+            <div class="stars-display" id="starsDisplay">⭐⭐⚪</div>
+          </div>
+          <div class="task-list">
+            <div class="task-item checked" onclick="toggleKidHabit(this, 1)">
+              <div class="task-checkbox" style="background:#EAB308; border-color:#EAB308;">⭐</div>
+              <div class="task-details">
+                <div class="task-label">早上乖乖刷牙洗脸，香喷喷</div>
+                <div class="task-time">08:00 · 卫生小能手</div>
+              </div>
+            </div>
+            <div class="task-item checked" onclick="toggleKidHabit(this, 2)">
+              <div class="task-checkbox" style="background:#EAB308; border-color:#EAB308;">⭐</div>
+              <div class="task-details">
+                <div class="task-label">咕噜咕噜喝一大杯纯牛奶 🥛</div>
+                <div class="task-time">08:30 · 身体棒棒长高高</div>
+              </div>
+            </div>
+            <div class="task-item" onclick="toggleKidHabit(this, 3)">
+              <div class="task-checkbox">⭐</div>
+              <div class="task-details">
+                <div class="task-label">晚上 21:00 准时听完睡前故事闭眼睛</div>
+                <div class="task-time">21:00 · 晚安好梦</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 万物为什么拟人百科 -->
+        <section class="why-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title" style="color:#0F172A;"><span>🧐</span> <span>万物为什么 · 奇妙百科</span></div>
+            <span class="card-badge">点击听解答</span>
+          </div>
+          <div class="why-item" onclick="toggleWhy(this, 'rainbow')">
+            <div class="why-q"><span>🌈 为什么雨后天上会有彩虹呀？</span><span>▾</span></div>
+            <div class="why-a" id="whyRainbow">因为太阳公公给空中的小水滴穿上了七彩的小裙子，光芒一照就变成美丽的大滑梯啦！</div>
+          </div>
+          <div class="why-item" onclick="toggleWhy(this, 'bird')">
+            <div class="why-q"><span>🐦 小鸟在树枝上睡觉会掉下来吗？</span><span>▾</span></div>
+            <div class="why-a" id="whyBird">不会哦！小鸟的爪子有神奇的筋腱锁，一蹲下就会自动牢牢锁紧树枝，越睡抓得越紧呢！</div>
+          </div>
+          <div class="why-item" onclick="toggleWhy(this, 'moon')">
+            <div class="why-q"><span>🌙 为什么晚上月亮老跟着我走？</span><span>▾</span></div>
+            <div class="why-a" id="whyMoon">因为月亮离我们特别特别远，像一位温柔的守护超人，无论你走到哪它都想照看着你！</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= 🏡 家庭中控看板子视图 ================= -->
+      <div id="viewFamily" class="mode-view" style="display: none;">
+        <!-- 30秒温情看护简报 Bento Grid -->
+        <div class="bento-grid">
+          <div class="bento-card full-width">
+            <div class="bento-title"><span>📊</span> <span>今日温情看护 30秒全景简报</span></div>
+            <div class="bento-note" style="color:#1E293B; font-weight:700;">
+              今日长辈情绪稳定愉悦，幼童作息健康良好，跨代互动已建立 2 次。
             </div>
           </div>
 
-          <div class="task-item" onclick="toggleTask(this)">
-            <div class="task-checkbox"></div>
-            <div class="task-details">
-              <div class="task-label" id="t2">公园散步晒晒背 20分钟</div>
-              <div class="task-time">10:00 · 舒筋活络</div>
+          <div class="bento-card">
+            <div class="bento-title"><span>👵</span> <span>外婆状态</span></div>
+            <div class="bento-big-stat" style="color:#C2410C;">
+              <span>5</span><span style="font-size:14px; font-weight:normal;">星 心情</span>
+            </div>
+            <div class="bento-note">今日对讲 18 分钟<br>降压药已于 08:30 打卡</div>
+          </div>
+
+          <div class="bento-card">
+            <div class="bento-title"><span>👶</span> <span>宝贝习惯</span></div>
+            <div class="bento-big-stat" style="color:#EA580C;">
+              <span>2/3</span><span style="font-size:14px; font-weight:normal;">星 勋章</span>
+            </div>
+            <div class="bento-note">早晨刷牙+牛奶已完成<br>故事进度：第 1 幕</div>
+          </div>
+        </div>
+
+        <!-- 家庭对话流区 -->
+        <div class="chat-flow" id="chatFlowFamily" style="margin-top:12px;"></div>
+
+        <!-- 亲情留声机录音箱 (Voice Memo Recorder) -->
+        <section class="voice-recorder-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title"><span>🎙️</span> <span>亲情留声机 · 发送彩蛋便签</span></div>
+            <span class="card-badge" style="background:#E0F2FE; color:#0284C7;">家人直达</span>
+          </div>
+          <div class="bento-note">给长辈或孩子录制一段亲切的语音留言，将在他们的界面中作为“亲情彩蛋”播放：</div>
+          <input type="text" class="recorder-input" id="memoInputText" placeholder="打字或语音留言，例如：妈，晚上我下班带排骨来看您！">
+          <div class="recorder-actions">
+            <button class="record-voice-btn" onclick="sendFamilyMemo('elder')">
+              <span>👵</span> <span>发送给长辈</span>
+            </button>
+            <button class="record-voice-btn" style="background:#F97316;" onclick="sendFamilyMemo('kids')">
+              <span>👶</span> <span>发送给宝贝</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- 远程看护配置项 -->
+        <section class="app-card" style="margin-top:12px;">
+          <div class="card-head">
+            <div class="card-title"><span>⚙️</span> <span>远程用药与看护设置</span></div>
+            <span class="card-badge">已生效</span>
+          </div>
+          <div class="task-list">
+            <div class="task-item checked">
+              <div class="task-checkbox" style="background:#0284C7; border-color:#0284C7;">✓</div>
+              <div class="task-details">
+                <div class="task-label">长辈晨间降压药定时推送 (08:00)</div>
+                <div class="task-time">已开启 · 超时 30分钟微信短信提醒</div>
+              </div>
+            </div>
+            <div class="task-item checked">
+              <div class="task-checkbox" style="background:#0284C7; border-color:#0284C7;">✓</div>
+              <div class="task-details">
+                <div class="task-label">睡前 21:00 故事机自动切静音防沉迷</div>
+                <div class="task-time">已开启 · 保护视力与作息</div>
+              </div>
             </div>
           </div>
-
-          <div class="task-item" onclick="toggleTask(this)">
-            <div class="task-checkbox"></div>
-            <div class="task-details">
-              <div class="task-label" id="t3">午饭后闭目小憩半小时</div>
-              <div class="task-time">13:00 · 养心安神</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 快捷百宝箱 -->
-      <section class="app-card">
-        <div class="card-head">
-          <div class="card-title">
-            <span>🎁</span>
-            <span id="boxTitle">长辈暖心百宝箱</span>
-          </div>
-        </div>
-
-        <div class="tools-grid">
-          <div class="tool-btn" onclick="quickAsk('music')">
-            <span class="tool-icon">📻</span>
-            <span class="tool-text" id="b1">听老歌戏曲</span>
-          </div>
-          <div class="tool-btn" onclick="quickAsk('health')">
-            <span class="tool-icon">🍵</span>
-            <span class="tool-text" id="b2">节气养生建议</span>
-          </div>
-          <div class="tool-btn" onclick="quickAsk('story')">
-            <span class="tool-icon">📖</span>
-            <span class="tool-text" id="b3">忆苦思甜老故事</span>
-          </div>
-          <div class="tool-btn" onclick="quickAsk('call')">
-            <span class="tool-icon">📞</span>
-            <span class="tool-text" id="b4">给女儿语音留言</span>
-          </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
     </main>
 
@@ -1117,67 +1628,188 @@
       document.getElementById('btnKids').classList.toggle('active', mode === 'kids');
       document.getElementById('btnFamily').classList.toggle('active', mode === 'family');
 
-      const avatar = document.getElementById('avatarIcon');
-      const bubbleAvatar = document.getElementById('bubbleAvatar');
-      const gTitle = document.getElementById('greetingTitle');
-      const gDesc = document.getElementById('greetingDesc');
-      const bMsg = document.getElementById('bubbleMsg');
+      // 切换专属子视图
+      const vElder = document.getElementById('viewElder');
+      const vKids = document.getElementById('viewKids');
+      const vFamily = document.getElementById('viewFamily');
+      if (vElder) vElder.style.display = (mode === 'elder') ? 'block' : 'none';
+      if (vKids) vKids.style.display = (mode === 'kids') ? 'block' : 'none';
+      if (vFamily) vFamily.style.display = (mode === 'family') ? 'block' : 'none';
 
-      if (mode === 'elder') {
-        avatar.innerText = '👵';
-        bubbleAvatar.innerText = '👵';
-        gTitle.innerText = '上午好，外婆！';
-        gDesc.innerText = '今日霜降 · 18℃ 晴 · 降压药已到点，记得喝温水哦';
-        bMsg.innerText = '外婆，早上吃了降压药没有呀？今天天气很好，要不要听两段您最爱听的黄梅戏《女驸马》？';
-        
-        document.getElementById('taskIcon').innerText = '💊';
-        document.getElementById('taskTitle').innerText = '今日关爱日程';
-        document.getElementById('t1').innerText = '早晨温水一杯 + 降压药';
-        document.getElementById('t2').innerText = '公园散步晒晒背 20分钟';
-        document.getElementById('t3').innerText = '午饭后闭目小憩半小时';
-
-        document.getElementById('boxTitle').innerText = '长辈暖心百宝箱';
-        document.getElementById('b1').innerText = '听老歌戏曲';
-        document.getElementById('b2').innerText = '节气养生建议';
-        document.getElementById('b3').innerText = '忆苦思甜老故事';
-        document.getElementById('b4').innerText = '给女儿语音留言';
-      } else if (mode === 'kids') {
-        avatar.innerText = '🐻';
-        bubbleAvatar.innerText = '🐻';
-        gTitle.innerText = '嗨！我是小熊豆豆！';
-        gDesc.innerText = '今天想听哪个宇宙大冒险？还有好习惯任务等你挑战！';
-        bMsg.innerText = '今天在幼儿园乖不乖？晚上准备了《彩虹独角兽与魔法泡泡》的故事，现在想听吗？';
-
-        document.getElementById('taskIcon').innerText = '⭐';
-        document.getElementById('taskTitle').innerText = '好习惯养成挑战';
-        document.getElementById('t1').innerText = '早起乖乖刷牙洗脸';
-        document.getElementById('t2').innerText = '喝一大杯纯牛奶 🥛';
-        document.getElementById('t3').innerText = '晚上 21:00 准时听睡前故事';
-
-        document.getElementById('boxTitle').innerText = '童趣奇妙游乐园';
-        document.getElementById('b1').innerText = '睡前互动绘本';
-        document.getElementById('b2').innerText = '万物为什么问答';
-        document.getElementById('b3').innerText = '趣味成语小剧场';
-        document.getElementById('b4').innerText = '给爸爸妈妈留语音';
-      } else if (mode === 'family') {
-        avatar.innerText = '🏡';
-        bubbleAvatar.innerText = '🤖';
-        gTitle.innerText = '家庭看护中控看板';
-        gDesc.innerText = '今日长辈与孩子各项指标正常 · 守护简报已同步';
-        bMsg.innerText = '【看护简报】外婆早晨 08:30 已打卡降压药，对讲 12 分钟，情绪平稳；孩子已完成早起喝牛奶任务。';
-
-        document.getElementById('taskIcon').innerText = '📊';
-        document.getElementById('taskTitle').innerText = '家庭看护监控项';
-        document.getElementById('t1').innerText = '外婆降压药按时打卡确认（已完成）';
-        document.getElementById('t2').innerText = '孩子睡前故事配额监控';
-        document.getElementById('t3').innerText = '全家周末探望日历配置';
-
-        document.getElementById('boxTitle').innerText = '远程看护与中控工具';
-        document.getElementById('b1').innerText = '远程配置用药提醒';
-        document.getElementById('b2').innerText = '录制亲情提醒语音';
-        document.getElementById('b3').innerText = '老人情绪状态周报';
-        document.getElementById('b4').innerText = '一键呼叫紧急联络人';
+      // 底部对讲提示微调
+      const voiceLabel = document.getElementById('voiceLabel');
+      if (voiceLabel) {
+        if (mode === 'elder') {
+          voiceLabel.innerText = '按住 / 点击和外婆唠家常';
+        } else if (mode === 'kids') {
+          voiceLabel.innerText = '按住 / 点击和小熊豆豆说话';
+        } else {
+          voiceLabel.innerText = '按住 / 点击向家庭备忘本说话';
+        }
       }
+    }
+
+    // 亲情语音便签播放
+    function playVoiceMemo(target) {
+      if ('vibrate' in navigator) navigator.vibrate(30);
+      let text = "";
+      if (target === 'elder') {
+        text = "妈，今天降温多穿件马甲，早上的降压药记得按时吃，晚上我下班带排骨来看您！";
+      } else {
+        text = "宝贝，今天在幼儿园听老师话，晚上乖乖听完故事睡觉，周末爸爸带你去恐龙博物馆看大霸王龙！";
+      }
+      speakContent(text);
+    }
+
+    // 戏曲随身听数据与控制
+    const operaList = [
+      { title: "黄梅戏 · 女驸马", aria: "为救李郎离家园，谁料皇榜中状元~", singer: "严凤英" },
+      { title: "豫剧 · 花木兰", aria: "刘大哥讲话理太偏，谁说女子不如男~", singer: "常香玉" },
+      { title: "京剧 · 梨花颂", aria: "梨花开，春带雨；梨花落，春入泥~", singer: "梅葆玖" }
+    ];
+    let operaIndex = 0;
+    let isOperaPlaying = false;
+
+    function renderOpera() {
+      const cur = operaList[operaIndex];
+      const titleEl = document.getElementById('operaTitle');
+      const ariaEl = document.getElementById('operaAria');
+      const idxEl = document.getElementById('operaTrackIndex');
+      if (titleEl) titleEl.innerText = cur.title;
+      if (ariaEl) ariaEl.innerText = `“${cur.aria}”`;
+      if (idxEl) idxEl.innerText = `${operaIndex + 1} / ${operaList.length} 首`;
+    }
+
+    function toggleOperaPlay() {
+      if ('vibrate' in navigator) navigator.vibrate(25);
+      isOperaPlaying = !isOperaPlaying;
+      const disk = document.getElementById('vinylDisk');
+      const btn = document.getElementById('operaPlayBtn');
+      if (isOperaPlaying) {
+        if (disk) disk.classList.add('playing');
+        if (btn) btn.innerText = '⏸';
+        speakContent(`正在为您大字播放：${operaList[operaIndex].title}。${operaList[operaIndex].aria}`);
+      } else {
+        if (disk) disk.classList.remove('playing');
+        if (btn) btn.innerText = '▶';
+        if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      }
+    }
+
+    function prevOpera() {
+      operaIndex = (operaIndex - 1 + operaList.length) % operaList.length;
+      renderOpera();
+      if (isOperaPlaying) speakContent(`切换到：${operaList[operaIndex].title}。${operaList[operaIndex].aria}`);
+    }
+
+    function nextOpera() {
+      operaIndex = (operaIndex + 1) % operaList.length;
+      renderOpera();
+      if (isOperaPlaying) speakContent(`切换到：${operaList[operaIndex].title}。${operaList[operaIndex].aria}`);
+    }
+
+    // 忆苦思甜·口述老故事
+    function recordElderMemory() {
+      if ('vibrate' in navigator) navigator.vibrate([40, 50, 40]);
+      const btn = event.currentTarget;
+      btn.innerHTML = '<span>🔴</span> <span>正在用心倾听外婆口述往事...</span>';
+      speakContent("外婆您慢点讲，我听着呢……");
+
+      setTimeout(() => {
+        btn.innerHTML = '<span>🎙️</span> <span>继续口述一段当年的老故事</span>';
+        const savedText = "外婆回忆：“那会儿大雪封路，家里院子里腌了一大缸雪里蕻，一家人围着炭盆吃热窝头，又香又暖和……”";
+        const target = document.getElementById('memorySavedText');
+        if (target) target.innerText = savedText;
+        speakContent("外婆，这段珍贵的回忆我已经帮您收录在人生时光册里啦！");
+      }, 2400);
+    }
+
+    // 长辈用药健康打卡
+    function toggleElderTask(item) {
+      if ('vibrate' in navigator) navigator.vibrate(30);
+      item.classList.toggle('checked');
+      const box = item.querySelector('.task-checkbox');
+      box.innerText = item.classList.contains('checked') ? '✓' : '';
+      const total = document.querySelectorAll('#viewElder .task-item').length;
+      const checked = document.querySelectorAll('#viewElder .task-item.checked').length;
+      const stat = document.getElementById('elderTaskStat');
+      if (stat) stat.innerText = `已完成 ${checked}/${total}`;
+      if (item.classList.contains('checked')) {
+        speakContent("好样的外婆！健康打卡完成啦！");
+      }
+    }
+
+    // 一键呼叫女儿
+    function callDaughter() {
+      if ('vibrate' in navigator) navigator.vibrate([50, 60, 50, 60]);
+      alert("正在为您一键拨通女儿小敏的电话……如有紧急情况也可直接对手机说话！");
+      speakContent("外婆别急，正在为您拨通女儿小敏的电话！");
+    }
+
+    // 睡前故事共创互动
+    function chooseStoryBranch(branch) {
+      if ('vibrate' in navigator) navigator.vibrate(35);
+      const textEl = document.getElementById('storySceneText');
+      const badge = document.getElementById('storySceneBadge');
+      if (badge) badge.innerText = '第 2 幕';
+
+      let storyText = "";
+      if (branch === 'A') {
+        storyText = "小熊豆豆顺着彩虹云梯滑进了软绵绵的棉花糖城堡！城堡的主人小粉兔递给了豆豆一杯甜甜的热可可，小动物们围在一起跳起了温暖的圆圈舞！宝贝，今晚的故事真甜呀，做个甜甜的好梦吧！";
+      } else {
+        storyText = "热气球呼呼飞过了七彩的彩虹桥，小星星们闪烁着大眼睛，排着整齐的队伍给豆豆唱起了晚安摇篮曲……豆豆向月亮许了一个愿望，愿所有好孩子今晚都有好梦！";
+      }
+      if (textEl) textEl.innerText = storyText;
+      speakContent(storyText);
+    }
+
+    // 儿童好习惯打卡
+    function toggleKidHabit(item, id) {
+      if ('vibrate' in navigator) navigator.vibrate(30);
+      item.classList.toggle('checked');
+      const box = item.querySelector('.task-checkbox');
+      if (item.classList.contains('checked')) {
+        box.style.background = '#EAB308';
+        box.style.borderColor = '#EAB308';
+      } else {
+        box.style.background = '';
+        box.style.borderColor = '';
+      }
+
+      const checkedCount = document.querySelectorAll('#viewKids .task-item.checked').length;
+      let starStr = "";
+      for (let i = 0; i < 3; i++) {
+        starStr += (i < checkedCount) ? "⭐" : "⚪";
+      }
+      const starsEl = document.getElementById('starsDisplay');
+      const badgeEl = document.getElementById('habitBadge');
+      if (starsEl) starsEl.innerText = starStr;
+      if (badgeEl) badgeEl.innerText = `已获 ${checkedCount} 颗星`;
+
+      if (checkedCount === 3) {
+        speakContent("太棒啦！集齐 3 颗好习惯星星，成功解锁【晚安小勇士】勋章！");
+        alert("🎉 恭喜宝贝！集齐 3 颗好习惯星星，成功解锁【晚安小勇士】勋章！");
+      }
+    }
+
+    // 万物为什么展开
+    function toggleWhy(item, key) {
+      item.classList.toggle('open');
+      const a = item.querySelector('.why-a');
+      if (item.classList.contains('open') && a) {
+        speakContent(a.innerText);
+      }
+    }
+
+    // 家庭中控发送留言
+    function sendFamilyMemo(target) {
+      const input = document.getElementById('memoInputText');
+      const val = (input && input.value.trim()) || (target === 'elder' ? "妈，今天降温多穿件马甲，晚上我下班来看您！" : "宝贝，今天在幼儿园听老师话，晚上乖乖睡觉哦！");
+      if (input) input.value = '';
+      
+      const targetName = target === 'elder' ? '外婆' : '宝贝';
+      alert(`已成功将亲情留言同步至【${targetName}】的手机端彩蛋便签！`);
+      speakContent(`已成功将亲情留言发送给${targetName}！`);
     }
 
     // 语音对讲触发
@@ -1249,7 +1881,9 @@
 
     // 动态追加对话气泡
     function appendChat(role, message) {
-      const flow = document.getElementById('chatFlow');
+      const flowId = currentMode === 'elder' ? 'chatFlowElder' : (currentMode === 'kids' ? 'chatFlowKids' : 'chatFlowFamily');
+      const flow = document.getElementById(flowId);
+      if (!flow) return;
       const wrap = document.createElement('div');
       wrap.className = 'chat-bubble-wrap ' + role;
 
@@ -1281,7 +1915,7 @@
 
       // 滚动到底部
       const scroller = document.getElementById('contentScroll');
-      scroller.scrollTop = scroller.scrollHeight;
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
 
       if (role === 'ai') {
         speakContent(message);
@@ -1302,37 +1936,6 @@
         utter.rate = currentMode === 'elder' ? 0.85 : 1.0;
         window.speechSynthesis.speak(utter);
       }
-    }
-
-    // 任务打卡
-    function toggleTask(item) {
-      if ('vibrate' in navigator) navigator.vibrate(25);
-      item.classList.toggle('checked');
-      const box = item.querySelector('.task-checkbox');
-      box.innerText = item.classList.contains('checked') ? '✓' : '';
-
-      const total = document.querySelectorAll('.task-item').length;
-      const checked = document.querySelectorAll('.task-item.checked').length;
-      document.getElementById('taskStat').innerText = `已完成 ${checked}/${total}`;
-    }
-
-    // 快捷百宝箱
-    function quickAsk(type) {
-      let q = "";
-      if (type === 'music') q = "我想听一段喜庆的黄梅戏名段";
-      else if (type === 'health') q = "霜降节气长辈吃什么最养生？";
-      else if (type === 'story') q = "给我讲一个童话故事";
-      else if (type === 'call') q = "我要给家里留一段语音";
-
-      appendChat('user', q);
-      setTimeout(() => {
-        let ans = "";
-        if (type === 'music') ans = "好嘞！马上为您播放《女驸马·谁料皇榜中状元》，老艺术家严凤英经典原版，声音已经为您调大啦！";
-        else if (type === 'health') ans = "霜降养生防秋燥，多吃白萝卜、银耳、雪梨，早起一杯温开水，脚腕要注意保暖避风寒哦！";
-        else if (type === 'story') ans = "很久很久以前，在云朵城堡里住着一只会打喷嚏变出棉花糖的小松鼠……今天它要举办一场派对！";
-        else if (type === 'call') ans = "语音留言通道已开启，请对准手机说话，我会自动转录并推送到家人的微信上！";
-        appendChat('ai', ans);
-      }, 700);
     }
 
     // 字号缩放
