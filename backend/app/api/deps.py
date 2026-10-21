@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from typing import Callable, List
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 
 from app.core.security import decode_jwt
 from app.schemas.auth import UserContext, UserRole
@@ -63,3 +63,16 @@ def require_roles(allowed_roles: List[UserRole]) -> Callable[[UserContext], User
         return u
 
     return role_checker
+
+
+def require_admin(u: UserContext = Depends(get_current_user)) -> UserContext:
+    """平台超级管理员专用权限守卫依赖。
+
+    验证当前调用者是否具备 ADMIN 角色，若非管理员则抛出 403 Forbidden。
+    """
+    if u.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="权限不足：仅平台超级管理员可执行此管控操作",
+        )
+    return u

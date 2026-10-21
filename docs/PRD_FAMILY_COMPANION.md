@@ -169,3 +169,59 @@ flowchart TD
 ### 6.3 Code Judo 零外部依赖安全工程
 - **RFC 7519 HS256 JWT**：采用 Python 标准库 `hmac` + `hashlib` + `base64` 原生实现，不引入任何重型外部三方库，恒定时间比对防御时序攻击；
 - **PBKDF2-HMAC-SHA256**：密码存储采用 100,000 次迭代加盐哈希，保障密码学强度。
+
+---
+
+## 七、 伴暖插件化微架构体系 (Micro-Plugin Architecture)
+
+为了支持伴老伴幼业务的极速拓展与定制，平台全域采用**松耦合插件化微架构**。
+
+### 7.1 核心设计规范
+1. **契约先行 (Contract-First)**：
+   - 每个功能独立封装为 `BasePlugin`，对外声明 `PluginManifest`（唯一 ID、分类、版本、适用角色白名单、渲染模板、权重）。
+2. **注册与角色隔离 (`PluginRegistry`)**：
+   - 自动发现与注册所有业务插件；
+   - 严格基于调用者角色（`elder` / `child` / `guardian`）动态过滤卡片流；
+   - 严禁角色越权：长辈调用儿童插件或儿童调用长辈插件均被拦截并抛出 `403 Forbidden`。
+3. **动态卡片插槽 (Dynamic Plugin Container)**：
+   - 前端不再硬编码静态组件，而是通过 `/api/v1/plugins/active` 拉取当前角色已激活的插件卡片流，实现千人千面的动态装配。
+4. **家庭守护者自选功能箱**：
+   - 守护者可通过 `/api/v1/family/plugins/{plugin_id}/toggle` 针对特定长辈或孩子按需启用或停用某项插件。
+
+### 7.2 官方内置插件集
+| 插件 ID | 插件名称 | 适用角色 | 模板类型 | 业务功能详述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `elder_opera` | 经典戏曲留声机 | `elder` | `media_player` | 黄梅戏、豫剧、京剧经典选段慢速播放与唱词同步 |
+| `elder_memory` | 人生时光回忆册 | `elder` | `interactive_prompt` | 晚辈 AI 温情引导长辈口述过往故事并沉淀为口述家史 |
+| `elder_medication` | 温馨服药守护 | `elder` | `star_tracker` | 晨起降压药/维生素伴随式定时打卡与亲情留言彩蛋 |
+| `child_story` | 双向共创故事机 | `child` | `decision_story` | 分幕式二选一决策互动，由孩子主导剧情走向 |
+| `child_habit` | 好习惯星星宝盒 | `child` | `star_tracker` | 拆解刷牙、牛奶、早睡任务，集齐 3 颗星点亮勋章 |
+| `child_encyclopedia` | 万物为什么百科 | `child` | `interactive_prompt` | 彩虹、小动物拟人科普童趣解答与一键语音朗读 |
+
+---
+
+## 八、 平台超级管理中控台 (Platform Admin Dashboard & AI Control)
+
+为了支撑全平台的运行态调度、模型切换与安全兜底，平台配备专门的超级管理员中控系统。
+
+### 8.1 核心管控能力
+1. **AI 大模型与语音中枢热更新**：
+   - 支持 DeepSeek-V3 / Qwen-2.5 / OpenAI / Mock 极速切换；
+   - 运行时在线微调长辈知心邻里 Agent 与儿童萌趣玩伴 Agent 的系统提示词 (Prompts)；
+   - 动态调度 Edge-TTS 音色（长辈成熟温润音色 `zh-CN-YunyangNeural`，儿童甜美活泼音色 `zh-CN-XiaoyiNeural`）与语速比例。
+2. **插件生态全局紧急熔断 (Kill-Switch)**：
+   - 管理员可一键将某插件置为全局熔断停用；
+   - 熔断生效后，全网所有家庭端即刻下线该插件卡片，且所有动作接口立即禁止调用。
+3. **全网多租户安全审计与监控大盘**：
+   - 实时统计入驻家庭数、在护老人/儿童规模、今日 AI 对话频次；
+   - 适老防诈骗关键词拦截预警、儿童有害内容净化记录实时追踪。
+
+### 8.2 管理员核心 API 契约
+| 方法 | 路径 | 权限要求 | 职责说明 |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/admin/login` | 公开 | 平台超级管理员专用凭证登入 |
+| `GET` | `/api/v1/admin/ai/config` | 仅 `admin` | 获取当前大模型通道、提示词人设与 TTS 音色（密钥脱敏） |
+| `PUT` | `/api/v1/admin/ai/config` | 仅 `admin` | 运行时热更新 AI 模型、提示词或语音参数 |
+| `GET` | `/api/v1/admin/plugins` | 仅 `admin` | 查看全平台插件状态与调用量统计 |
+| `PUT` | `/api/v1/admin/plugins/{id}/toggle` | 仅 `admin` | 全局紧急熔断/恢复指定插件 |
+| `GET` | `/api/v1/admin/dashboard/stats` | 仅 `admin` | 查看平台家庭、老幼用户画像与 AI 对话大盘指标 |

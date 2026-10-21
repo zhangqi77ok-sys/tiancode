@@ -10,10 +10,17 @@ from pydantic import BaseModel, Field
 
 
 class UserRole(str, Enum):
-    """用户家庭角色枚举"""
+    """用户角色枚举"""
     GUARDIAN = "guardian"  # 家庭守护者（家长/中青年）
     ELDER = "elder"        # 银发长辈
     CHILD = "child"        # 幼童宝贝
+    ADMIN = "admin"        # 平台超级管理员（中枢管控）
+
+
+class AdminLoginRequest(BaseModel):
+    """平台管理员登录凭证请求"""
+    username: str = Field(..., description="管理员账号（如 admin）", min_length=3)
+    password: str = Field(..., description="管理员密码", min_length=6)
 
 
 class RegisterRequest(BaseModel):

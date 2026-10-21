@@ -1169,6 +1169,7 @@
           <span>伴暖 WarmCompanion</span>
         </div>
         <div class="top-actions">
+          <a href="admin.html" target="_blank" class="font-btn" style="text-decoration:none; display:inline-flex; align-items:center; background:#1E293B; color:#F8FAFC; border:1px solid #475569;" title="进入平台超级管理控制台">🛠️ 管理后台</a>
           <button class="birthday-pill" id="birthdayBadge" onclick="openOnboarding()">🎂 <span id="badgeAgeText">68岁 · 长辈</span></button>
           <button class="font-btn" id="fontBtn" onclick="toggleZoom()">大字号</button>
         </div>
@@ -1496,6 +1497,50 @@
                 <div class="task-label">睡前 21:00 故事机自动切静音防沉迷</div>
                 <div class="task-time">已开启 · 保护视力与作息</div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 🧩 伴暖家庭插件功能箱 (Guardian Plugin Ecosystem Hub) -->
+        <section class="app-card" style="margin-top:12px; border-left: 4px solid #6366F1;">
+          <div class="card-head">
+            <div class="card-title" style="color:#4F46E5;"><span>🧩</span> <span>家庭插件功能箱 (动态插槽)</span></div>
+            <span class="card-badge" style="background:#EEF2FF; color:#4F46E5;">守护者管控</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-sub); margin-bottom:12px;">
+            基于插件化架构，守护者可自由定制长辈与孩子的专属功能卡片流：
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:var(--bg-mobile); border-radius:12px; border:1px solid var(--border-subtle);">
+              <div>
+                <div style="font-size:13px; font-weight:700;">📻 经典戏曲随身听 <span style="font-size:11px; color:#C2410C; background:#FFF7ED; padding:2px 6px; border-radius:4px;">长辈端</span></div>
+                <div style="font-size:11px; color:var(--text-muted);">黄梅戏/豫剧经典名段与大字唱词</div>
+              </div>
+              <input type="checkbox" checked onchange="toggleFamilyPluginPrototype('elder_opera', this.checked)">
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:var(--bg-mobile); border-radius:12px; border:1px solid var(--border-subtle);">
+              <div>
+                <div style="font-size:13px; font-weight:700;">📖 人生时光回忆册 <span style="font-size:11px; color:#C2410C; background:#FFF7ED; padding:2px 6px; border-radius:4px;">长辈端</span></div>
+                <div style="font-size:11px; color:var(--text-muted);">AI温情唠嗑引导老人倾诉口述史</div>
+              </div>
+              <input type="checkbox" checked onchange="toggleFamilyPluginPrototype('elder_memory', this.checked)">
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:var(--bg-mobile); border-radius:12px; border:1px solid var(--border-subtle);">
+              <div>
+                <div style="font-size:13px; font-weight:700;">🐻 双向共创故事机 <span style="font-size:11px; color:#0284C7; background:#E0F2FE; padding:2px 6px; border-radius:4px;">儿童端</span></div>
+                <div style="font-size:11px; color:var(--text-muted);">分幕式情节二选一决策互动</div>
+              </div>
+              <input type="checkbox" checked onchange="toggleFamilyPluginPrototype('child_story', this.checked)">
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:var(--bg-mobile); border-radius:12px; border:1px solid var(--border-subtle);">
+              <div>
+                <div style="font-size:13px; font-weight:700;">⭐ 好习惯星星挑战箱 <span style="font-size:11px; color:#0284C7; background:#E0F2FE; padding:2px 6px; border-radius:4px;">儿童端</span></div>
+                <div style="font-size:11px; color:var(--text-muted);">点亮小星星赢取晚安小勇士勋章</div>
+              </div>
+              <input type="checkbox" checked onchange="toggleFamilyPluginPrototype('child_habit', this.checked)">
             </div>
           </div>
         </section>
@@ -2058,6 +2103,23 @@
       document.documentElement.style.setProperty('--font-scale', scales[zoomLevel]);
       document.getElementById('fontBtn').innerText = titles[zoomLevel];
     }
+    // 插件化动态开关联动函数
+    function toggleFamilyPluginPrototype(pluginId, isEnabled) {
+      if (pluginId === 'elder_opera') {
+        const el = document.querySelector('.opera-card');
+        if (el) el.style.display = isEnabled ? 'block' : 'none';
+      } else if (pluginId === 'elder_memory') {
+        const el = document.querySelector('.memory-card');
+        if (el) el.style.display = isEnabled ? 'block' : 'none';
+      } else if (pluginId === 'child_story') {
+        const el = document.querySelector('.story-card');
+        if (el) el.style.display = isEnabled ? 'block' : 'none';
+      } else if (pluginId === 'child_habit') {
+        const el = document.querySelector('.habits-card');
+        if (el) el.style.display = isEnabled ? 'block' : 'none';
+      }
+    }
+
     // 初始化首屏角色与双 Tab
     applyUserRole(getModeByAge(calcAge(selectedBirthDate)), calcAge(selectedBirthDate));
   </script>

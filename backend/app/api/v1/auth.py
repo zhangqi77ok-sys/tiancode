@@ -238,3 +238,20 @@ def update_family_settings(req: FamilySettingsUpdate, u: UserContext = Depends(g
 
     fam["settings"] = req.model_dump()
     return {"status": "ok", "settings": fam["settings"]}
+
+
+# ================= 跨模块辅助查询函数 =================
+
+def get_family_by_id(family_id: str) -> Optional[dict]:
+    """获取指定家庭对象引用"""
+    return _FAMILIES.get(family_id)
+
+
+def get_all_families_count() -> int:
+    """获取平台已注册家庭总数"""
+    return len(_FAMILIES)
+
+
+def get_all_users() -> List[dict]:
+    """获取全平台用户列表副本"""
+    return list(_USERS.values())
