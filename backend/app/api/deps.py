@@ -1,7 +1,8 @@
 """FastAPI 认证与权限依赖注入模块 (Dependencies & Guards)
 
 提供当前用户上下文解析、基于角色的访问控制（RBAC）守卫。
-身份以内存用户表为准：已删除的成员，其 JWT 立即失效。
+身份以数据库用户为准。已删除的成员，以及已注销的 jti，其 JWT 立即失效。
+未注销的令牌在过期前仍然有效。
 """
 from __future__ import annotations
 
@@ -50,13 +51,19 @@ def get_current_user(
             detail=f"无效或已过期的访问令牌: {str(e)}",
         ) from e
 
-    if not claims.get("sub") or not claims.get("fam") or not claims.get("role"):
+    if not claims.get("sub") or not claims.get("fam") or not claims.get("role") or not claims.get("jti"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌缺失必要身份字段 (sub/fam/role)",
+            detail="令牌缺失必要身份字段 (sub/fam/role/jti)",
         )
 
     from app.core.store import store
+
+    if store.is_jti_revoked(str(claims["jti"])):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或已过期的访问令牌",
+        )
 
     user = store.get_user(str(claims["sub"]))
     if (
@@ -83,6 +90,8 @@ def get_current_user(
         role=role,
         nickname=str(user.get("nickname") or ""),
         birth_date=str(user.get("birth_date") or ""),
+        jti=str(claims["jti"]),
+        token_exp=int(claims.get("exp") or 0),
     )
 
 

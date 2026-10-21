@@ -112,6 +112,8 @@ class UserContext(BaseModel):
     role: UserRole
     nickname: str
     birth_date: str
+    jti: str
+    token_exp: int
 
 
 class FamilyMemberOut(BaseModel):
@@ -129,4 +131,7 @@ class FamilyMemberOut(BaseModel):
 class FamilySettingsUpdate(BaseModel):
     """家庭看护配置更新请求（仅守护者可调）"""
     medication_reminder_enabled: bool = Field(True, description="长辈用药提醒总开关")
-    kids_curfew_enabled: bool = Field(True, description="儿童 21:00 睡前故事防沉迷开关")
+    kids_curfew_enabled: bool = Field(
+        True,
+        description="儿童防沉迷。北京时间 21:00–06:00 拒绝儿童插件动作",
+    )

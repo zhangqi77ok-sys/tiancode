@@ -15,7 +15,7 @@ import string
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
@@ -39,9 +39,7 @@ from app.schemas.auth import (
 
 router = APIRouter(prefix="/api/v1")
 
-# 登录失败计数留在进程里。账号、家庭和插件开关在 SQLite。
-# key -> 失败时间戳（monotonic）。超过窗口的记录在检查时丢掉。
-_LOGIN_FAILS: Dict[str, List[float]] = {}
+# 登录失败计数写在 SQLite，重启后窗口仍然有效。
 LOGIN_FAIL_LIMIT = 5
 LOGIN_FAIL_WINDOW_SECONDS = 300
 
@@ -121,13 +119,27 @@ def _allocate_pin(family_id: str) -> str:
     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法分配 Pin 码")
 
 
+def _fail_storage_key(key: str) -> str:
+    return f"login_fail:{key}"
+
+
 def _recent_failures(key: str) -> List[float]:
-    now = time.monotonic()
-    kept = [stamp for stamp in _LOGIN_FAILS.get(key, []) if now - stamp < LOGIN_FAIL_WINDOW_SECONDS]
+    raw = store.kv_get(_fail_storage_key(key)) or ""
+    now = time.time()
+    kept: List[float] = []
+    for part in raw.split(","):
+        if not part:
+            continue
+        try:
+            stamp = float(part)
+        except ValueError:
+            continue
+        if now - stamp < LOGIN_FAIL_WINDOW_SECONDS:
+            kept.append(stamp)
     if kept:
-        _LOGIN_FAILS[key] = kept
+        store.kv_set(_fail_storage_key(key), ",".join(str(stamp) for stamp in kept))
     else:
-        _LOGIN_FAILS.pop(key, None)
+        store.kv_delete(_fail_storage_key(key))
     return kept
 
 
@@ -138,12 +150,13 @@ def enforce_login_attempt(key: str) -> None:
 
 
 def record_login_failure(key: str) -> None:
-    _recent_failures(key)
-    _LOGIN_FAILS.setdefault(key, []).append(time.monotonic())
+    kept = _recent_failures(key)
+    kept.append(time.time())
+    store.kv_set(_fail_storage_key(key), ",".join(str(stamp) for stamp in kept))
 
 
 def clear_login_failures(key: str) -> None:
-    _LOGIN_FAILS.pop(key, None)
+    store.kv_delete(_fail_storage_key(key))
 
 
 def _issue_token(user: dict) -> TokenResponse:
@@ -359,6 +372,13 @@ def member_quick_login(req: MemberLoginRequest):
 
     clear_login_failures(key)
     return _issue_token(matched_user)
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(u: UserContext = Depends(require_roles(list(UserRole)))):
+    """注销当前这枚令牌。同一用户的其他未注销令牌在过期前仍然有效。"""
+    store.revoke_jti(u.jti, u.token_exp)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/auth/me")

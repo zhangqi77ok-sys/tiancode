@@ -6,6 +6,8 @@
 3. RBAC 越权拦截：长辈调用儿童故事插件被 403 严格拦截；儿童调用用药插件被 403 严格拦截；
 4. 守护者家庭开关：守护者在家庭设置中关闭戏曲插件后，长辈主页该插件卡片立即下线。
 """
+from datetime import date
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -48,7 +50,7 @@ def test_plugins_lifecycle_rbac_and_family_toggle(client):
     client.post(
         "/api/v1/family/members",
         headers=guardian_headers,
-        json={"nickname": "豆豆", "role": "child", "birth_date": "2019-06-01", "pin_code": "2222"},
+        json={"nickname": "豆豆", "role": "child", "birth_date": date(date.today().year - 8, 1, 1).isoformat(), "pin_code": "2222"},
     )
 
     # 3. 长辈登录并拉取插件卡片流

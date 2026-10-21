@@ -1,26 +1,44 @@
 # WarmCompanion (伴暖) — severity-ranked code review
 
-## Phase 1 and 2 status
+## Status after phase 3
 
-Phase 1 closed auth and member management. Phase 2 stores families in SQLite, points the prototype at those APIs, and extends deploy smoke. The findings below are the original review of `5debeec`.
+Phases 1–3 changed this branch. The sections under this table are the original review of `5debeec` and are kept as evidence. They are not the current bug list. Current behavior is the README plus this table.
 
-| Item | Status |
+### Fixed
+
+| Item | What changed |
 | :--- | :--- |
-| C1 privilege escalation | Fixed. Member create accepts only `elder` / `child`. PIN login ignores any other role. `require_roles` guards guardian and admin routes. |
-| C2 fail-open secrets | Fixed. `create_app()` refuses a missing or published `JWT_SECRET` / `ADMIN_PASSWORD`. README no longer prints a live admin password. |
-| H1 smoke and the test badge | Smoke in `deploy/smoke.sh` registers a guardian, checks `/auth/me`, and expects 403 on the admin config route. The static 11/11 badge is gone. |
-| H2 memory-only families | Fixed for accounts, settings, plugin toggles, kill-switch, and plugin progress. They live in `TIANCODE_DB`. Login lockout counters are still process memory. |
-| H3 settings wipe plugin toggles | Fixed. Settings update merges. Medication check-in honors `medication_reminder_enabled`. The curfew flag is stored and does not change behavior by clock time. |
-| H4 model, voice, safety | Not implemented. Admin metrics come from the API and stay at 0 dialogues. Saved provider fields are not used to call a model. |
-| H5 prototype session | Fixed. `login.html` stores the server JWT. `index.html` uses `/auth/me` and `child`. `admin.html` logs in and loads stats, config, and the kill switch. |
-| M1 family plugin off | Fixed. |
-| M2 PIN, invite, age | Fixed in phase 1, with hashed PINs now in SQLite. |
-| M4 Sa-Token / revocation | Header is a JWT alias. Deleted users fail the lookup. There is still no logout denylist; a live user’s 30-day token stays valid. |
-| M5 TLS and forwarded IPs | Documented as HTTP on the practice host. `forwarded-allow-ips` defaults to `127.0.0.1`. |
-| L1 license and README | `LICENSE` is MIT. README describes the SQLite app, not TTS or a model. |
+| C1 privilege escalation | Member create accepts only `elder` / `child`. PIN login ignores any other role. `require_roles` guards guardian and admin routes. |
+| C2 fail-open secrets | `create_app()` refuses a missing or published `JWT_SECRET` / `ADMIN_PASSWORD`. README does not print a live admin password. |
+| H1 smoke and the test badge | `deploy/smoke.sh` checks pages, anonymous admin 401, a real register plus `/auth/me`, and 403 when a guardian token hits `/api/v1/admin/dashboard/stats`. The static 11/11 badge is gone. |
+| H2 memory-only families | Accounts, settings, plugin toggles, kill-switch, plugin progress, login lockout, and the logout denylist live in `TIANCODE_DB`. Each request loads the user row. |
+| H3 settings wipe plugin toggles | Settings update merges. Medication check-in honors `medication_reminder_enabled`. |
+| H3 curfew flag | When `kids_curfew_enabled` is on (the default), child plugin actions return 403 from 21:00 inclusive through 06:00 exclusive, Asia/Shanghai, fixed UTC+8. Cards stay visible. Elders are not blocked. `kids_curfew_enabled: false` turns the window off. |
+| H4 fake model pipeline | `AiConfigManager`, provider / prompt / TTS fields, dialogue and safety counters, and the admin AI and audit tabs are gone. The dashboard counts families, members, and plugins that are not killed. |
+| H5 prototype session | `login.html` stores the server JWT. `index.html` uses `/auth/me` and `child`, and logout calls `POST /api/v1/auth/logout` before clearing localStorage. `admin.html` logs in, loads stats and the kill switch, and logs out the same way. |
+| M1 family plugin off | A family-off plugin rejects `dispatch_action`. |
+| M2 PIN, invite, age | PINs are hashed. Invites use `secrets`. Bad invite and bad PIN share one 401. Five failures in five minutes return 429, and that counter is in SQLite. Age bands and an 11-digit phone are checked on the server. Invite codes are returned to guardians only. Child fixtures use a birthday eight years before today. |
+| M3 shared process state | Each test wipes SQLite and freezes the curfew clock at noon Shanghai. AuthZ, logout, and curfew have their own cases. |
+| M4 current-token logout | `encode_jwt` sets `jti`. `POST /api/v1/auth/logout` inserts it into `revoked_jti`. A missing or revoked `jti` is 401. |
+| M5 forwarded IPs | `forwarded-allow-ips` defaults to `127.0.0.1`. The practice host is documented as HTTP in front of nginx. |
+| L1 license and README | `LICENSE` is MIT. README describes SQLite, logout, and curfew, and does not claim a model or Edge-TTS. |
 | L4 copy forks | The home page renders cards from `/plugins/active` and hides the old static plugin copy. |
 
-Reviewed tree: `5debeec` (`feat: enforce auth route guard, require user name on registration, and dynamically display name post-login`), 2026-10-21. The original pass did not change application code. Phase 1 did.
+### Remaining
+
+| Item | Disposition |
+| :--- | :--- |
+| No model, server TTS, ASR, safety filter, or WebSocket | Won’t-fix. Plugin copy is canned. Browser `speechSynthesis` is labeled as the browser. Calling a model was not added. |
+| Sibling tokens | A logout revokes only that token. Other unexpired tokens for the same live user keep working until `exp` or their own logout. There is no refresh rotation, issuer, or audience. `satoken` is the same JWT, not a server session. |
+| Curfew scope | Quiet hours do not hide cards, mute the browser, or run a scheduler. Medication reminders are a stored flag plus a check-in action, not a clock. |
+| Plugin toggle scope | Flags are family-wide, not per member. |
+| TLS | Won’t-fix inside the app. Terminate TLS in front of nginx. The container trusts forwarded headers only from `127.0.0.1`. |
+| L2 WCAG / CSS sizes | Won’t-fix. README no longer claims AAA, 20px, or a 64px target. |
+| PRD | Historical. The banner at the top of `docs/PRD_FAMILY_COMPANION.md` says so. |
+| L3 leftovers | `BENTO_STAT`, `unregister`, and the AI config module are gone. `.gitignore` still ignores `*.png` and `*.zip`. |
+| Single container | Compose runs one API process. Family data, the kill switch, invocation counts, and the logout list are rows in that process’s SQLite file. |
+
+Reviewed tree for the original findings: `5debeec` (`feat: enforce auth route guard, require user name on registration, and dynamically display name post-login`), 2026-10-21. That pass did not change application code.
 
 Method: read `README.md`, `docs/PRD_FAMILY_COMPANION.md`, `docs/deploy.md`, `Jenkinsfile`, `Dockerfile`, `pyproject.toml`, the deploy templates, every file under `backend/`, and `prototype/login.html`, `index.html`, and `admin.html`. Then, from a clean import of this tree:
 
@@ -285,7 +303,9 @@ The global kill-switch does block the action and is what `test_admin_api.py` cov
 
 ## 4. Claims that are overstated or unimplemented
 
-“Real” means this tree does the behavior, not that it is safe to ship. “Partial” means a slice exists and the sentence around it does not.
+This table judges `5debeec`, not the branch after phases 1–3. Use the status table at the top for what is fixed.
+
+“Real” means that tree did the behavior, not that it was safe to ship. “Partial” means a slice existed and the sentence around it did not.
 
 ### README.md (current text, not the old prototype-only README)
 

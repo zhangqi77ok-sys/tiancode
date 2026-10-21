@@ -1115,7 +1115,7 @@
 
   <div class="mobile-frame">
     <!-- 首次年月日填写引导层 (Onboarding Modal) -->
-    <div class="onboarding-overlay" id="onboardingOverlay">
+    <div class="onboarding-overlay hidden" id="onboardingOverlay">
       <div class="onboarding-modal">
         <div class="onboarding-header">
           <div class="onboarding-badge">🎂</div>
@@ -1810,12 +1810,16 @@
       switchPersonalOrFamily('personal');
     }
 
-    function logoutAndRedirect() {
-      if (confirm("确定要退出当前账号并返回登录注册门户吗？")) {
-        localStorage.removeItem('satoken');
-        localStorage.removeItem('satoken_user');
-        window.location.href = 'login.html';
+    async function logoutAndRedirect() {
+      if (!confirm("确定要退出当前账号并返回登录注册门户吗？")) return;
+      try {
+        await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: authHeaders() });
+      } catch (err) {
+        // 网络失败时只清本机。服务端这枚令牌在过期前仍然有效。
       }
+      localStorage.removeItem('satoken');
+      localStorage.removeItem('satoken_user');
+      window.location.href = 'login.html';
     }
 
     // 切换【我的主页】与【家庭看板】
@@ -2270,9 +2274,9 @@
       }).join('');
       const med = settings.medication_reminder_enabled !== false;
       const curfew = settings.kids_curfew_enabled !== false;
-      box.innerHTML = `<section class="live-card"><h3>家庭插件</h3><p>开关写入数据库。防沉迷时段还没有自动静音。</p>${rows}
+      box.innerHTML = `<section class="live-card"><h3>家庭插件</h3><p>开关写入数据库。儿童防沉迷开启后，北京时间 21:00–06:00 拒绝儿童插件动作，卡片仍会显示。</p>${rows}
         <label><input id="flagMed" type="checkbox" ${med ? 'checked' : ''}> 用药提醒</label>
-        <label><input id="flagCurfew" type="checkbox" ${curfew ? 'checked' : ''}> 保存防沉迷开关（尚未按时段生效）</label>
+        <label><input id="flagCurfew" type="checkbox" ${curfew ? 'checked' : ''}> 儿童防沉迷（北京时间 21:00–06:00）</label>
         <button type="button" onclick="saveCareFlags(document.getElementById('flagMed').checked, document.getElementById('flagCurfew').checked)">保存看护开关</button>
       </section>`;
     }

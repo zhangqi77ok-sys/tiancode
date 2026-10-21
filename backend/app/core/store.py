@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS plugin_state (
     state_json TEXT NOT NULL,
     PRIMARY KEY (plugin_id, scope_key)
 );
+CREATE TABLE IF NOT EXISTS revoked_jti (
+    jti TEXT PRIMARY KEY,
+    exp INTEGER NOT NULL
+);
 """
 
 
@@ -74,7 +78,7 @@ class Store:
     def wipe(self) -> None:
         with self._lock:
             conn = self.conn()
-            for table in ("users", "families", "kv", "plugin_state"):
+            for table in ("users", "families", "kv", "plugin_state", "revoked_jti"):
                 conn.execute(f"DELETE FROM {table}")
             conn.commit()
 
@@ -172,6 +176,11 @@ class Store:
             row = self.conn().execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
         return None if row is None else str(row["value"])
 
+    def kv_delete(self, key: str) -> None:
+        with self._lock:
+            self.conn().execute("DELETE FROM kv WHERE key = ?", (key,))
+            self.conn().commit()
+
     def kv_set(self, key: str, value: str) -> None:
         with self._lock:
             self.conn().execute(
@@ -193,6 +202,33 @@ class Store:
             return None
         data = json.loads(row["state_json"])
         return data if isinstance(data, dict) else None
+
+    def revoke_jti(self, jti: str, exp: int) -> None:
+        import time
+
+        now = int(time.time())
+        with self._lock:
+            conn = self.conn()
+            conn.execute("DELETE FROM revoked_jti WHERE exp < ?", (now,))
+            conn.execute(
+                "INSERT INTO revoked_jti (jti, exp) VALUES (?, ?) ON CONFLICT(jti) DO UPDATE SET exp=excluded.exp",
+                (jti, int(exp)),
+            )
+            conn.commit()
+
+    def is_jti_revoked(self, jti: str) -> bool:
+        import time
+
+        now = int(time.time())
+        with self._lock:
+            row = self.conn().execute("SELECT exp FROM revoked_jti WHERE jti = ?", (jti,)).fetchone()
+            if row is None:
+                return False
+            if int(row["exp"]) < now:
+                self.conn().execute("DELETE FROM revoked_jti WHERE jti = ?", (jti,))
+                self.conn().commit()
+                return False
+            return True
 
     def set_plugin_state(self, plugin_id: str, scope_key: str, state: Dict[str, Any]) -> None:
         payload = json.dumps(state, ensure_ascii=False)

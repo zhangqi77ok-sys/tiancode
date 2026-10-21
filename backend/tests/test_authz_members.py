@@ -4,6 +4,8 @@ These cases describe the phase-1 contract. They fail on the pre-fix tree.
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -98,7 +100,7 @@ def test_family_roles_cannot_call_admin_routes(client):
         client, headers, nickname="外婆", role="elder", birth_date="1955-03-12", pin_code="1111"
     )
     child = _add_member(
-        client, headers, nickname="豆豆", role="child", birth_date="2019-06-01", pin_code="2222"
+        client, headers, nickname="豆豆", role="child", birth_date=date(date.today().year - 8, 1, 1).isoformat(), pin_code="2222"
     )
     assert elder.status_code == 201
     assert child.status_code == 201
@@ -111,7 +113,7 @@ def test_family_roles_cannot_call_admin_routes(client):
     ).json()["access_token"]
 
     for token in (headers["Authorization"].split()[1], elder_token, child_token):
-        resp = client.get("/api/v1/admin/ai/config", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get("/api/v1/admin/dashboard/stats", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 403
         assert "权限不足" in resp.json()["detail"]
 
@@ -207,7 +209,7 @@ def test_pin_is_hashed_and_invite_errors_do_not_enumerate(client):
     assert wrong_pin.json()["detail"] == wrong_invite.json()["detail"]
 
     duplicate = _add_member(
-        client, headers, nickname="另一位", role="child", birth_date="2018-08-08", pin_code="8888"
+        client, headers, nickname="另一位", role="child", birth_date=date(date.today().year - 8, 1, 1).isoformat(), pin_code="8888"
     )
     assert duplicate.status_code == 409
 

@@ -30,7 +30,7 @@ for path in / /login.html /admin.html; do
   [ "$c" = 200 ]
 done
 
-c="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/v1/admin/ai/config" || true)"
+c="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/v1/admin/dashboard/stats" || true)"
 echo "smoke admin-anon $c"
 [ "$c" = 401 ]
 
@@ -49,7 +49,7 @@ c="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$
 echo "smoke me $c"
 [ "$c" = 200 ]
 
-c="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "${BASE}/api/v1/admin/ai/config" || true)"
+c="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "${BASE}/api/v1/admin/dashboard/stats" || true)"
 echo "smoke admin-guardian $c"
 [ "$c" = 403 ]
 

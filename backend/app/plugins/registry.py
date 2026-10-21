@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.core.curfew import child_actions_blocked
 from app.core.store import store
 from app.plugins.base import BasePlugin
 from app.schemas.auth import UserContext, UserRole
@@ -139,6 +140,9 @@ class PluginRegistry:
             is_enabled = enabled_map.get(plugin.id, plugin.manifest.default_enabled)
             if not is_enabled:
                 raise PermissionError(f"插件 [{plugin.name}] 已在当前家庭中停用")
+
+        if child_actions_blocked(context.role.value, family_settings):
+            raise PermissionError("已过防沉迷时间（北京时间 21:00–06:00），儿童插件暂不可用")
 
         if not plugin.can_access(context.role):
             raise PermissionError(

@@ -41,7 +41,7 @@
 - `child_story` 只有写好的两幕，选择会保存。不会调用模型续写。
 - `child_habit` 把三颗星的勾选写入数据库。
 - `child_encyclopedia` 是固定句子，没有音频。
-- `kids_curfew_enabled` 可以保存。到点不会自动把故事静音。
+- `kids_curfew_enabled` 默认开启。北京时间（固定 UTC+8）21:00 至次日 06:00（含 21 点，不含 6 点）拒绝儿童的插件动作。卡片仍然显示，浏览器朗读不受这条限制。关掉开关后，这个时段也允许动作。
 
 ### 3. 守护者
 - 注册、登录、按 `family_id` 列出成员、添加 / 修改 / 删除长辈或儿童。
@@ -50,8 +50,8 @@
 
 ### 4. 管理页
 - `POST /api/v1/admin/login` 使用 `ADMIN_USERNAME` / `ADMIN_PASSWORD`。家庭令牌访问管理接口是 403。
-- 大盘数字来自 `GET /api/v1/admin/dashboard/stats`。没有模型调用时，对话数和安全告警是 0。
-- 模型服务商、提示词可以写入 SQLite。这个进程不会用它们发请求。
+- 大盘数字来自 `GET /api/v1/admin/dashboard/stats`：家庭数、成员数、未熔断插件数。没有对话数或安全告警。
+- 管理页没有模型服务商、提示词或 Edge-TTS 开关。这个进程不调用大模型或服务端语音。
 - 插件全局开关会持久化。关掉之后，家庭端卡片消失，动作返回 403。
 
 ---
@@ -64,7 +64,7 @@ flowchart TD
         ElderView["👵 长辈关爱主页 (超大字 / 戏曲 / 时光册 / 用药)"]
         ChildView["👶 豆豆熊乐园 (互动故事 / 好习惯星星 / 百科)"]
         FamilyView["🏡 家庭看板 (Bento 简报 / 插件功能箱 / 留声机)"]
-        AdminView["🛠️ 平台管理台 (AI热更 / 插件全局熔断 / 大盘监控)"]
+        AdminView["🛠️ 平台管理台 (家庭计数 / 插件全局熔断)"]
     end
 
     subgraph Security ["自主研发安全与 RBAC 权限中心"]
@@ -87,22 +87,21 @@ flowchart TD
         end
     end
 
-    subgraph Backend ["FastAPI 核心服务与 AI 运行态"]
-        API["FastAPI 异步路由 (/api/v1)"]
-        AiManager["已保存的模型字段，不发起请求"]
-        Safety["安全计数保持 0"]
+    subgraph Backend ["FastAPI 核心服务"]
+        API["FastAPI 路由 (/api/v1)"]
+        DB["SQLite：家庭、令牌注销、插件进度"]
     end
 
     Client <--> Security
     Security --> API
     API --> Plugins
     Plugins --> Builtin
-    API --> AiManager & Safety
+    API --> DB
 ```
 
 ### 1. PyJWT
-- 令牌是 PyJWT HS256，默认 30 天。`satoken` 头和 `Authorization: Bearer` 接受同一枚 JWT，这不是服务端会话。
-- 每次请求按 `sub` 查 SQLite。用户被删除后，旧令牌返回 401。没有注销接口，未删除的令牌在过期前仍然有效。
+- 令牌是 PyJWT HS256，默认 30 天，每枚带 `jti`。`satoken` 头和 `Authorization: Bearer` 接受同一枚 JWT，这不是服务端会话。
+- `POST /api/v1/auth/logout` 把当前 `jti` 写进 SQLite 拒绝名单，这枚令牌立即 401。同一用户没有注销的其他令牌，在各自到期前仍然有效。用户被删除后，旧令牌也会 401。
 - 密码和 Pin 用 PBKDF2-HMAC-SHA256。邀请码用 `secrets`。
 - 平台 `admin` 只能从 `POST /api/v1/admin/login` 签发。成员创建只接受 `elder` 和 `child`。
 
@@ -126,12 +125,12 @@ tiancode/
 │   │   │   └── v1/
 │   │   │       ├── auth.py           # 守护者注册/登录、家庭纳管、Pin 码免密登录
 │   │   │       ├── plugins.py        # 动态卡片流拉取、插件动作分发、家庭插件开关
-│   │   │       └── admin.py          # 管理员登录、AI 模型热更、插件全局熔断、大盘统计
+│   │   │       └── admin.py          # 管理员登录、插件全局熔断、家庭计数
 │   │   ├── core/
 │   │   │   ├── security.py           # PyJWT HS256 与 PBKDF2
-│   │   │   ├── store.py              # SQLite：家庭、用户、设置、插件状态
+│   │   │   ├── store.py              # SQLite：家庭、用户、注销名单、插件状态
 │   │   │   ├── runtime_secrets.py    # 拒绝缺失或公开的 JWT / 管理员密码
-│   │   │   └── ai_config.py          # 可保存的模型字段，不调用模型
+│   │   │   └── curfew.py             # 北京时间 21:00–06:00 儿童插件动作
 │   │   ├── plugins/
 │   │   │   ├── base.py               # 插件抽象基类规范 (BasePlugin)
 │   │   │   ├── registry.py           # 插件注册中心 (单例、角色过滤、全局熔断)
@@ -141,13 +140,16 @@ tiancode/
 │   │   └── schemas/
 │   │       ├── auth.py               # 认证请求/响应模型与 UserRole (guardian/elder/child/admin)
 │   │       ├── plugin.py             # PluginManifest、CardTemplateType、动作契约
-│   │       └── admin.py              # AI 配置热更契约、大盘指标统计模型
+│   │       └── admin.py              # 插件状态与大盘计数
 │   └── tests/
 │       ├── test_main_health.py       # /healthz、原型页、ROOT_PATH 不改写路由
 │       ├── test_auth_unit.py         # JWT 签名、验签、篡改防御、过期拦截单元测试
 │       ├── test_auth_api.py          # 守护者建家、纳管成员、Pin 免密登录与 RBAC 越权拦截
 │       ├── test_plugins_api.py       # 插件角色白名单过滤、切歌/分支动作与家庭开关测试
-│       └── test_admin_api.py         # 管理员认证、AI 参数热更、插件全网紧急熔断联动测试
+│       ├── test_admin_api.py         # 管理员认证、大盘计数、插件全网紧急熔断
+│       ├── test_authz_members.py      # 越权、密钥、成员增删改
+│       ├── test_persistence.py        # 重启后家庭与插件进度仍在
+│       └── test_session_curfew.py    # 注销当前令牌、儿童防沉迷时段
 ├── deploy/
 │   ├── docker-compose.yml            # 单 api 服务，127.0.0.1:8092→8000
 │   ├── .env.example                  # JWT / 管理员占位，无真实密钥

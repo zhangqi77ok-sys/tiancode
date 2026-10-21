@@ -52,7 +52,7 @@ Jenkins 全局环境变量沿用现有的 `DEPLOY_HOST` 与 `DEPLOY_USER=deploy`
 | Push GHCR | 仅部署分支。凭据缺失或过期则失败，不会静默改用别的镜像 |
 | Dedup check | 同一提交已部署且 `/readyz` 为 200 时跳过。`FORCE_DEPLOY` 可强制重来 |
 | Deploy | `scp` compose 与 `.env`，`docker compose -p tiancode up -d` |
-| Smoke | 部署机执行 `deploy/smoke.sh`。默认 `/readyz` 就绪后检查 `/`、`/login.html`、`/admin.html`，匿名管理接口为 401，注册一个守护者后 `/auth/me` 为 200，该令牌访问 `/api/v1/admin/ai/config` 为 403。`SMOKE_PATH` 不是 `/readyz` 时只探测那一条路径。失败则回滚到 `.last_tag` |
+| Smoke | 部署机执行 `deploy/smoke.sh`。默认 `/readyz` 就绪后检查 `/`、`/login.html`、`/admin.html`，匿名管理接口为 401，注册一个守护者后 `/auth/me` 为 200，该令牌访问 `/api/v1/admin/dashboard/stats` 为 403。`SMOKE_PATH` 不是 `/readyz` 时只探测那一条路径。失败则回滚到 `.last_tag` |
 
 ## `.env`
 

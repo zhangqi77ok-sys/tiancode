@@ -306,14 +306,8 @@
       <li class="nav-item active" onclick="switchTab('dashboard', this)">
         <span class="icon">📊</span> 全景监控大盘
       </li>
-      <li class="nav-item" onclick="switchTab('ai-config', this)">
-        <span class="icon">🤖</span> AI与语音管控
-      </li>
       <li class="nav-item" onclick="switchTab('plugins', this)">
         <span class="icon">🧩</span> 插件生态与熔断
-      </li>
-      <li class="nav-item" onclick="switchTab('audit', this)">
-        <span class="icon">🛡️</span> 安全审计日志
       </li>
     </ul>
 
@@ -331,10 +325,11 @@
     <header>
       <div>
         <div class="page-title" id="page-heading">全景大盘概览</div>
-        <div class="page-desc" id="page-sub">实时监控全平台家庭空间、老幼使用画像与 AI 伴暖服务态势</div>
+        <div class="page-desc" id="page-sub">家庭数、成员数和未熔断插件数，来自接口</div>
       </div>
       <div>
-        <button class="btn btn-primary" onclick="refreshData()">🔄 刷新运行时指标</button>
+        <button class="btn btn-primary" onclick="refreshData()">刷新</button>
+        <button class="btn btn-primary" onclick="adminLogout()" style="margin-left:8px;background:#334155;">退出</button>
       </div>
     </header>
 
@@ -360,18 +355,6 @@
           <div class="stat-sub">角色为 child 的成员</div>
         </div>
         <div class="stat-card">
-          <div class="stat-badge">💬</div>
-          <div class="stat-label">今日 AI 陪伴轮次</div>
-          <div class="stat-val" id="stat-dialogues">0</div>
-          <div class="stat-sub">未接入大模型，所以是 0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-badge">🛡️</div>
-          <div class="stat-label">防诈与安全拦截</div>
-          <div class="stat-val" id="stat-alerts" style="color: var(--danger)">0</div>
-          <div class="stat-sub">没有安全过滤器在记账</div>
-        </div>
-        <div class="stat-card">
           <div class="stat-badge">🧩</div>
           <div class="stat-label">活跃运行插件</div>
           <div class="stat-val" id="stat-plugins">0</div>
@@ -390,90 +373,12 @@
             <div style="font-weight: 700;">页面能打开只说明静态文件在。健康检查看 /readyz。</div>
           </div>
           <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-            <div style="color: var(--text-sub); margin-bottom: 4px;">大模型</div>
-            <div style="font-weight: 700;">未调用。下面的服务商字段只是保存下来的配置。</div>
+            <div style="color: var(--text-sub); margin-bottom: 4px;">账号</div>
+            <div style="font-weight: 700;">家庭和成员在 SQLite。退出只作废当前这枚令牌。</div>
           </div>
           <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-            <div style="color: var(--text-sub); margin-bottom: 4px;">语音</div>
-            <div style="font-weight: 700;">没有 Edge-TTS。家庭页只用浏览器朗读。</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 2: AI 与语音管控 -->
-    <div id="tab-ai-config" class="tab-pane">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🤖 大语言模型 (LLM) 通道与运行时参数</div>
-          <button class="btn btn-primary" onclick="saveAiConfig()">💾 实时热更新生效</button>
-        </div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label class="form-label">大模型通道服务商 (LLM Provider)</label>
-            <select id="cfg-provider">
-              <option value="deepseek">DeepSeek (V3 / R1 推理)</option>
-              <option value="qwen">通义千问 Qwen 2.5</option>
-              <option value="openai">OpenAI (GPT-4o mini)</option>
-              <option value="mock" selected>Mock 本地极速兜底</option>
-            </select>
-            <div class="form-hint">只写入数据库。这个进程不会拿它去请求模型。</div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">API 密钥 (API Key)</label>
-            <input type="password" id="cfg-key" value="" placeholder="留空则保持已保存的密钥">
-            <div class="form-hint">明文存在 SQLite 里。默认是空的，也不会用来调用接口。</div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">API Base URL</label>
-            <input type="text" id="cfg-url" value="" placeholder="未使用">
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">发散度 (Temperature: 0.1 ~ 1.0)</label>
-            <input type="number" id="cfg-temp" value="0.7" step="0.1" min="0" max="1">
-          </div>
-
-          <div class="form-group form-full">
-            <label class="form-label">👵 银发长辈知心邻里 Agent 系统人设 (System Prompt)</label>
-            <textarea id="cfg-elder-prompt" rows="3">你是一个温暖耐心的家庭伴老邻里助手。面对银发长辈，你说话温和慢速、尊重体贴，善于倾听长辈的回忆，绝不使用晦涩技术术语，主动提醒长辈按时服药与健康生活，严防诈骗诱导。</textarea>
-          </div>
-
-          <div class="form-group form-full">
-            <label class="form-label">👶 幼童萌趣玩伴 Agent 系统人设 (System Prompt)</label>
-            <textarea id="cfg-child-prompt" rows="3">你是活泼萌趣的陪伴小熊（豆豆熊）。面对学龄前幼童，你充满好奇心与耐心，善于用拟人生动的童话讲故事，用分幕选择引导孩子做决定，鼓励好习惯打卡，语言积极健康，绝不涉及暴力有害信息。</textarea>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🎙️ 拟人多模态语音 (TTS / ASR) 音色调度</div>
-        </div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label class="form-label">长辈端朗读音色 (Edge-TTS)</label>
-            <select id="cfg-elder-voice">
-              <option value="zh-CN-YunyangNeural" selected>云阳 (成熟温润·播报适老专用)</option>
-              <option value="zh-CN-YunxiNeural">云希 (邻家青年·温和叙事)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">长辈端语速调节</label>
-            <input type="text" id="cfg-elder-rate" value="-15%" placeholder="-15% (慢速舒适)">
-          </div>
-          <div class="form-group">
-            <label class="form-label">儿童端故事音色 (Edge-TTS)</label>
-            <select id="cfg-child-voice">
-              <option value="zh-CN-XiaoyiNeural" selected>晓伊 (甜美童趣·绘本小熊)</option>
-              <option value="zh-CN-YunjianNeural">云健 (阳光少年)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">儿童端语速调节</label>
-            <input type="text" id="cfg-child-rate" value="+5%" placeholder="+5% (欢快活泼)">
+            <div style="color: var(--text-sub); margin-bottom: 4px;">语音与故事</div>
+            <div style="font-weight: 700;">没有服务端语音或大模型。家庭页朗读用浏览器。</div>
           </div>
         </div>
       </div>
@@ -509,15 +414,6 @@
       </div>
     </div>
 
-    <!-- Tab 4: 安全审计日志 -->
-    <div id="tab-audit" class="tab-pane">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🛡️ 实时安全护栏与敏感词拦截日志</div>
-        </div>
-        <p style="font-size: 14px; line-height: 1.6;">没有审计日志。安全拦截计数来自接口，当前为 0，因为没有过滤器在运行。</p>
-      </div>
-    </div>
   </main>
 
   <div id="toast">✅ 操作已成功同步</div>
@@ -580,48 +476,28 @@
       el.classList.add('active');
 
       const headings = {
-        'dashboard': ['全景大盘概览', '实时监控全平台家庭空间、老幼使用画像与 AI 伴暖服务态势'],
-        'ai-config': ['AI模型与语音管控中枢', '大模型 Provider 实时热切换、人设 Prompt 微调与 Edge-TTS 语速配置'],
-        'plugins': ['插件生态与全局熔断', '全平台可插拔插件治理与应急一键 Kill-Switch 拦截中枢'],
-        'audit': ['安全合规审计中心', '全链路适老反诈提示与儿童有害内容审查记录']
+        'dashboard': ['全景大盘概览', '家庭数、成员数和未熔断插件数，来自接口'],
+        'plugins': ['插件生态与全局熔断', '全平台插件开关。关掉之后家庭端动作返回 403']
       };
       document.getElementById('page-heading').innerText = headings[tabId][0];
       document.getElementById('page-sub').innerText = headings[tabId][1];
     }
 
-    async function saveAiConfig() {
-      const body = {
-        llm_provider: document.getElementById('cfg-provider').value,
-        base_url: document.getElementById('cfg-url').value,
-        temperature: Number(document.getElementById('cfg-temp').value),
-        elder_prompt: document.getElementById('cfg-elder-prompt').value,
-        child_prompt: document.getElementById('cfg-child-prompt').value,
-        tts_elder_voice: document.getElementById('cfg-elder-voice').value,
-        tts_elder_rate: document.getElementById('cfg-elder-rate').value,
-        tts_child_voice: document.getElementById('cfg-child-voice').value,
-        tts_child_rate: document.getElementById('cfg-child-rate').value,
-      };
-      const key = document.getElementById('cfg-key').value;
-      if (key) body.api_key = key;
-      const resp = await fetch(apiUrl('/admin/ai/config'), {
-        method: 'PUT',
-        headers: adminHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!resp.ok) {
-        showToast('配置没有保存');
-        return;
+    async function adminLogout() {
+      try {
+        await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: adminHeaders() });
+      } catch (err) {
+        // 请求失败时只清本机。这枚令牌在过期前仍然有效。
       }
-      document.getElementById('cfg-key').value = '';
-      showToast('配置已写入数据库。没有调用模型。');
-      await refreshData();
+      sessionStorage.removeItem('admin_token');
+      document.getElementById('admin-name').innerText = '未登录';
+      document.getElementById('admin-login').style.display = 'flex';
     }
 
     async function refreshData() {
       const statsResp = await fetch(apiUrl('/admin/dashboard/stats'), { headers: adminHeaders() });
       const pluginsResp = await fetch(apiUrl('/admin/plugins'), { headers: adminHeaders() });
-      const cfgResp = await fetch(apiUrl('/admin/ai/config'), { headers: adminHeaders() });
-      if (!statsResp.ok || !pluginsResp.ok || !cfgResp.ok) {
+      if (!statsResp.ok || !pluginsResp.ok) {
         sessionStorage.removeItem('admin_token');
         document.getElementById('admin-login').style.display = 'flex';
         return;
@@ -630,20 +506,8 @@
       document.getElementById('stat-families').innerText = stats.total_families;
       document.getElementById('stat-elders').innerText = stats.total_elders;
       document.getElementById('stat-children').innerText = stats.total_children;
-      document.getElementById('stat-dialogues').innerText = stats.total_ai_dialogues;
-      document.getElementById('stat-alerts').innerText = stats.safety_alerts_count;
       document.getElementById('stat-plugins').innerText = stats.active_plugins_count;
       renderPlugins(await pluginsResp.json());
-      const cfg = await cfgResp.json();
-      document.getElementById('cfg-provider').value = cfg.llm_provider;
-      document.getElementById('cfg-url').value = cfg.base_url || '';
-      document.getElementById('cfg-temp').value = cfg.temperature;
-      document.getElementById('cfg-elder-prompt').value = cfg.elder_prompt;
-      document.getElementById('cfg-child-prompt').value = cfg.child_prompt;
-      if (cfg.tts_elder_voice) document.getElementById('cfg-elder-voice').value = cfg.tts_elder_voice;
-      document.getElementById('cfg-elder-rate').value = cfg.tts_elder_rate || '';
-      if (cfg.tts_child_voice) document.getElementById('cfg-child-voice').value = cfg.tts_child_voice;
-      document.getElementById('cfg-child-rate').value = cfg.tts_child_rate || '';
     }
 
     function showToast(msg) {

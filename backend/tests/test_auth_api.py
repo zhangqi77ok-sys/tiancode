@@ -9,6 +9,8 @@
 6. 缺失令牌/伪造令牌的 401 安全拦截
 7. 错误邀请码与错误 Pin 码的安全拦截
 """
+from datetime import date
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -72,14 +74,14 @@ def test_auth_full_family_lifecycle_and_rbac(client):
         json={
             "nickname": "豆豆",
             "role": "child",
-            "birth_date": "2018-09-01",
+            "birth_date": date(date.today().year - 8, 1, 1).isoformat(),
             "pin_code": "6666",
         },
     )
     assert child_add_resp.status_code == 201
     child_data = child_add_resp.json()
     assert child_data["nickname"] == "豆豆"
-    assert child_data["age"] <= 10
+    assert child_data["age"] == 8
 
     # 5. 长辈在专属老人机上使用【邀请码 + 4位Pin码】免密登录
     elder_login_resp = client.post(

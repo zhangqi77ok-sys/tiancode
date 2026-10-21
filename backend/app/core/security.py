@@ -32,6 +32,7 @@ def encode_jwt(payload: Dict[str, Any], secret: str, expires_in: int = DEFAULT_E
     data = dict(payload)
     data.setdefault("iat", now)
     data.setdefault("exp", now + expires_in)
+    data.setdefault("jti", secrets.token_hex(16))
 
     return jwt.encode(data, secret, algorithm=JWT_ALGORITHM)
 
