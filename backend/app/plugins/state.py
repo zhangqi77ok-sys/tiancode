@@ -1,4 +1,4 @@
-"""插件进度按 (plugin_id, family_id, user_id) 写入 SQLite。"""
+"""插件进度按 (plugin_id, family_id, user_id) 写入 PostgreSQL。"""
 from __future__ import annotations
 
 from typing import Any, Dict

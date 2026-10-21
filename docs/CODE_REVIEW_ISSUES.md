@@ -2,7 +2,7 @@
 
 ## Status after phase 3
 
-Phases 1–3 changed this branch. The sections under this table are the original review of `5debeec` and are kept as evidence. They are not the current bug list. Current behavior is the README plus this table.
+Phases 1–3 changed this branch. Persistence was then corrected from SQLite to PostgreSQL. The sections under this table are the original review of `5debeec` and are kept as evidence. They are not the current bug list. Current behavior is the README plus this table.
 
 ### Fixed
 
@@ -11,17 +11,17 @@ Phases 1–3 changed this branch. The sections under this table are the original
 | C1 privilege escalation | Member create accepts only `elder` / `child`. PIN login ignores any other role. `require_roles` guards guardian and admin routes. |
 | C2 fail-open secrets | `create_app()` refuses a missing or published `JWT_SECRET` / `ADMIN_PASSWORD`. README does not print a live admin password. |
 | H1 smoke and the test badge | `deploy/smoke.sh` checks pages, anonymous admin 401, a real register plus `/auth/me`, and 403 when a guardian token hits `/api/v1/admin/dashboard/stats`. The static 11/11 badge is gone. |
-| H2 memory-only families | Accounts, settings, plugin toggles, kill-switch, plugin progress, login lockout, and the logout denylist live in `TIANCODE_DB`. Each request loads the user row. |
+| H2 memory-only families | Accounts, settings, plugin toggles, kill-switch, plugin progress, login lockout, and the logout denylist live in PostgreSQL (`TIANCODE_DATABASE_URL` or `DATABASE_URL`). Schema is `backend/app/core/schema.sql`, applied on startup. Each request loads the user row. SQLite is rejected. |
 | H3 settings wipe plugin toggles | Settings update merges. Medication check-in honors `medication_reminder_enabled`. |
 | H3 curfew flag | When `kids_curfew_enabled` is on (the default), child plugin actions return 403 from 21:00 inclusive through 06:00 exclusive, Asia/Shanghai, fixed UTC+8. Cards stay visible. Elders are not blocked. `kids_curfew_enabled: false` turns the window off. |
 | H4 fake model pipeline | `AiConfigManager`, provider / prompt / TTS fields, dialogue and safety counters, and the admin AI and audit tabs are gone. The dashboard counts families, members, and plugins that are not killed. |
 | H5 prototype session | `login.html` stores the server JWT. `index.html` uses `/auth/me` and `child`, and logout calls `POST /api/v1/auth/logout` before clearing localStorage. `admin.html` logs in, loads stats and the kill switch, and logs out the same way. |
 | M1 family plugin off | A family-off plugin rejects `dispatch_action`. |
-| M2 PIN, invite, age | PINs are hashed. Invites use `secrets`. Bad invite and bad PIN share one 401. Five failures in five minutes return 429, and that counter is in SQLite. Age bands and an 11-digit phone are checked on the server. Invite codes are returned to guardians only. Child fixtures use a birthday eight years before today. |
-| M3 shared process state | Each test wipes SQLite and freezes the curfew clock at noon Shanghai. AuthZ, logout, and curfew have their own cases. |
+| M2 PIN, invite, age | PINs are hashed. Invites use `secrets`. Bad invite and bad PIN share one 401. Five failures in five minutes return 429, and that counter is in PostgreSQL. Age bands and an 11-digit phone are checked on the server. Invite codes are returned to guardians only. Child fixtures use a birthday eight years before today. |
+| M3 shared process state | Each test truncates the PostgreSQL database named by `TEST_DATABASE_URL` and freezes the curfew clock at noon Shanghai. AuthZ, logout, and curfew have their own cases. |
 | M4 current-token logout | `encode_jwt` sets `jti`. `POST /api/v1/auth/logout` inserts it into `revoked_jti`. A missing or revoked `jti` is 401. |
 | M5 forwarded IPs | `forwarded-allow-ips` defaults to `127.0.0.1`. The practice host is documented as HTTP in front of nginx. |
-| L1 license and README | `LICENSE` is MIT. README describes SQLite, logout, and curfew, and does not claim a model or Edge-TTS. |
+| L1 license and README | `LICENSE` is MIT. README describes PostgreSQL, logout, and curfew, and does not claim a model or Edge-TTS. |
 | L4 copy forks | The home page renders cards from `/plugins/active` and hides the old static plugin copy. |
 
 ### Remaining
@@ -36,7 +36,7 @@ Phases 1–3 changed this branch. The sections under this table are the original
 | L2 WCAG / CSS sizes | Won’t-fix. README no longer claims AAA, 20px, or a 64px target. |
 | PRD | Historical. The banner at the top of `docs/PRD_FAMILY_COMPANION.md` says so. |
 | L3 leftovers | `BENTO_STAT`, `unregister`, and the AI config module are gone. `.gitignore` still ignores `*.png` and `*.zip`. |
-| Single container | Compose runs one API process. Family data, the kill switch, invocation counts, and the logout list are rows in that process’s SQLite file. |
+| Compose layout | One API container and one PostgreSQL 16 container. Family data, the kill switch, invocation counts, lockout, and the logout list are rows in the `tiancode-pg` volume. The database port is not published on the host. |
 
 Reviewed tree for the original findings: `5debeec` (`feat: enforce auth route guard, require user name on registration, and dynamically display name post-login`), 2026-10-21. That pass did not change application code.
 

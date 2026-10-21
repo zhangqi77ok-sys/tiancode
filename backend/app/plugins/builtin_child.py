@@ -33,7 +33,7 @@ class InteractiveStoryPlugin(BasePlugin):
             allowed_roles=[UserRole.CHILD],
             card_template=CardTemplateType.DECISION_STORY,
             title="🐻 豆豆熊魔法冒险",
-            description="两幕固定文案。孩子的选择写入 SQLite。不调用大模型续写。",
+            description="两幕固定文案。孩子的选择写入 PostgreSQL。不调用大模型续写。",
             icon="🐻",
             default_enabled=True,
             sort_order=10,

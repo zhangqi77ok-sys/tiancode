@@ -23,7 +23,7 @@ class AdminPluginToggleRequest(BaseModel):
 
 
 class AdminDashboardStats(BaseModel):
-    """全平台中控大盘。数字来自 SQLite 和插件注册表，没有模型调用计数。"""
+    """全平台中控大盘。数字来自 PostgreSQL 和插件注册表，没有模型调用计数。"""
     total_families: int = Field(0, description="已注册家庭空间总数")
     total_elders: int = Field(0, description="平台纳管银发长辈总数")
     total_children: int = Field(0, description="平台纳管幼童宝贝总数")

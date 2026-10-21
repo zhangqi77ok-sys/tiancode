@@ -39,7 +39,7 @@ from app.schemas.auth import (
 
 router = APIRouter(prefix="/api/v1")
 
-# 登录失败计数写在 SQLite，重启后窗口仍然有效。
+# 登录失败计数写在 PostgreSQL，重启后窗口仍然有效。
 LOGIN_FAIL_LIMIT = 5
 LOGIN_FAIL_WINDOW_SECONDS = 300
 
@@ -435,7 +435,7 @@ def get_family_by_id(family_id: str) -> Optional[dict]:
 
 
 def save_family(family: dict) -> None:
-    """把家庭名称、邀请码和 settings（含插件开关）写回 SQLite。"""
+    """把家庭名称、邀请码和 settings（含插件开关）写回 PostgreSQL。"""
     store.upsert_family(family)
 
 

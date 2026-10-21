@@ -102,7 +102,7 @@ class MemoryKeeperPlugin(BasePlugin):
             allowed_roles=[UserRole.ELDER],
             card_template=CardTemplateType.INTERACTIVE_PROMPT,
             title="📖 忆苦思甜·今日老话题",
-            description="固定话题提示。口述文字按家庭和成员写入 SQLite，重启后还在。不调用大模型。",
+            description="固定话题提示。口述文字按家庭和成员写入 PostgreSQL，重启后还在。不调用大模型。",
             icon="📖",
             default_enabled=True,
             sort_order=20,

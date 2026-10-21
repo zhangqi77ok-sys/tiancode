@@ -36,14 +36,14 @@ class PluginRegistry:
         logger.warning(f"管理员变更插件全局状态: [{plugin_id}] -> enabled={enabled}")
 
     def is_global_enabled(self, plugin_id: str) -> bool:
-        """检查插件是否处于全局开启状态（未显式关闭时默认为 True）。开关在 SQLite。"""
+        """检查插件是否处于全局开启状态（未显式关闭时默认为 True）。开关在 PostgreSQL。"""
         raw = store.kv_get(f"plugin_global:{plugin_id}")
         if raw is None:
             return True
         return raw == "1"
 
     def get_invocation_count(self, plugin_id: str) -> int:
-        """获取插件历史调用量。次数写在 SQLite，重启后还在。"""
+        """获取插件历史调用量。次数写在 PostgreSQL，重启后还在。"""
         raw = store.kv_get(f"plugin_invocations:{plugin_id}")
         if raw is None:
             return 0

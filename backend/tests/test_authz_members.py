@@ -264,6 +264,26 @@ def test_member_login_locks_out_after_repeated_failures(client):
     assert locked.status_code == 429
 
 
+def test_create_app_refuses_sqlite_and_placeholder_database_urls(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-for-local-suite-32bytes!")
+    monkeypatch.setenv("ADMIN_PASSWORD", "TestAdminPassword!")
+    monkeypatch.setenv("TIANCODE_DATABASE_URL", "sqlite:///tmp/warmcompanion.sqlite")
+    with pytest.raises(RuntimeError, match="SQLite"):
+        create_app()
+
+    monkeypatch.setenv(
+        "TIANCODE_DATABASE_URL",
+        "postgresql://tiancode:change-me-pg-password@127.0.0.1:5432/tiancode",
+    )
+    with pytest.raises(RuntimeError, match="placeholder"):
+        create_app()
+
+    monkeypatch.delenv("TIANCODE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="TIANCODE_DATABASE_URL"):
+        create_app()
+
+
 def test_create_app_refuses_missing_or_published_secrets(monkeypatch):
     monkeypatch.setenv("ADMIN_PASSWORD", "TestAdminPassword!")
     monkeypatch.setenv("JWT_SECRET", "tiancode-family-secret-32-bytes-min!")

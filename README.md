@@ -7,7 +7,7 @@
 ![Architecture](https://img.shields.io/badge/Architecture-Plugin--Based%20%26%20Multi--Tenant-6366F1.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-**一个 FastAPI 家庭空间：守护者注册、邀请码加 Pin、六个固定文案插件，数据在 SQLite。**  
+**一个 FastAPI 家庭空间：守护者注册、邀请码加 Pin、六个固定文案插件，数据在 PostgreSQL。**  
 页面通过正在运行的服务打开。没有接入大模型或 Edge-TTS。
 
 [🔑 独立登录与注册门户](prototype/login.html) · [📱 手机端体验原型](prototype/index.html) · [🛠️ 平台管理控制台](prototype/admin.html) · [📖 产品需求文档 (PRD)](docs/PRD_FAMILY_COMPANION.md)
@@ -23,7 +23,7 @@
 - **幼童宝贝**：渴望耐心睡前故事与好奇心百科解答、需要好习惯正向引导激励、对网络有害内容高度敏感；
 - **家庭守护者**：工作繁忙，亟需轻量低干扰、高价值的每日老幼陪伴全景简报，并能随时远程留言与配置提醒。
 
-**「伴暖」(WarmCompanion)** 是一个 FastAPI 进程加三张静态页。身份来自注册时的角色（`guardian` / `elder` / `child`），不是页面上的生日选择器。家庭、成员、设置、插件开关和插件进度写在 SQLite。
+**「伴暖」(WarmCompanion)** 是一个 FastAPI 进程加三张静态页。身份来自注册时的角色（`guardian` / `elder` / `child`），不是页面上的生日选择器。家庭、成员、设置、插件开关和插件进度写在 PostgreSQL。
 
 ---
 
@@ -32,7 +32,7 @@
 ### 1. 长辈页
 - 角色是 `elder`。卡片来自 `GET /api/v1/plugins/active`。
 - `elder_opera` 在三首固定曲目之间切换，进度写入数据库。没有音频文件。
-- `elder_memory` 把口述文字按家庭和成员存进 SQLite，重启后还在。提示语是固定的。
+- `elder_memory` 把口述文字按家庭和成员存进 PostgreSQL，重启后还在。提示语是固定的。
 - `elder_medication` 记录一次打卡。守护者关掉用药提醒后，打卡会被拒绝。没有推送，也没有发给家人。
 - 底部麦克风不会识别语音。朗读用的是浏览器 `speechSynthesis`。
 
@@ -89,7 +89,7 @@ flowchart TD
 
     subgraph Backend ["FastAPI 核心服务"]
         API["FastAPI 路由 (/api/v1)"]
-        DB["SQLite：家庭、令牌注销、插件进度"]
+        DB["PostgreSQL：家庭、令牌注销、插件进度"]
     end
 
     Client <--> Security
@@ -101,7 +101,7 @@ flowchart TD
 
 ### 1. PyJWT
 - 令牌是 PyJWT HS256，默认 30 天，每枚带 `jti`。`satoken` 头和 `Authorization: Bearer` 接受同一枚 JWT，这不是服务端会话。
-- `POST /api/v1/auth/logout` 把当前 `jti` 写进 SQLite 拒绝名单，这枚令牌立即 401。同一用户没有注销的其他令牌，在各自到期前仍然有效。用户被删除后，旧令牌也会 401。
+- `POST /api/v1/auth/logout` 把当前 `jti` 写进 PostgreSQL 拒绝名单，这枚令牌立即 401。同一用户没有注销的其他令牌，在各自到期前仍然有效。用户被删除后，旧令牌也会 401。
 - 密码和 Pin 用 PBKDF2-HMAC-SHA256。邀请码用 `secrets`。
 - 平台 `admin` 只能从 `POST /api/v1/admin/login` 签发。成员创建只接受 `elder` 和 `child`。
 
@@ -128,7 +128,8 @@ tiancode/
 │   │   │       └── admin.py          # 管理员登录、插件全局熔断、家庭计数
 │   │   ├── core/
 │   │   │   ├── security.py           # PyJWT HS256 与 PBKDF2
-│   │   │   ├── store.py              # SQLite：家庭、用户、注销名单、插件状态
+│   │   │   ├── schema.sql            # 启动时执行的 PostgreSQL 表
+│   │   │   ├── store.py              # PostgreSQL：家庭、用户、注销名单、插件状态
 │   │   │   ├── runtime_secrets.py    # 拒绝缺失或公开的 JWT / 管理员密码
 │   │   │   └── curfew.py             # 北京时间 21:00–06:00 儿童插件动作
 │   │   ├── plugins/
@@ -181,19 +182,40 @@ tiancode/
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
+
+# 一次性测试库。口令至少 12 位，且不能是仓库里的占位符。
+docker run -d --name tiancode-pytest-pg \
+  -e POSTGRES_USER=tiancode \
+  -e POSTGRES_PASSWORD=tiancode_test_pw \
+  -e POSTGRES_DB=tiancode_test \
+  -p 127.0.0.1:55432:5432 \
+  postgres:16-alpine
+export TEST_DATABASE_URL=postgresql://tiancode:tiancode_test_pw@127.0.0.1:55432/tiancode_test
 pytest -q
+
+# 应用库。不要把测试库地址写进 TIANCODE_DATABASE_URL，pytest 也不会去连它。
 export JWT_SECRET="$(openssl rand -hex 32)"
 export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD="$(openssl rand -base64 24)"
-export TIANCODE_DB="$PWD/data/warmcompanion.sqlite"
+export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+docker run -d --name tiancode-pg \
+  -e POSTGRES_USER=tiancode \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+  -e POSTGRES_DB=tiancode \
+  -p 127.0.0.1:5432:5432 \
+  -v tiancode-pg:/var/lib/postgresql/data \
+  postgres:16-alpine
+export TIANCODE_DATABASE_URL="postgresql://tiancode:${POSTGRES_PASSWORD}@127.0.0.1:5432/tiancode"
 cd backend && uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`JWT_SECRET` 至少 32 个字符，`ADMIN_PASSWORD` 至少 12 个字符。未设置，或仍等于仓库里的占位符（`tiancode-family-secret-32-bytes-min!`、`AdminPassword123!`、`change-me`、`change-me-openssl-rand-hex-32`），进程会在启动时拒绝服务。模板见 [deploy/.env.example](deploy/.env.example)。pytest 自己注入测试密钥，并使用临时数据库。
+`JWT_SECRET` 至少 32 个字符，`ADMIN_PASSWORD` 至少 12 个字符。未设置，或仍等于仓库里的占位符（`tiancode-family-secret-32-bytes-min!`、`AdminPassword123!`、`change-me`、`change-me-openssl-rand-hex-32`），进程会在启动时拒绝服务。数据库口令同样至少 12 位，`change-me-pg-password` 会拒绝启动。模板见 [deploy/.env.example](deploy/.env.example)。
 
-健康检查：`/healthz`、`/readyz`。
+进程只连 PostgreSQL。`TIANCODE_DB` 不再使用。以前的 SQLite 文件不会被导入，可以删掉。表在启动时按 `backend/app/core/schema.sql` 创建（`CREATE TABLE IF NOT EXISTS`），测试、本机和容器走同一段 SQL。
 
-没有预置家庭。守护者 `POST /api/v1/auth/register` 建家，再添加长辈或儿童。Pin 只在创建或重置时明文返回一次。删掉 `TIANCODE_DB` 指向的文件再启动，就是清空。Docker 里这个文件在卷 `tiancode-data` 的 `/srv/data/warmcompanion.sqlite`，`docker compose -p tiancode down` 不会删卷；要清空时再删卷。
+健康检查：`/healthz` 只表示进程在。`/readyz` 还会查数据库。
+
+没有预置家庭。守护者 `POST /api/v1/auth/register` 建家，再添加长辈或儿童。Pin 只在创建或重置时明文返回一次。清空数据：停掉 compose 后删除卷 `tiancode_tiancode-pg`（`docker compose -p tiancode down` 不会删卷）。练习机上的 Postgres 不映射到宿主端口。本机 uvicorn 需要自己准备一个已发布端口的库，并把 `TIANCODE_DATABASE_URL` 指过去。
 
 ### 3. 练习机部署
 公开路径是 `http://<HOST>/tiancode/`，API 只监听 `127.0.0.1:8092`。凭据 ID、nginx 片段和 `docker restart nginx-gw` 见 [docs/deploy.md](docs/deploy.md)。

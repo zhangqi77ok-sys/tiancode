@@ -1,4 +1,4 @@
-// tiancode（伴暖）CI/CD。Jenkins 与应用在同一台练习机上。家庭数据在容器卷里的 SQLite。
+// tiancode（伴暖）CI/CD。Jenkins 与应用在同一台练习机上。家庭数据在 compose 的 PostgreSQL 卷里。
 // 凭据（Jenkins Credentials，仓库里只出现 ID）：
 //   deploy-ssh            SSH 私钥，登录部署机 deploy 用户（与 agent-memory 共用）
 //   ghcr-token            用户名 + PAT（write:packages），部署分支必需（与 agent-memory 共用）
@@ -54,9 +54,28 @@ pipeline {
     stage('Lint & Test') {
       steps {
         sh '''
+          set -eu
+          docker rm -f tiancode-pytest-pg >/dev/null 2>&1 || true
+          docker run -d --name tiancode-pytest-pg \
+            -e POSTGRES_USER=tiancode \
+            -e POSTGRES_PASSWORD=tiancode_test_pw \
+            -e POSTGRES_DB=tiancode_test \
+            -p 127.0.0.1:55432:5432 \
+            postgres:16-alpine
+          trap 'docker rm -f tiancode-pytest-pg >/dev/null 2>&1 || true' EXIT
+          ready=0
+          for i in $(seq 1 40); do
+            if docker exec tiancode-pytest-pg pg_isready -U tiancode -d tiancode_test; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          [ "$ready" = 1 ]
           python3 -m venv .venv && . .venv/bin/activate
           pip install -q -e '.[dev]'
           ruff check backend
+          export TEST_DATABASE_URL=postgresql://tiancode:tiancode_test_pw@127.0.0.1:55432/tiancode_test
           pytest -q --junitxml=report.xml
         '''
       }

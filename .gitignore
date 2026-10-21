@@ -24,7 +24,7 @@ nul
 .idea/
 .vscode/
 
-# Local SQLite
+# Leftover SQLite files from the retired store. The runtime database is PostgreSQL.
 data/
 *.sqlite
 *.sqlite3
