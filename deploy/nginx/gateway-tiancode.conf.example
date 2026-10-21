@@ -1,0 +1,28 @@
+# 模板（不是线上配置）：nginx-gw 里 tiancode 相关 location。
+# 请和线上实际配置 diff 后再粘贴，不要整文件覆盖。仓库里不放真实域名或 IP。
+# 该文件在 nginx-gw 中若是「单文件 bind mount」：改完后必须 `docker restart nginx-gw`，
+# 不能只 `nginx -s reload`（编辑器换 inode 后容器里看到的仍是旧文件）。
+# 重启期间整个网关（含 /jenkins/）会短暂不可用。
+
+# 裸路径 /tiancode 没有尾斜杠，前缀 location /tiancode/ 匹配不到。
+location = /tiancode {
+    return 301 /tiancode/;
+}
+
+# 前缀策略：去掉 /tiancode（proxy_pass 末尾带斜杠）。
+# 容器内路由仍是 /、/readyz、/healthz、/admin.html、/api/v1/...。
+# 应用环境变量 ROOT_PATH=/tiancode 与下面的 X-Forwarded-Prefix 相同，
+# 只用于 OpenAPI / Swagger 的对外地址，应用不会再剥一次前缀。
+location /tiancode/ {
+    client_max_body_size 10m;
+    proxy_pass http://127.0.0.1:8092/;
+    proxy_http_version 1.1;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /tiancode;
+}

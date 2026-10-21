@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 from app.plugins.base import BasePlugin
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import (

@@ -122,6 +122,7 @@ flowchart TD
 tiancode/
 ├── backend/
 │   ├── app/
+│   │   ├── main.py                 # FastAPI 入口：挂载路由、/healthz /readyz、托管原型
 │   │   ├── api/
 │   │   │   ├── deps.py               # JWT 身份依赖、RBAC 角色守卫、require_admin
 │   │   │   └── v1/
@@ -142,15 +143,25 @@ tiancode/
 │   │       ├── plugin.py             # PluginManifest、CardTemplateType、动作契约
 │   │       └── admin.py              # AI 配置热更契约、大盘指标统计模型
 │   └── tests/
+│       ├── test_main_health.py       # /healthz、原型页、ROOT_PATH 不改写路由
 │       ├── test_auth_unit.py         # JWT 签名、验签、篡改防御、过期拦截单元测试
 │       ├── test_auth_api.py          # 守护者建家、纳管成员、Pin 免密登录与 RBAC 越权拦截
 │       ├── test_plugins_api.py       # 插件角色白名单过滤、切歌/分支动作与家庭开关测试
 │       └── test_admin_api.py         # 管理员认证、AI 参数热更、插件全网紧急熔断联动测试
+├── deploy/
+│   ├── docker-compose.yml            # 单 api 服务，127.0.0.1:8092→8000
+│   ├── .env.example                  # JWT / 管理员占位，无真实密钥
+│   └── nginx/
+│       └── gateway-tiancode.conf.example
 ├── docs/
-│   └── PRD_FAMILY_COMPANION.md       # 伴暖完整产品需求文档 (PRD)
+│   ├── PRD_FAMILY_COMPANION.md       # 伴暖完整产品需求文档 (PRD)
+│   └── deploy.md                     # Jenkins 部署说明
 ├── prototype/
 │   ├── index.html                    # 移动端一老一小双模陪伴与家庭看板交互原型
 │   └── admin.html                    # 现代化 Enterprise SaaS 平台管理控制台中枢
+├── Dockerfile
+├── Jenkinsfile
+├── pyproject.toml
 ├── .gitignore
 └── README.md
 ```
@@ -166,38 +177,22 @@ tiancode/
 - **平台超级管理控制台**：使用浏览器直接打开 [`prototype/admin.html`](prototype/admin.html)
   - 体验全景监控指标、大模型 Provider 实时热切换、Edge-TTS 音色微调以及插件全局紧急熔断开关。
 
+启动 API 后，同一套页面也在 `/` 与 `/admin.html`。
+
 ### 2. 后端服务运行与测试验证
-运行环境要求：**Python 3.10+** (已在 Python 3.12 严苛验证)
+运行环境要求：**Python 3.11+**（已在 Python 3.12 验证）。依赖在仓库根目录 `pyproject.toml`。
 
 ```bash
-# 1. 进入后端目录并安装必要依赖
-cd backend
-pip install fastapi uvicorn pydantic pytest httpx starlette
-
-# 2. 运行自动化全量回归测试套件 (10 项全量通过)
-# Windows PowerShell
-$env:PYTHONPATH="backend"
-python -m pytest backend/tests -v
-
-# Linux / macOS
-export PYTHONPATH=backend
-python -m pytest backend/tests -v
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e '.[dev]'
+pytest -q
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-**测试输出概览：**
-```text
-test_admin_api.py::test_admin_rbac_ai_config_and_global_killswitch PASSED [ 10%]
-test_auth_api.py::test_auth_full_family_lifecycle_and_rbac PASSED        [ 20%]
-test_auth_unit.py::test_jwt_encode_and_decode_success PASSED             [ 30%]
-test_auth_unit.py::test_jwt_expired_token_fails PASSED                   [ 40%]
-test_auth_unit.py::test_jwt_tampered_signature_fails PASSED              [ 50%]
-test_auth_unit.py::test_jwt_wrong_secret_fails PASSED                    [ 60%]
-test_auth_unit.py::test_password_hash_and_verify PASSED                  [ 70%]
-test_auth_unit.py::test_schema_register_validation PASSED                [ 80%]
-test_auth_unit.py::test_schema_member_add_validation PASSED              [ 90%]
-test_plugins_api.py::test_plugins_lifecycle_rbac_and_family_toggle PASSED [100%]
-============================== 10 passed in 1.81s ==============================
-```
+健康检查：`/healthz`、`/readyz`。
+
+### 3. 练习机部署
+公开路径是 `http://<HOST>/tiancode/`，API 只监听 `127.0.0.1:8092`。凭据 ID、nginx 片段和 `docker restart nginx-gw` 见 [docs/deploy.md](docs/deploy.md)。
 
 ---
 
