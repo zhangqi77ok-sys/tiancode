@@ -15,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.plugins import router as plugins_router
+from app.core.runtime_secrets import assert_runtime_secrets
+from app.core.store import store
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 
@@ -34,6 +36,8 @@ def prototype_directory() -> Path | None:
 
 
 def create_app() -> FastAPI:
+    assert_runtime_secrets()
+    store.ensure_schema()
     load_builtin_plugins()
     app = FastAPI(title="伴暖 WarmCompanion", version="0.1.0")
 
@@ -45,6 +49,10 @@ def create_app() -> FastAPI:
     def readyz() -> dict:
         if not plugin_registry.list_manifests():
             raise HTTPException(status_code=503, detail="builtin plugins not ready")
+        try:
+            store.ping()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="database not ready") from exc
         return {"status": "ready"}
 
     app.include_router(auth_router)

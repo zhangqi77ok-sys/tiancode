@@ -1,17 +1,18 @@
 """FastAPI 认证与权限依赖注入模块 (Dependencies & Guards)
 
 提供当前用户上下文解析、基于角色的访问控制（RBAC）守卫。
+身份以数据库用户为准。已删除的成员，以及已注销的 jti，其 JWT 立即失效。
+未注销的令牌在过期前仍然有效。
 """
 from __future__ import annotations
 
-import os
 from typing import Callable, List
+
 from fastapi import Depends, Header, HTTPException, status
 
+from app.core.runtime_secrets import jwt_secret
 from app.core.security import decode_jwt
 from app.schemas.auth import UserContext, UserRole
-
-JWT_SECRET = os.getenv("JWT_SECRET", "tiancode-family-secret-32-bytes-min!")
 
 
 def get_current_user(
@@ -20,9 +21,9 @@ def get_current_user(
 ) -> UserContext:
     """提取访问令牌并解析为强类型用户上下文。
 
-    全面支持 Sa-Token 规范双通道头：
-    1. Header `satoken: <token>` (Sa-Token 官方默认风格)
-    2. Header `Authorization: Bearer <token>` (RFC 6750 标准规范)
+    支持两种请求头：
+    1. Header `satoken: <jwt>`
+    2. Header `Authorization: Bearer <jwt>`
     """
     auth_val = authorization if isinstance(authorization, str) else ""
     sa_val = satoken if isinstance(satoken, str) else ""
@@ -41,53 +42,76 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="缺少或无效的认证头 (支持 satoken 或 Authorization: Bearer <token>)",
         )
+    secret = jwt_secret()
     try:
-        claims = decode_jwt(token, JWT_SECRET)
+        claims = decode_jwt(token, secret)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"无效或已过期的访问令牌: {str(e)}",
         ) from e
 
-    if not claims.get("sub") or not claims.get("fam") or not claims.get("role"):
+    if not claims.get("sub") or not claims.get("fam") or not claims.get("role") or not claims.get("jti"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌缺失必要身份字段 (sub/fam/role)",
+            detail="令牌缺失必要身份字段 (sub/fam/role/jti)",
         )
 
+    from app.core.store import store
+
+    if store.is_jti_revoked(str(claims["jti"])):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或已过期的访问令牌",
+        )
+
+    user = store.get_user(str(claims["sub"]))
+    if (
+        not user
+        or str(user.get("family_id")) != str(claims.get("fam"))
+        or str(user.get("role")) != str(claims.get("role"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或已过期的访问令牌",
+        )
+
+    try:
+        role = UserRole(str(user["role"]))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或已过期的访问令牌",
+        ) from e
+
     return UserContext(
-        user_id=str(claims["sub"]),
-        family_id=str(claims["fam"]),
-        role=UserRole(claims["role"]),
-        nickname=str(claims.get("name", "")),
-        birth_date=str(claims.get("birth", "")),
+        user_id=str(user["id"]),
+        family_id=str(user["family_id"]),
+        role=role,
+        nickname=str(user.get("nickname") or ""),
+        birth_date=str(user.get("birth_date") or ""),
+        jti=str(claims["jti"]),
+        token_exp=int(claims.get("exp") or 0),
     )
 
 
 def require_roles(allowed_roles: List[UserRole]) -> Callable[[UserContext], UserContext]:
-    """RBAC 角色权限守卫装饰依赖。
+    """RBAC 角色守卫。内部依赖 get_current_user，路由用 Depends(require_roles([...]))。"""
 
-    若当前调用者的角色不在允许的角色列表中，立即拦截并抛出 403 Forbidden。
-    """
-    def role_checker(u: UserContext = None) -> UserContext:
+    def role_checker(u: UserContext = Depends(get_current_user)) -> UserContext:
         if u.role not in allowed_roles:
+            allowed = ", ".join(role.value for role in allowed_roles)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"权限不足：当前角色 [{u.role.value}] 无权执行此操作，仅允许 [{', '.join(r.value for r in allowed_roles)}]",
+                detail=(
+                    f"权限不足：当前角色 [{u.role.value}] 无权执行此操作，仅允许 [{allowed}]"
+                ),
             )
         return u
 
     return role_checker
 
 
-def require_admin(u: UserContext = Depends(get_current_user)) -> UserContext:
-    """平台超级管理员专用权限守卫依赖。
-
-    验证当前调用者是否具备 ADMIN 角色，若非管理员则抛出 403 Forbidden。
-    """
-    if u.role != UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="权限不足：仅平台超级管理员可执行此管控操作",
-        )
+def require_admin(u: UserContext = Depends(require_roles([UserRole.ADMIN]))) -> UserContext:
+    """平台超级管理员专用权限守卫。"""
     return u

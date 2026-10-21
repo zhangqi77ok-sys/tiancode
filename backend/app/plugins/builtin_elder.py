@@ -7,8 +7,11 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
+
+from app.api.v1.auth import get_family_by_id
 from app.plugins.base import BasePlugin
+from app.plugins.state import load_state, save_state
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import (
     CardTemplateType,
@@ -44,10 +47,9 @@ class OperaPlugin(BasePlugin):
             sort_order=10,
         )
         super().__init__(manifest)
-        self._current_indices: Dict[str, int] = {}  # user_id -> index
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        idx = self._current_indices.get(context.user_id, 0)
+        idx = int(load_state(self.id, context, {"index": 0}).get("index") or 0)
         track = OPERA_PLAYLIST[idx % len(OPERA_PLAYLIST)]
         return PluginCardData(
             plugin_id=self.id,
@@ -66,10 +68,10 @@ class OperaPlugin(BasePlugin):
         payload: Dict[str, Any],
         context: UserContext,
     ) -> PluginActionResult:
-        idx = self._current_indices.get(context.user_id, 0)
+        idx = int(load_state(self.id, context, {"index": 0}).get("index") or 0)
         if action_name == "next_track":
             idx = (idx + 1) % len(OPERA_PLAYLIST)
-            self._current_indices[context.user_id] = idx
+            save_state(self.id, context, {"index": idx})
             track = OPERA_PLAYLIST[idx]
             return PluginActionResult(
                 status="ok",
@@ -78,7 +80,7 @@ class OperaPlugin(BasePlugin):
             )
         elif action_name == "prev_track":
             idx = (idx - 1 + len(OPERA_PLAYLIST)) % len(OPERA_PLAYLIST)
-            self._current_indices[context.user_id] = idx
+            save_state(self.id, context, {"index": idx})
             track = OPERA_PLAYLIST[idx]
             return PluginActionResult(
                 status="ok",
@@ -100,16 +102,15 @@ class MemoryKeeperPlugin(BasePlugin):
             allowed_roles=[UserRole.ELDER],
             card_template=CardTemplateType.INTERACTIVE_PROMPT,
             title="📖 忆苦思甜·今日老话题",
-            description="晚辈 AI 主动抛出温情话题，长辈口述过往故事并归档为家庭记忆。",
+            description="固定话题提示。口述文字按家庭和成员写入 PostgreSQL，重启后还在。不调用大模型。",
             icon="📖",
             default_enabled=True,
             sort_order=20,
         )
         super().__init__(manifest)
-        self._user_memories: Dict[str, List[str]] = {}
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        memories = self._user_memories.get(context.user_id, [])
+        memories = load_state(self.id, context, {"memories": []}).get("memories") or []
         return PluginCardData(
             plugin_id=self.id,
             manifest=self.manifest,
@@ -131,11 +132,12 @@ class MemoryKeeperPlugin(BasePlugin):
             text = payload.get("story_text", "").strip()
             if not text:
                 return PluginActionResult(status="error", message="回忆内容不能为空")
-            memories = self._user_memories.setdefault(context.user_id, [])
+            memories = list(load_state(self.id, context, {"memories": []}).get("memories") or [])
             memories.append(text)
+            save_state(self.id, context, {"memories": memories})
             return PluginActionResult(
                 status="ok",
-                message="外婆真棒！这段珍贵回忆已永久珍藏到家庭时光册中。",
+                message="这段口述已写入家庭数据库，重启后仍然在。",
                 data={"total_count": len(memories)},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
@@ -159,10 +161,10 @@ class MedicationPlugin(BasePlugin):
             sort_order=5,
         )
         super().__init__(manifest)
-        self._checkin_status: Dict[str, bool] = {}  # user_id -> checked_in
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        is_done = self._checkin_status.get(context.user_id, False)
+        is_done = bool(load_state(self.id, context, {"checked_in": False}).get("checked_in"))
+        reminder_on = family_state.get("medication_reminder_enabled", True) is not False
         return PluginCardData(
             plugin_id=self.id,
             manifest=self.manifest,
@@ -170,7 +172,8 @@ class MedicationPlugin(BasePlugin):
                 "medicine_name": "清晨降压温水药",
                 "schedule_time": "08:30",
                 "checked_in": is_done,
-                "memo": "女儿小敏留言：妈，吃完药记得散步半小时哦~",
+                "reminder_enabled": reminder_on,
+                "memo": "固定示例便签，没有发送给家人。" if reminder_on else "守护者已关闭用药提醒。",
             },
             enabled=True,
         )
@@ -182,10 +185,13 @@ class MedicationPlugin(BasePlugin):
         context: UserContext,
     ) -> PluginActionResult:
         if action_name == "checkin":
-            self._checkin_status[context.user_id] = True
+            fam = get_family_by_id(context.family_id) or {}
+            if fam.get("settings", {}).get("medication_reminder_enabled") is False:
+                return PluginActionResult(status="error", message="守护者已关闭用药提醒")
+            save_state(self.id, context, {"checked_in": True})
             return PluginActionResult(
                 status="ok",
-                message="外婆太棒啦！今日早晨用药已打卡，已同步给女儿小敏。",
+                message="今日早晨用药已打卡，并写入数据库。没有同步给其他家人。",
                 data={"checked_in": True},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")

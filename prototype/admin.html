@@ -281,6 +281,17 @@
 </head>
 <body>
 
+  <div id="admin-login" style="position:fixed;inset:0;background:#0F172A;z-index:2000;display:flex;align-items:center;justify-content:center;">
+    <form id="admin-login-form" style="background:#1E293B;padding:28px;border-radius:16px;width:320px;display:flex;flex-direction:column;gap:12px;color:#E2E8F0;">
+      <strong>平台管理员登录</strong>
+      <p style="font-size:12px;color:#94A3B8;">使用环境变量里的账号。家庭成员令牌不能打开这里。</p>
+      <input id="admin-user" placeholder="用户名" style="height:40px;border-radius:8px;border:1px solid #334155;padding:0 12px;">
+      <input id="admin-pass" type="password" placeholder="密码" style="height:40px;border-radius:8px;border:1px solid #334155;padding:0 12px;">
+      <button type="submit" style="height:40px;border:none;border-radius:8px;background:#6366F1;color:white;font-weight:700;">登录</button>
+      <p id="admin-login-error" style="font-size:12px;color:#FCA5A5;"></p>
+    </form>
+  </div>
+
   <!-- 侧边栏 -->
   <aside>
     <div class="brand">
@@ -295,22 +306,16 @@
       <li class="nav-item active" onclick="switchTab('dashboard', this)">
         <span class="icon">📊</span> 全景监控大盘
       </li>
-      <li class="nav-item" onclick="switchTab('ai-config', this)">
-        <span class="icon">🤖</span> AI与语音管控
-      </li>
       <li class="nav-item" onclick="switchTab('plugins', this)">
         <span class="icon">🧩</span> 插件生态与熔断
-      </li>
-      <li class="nav-item" onclick="switchTab('audit', this)">
-        <span class="icon">🛡️</span> 安全审计日志
       </li>
     </ul>
 
     <div class="user-footer">
       <div class="avatar">管</div>
       <div class="user-info">
-        <div class="user-name">Root Admin</div>
-        <div class="user-role">🟢 全局超级权限</div>
+        <div class="user-name" id="admin-name">未登录</div>
+        <div class="user-role">仅管理员令牌可操作</div>
       </div>
     </div>
   </aside>
@@ -320,10 +325,11 @@
     <header>
       <div>
         <div class="page-title" id="page-heading">全景大盘概览</div>
-        <div class="page-desc" id="page-sub">实时监控全平台家庭空间、老幼使用画像与 AI 伴暖服务态势</div>
+        <div class="page-desc" id="page-sub">家庭数、成员数和未熔断插件数，来自接口</div>
       </div>
       <div>
-        <button class="btn btn-primary" onclick="refreshData()">🔄 刷新运行时指标</button>
+        <button class="btn btn-primary" onclick="refreshData()">刷新</button>
+        <button class="btn btn-primary" onclick="adminLogout()" style="margin-left:8px;background:#334155;">退出</button>
       </div>
     </header>
 
@@ -333,136 +339,46 @@
         <div class="stat-card">
           <div class="stat-badge">🏡</div>
           <div class="stat-label">已入驻家庭总数</div>
-          <div class="stat-val" id="stat-families">12</div>
-          <div class="stat-sub">↑ 今日新增 2 户</div>
+          <div class="stat-val" id="stat-families">0</div>
+          <div class="stat-sub">来自数据库的家庭数</div>
         </div>
         <div class="stat-card">
           <div class="stat-badge">👵</div>
           <div class="stat-label">在护银发长辈</div>
-          <div class="stat-val" id="stat-elders">15</div>
-          <div class="stat-sub">平均年龄 71.4 岁</div>
+          <div class="stat-val" id="stat-elders">0</div>
+          <div class="stat-sub">角色为 elder 的成员</div>
         </div>
         <div class="stat-card">
           <div class="stat-badge">👶</div>
           <div class="stat-label">在护幼童宝贝</div>
-          <div class="stat-val" id="stat-children">18</div>
-          <div class="stat-sub">习惯打卡率 94%</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-badge">💬</div>
-          <div class="stat-label">今日 AI 陪伴轮次</div>
-          <div class="stat-val" id="stat-dialogues">2,480</div>
-          <div class="stat-sub">平均响应 480ms</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-badge">🛡️</div>
-          <div class="stat-label">防诈与安全拦截</div>
-          <div class="stat-val" id="stat-alerts" style="color: var(--danger)">0</div>
-          <div class="stat-sub" style="color: var(--success)">全域安全稳定</div>
+          <div class="stat-val" id="stat-children">0</div>
+          <div class="stat-sub">角色为 child 的成员</div>
         </div>
         <div class="stat-card">
           <div class="stat-badge">🧩</div>
           <div class="stat-label">活跃运行插件</div>
-          <div class="stat-val" id="stat-plugins">6</div>
-          <div class="stat-sub">无熔断下线</div>
+          <div class="stat-val" id="stat-plugins">0</div>
+          <div class="stat-sub">当前未熔断的插件</div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-title">⚡ 平台系统服务健康状况</div>
-          <span style="font-size: 12px; color: var(--success);">● 全域集群运行平稳</span>
+          <span style="font-size: 12px; color: var(--text-sub);">单进程，没有集群指标</span>
         </div>
         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; font-size: 13px;">
           <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-            <div style="color: var(--text-sub); margin-bottom: 4px;">FastAPI 异步微服务网关</div>
-            <div style="font-weight: 700; color: var(--success);">🟢 正常 (Uptime 99.98%)</div>
+            <div style="color: var(--text-sub); margin-bottom: 4px;">API 进程</div>
+            <div style="font-weight: 700;">页面能打开只说明静态文件在。健康检查看 /readyz。</div>
           </div>
           <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-            <div style="color: var(--text-sub); margin-bottom: 4px;">DeepSeek / Qwen 模型通道</div>
-            <div style="font-weight: 700; color: var(--success);">🟢 低延迟链路畅通</div>
+            <div style="color: var(--text-sub); margin-bottom: 4px;">账号</div>
+            <div style="font-weight: 700;">家庭和成员在 PostgreSQL。退出只作废当前这枚令牌。</div>
           </div>
           <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-            <div style="color: var(--text-sub); margin-bottom: 4px;">Edge-TTS 拟人情感语音引擎</div>
-            <div style="font-weight: 700; color: var(--success);">🟢 双音色就绪</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 2: AI 与语音管控 -->
-    <div id="tab-ai-config" class="tab-pane">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🤖 大语言模型 (LLM) 通道与运行时参数</div>
-          <button class="btn btn-primary" onclick="saveAiConfig()">💾 实时热更新生效</button>
-        </div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label class="form-label">大模型通道服务商 (LLM Provider)</label>
-            <select id="cfg-provider">
-              <option value="deepseek">DeepSeek (V3 / R1 推理)</option>
-              <option value="qwen">通义千问 Qwen 2.5</option>
-              <option value="openai">OpenAI (GPT-4o mini)</option>
-              <option value="mock" selected>Mock 本地极速兜底</option>
-            </select>
-            <div class="form-hint">切换供应商后各家庭 Agent 实时无缝转接</div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">API 密钥 (API Key)</label>
-            <input type="password" id="cfg-key" value="sk-antigravity-demo-production-key" placeholder="留空则保持原密钥">
-            <div class="form-hint">出厂已加密加盐存储，仅用于鉴权转发</div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">API Base URL</label>
-            <input type="text" id="cfg-url" value="https://api.deepseek.com/v1">
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">发散度 (Temperature: 0.1 ~ 1.0)</label>
-            <input type="number" id="cfg-temp" value="0.7" step="0.1" min="0" max="1">
-          </div>
-
-          <div class="form-group form-full">
-            <label class="form-label">👵 银发长辈知心邻里 Agent 系统人设 (System Prompt)</label>
-            <textarea id="cfg-elder-prompt" rows="3">你是一个温暖耐心的家庭伴老邻里助手。面对银发长辈，你说话温和慢速、尊重体贴，善于倾听长辈的回忆，绝不使用晦涩技术术语，主动提醒长辈按时服药与健康生活，严防诈骗诱导。</textarea>
-          </div>
-
-          <div class="form-group form-full">
-            <label class="form-label">👶 幼童萌趣玩伴 Agent 系统人设 (System Prompt)</label>
-            <textarea id="cfg-child-prompt" rows="3">你是活泼萌趣的陪伴小熊（豆豆熊）。面对学龄前幼童，你充满好奇心与耐心，善于用拟人生动的童话讲故事，用分幕选择引导孩子做决定，鼓励好习惯打卡，语言积极健康，绝不涉及暴力有害信息。</textarea>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🎙️ 拟人多模态语音 (TTS / ASR) 音色调度</div>
-        </div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label class="form-label">长辈端朗读音色 (Edge-TTS)</label>
-            <select id="cfg-elder-voice">
-              <option value="zh-CN-YunyangNeural" selected>云阳 (成熟温润·播报适老专用)</option>
-              <option value="zh-CN-YunxiNeural">云希 (邻家青年·温和叙事)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">长辈端语速调节</label>
-            <input type="text" id="cfg-elder-rate" value="-15%" placeholder="-15% (慢速舒适)">
-          </div>
-          <div class="form-group">
-            <label class="form-label">儿童端故事音色 (Edge-TTS)</label>
-            <select id="cfg-child-voice">
-              <option value="zh-CN-XiaoyiNeural" selected>晓伊 (甜美童趣·绘本小熊)</option>
-              <option value="zh-CN-YunjianNeural">云健 (阳光少年)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">儿童端语速调节</label>
-            <input type="text" id="cfg-child-rate" value="+5%" placeholder="+5% (欢快活泼)">
+            <div style="color: var(--text-sub); margin-bottom: 4px;">语音与故事</div>
+            <div style="font-weight: 700;">没有服务端语音或大模型。家庭页朗读用浏览器。</div>
           </div>
         </div>
       </div>
@@ -498,75 +414,59 @@
       </div>
     </div>
 
-    <!-- Tab 4: 安全审计日志 -->
-    <div id="tab-audit" class="tab-pane">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🛡️ 实时安全护栏与敏感词拦截日志</div>
-        </div>
-        <div style="font-family: var(--font-mono); font-size: 13px; color: var(--text-sub); display: flex; flex-direction: column; gap: 8px;">
-          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--success);">
-            [2026-10-21 12:45:10] <span style="color:#FFF;">长辈端会话审计</span>: 识别到“买保健品转账”关键词，Agent 已主动切入反诈关怀提示，并向守护者发送温情提醒。
-          </div>
-          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--accent);">
-            [2026-10-21 11:30:22] <span style="color:#FFF;">儿童故事共创审查</span>: 孩子提出“打怪兽流血”，安全护栏自动净化重塑为“和调皮怪兽一起吃布丁”，未触发违规。
-          </div>
-          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--success);">
-            [2026-10-21 08:30:00] <span style="color:#FFF;">用药计划同步</span>: 全平台 15 位长辈早晨用药定时打卡触发，打卡率 100%。
-          </div>
-        </div>
-      </div>
-    </div>
   </main>
 
   <div id="toast">✅ 操作已成功同步</div>
 
   <script>
-    // 默认内置插件全量数据
-    const PLUGINS = [
-      { id: "elder_opera", name: "经典戏曲留声机", category: "entertainment", role: "elder", template: "media_player", count: 1420, enabled: true },
-      { id: "elder_memory", name: "人生时光回忆册", category: "family", role: "elder", template: "interactive_prompt", count: 620, enabled: true },
-      { id: "elder_medication", name: "温馨用药守护", category: "health", role: "elder", template: "star_tracker", count: 890, enabled: true },
-      { id: "child_story", name: "双向共创故事机", category: "growth", role: "child", template: "decision_story", count: 2100, enabled: true },
-      { id: "child_habit", name: "好习惯星星宝盒", category: "growth", role: "child", template: "star_tracker", count: 1840, enabled: true },
-      { id: "child_encyclopedia", name: "万物为什么百科", category: "growth", role: "child", template: "interactive_prompt", count: 950, enabled: true }
-    ];
+    function apiUrl(path) {
+      return 'api/v1' + path;
+    }
 
-    function renderPlugins() {
+    function adminHeaders() {
+      const token = sessionStorage.getItem('admin_token') || '';
+      return { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, satoken: token };
+    }
+
+    function renderPlugins(plugins) {
       const tbody = document.getElementById('plugin-table-body');
       tbody.innerHTML = '';
-      PLUGINS.forEach((p, idx) => {
+      plugins.forEach((p) => {
         const tr = document.createElement('tr');
-        const roleTag = p.role === 'elder' ? '<span class="tag tag-elder">长辈专属</span>' : '<span class="tag tag-child">儿童专属</span>';
-        const statusDot = p.enabled ? '<span style="color: var(--success)">🟢 正常运行</span>' : '<span style="color: var(--danger)">🔴 全局已熔断</span>';
-        
+        const roles = (p.allowed_roles || []).join(', ');
+        const statusDot = p.global_enabled ? '<span style="color: var(--success)">运行中</span>' : '<span style="color: var(--danger)">已熔断</span>';
         tr.innerHTML = `
           <td><strong>${p.name}</strong></td>
           <td style="font-family: var(--font-mono); color: var(--text-sub);">${p.id}</td>
           <td>${p.category}</td>
-          <td>${roleTag}</td>
-          <td style="font-family: var(--font-mono); font-size: 11px;">${p.template}</td>
-          <td>${p.count.toLocaleString()} 次</td>
+          <td>${roles}</td>
+          <td style="font-family: var(--font-mono); font-size: 11px;">${p.card_template}</td>
+          <td>${p.invocations_count} 次</td>
           <td>${statusDot}</td>
           <td>
             <label class="switch">
-              <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="toggleKillswitch('${p.id}', this.checked)">
+              <input type="checkbox" ${p.global_enabled ? 'checked' : ''} onchange="toggleKillswitch('${p.id}', this.checked)">
               <span class="slider"></span>
             </label>
           </td>
         `;
         tbody.appendChild(tr);
       });
-      document.getElementById('stat-plugins').innerText = PLUGINS.filter(p => p.enabled).length;
     }
 
-    function toggleKillswitch(pluginId, isEnabled) {
-      const target = PLUGINS.find(p => p.id === pluginId);
-      if (target) {
-        target.enabled = isEnabled;
-        showToast(isEnabled ? `🟢 插件 [${target.name}] 已恢复全网运行` : `🔴 插件 [${target.name}] 已执行全局紧急熔断！`);
-        renderPlugins();
+    async function toggleKillswitch(pluginId, isEnabled) {
+      const resp = await fetch(apiUrl('/admin/plugins/' + pluginId + '/toggle'), {
+        method: 'PUT',
+        headers: adminHeaders(),
+        body: JSON.stringify({ global_enabled: isEnabled }),
+      });
+      if (!resp.ok) {
+        showToast('熔断没有保存');
+        await refreshData();
+        return;
       }
+      showToast(isEnabled ? '插件已恢复' : '插件已全局关闭');
+      await refreshData();
     }
 
     function switchTab(tabId, el) {
@@ -576,22 +476,38 @@
       el.classList.add('active');
 
       const headings = {
-        'dashboard': ['全景大盘概览', '实时监控全平台家庭空间、老幼使用画像与 AI 伴暖服务态势'],
-        'ai-config': ['AI模型与语音管控中枢', '大模型 Provider 实时热切换、人设 Prompt 微调与 Edge-TTS 语速配置'],
-        'plugins': ['插件生态与全局熔断', '全平台可插拔插件治理与应急一键 Kill-Switch 拦截中枢'],
-        'audit': ['安全合规审计中心', '全链路适老反诈提示与儿童有害内容审查记录']
+        'dashboard': ['全景大盘概览', '家庭数、成员数和未熔断插件数，来自接口'],
+        'plugins': ['插件生态与全局熔断', '全平台插件开关。关掉之后家庭端动作返回 403']
       };
       document.getElementById('page-heading').innerText = headings[tabId][0];
       document.getElementById('page-sub').innerText = headings[tabId][1];
     }
 
-    function saveAiConfig() {
-      const provider = document.getElementById('cfg-provider').value;
-      showToast(`✅ AI 配置热更成功！当前大模型服务商通道已切换为：[${provider.toUpperCase()}]`);
+    async function adminLogout() {
+      try {
+        await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: adminHeaders() });
+      } catch (err) {
+        // 请求失败时只清本机。这枚令牌在过期前仍然有效。
+      }
+      sessionStorage.removeItem('admin_token');
+      document.getElementById('admin-name').innerText = '未登录';
+      document.getElementById('admin-login').style.display = 'flex';
     }
 
-    function refreshData() {
-      showToast('🔄 运行时度量数据已与后端集群完成精准对齐！');
+    async function refreshData() {
+      const statsResp = await fetch(apiUrl('/admin/dashboard/stats'), { headers: adminHeaders() });
+      const pluginsResp = await fetch(apiUrl('/admin/plugins'), { headers: adminHeaders() });
+      if (!statsResp.ok || !pluginsResp.ok) {
+        sessionStorage.removeItem('admin_token');
+        document.getElementById('admin-login').style.display = 'flex';
+        return;
+      }
+      const stats = await statsResp.json();
+      document.getElementById('stat-families').innerText = stats.total_families;
+      document.getElementById('stat-elders').innerText = stats.total_elders;
+      document.getElementById('stat-children').innerText = stats.total_children;
+      document.getElementById('stat-plugins').innerText = stats.active_plugins_count;
+      renderPlugins(await pluginsResp.json());
     }
 
     function showToast(msg) {
@@ -601,8 +517,31 @@
       setTimeout(() => { t.style.display = 'none'; }, 3000);
     }
 
-    // 初始化渲染
-    renderPlugins();
+    document.getElementById('admin-login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const resp = await fetch(apiUrl('/admin/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('admin-user').value,
+          password: document.getElementById('admin-pass').value,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        document.getElementById('admin-login-error').innerText = data.detail || '登录失败';
+        return;
+      }
+      sessionStorage.setItem('admin_token', data.access_token);
+      document.getElementById('admin-name').innerText = data.name || '管理员';
+      document.getElementById('admin-login').style.display = 'none';
+      await refreshData();
+    });
+
+    if (sessionStorage.getItem('admin_token')) {
+      document.getElementById('admin-login').style.display = 'none';
+      refreshData();
+    }
   </script>
 </body>
 </html>

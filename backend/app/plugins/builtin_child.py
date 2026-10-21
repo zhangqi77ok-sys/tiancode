@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 from typing import Any, Dict
+
 from app.plugins.base import BasePlugin
+from app.plugins.state import load_state, save_state
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import (
     CardTemplateType,
@@ -31,17 +33,17 @@ class InteractiveStoryPlugin(BasePlugin):
             allowed_roles=[UserRole.CHILD],
             card_template=CardTemplateType.DECISION_STORY,
             title="🐻 豆豆熊魔法冒险",
-            description="改变单向听故事，每幕结束由孩子在二选一胶囊中做决定，AI 即时接续讲完。",
+            description="两幕固定文案。孩子的选择写入 PostgreSQL。不调用大模型续写。",
             icon="🐻",
             default_enabled=True,
             sort_order=10,
         )
         super().__init__(manifest)
-        self._user_story_state: Dict[str, dict] = {}
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        state = self._user_story_state.get(
-            context.user_id,
+        state = load_state(
+            self.id,
+            context,
             {
                 "scene": "第 1 幕：豆豆熊背着心爱的小背包来到了神秘魔法森林，前方出现了两条闪光的小路...",
                 "branch_options": [
@@ -82,10 +84,10 @@ class InteractiveStoryPlugin(BasePlugin):
                     ],
                     "act": 2,
                 }
-            self._user_story_state[context.user_id] = new_state
+            save_state(self.id, context, new_state)
             return PluginActionResult(
                 status="ok",
-                message="你的决定太棒啦！豆豆熊马上接着给你讲下一幕！",
+                message="下一幕是写好的文案，不是大模型续写。",
                 data=new_state,
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
@@ -109,11 +111,11 @@ class HabitChallengePlugin(BasePlugin):
             sort_order=5,
         )
         super().__init__(manifest)
-        self._user_stars: Dict[str, Dict[str, bool]] = {}
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        stars = self._user_stars.get(
-            context.user_id,
+        stars = load_state(
+            self.id,
+            context,
             {"brush_teeth": False, "drink_milk": False, "sleep_on_time": False},
         )
         collected = sum(1 for v in stars.values() if v)
@@ -138,12 +140,14 @@ class HabitChallengePlugin(BasePlugin):
     ) -> PluginActionResult:
         if action_name == "toggle_habit":
             habit_key = payload.get("habit_key")
-            stars = self._user_stars.setdefault(
-                context.user_id,
+            stars = load_state(
+                self.id,
+                context,
                 {"brush_teeth": False, "drink_milk": False, "sleep_on_time": False},
             )
             if habit_key in stars:
                 stars[habit_key] = True
+                save_state(self.id, context, stars)
                 collected = sum(1 for v in stars.values() if v)
                 msg = "恭喜你点亮一颗小金星！" if collected < 3 else "太棒啦！集齐 3 颗星，荣获【晚安小勇士勋章】🎖️！"
                 return PluginActionResult(
@@ -167,7 +171,7 @@ class WonderEncyclopediaPlugin(BasePlugin):
             allowed_roles=[UserRole.CHILD],
             card_template=CardTemplateType.INTERACTIVE_PROMPT,
             title="🔍 万物为什么百科",
-            description="采用拟人童趣的比喻解答彩虹、月亮、小动物等自然奥秘。",
+            description="固定问答文案。不是大模型解答，也没有音频文件。",
             icon="🔍",
             default_enabled=True,
             sort_order=20,
@@ -181,7 +185,7 @@ class WonderEncyclopediaPlugin(BasePlugin):
             data={
                 "featured_question": "为什么雨后天空会有漂亮的彩虹呢？",
                 "answer_summary": "因为太阳公公把阳光当成了彩色画笔，穿过空气里调皮的七彩小水滴，天空就铺开了一条彩色滑梯！",
-                "listen_audio_url": "#audio-rainbow",
+                "listen_audio_url": "",
             },
             enabled=True,
         )
@@ -196,7 +200,7 @@ class WonderEncyclopediaPlugin(BasePlugin):
             q = payload.get("question", "")
             return PluginActionResult(
                 status="ok",
-                message=f"豆豆熊听懂了你的问题：‘{q}’，大自然真神奇呀！",
-                data={"reply": "因为万事万物都在快乐生长呀！点击麦克风可以继续问豆豆熊哦！"},
+                message="这是写死的回复，不是大模型回答。",
+                data={"reply": "页面上的百科句子是固定文案。", "question": q},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")

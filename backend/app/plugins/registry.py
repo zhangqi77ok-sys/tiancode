@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.core.curfew import child_actions_blocked
+from app.core.store import store
 from app.plugins.base import BasePlugin
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import PluginActionResult, PluginCardData, PluginManifest
@@ -29,16 +31,26 @@ class PluginRegistry:
         """管理员设置插件全局开启/熔断状态"""
         if plugin_id not in self._plugins:
             raise ValueError(f"未找到插件: {plugin_id}")
+        store.kv_set(f"plugin_global:{plugin_id}", "1" if enabled else "0")
         self._global_enabled[plugin_id] = enabled
         logger.warning(f"管理员变更插件全局状态: [{plugin_id}] -> enabled={enabled}")
 
     def is_global_enabled(self, plugin_id: str) -> bool:
-        """检查插件是否处于全局开启状态（未显式关闭时默认为 True）"""
-        return self._global_enabled.get(plugin_id, True)
+        """检查插件是否处于全局开启状态（未显式关闭时默认为 True）。开关在 PostgreSQL。"""
+        raw = store.kv_get(f"plugin_global:{plugin_id}")
+        if raw is None:
+            return True
+        return raw == "1"
 
     def get_invocation_count(self, plugin_id: str) -> int:
-        """获取插件历史调用量"""
-        return self._invocations.get(plugin_id, 0)
+        """获取插件历史调用量。次数写在 PostgreSQL，重启后还在。"""
+        raw = store.kv_get(f"plugin_invocations:{plugin_id}")
+        if raw is None:
+            return 0
+        try:
+            return int(raw)
+        except ValueError:
+            return 0
 
     def register(self, plugin: BasePlugin) -> None:
         """注册插件到中心
@@ -51,12 +63,6 @@ class PluginRegistry:
             raise ValueError(f"插件 ID 已存在，禁止重复注册: {pid}")
         self._plugins[pid] = plugin
         logger.info(f"成功注册伴暖插件: [{pid}] {plugin.name}")
-
-    def unregister(self, plugin_id: str) -> None:
-        """卸载插件"""
-        if plugin_id in self._plugins:
-            del self._plugins[plugin_id]
-            logger.info(f"已卸载伴暖插件: [{plugin_id}]")
 
     def get_plugin(self, plugin_id: str) -> Optional[BasePlugin]:
         """按 ID 检索插件实例"""
@@ -111,14 +117,16 @@ class PluginRegistry:
         action_name: str,
         payload: Dict[str, Any],
         context: UserContext,
+        family_settings: Optional[Dict[str, Any]] = None,
     ) -> PluginActionResult:
         """安全调度插件动作
 
         安全防线：
         1. 存在性检查：插件不存在时抛出 ValueError；
         2. 全局熔断检查：若管理员全局停用该插件，抛出 PermissionError；
-        3. RBAC 越权拦截：当前角色无权访问该插件时抛出 PermissionError；
-        4. 委托执行：调用插件的 execute_action 处理业务逻辑并记录调用量。
+        3. 家庭开关：守护者停用后拒绝动作；
+        4. RBAC 越权拦截：当前角色无权访问该插件时抛出 PermissionError；
+        5. 委托执行：调用插件的 execute_action 处理业务逻辑并记录调用量。
         """
         plugin = self.get_plugin(plugin_id)
         if not plugin:
@@ -127,12 +135,23 @@ class PluginRegistry:
         if not self.is_global_enabled(plugin_id):
             raise PermissionError(f"插件 [{plugin.name}] 已被平台管理员全局紧急熔断下线")
 
+        if family_settings is not None:
+            enabled_map = family_settings.get("plugins", {})
+            is_enabled = enabled_map.get(plugin.id, plugin.manifest.default_enabled)
+            if not is_enabled:
+                raise PermissionError(f"插件 [{plugin.name}] 已在当前家庭中停用")
+
+        if child_actions_blocked(context.role.value, family_settings):
+            raise PermissionError("已过防沉迷时间（北京时间 21:00–06:00），儿童插件暂不可用")
+
         if not plugin.can_access(context.role):
             raise PermissionError(
                 f"权限不足：当前角色 [{context.role.value}] 无权操作插件 [{plugin.name}]"
             )
 
-        self._invocations[plugin_id] = self._invocations.get(plugin_id, 0) + 1
+        count = self.get_invocation_count(plugin_id) + 1
+        store.kv_set(f"plugin_invocations:{plugin_id}", str(count))
+        self._invocations[plugin_id] = count
         return await plugin.execute_action(action_name, payload, context)
 
 

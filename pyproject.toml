@@ -12,6 +12,7 @@ dependencies = [
   "uvicorn[standard]>=0.29",
   "pydantic>=2",
   "pyjwt>=2.8.0",
+  "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +21,9 @@ dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.4"]
 [tool.setuptools.packages.find]
 where = ["backend"]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["core/schema.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

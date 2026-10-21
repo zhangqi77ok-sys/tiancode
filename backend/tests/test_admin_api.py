@@ -1,12 +1,10 @@
-"""平台管理员后台与 AI 全局管控端到端测试 (Admin & AI Control E2E Test)
+"""平台管理员登录、大盘计数和插件熔断。
 
-覆盖验证：
-1. 权限拦截：普通家庭守护者访问管理接口被严格 403 阻断；
-2. 管理员认证：凭据登录、令牌签发与防伪；
-3. AI 运行态热更新：大模型通道切换与提示词人设在线调整；
-4. 全局紧急熔断 (Kill-Switch)：管理员全局禁用插件后，家庭端全域下线并禁止调用；
-5. 大盘多租户统计：平台家庭数、老幼成员量与 AI 调用度量。
+没有模型配置接口。大盘只返回家庭、成员和未熔断插件数。
 """
+import os
+from datetime import date
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -45,7 +43,7 @@ def test_admin_rbac_ai_config_and_global_killswitch(client):
     client.post(
         "/api/v1/family/members",
         headers=guardian_headers,
-        json={"nickname": "乐乐", "role": "child", "birth_date": "2018-01-01", "pin_code": "3333"},
+        json={"nickname": "乐乐", "role": "child", "birth_date": date(date.today().year - 8, 1, 1).isoformat(), "pin_code": "3333"},
     )
     child_login = client.post(
         "/api/v1/auth/member-login",
@@ -53,8 +51,8 @@ def test_admin_rbac_ai_config_and_global_killswitch(client):
     )
     child_headers = {"Authorization": f"Bearer {child_login.json()['access_token']}"}
 
-    # 2. RBAC 越权拦截：普通守护者试图访问管理员 AI 配置，必须被 403 拦截！
-    hack_ai = client.get("/api/v1/admin/ai/config", headers=guardian_headers)
+    # 2. RBAC 越权拦截：普通守护者试图访问管理员大盘，必须被 403 拦截！
+    hack_ai = client.get("/api/v1/admin/dashboard/stats", headers=guardian_headers)
     assert hack_ai.status_code == 403
     assert "权限不足" in hack_ai.json()["detail"]
 
@@ -68,35 +66,13 @@ def test_admin_rbac_ai_config_and_global_killswitch(client):
     # 4. 管理员正确登录
     admin_login_resp = client.post(
         "/api/v1/admin/login",
-        json={"username": "admin", "password": "AdminPassword123!"},
+        json={"username": "admin", "password": os.environ["ADMIN_PASSWORD"]},
     )
     assert admin_login_resp.status_code == 200
     admin_token = admin_login_resp.json()["access_token"]
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-    # 5. 管理员查看 AI 配置（脱敏验证）
-    ai_cfg_resp = client.get("/api/v1/admin/ai/config", headers=admin_headers)
-    assert ai_cfg_resp.status_code == 200
-    ai_cfg = ai_cfg_resp.json()
-    assert "sk-" in ai_cfg["api_key_masked"]
-
-    # 6. 管理员热更新 AI 配置
-    update_resp = client.put(
-        "/api/v1/admin/ai/config",
-        headers=admin_headers,
-        json={
-            "llm_provider": "deepseek",
-            "temperature": 0.5,
-            "elder_prompt": "热更测试：长辈伴老智能体人设最新版本",
-        },
-    )
-    assert update_resp.status_code == 200
-    updated_cfg = update_resp.json()
-    assert updated_cfg["llm_provider"] == "deepseek"
-    assert updated_cfg["temperature"] == 0.5
-    assert "最新版本" in updated_cfg["elder_prompt"]
-
-    # 7. 管理员查看全平台插件列表
+    # 5. 管理员查看全平台插件列表
     plugins_resp = client.get("/api/v1/admin/plugins", headers=admin_headers)
     assert plugins_resp.status_code == 200
     plugins_list = plugins_resp.json()

@@ -1,4 +1,4 @@
-// tiancode（伴暖）CI/CD。Jenkins 与应用在同一台练习机上，模式对齐 agent-memory，但没有数据库。
+// tiancode（伴暖）CI/CD。Jenkins 与应用在同一台练习机上。家庭数据在 compose 的 PostgreSQL 卷里。
 // 凭据（Jenkins Credentials，仓库里只出现 ID）：
 //   deploy-ssh            SSH 私钥，登录部署机 deploy 用户（与 agent-memory 共用）
 //   ghcr-token            用户名 + PAT（write:packages），部署分支必需（与 agent-memory 共用）
@@ -54,9 +54,28 @@ pipeline {
     stage('Lint & Test') {
       steps {
         sh '''
+          set -eu
+          docker rm -f tiancode-pytest-pg >/dev/null 2>&1 || true
+          docker run -d --name tiancode-pytest-pg \
+            -e POSTGRES_USER=tiancode \
+            -e POSTGRES_PASSWORD=tiancode_test_pw \
+            -e POSTGRES_DB=tiancode_test \
+            -p 127.0.0.1:55432:5432 \
+            postgres:16-alpine
+          trap 'docker rm -f tiancode-pytest-pg >/dev/null 2>&1 || true' EXIT
+          ready=0
+          for i in $(seq 1 40); do
+            if docker exec tiancode-pytest-pg pg_isready -U tiancode -d tiancode_test; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          [ "$ready" = 1 ]
           python3 -m venv .venv && . .venv/bin/activate
           pip install -q -e '.[dev]'
           ruff check backend
+          export TEST_DATABASE_URL=postgresql://tiancode:tiancode_test_pw@127.0.0.1:55432/tiancode_test
           pytest -q --junitxml=report.xml
         '''
       }
@@ -131,6 +150,7 @@ pipeline {
                 SSH="ssh -o StrictHostKeyChecking=accept-new"
                 $SSH "$T" "mkdir -p $APP_DIR"
                 scp -o StrictHostKeyChecking=accept-new -q deploy/docker-compose.yml "$T:$APP_DIR/docker-compose.yml"
+                scp -o StrictHostKeyChecking=accept-new -q deploy/smoke.sh "$T:$APP_DIR/smoke.sh"
                 scp -o StrictHostKeyChecking=accept-new -q "$ENVF" "$T:$APP_DIR/.env"
                 if [ "$DEPLOY_IMAGE" = "$GHCR_IMAGE" ] && [ -n "${GHCR_P:-}" ]; then
                   echo "$GHCR_P" | $SSH "$T" "docker login ghcr.io -u '$GHCR_U' --password-stdin"
@@ -150,7 +170,7 @@ pipeline {
         sshagent(['deploy-ssh']) {
           // 整段命令写在 ssh 参数里，和 agent-memory 一样。curl 失败也要先打出状态码，再由 ok 决定退出码。
           sh '''
-            ssh -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST "cd $APP_DIR && P=\\$(grep ^API_PORT= .env | cut -d= -f2 || true); P=\\${P:-8092}; ok=0; for i in \\$(seq 1 30); do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P$SMOKE_PATH || true); echo smoke api \\$i \\$c; [ \\"\\$c\\" = 200 ] && ok=1 && break; sleep 3; done; [ \\"\\$ok\\" = 1 ] || exit 1; if [ '$SMOKE_PATH' = /readyz ]; then for path in / /admin.html; do c=\\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\\$P\\$path || true); echo smoke prototype \\$path \\$c; [ \\"\\$c\\" = 200 ] || exit 1; done; fi"
+            ssh -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST "SMOKE_PATH='$SMOKE_PATH' bash $APP_DIR/smoke.sh"
           '''
         }
       }

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.core.security import decode_jwt, encode_jwt, hash_password, verify_password
 from app.schemas.auth import (
+    FamilyMemberRole,
     MemberAddRequest,
     RegisterRequest,
     UserRole,
@@ -41,10 +42,30 @@ def test_jwt_encode_and_decode_success():
 
 
 def test_satoken_header_support():
-    """Sa-Token 协议验证：支持使用 satoken 请求头提取身份"""
-    from app.api.deps import get_current_user, JWT_SECRET
-    payload = {"sub": "usr_sa_01", "fam": "fam_01", "role": "guardian", "name": "测试用户"}
-    token = encode_jwt(payload, JWT_SECRET)
+    """支持使用 satoken 请求头提取身份，且用户必须仍在数据库中。"""
+    from app.api.deps import get_current_user
+    from app.core.runtime_secrets import jwt_secret
+    from app.core.store import store
+
+    store.upsert_user({
+        "id": "usr_sa_01",
+        "family_id": "fam_01",
+        "nickname": "测试用户",
+        "role": "guardian",
+        "birth_date": "1990-01-01",
+        "phone": None,
+        "password_hash": None,
+        "pin_hash": None,
+        "pin_code": None,
+    })
+    payload = {
+        "sub": "usr_sa_01",
+        "fam": "fam_01",
+        "role": "guardian",
+        "name": "测试用户",
+        "birth": "1990-01-01",
+    }
+    token = encode_jwt(payload, jwt_secret())
 
     # 1. 模拟标准 Sa-Token header: satoken: <token>
     ctx = get_current_user(satoken=token)
@@ -136,9 +157,9 @@ def test_schema_member_add_validation():
     """契约验证：添加家庭成员参数校验"""
     member = MemberAddRequest(
         nickname="外婆",
-        role=UserRole.ELDER,
+        role=FamilyMemberRole.ELDER,
         birth_date="1958-06-18",
         pin_code="1234",
     )
-    assert member.role == UserRole.ELDER
+    assert member.role == FamilyMemberRole.ELDER
     assert member.pin_code == "1234"

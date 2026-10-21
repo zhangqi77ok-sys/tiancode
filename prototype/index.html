@@ -37,6 +37,12 @@
       --font-scale: 1;
       --safe-bottom: env(safe-area-inset-bottom, 16px);
     }
+    .static-fork { display: none !important; }
+    .live-card { background: #fff; border: 1px solid var(--border-subtle); border-radius: 16px; padding: 14px; margin-top: 12px; }
+    .live-card h3 { font-size: 16px; margin-bottom: 8px; }
+    .live-card p, .live-card li { font-size: 15px; line-height: 1.6; }
+    .live-card button, .live-card input { font-size: 15px; margin-top: 8px; min-height: 44px; }
+    .honesty-note { font-size: 12px; color: #57534E; padding: 8px 16px; }
 
     /* 长辈关怀模式 (Elder Care) */
     body.mode-elder {
@@ -1109,7 +1115,7 @@
 
   <div class="mobile-frame">
     <!-- 首次年月日填写引导层 (Onboarding Modal) -->
-    <div class="onboarding-overlay" id="onboardingOverlay">
+    <div class="onboarding-overlay hidden" id="onboardingOverlay">
       <div class="onboarding-modal">
         <div class="onboarding-header">
           <div class="onboarding-badge">🎂</div>
@@ -1163,8 +1169,8 @@
         <div id="pinLoginBox" style="display:none; background:#FFFFFF; border-radius:16px; padding:12px; border:1px solid #E7E5E4; margin-top:4px;">
           <div style="font-size:12px; color:#57534E; margin-bottom:8px; font-weight:700;">长辈/儿童快速入家：</div>
           <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <input type="text" id="inputInviteCode" placeholder="6位家庭码(HAPPY8)" style="flex:1; height:36px; border-radius:18px; border:1px solid #CBD5E1; padding:0 10px; font-size:12px; text-transform:uppercase;">
-            <input type="text" id="inputPinCode" placeholder="4位Pin码(8888)" style="width:110px; height:36px; border-radius:18px; border:1px solid #CBD5E1; padding:0 10px; font-size:12px; text-align:center;">
+            <input type="text" id="inputInviteCode" placeholder="6位家庭码" style="flex:1; height:36px; border-radius:18px; border:1px solid #CBD5E1; padding:0 10px; font-size:12px; text-transform:uppercase;">
+            <input type="text" id="inputPinCode" placeholder="Pin码" style="width:110px; height:36px; border-radius:18px; border:1px solid #CBD5E1; padding:0 10px; font-size:12px; text-align:center;">
           </div>
           <button type="button" style="width:100%; height:38px; border-radius:19px; background:#0284C7; color:white; border:none; font-size:13px; font-weight:700; cursor:pointer;" onclick="submitPinLogin()">
             免密换取 JWT 登录 ➔
@@ -1209,7 +1215,8 @@
       <!-- ================= 👵 长辈关爱模式子视图 ================= -->
       <div id="viewElder" class="mode-view">
         <!-- 亲情语音便签彩蛋 -->
-        <div class="memo-banner" onclick="playVoiceMemo('elder')">
+        <div id="liveCardsElder"></div>
+        <div class="memo-banner static-fork" onclick="playVoiceMemo('elder')">
           <div class="memo-info">
             <div class="memo-badge">💌</div>
             <div>
@@ -1230,7 +1237,7 @@
         </div>
 
         <!-- 对话流卡片区 (外婆温情对讲) -->
-        <div class="chat-flow" id="chatFlowElder" style="margin-top:12px;">
+        <div class="chat-flow static-fork" id="chatFlowElder" style="margin-top:12px;">
           <div class="chat-bubble-wrap ai">
             <div class="bubble-avatar">👵</div>
             <div>
@@ -1245,7 +1252,7 @@
         </div>
 
         <!-- 经典戏曲随身听 (Opera Player) -->
-        <section class="opera-card" style="margin-top:12px;">
+        <section class="opera-card static-fork" style="margin-top:12px;">
           <div class="opera-head">
             <div class="card-title"><span>📻</span> <span>老戏曲随身听</span></div>
             <span class="card-badge" id="operaTrackIndex">1 / 3 首</span>
@@ -1268,7 +1275,7 @@
         </section>
 
         <!-- 忆苦思甜·老故事时光册 (Memory Keeper) -->
-        <section class="memory-card" style="margin-top:12px;">
+        <section class="memory-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title"><span>📖</span> <span>忆苦思甜 · 人生时光册</span></div>
             <span class="card-badge">温情倾听</span>
@@ -1291,7 +1298,7 @@
         </section>
 
         <!-- 今日用药与关怀打卡 -->
-        <section class="app-card" style="margin-top:12px;">
+        <section class="app-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title"><span>💊</span> <span>今日关怀与用药</span></div>
             <span class="card-badge" id="elderTaskStat">已完成 1/3</span>
@@ -1331,8 +1338,9 @@
 
       <!-- ================= 👶 童趣启蒙模式子视图 ================= -->
       <div id="viewKids" class="mode-view" style="display: none;">
+        <div id="liveCardsChild"></div>
         <!-- 爸爸留言彩蛋便签 -->
-        <div class="memo-banner" style="background: linear-gradient(135deg, #E0F2FE 0%, #BAE6FD 100%); border-color: #38BDF8;" onclick="playVoiceMemo('kids')">
+        <div class="memo-banner static-fork" style="background: linear-gradient(135deg, #E0F2FE 0%, #BAE6FD 100%); border-color: #38BDF8;" onclick="playVoiceMemo('kids')">
           <div class="memo-info">
             <div class="memo-badge" style="background:#0284C7;">🧸</div>
             <div>
@@ -1353,7 +1361,7 @@
         </div>
 
         <!-- 对话流卡片区 (豆豆熊伴聊) -->
-        <div class="chat-flow" id="chatFlowKids" style="margin-top:12px;">
+        <div class="chat-flow static-fork" id="chatFlowKids" style="margin-top:12px;">
           <div class="chat-bubble-wrap ai">
             <div class="bubble-avatar">🐻</div>
             <div>
@@ -1368,7 +1376,7 @@
         </div>
 
         <!-- 豆豆熊双向共创故事机 (Interactive Story Machine) -->
-        <section class="story-card" style="margin-top:12px;">
+        <section class="story-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title" style="color:#0284C7;"><span>✨</span> <span>今晚的睡前互动故事</span></div>
             <span class="card-badge" style="background:#E0F2FE; color:#0284C7;" id="storySceneBadge">第 1 幕</span>
@@ -1390,7 +1398,7 @@
         </section>
 
         <!-- 好习惯收集星星挑战箱 -->
-        <section class="habits-card" style="margin-top:12px;">
+        <section class="habits-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title" style="color:#854D0E;"><span>⭐</span> <span>好习惯星星挑战箱</span></div>
             <span class="card-badge" style="background:#FEF9C3; color:#854D0E;" id="habitBadge">已获 2 颗星</span>
@@ -1425,7 +1433,7 @@
         </section>
 
         <!-- 万物为什么拟人百科 -->
-        <section class="why-card" style="margin-top:12px;">
+        <section class="why-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title" style="color:#0F172A;"><span>🧐</span> <span>万物为什么 · 奇妙百科</span></div>
             <span class="card-badge">点击听解答</span>
@@ -1456,7 +1464,8 @@
           </div>
         </div>
         <!-- 30秒温情看护简报 Bento Grid -->
-        <div class="bento-grid">
+        <div id="familyTools"></div>
+        <div class="bento-grid static-fork">
           <div class="bento-card full-width">
             <div class="bento-title"><span>📊</span> <span>今日温情看护 30秒全景简报</span></div>
             <div class="bento-note" style="color:#1E293B; font-weight:700;">
@@ -1482,10 +1491,10 @@
         </div>
 
         <!-- 家庭对话流区 -->
-        <div class="chat-flow" id="chatFlowFamily" style="margin-top:12px;"></div>
+        <div class="chat-flow static-fork" id="chatFlowFamily" style="margin-top:12px;"></div>
 
         <!-- 亲情留声机录音箱 (Voice Memo Recorder) -->
-        <section class="voice-recorder-card" style="margin-top:12px;">
+        <section class="voice-recorder-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title"><span>🎙️</span> <span>亲情留声机 · 发送彩蛋便签</span></div>
             <span class="card-badge" style="background:#E0F2FE; color:#0284C7;">家人直达</span>
@@ -1503,7 +1512,7 @@
         </section>
 
         <!-- 远程看护配置项 -->
-        <section class="app-card" style="margin-top:12px;">
+        <section class="app-card static-fork" style="margin-top:12px;">
           <div class="card-head">
             <div class="card-title"><span>⚙️</span> <span>远程用药与看护设置</span></div>
             <span class="card-badge">已生效</span>
@@ -1527,7 +1536,7 @@
         </section>
 
         <!-- 🧩 伴暖家庭插件功能箱 (Guardian Plugin Ecosystem Hub) -->
-        <section class="app-card" style="margin-top:12px; border-left: 4px solid #6366F1;">
+        <section class="app-card static-fork" style="margin-top:12px; border-left: 4px solid #6366F1;">
           <div class="card-head">
             <div class="card-title" style="color:#4F46E5;"><span>🧩</span> <span>家庭插件功能箱 (动态插槽)</span></div>
             <span class="card-badge" style="background:#EEF2FF; color:#4F46E5;">守护者管控</span>
@@ -1574,6 +1583,7 @@
     </main>
 
     <!-- 底部常驻单手对讲控制台 -->
+    <p class="honesty-note">底部麦克风使用浏览器自带朗读，不调用大模型或 Edge-TTS。卡片内容来自 /api/v1/plugins/active。</p>
     <footer class="bottom-bar">
       <button class="voice-main-btn" id="voiceBtn" onclick="toggleVoice()">
         <span id="voiceIcon">🎤</span>
@@ -1672,7 +1682,8 @@
       onBirthDateChange(dateStr);
     }
 
-    let userRole = 'elder'; // elder | kids | family 由出生年月日决定
+    let userRole = 'elder'; // 页面布局：elder | kids | family。接口角色是 elder | child | guardian
+    let serverRole = '';
     let currentTab = 'personal'; // personal | family
 
     function getCurrentMode() {
@@ -1682,22 +1693,7 @@
 
     // 确认生日并关闭弹层进入系统
     function confirmBirthday() {
-      const age = calcAge(selectedBirthDate);
-      const role = getModeByAge(age);
-      
-      applyUserRole(role, age);
-
-      // 关闭引导弹层
       document.getElementById('onboardingOverlay').classList.add('hidden');
-
-      // 语音欢迎播报
-      const welcomeMsg = role === 'elder' 
-        ? `欢迎您！已为您开启大字关爱模式，我是您的温情陪伴小助手，有任何想唠的随时点下方说话！`
-        : (role === 'kids' ? `太棒啦！小熊豆豆来和你做朋友啦！今天想听什么好玩的故事呢？` : `欢迎家庭守护者，已为您同步今日家庭看护看板。`);
-      
-      setTimeout(() => {
-        speakContent(welcomeMsg);
-      }, 400);
     }
 
     // 重新打开引导弹层
@@ -1711,35 +1707,49 @@
       box.style.display = box.style.display === 'none' ? 'block' : 'none';
     }
 
-    // 提交家庭邀请码 + 4位Pin码换取 JWT 令牌
-    function submitPinLogin() {
-      const inviteInput = document.getElementById('inputInviteCode');
-      const pinInput = document.getElementById('inputPinCode');
-      const invite = (inviteInput && inviteInput.value.trim().toUpperCase()) || 'HAPPY8';
-      const pin = (pinInput && pinInput.value.trim()) || '8888';
-
-      // 模拟 /api/v1/auth/member-login 契约
-      const isElder = pin === '8888' || pin.startsWith('8');
-      const role = isElder ? 'elder' : 'kids';
-      const age = isElder ? 68 : 8;
-      const bdate = isElder ? '1958-06-18' : '2018-09-01';
-
-      // 本地存储 JWT Token
-      const fakePayload = { sub: isElder ? 'usr_elder_01' : 'usr_child_01', fam: 'fam_' + invite, role: role, name: isElder ? '外婆' : '豆豆' };
-      try {
-        localStorage.setItem('warm_jwt_token', `ey.header.${btoa(JSON.stringify(fakePayload))}.signature`);
-      } catch (e) {}
-
-      selectedBirthDate = bdate;
-      applyUserRole(role, age);
-      document.getElementById('onboardingOverlay').classList.add('hidden');
-
-      alert(`🎉 登录成功！已根据家庭邀请码【${invite}】与专属Pin码【${pin}】签发 JWT 并进入【${isElder ? '外婆' : '宝贝'}】专属主页！`);
-      speakContent(isElder ? "外婆好！已为您开启大字关爱模式！" : "宝贝好！豆豆熊乐园为你开启啦！");
+    function apiUrl(path) {
+      return 'api/v1' + path;
     }
 
-    // 根据身份自适应配置顶部双 Tab
+    function authHeaders() {
+      const token = localStorage.getItem('satoken') || '';
+      return { 'Content-Type': 'application/json', satoken: token, Authorization: 'Bearer ' + token };
+    }
+
+    function layoutOf(role) {
+      if (role === 'child' || role === 'kids') return 'kids';
+      if (role === 'guardian' || role === 'family' || role === 'admin') return 'family';
+      return 'elder';
+    }
+
+    async function submitPinLogin() {
+      const inviteInput = document.getElementById('inputInviteCode');
+      const pinInput = document.getElementById('inputPinCode');
+      const invite = (inviteInput && inviteInput.value.trim().toUpperCase()) || '';
+      const pin = (pinInput && pinInput.value.trim()) || '';
+      if (!invite || !pin) {
+        alert('请填写家庭邀请码和 Pin');
+        return;
+      }
+      const resp = await fetch(apiUrl('/auth/member-login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invite_code: invite, pin_code: pin }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        alert(typeof data.detail === 'string' ? data.detail : '登录失败');
+        return;
+      }
+      localStorage.setItem('satoken', data.access_token);
+      localStorage.removeItem('warm_jwt_token');
+      await bootstrapSession();
+    }
+
+    // 根据服务器角色配置顶部双 Tab。child 对应儿童布局，不再使用 kids 作为接口角色。
     function applyUserRole(role, age) {
+      serverRole = role;
+      role = layoutOf(role);
       userRole = role;
       const btnPersonal = document.getElementById('btnPersonalTab');
       const btnFamily = document.getElementById('btnFamilyTab');
@@ -1748,7 +1758,7 @@
       const famText = document.getElementById('familyTabText');
 
       // 从 localStorage 中提取已登录的用户信息与真实名称
-      let displayName = role === 'elder' ? '外婆' : (role === 'kids' ? '豆豆' : '女儿小敏');
+      let displayName = role === 'elder' ? '长辈' : (role === 'kids' ? '孩子' : '守护者');
       const savedUserStr = localStorage.getItem('satoken_user');
       if (savedUserStr) {
         try {
@@ -1800,12 +1810,16 @@
       switchPersonalOrFamily('personal');
     }
 
-    function logoutAndRedirect() {
-      if (confirm("确定要退出当前账号并返回登录注册门户吗？")) {
-        localStorage.removeItem('satoken');
-        localStorage.removeItem('satoken_user');
-        window.location.href = 'login.html';
+    async function logoutAndRedirect() {
+      if (!confirm("确定要退出当前账号并返回登录注册门户吗？")) return;
+      try {
+        await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: authHeaders() });
+      } catch (err) {
+        // 网络失败时只清本机。服务端这枚令牌在过期前仍然有效。
       }
+      localStorage.removeItem('satoken');
+      localStorage.removeItem('satoken_user');
+      window.location.href = 'login.html';
     }
 
     // 切换【我的主页】与【家庭看板】
@@ -2015,14 +2029,8 @@
     }
 
     // 家庭中控发送留言
-    function sendFamilyMemo(target) {
-      const input = document.getElementById('memoInputText');
-      const val = (input && input.value.trim()) || (target === 'elder' ? "妈，今天降温多穿件马甲，晚上我下班来看您！" : "宝贝，今天在幼儿园听老师话，晚上乖乖睡觉哦！");
-      if (input) input.value = '';
-      
-      const targetName = target === 'elder' ? '外婆' : '宝贝';
-      alert(`已成功将亲情留言同步至【${targetName}】的手机端彩蛋便签！`);
-      speakContent(`已成功将亲情留言发送给${targetName}！`);
+    function sendFamilyMemo() {
+      alert('留言没有发出。这个按钮没有对应的接口。');
     }
 
     // 语音对讲触发
@@ -2038,28 +2046,14 @@
         isListening = true;
         btn.classList.add('active');
         icon.innerText = '🔴';
-        label.innerText = '正在用心倾听您说话...';
+        label.innerText = '没有接入语音识别';
 
-        // 模拟对讲录音 2.6 秒
         setTimeout(() => {
-          if (isListening) {
-            isListening = false;
-            btn.classList.remove('active');
-            icon.innerText = '🎤';
-            label.innerText = '按住 / 点击开始对讲';
-
-            const curMode = getCurrentMode();
-            const userText = curMode === 'elder' ? "今天中午喝点什么热汤好呀？" : "天上为什么会有小鸟飞呢？";
-            appendChat('user', userText);
-
-            setTimeout(() => {
-              const aiText = curMode === 'elder' 
-                ? "外婆，今天霜降有点风，中午炖点山药排骨汤或者百合莲子汤最润肺了，记得稍微少放点盐哦！"
-                : "因为小鸟的羽毛非常轻巧，两只翅膀像小飞机的机翼一样，扇动空气就能带它们飞上天空啦！";
-              appendChat('ai', aiText);
-            }, 700);
-          }
-        }, 2600);
+          isListening = false;
+          btn.classList.remove('active');
+          icon.innerText = '🎤';
+          label.innerText = '麦克风未接入，不会生成回复';
+        }, 600);
       } else {
         isListening = false;
         btn.classList.remove('active');
@@ -2163,33 +2157,155 @@
       document.getElementById('fontBtn').innerText = titles[zoomLevel];
     }
     // 插件化动态开关联动函数
-    function toggleFamilyPluginPrototype(pluginId, isEnabled) {
-      if (pluginId === 'elder_opera') {
-        const el = document.querySelector('.opera-card');
-        if (el) el.style.display = isEnabled ? 'block' : 'none';
-      } else if (pluginId === 'elder_memory') {
-        const el = document.querySelector('.memory-card');
-        if (el) el.style.display = isEnabled ? 'block' : 'none';
-      } else if (pluginId === 'child_story') {
-        const el = document.querySelector('.story-card');
-        if (el) el.style.display = isEnabled ? 'block' : 'none';
-      } else if (pluginId === 'child_habit') {
-        const el = document.querySelector('.habits-card');
-        if (el) el.style.display = isEnabled ? 'block' : 'none';
+    async function toggleFamilyPlugin(pluginId, isEnabled) {
+      const resp = await fetch(apiUrl('/family/plugins/' + pluginId + '/toggle'), {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ enabled: isEnabled }),
+      });
+      if (!resp.ok) {
+        alert('开关没有保存');
+        return;
       }
+      await loadFamilyTools();
     }
 
-    // 检查并恢复 Sa-Token 登录会话
-    const savedUserStr = localStorage.getItem('satoken_user');
-    if (savedUserStr) {
-      try {
-        const u = JSON.parse(savedUserStr);
-        if (u.birth_date) selectedBirthDate = u.birth_date;
-      } catch (e) {}
+    async function saveCareFlags(medication, curfew) {
+      const resp = await fetch(apiUrl('/family/settings'), {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          medication_reminder_enabled: medication,
+          kids_curfew_enabled: curfew,
+        }),
+      });
+      if (!resp.ok) alert('看护设置没有保存');
     }
 
-    // 初始化首屏角色与双 Tab
-    applyUserRole(getModeByAge(calcAge(selectedBirthDate)), calcAge(selectedBirthDate));
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[ch]));
+    }
+
+    async function runPluginAction(pluginId, actionName, payload) {
+      const resp = await fetch(apiUrl('/plugins/' + pluginId + '/action'), {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ action_name: actionName, payload: payload || {} }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        alert(typeof data.detail === 'string' ? data.detail : '动作失败');
+        return;
+      }
+      if (data.message) alert(data.message);
+      await loadActiveCards();
+    }
+
+    function renderCard(card) {
+      const m = card.manifest || {};
+      const data = card.data || {};
+      const title = escapeHtml((m.icon || '') + ' ' + (m.title || m.name || card.plugin_id));
+      let body = '';
+      if (card.plugin_id === 'elder_opera') {
+        const track = data.current_track || {};
+        body = `<p><strong>${escapeHtml(track.name || '')}</strong><br>${escapeHtml(track.artist || '')}</p><p>${escapeHtml(track.lyric || '')}</p>
+          <button type="button" onclick="runPluginAction('elder_opera','prev_track',{})">上一首</button>
+          <button type="button" onclick="runPluginAction('elder_opera','next_track',{})">下一首</button>`;
+      } else if (card.plugin_id === 'elder_memory') {
+        body = `<p>${escapeHtml(data.prompt || '')}</p><p>已保存 ${escapeHtml(data.recorded_memories_count || 0)} 条。最近：${escapeHtml(data.latest_memory || '')}</p>
+          <input id="memoryInput" placeholder="写下一段口述">
+          <button type="button" onclick="runPluginAction('elder_memory','save_oral_story',{story_text:document.getElementById('memoryInput').value})">保存到数据库</button>`;
+      } else if (card.plugin_id === 'elder_medication') {
+        body = `<p>${escapeHtml(data.medicine_name || '')} · ${escapeHtml(data.schedule_time || '')}</p><p>${escapeHtml(data.memo || '')}</p>
+          <button type="button" onclick="runPluginAction('elder_medication','checkin',{})">${data.checked_in ? '已打卡' : '打卡'}</button>`;
+      } else if (card.plugin_id === 'child_story') {
+        const options = (data.branch_options || []).map((opt) =>
+          `<button type="button" onclick="runPluginAction('child_story','choose_branch',{branch_id:'${escapeHtml(opt.id)}'})">${escapeHtml(opt.label)}</button>`
+        ).join('');
+        body = `<p>${escapeHtml(data.scene || '')}</p>${options}`;
+      } else if (card.plugin_id === 'child_habit') {
+        const stars = data.stars || {};
+        body = Object.keys(stars).map((key) =>
+          `<button type="button" onclick="runPluginAction('child_habit','toggle_habit',{habit_key:'${escapeHtml(key)}'})">${escapeHtml(key)} ${stars[key] ? '已完成' : '未完成'}</button>`
+        ).join('') + `<p>${escapeHtml(data.badge_name || '')}</p>`;
+      } else if (card.plugin_id === 'child_encyclopedia') {
+        body = `<p>${escapeHtml(data.featured_question || '')}</p><p>${escapeHtml(data.answer_summary || '')}</p>
+          <p>固定文案，没有音频。</p>`;
+      } else {
+        body = `<pre>${escapeHtml(JSON.stringify(data))}</pre>`;
+      }
+      return `<section class="live-card"><h3>${title}</h3>${body}</section>`;
+    }
+
+    async function loadActiveCards() {
+      const resp = await fetch(apiUrl('/plugins/active'), { headers: authHeaders() });
+      if (!resp.ok) return;
+      const cards = await resp.json();
+      const html = cards.map(renderCard).join('') || '<p class="honesty-note">当前角色没有开启的插件卡片。</p>';
+      const elder = document.getElementById('liveCardsElder');
+      const child = document.getElementById('liveCardsChild');
+      if (elder) elder.innerHTML = serverRole === 'elder' ? html : '';
+      if (child) child.innerHTML = serverRole === 'child' ? html : '';
+    }
+
+    async function loadFamilyTools() {
+      const box = document.getElementById('familyTools');
+      if (!box || serverRole !== 'guardian') {
+        if (box) box.innerHTML = '';
+        return;
+      }
+      const meResp = await fetch(apiUrl('/auth/me'), { headers: authHeaders() });
+      const pluginsResp = await fetch(apiUrl('/family/plugins'), { headers: authHeaders() });
+      if (!meResp.ok || !pluginsResp.ok) {
+        box.innerHTML = '<p class="honesty-note">家庭插件列表加载失败。</p>';
+        return;
+      }
+      const me = await meResp.json();
+      const settings = me.settings || {};
+      const plugins = await pluginsResp.json();
+      const rows = plugins.map((item) => {
+        const m = item.manifest;
+        return `<label class="live-card" style="display:flex;justify-content:space-between;align-items:center;">
+          <span><strong>${escapeHtml(m.icon || '')} ${escapeHtml(m.name)}</strong><br><span>${escapeHtml(m.description || '')}</span></span>
+          <input type="checkbox" ${item.enabled ? 'checked' : ''} onchange="toggleFamilyPlugin('${escapeHtml(m.id)}', this.checked)">
+        </label>`;
+      }).join('');
+      const med = settings.medication_reminder_enabled !== false;
+      const curfew = settings.kids_curfew_enabled !== false;
+      box.innerHTML = `<section class="live-card"><h3>家庭插件</h3><p>开关写入数据库。儿童防沉迷开启后，北京时间 21:00–06:00 拒绝儿童插件动作，卡片仍会显示。</p>${rows}
+        <label><input id="flagMed" type="checkbox" ${med ? 'checked' : ''}> 用药提醒</label>
+        <label><input id="flagCurfew" type="checkbox" ${curfew ? 'checked' : ''}> 儿童防沉迷（北京时间 21:00–06:00）</label>
+        <button type="button" onclick="saveCareFlags(document.getElementById('flagMed').checked, document.getElementById('flagCurfew').checked)">保存看护开关</button>
+      </section>`;
+    }
+
+    async function bootstrapSession() {
+      const token = localStorage.getItem('satoken');
+      if (!token || token.indexOf('satoken_') === 0) {
+        localStorage.removeItem('satoken');
+        localStorage.removeItem('satoken_user');
+        window.location.replace('login.html');
+        return;
+      }
+      const resp = await fetch(apiUrl('/auth/me'), { headers: authHeaders() });
+      if (!resp.ok) {
+        localStorage.removeItem('satoken');
+        localStorage.removeItem('satoken_user');
+        window.location.replace('login.html');
+        return;
+      }
+      const me = await resp.json();
+      localStorage.setItem('satoken_user', JSON.stringify(me));
+      const overlay = document.getElementById('onboardingOverlay');
+      if (overlay) overlay.classList.add('hidden');
+      applyUserRole(me.role, me.age);
+      await loadActiveCards();
+      await loadFamilyTools();
+    }
+
+    bootstrapSession();
   </script>
 </body>
 </html>

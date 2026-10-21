@@ -26,7 +26,6 @@ class CardTemplateType(str, Enum):
     DECISION_STORY = "decision_story"      # 双向分幕决策故事卡片
     STAR_TRACKER = "star_tracker"          # 好习惯星星收集器卡片
     INTERACTIVE_PROMPT = "interactive_prompt"  # 口述时光回忆问答卡片
-    BENTO_STAT = "bento_stat"              # 便当盒统计指标卡片
 
 
 class PluginManifest(BaseModel):

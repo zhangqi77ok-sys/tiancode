@@ -1,6 +1,7 @@
-# 伴暖 API（内存存储，无数据库）。
-# 变量来自同目录 .env：compose 插值与 env_file 读的是同一个文件。
-# Jenkins 部署时额外注入 IMAGE / TAG，不必写进 .env。
+# 伴暖 API + PostgreSQL。库只在 compose 网络里，不把 5432 映射到宿主，
+# 避免和同机的其他 Postgres 抢端口。数据在卷 tiancode-pg。
+# 变量来自同目录 .env。Jenkins 部署时额外注入 IMAGE / TAG。
+# 旧的 SQLite 卷 tiancode-data 不再挂载，里面的文件不会被导入。
 
 x-log: &log
   driver: json-file
@@ -9,10 +10,35 @@ x-log: &log
     max-file: "3"
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tiancode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-tiancode}
+    volumes:
+      - tiancode-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging: *log
+    restart: unless-stopped
+
   api:
     image: ${IMAGE:-ghcr.io/zhangqi77ok-sys/tiancode}:${TAG:-latest}
     env_file: .env
+    environment:
+      TIANCODE_DATABASE_URL: postgresql://${POSTGRES_USER:-tiancode}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tiancode}
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${API_PORT:-8092}:8000"
     logging: *log
     restart: unless-stopped
+
+volumes:
+  tiancode-pg:

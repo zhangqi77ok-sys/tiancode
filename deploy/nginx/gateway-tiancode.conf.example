@@ -1,4 +1,6 @@
 # 模板（不是线上配置）：nginx-gw 里 tiancode 相关 location。
+# 这段只监听现有的 HTTP server。令牌会明文经过它。对外之前应在更外层终结 TLS，
+# 并把那一跳的地址写进 FORWARDED_ALLOW_IPS，不要使用 *。
 # 请和线上实际配置 diff 后再粘贴，不要整文件覆盖。仓库里不放真实域名或 IP。
 # 该文件在 nginx-gw 中若是「单文件 bind mount」：改完后必须 `docker restart nginx-gw`，
 # 不能只 `nginx -s reload`（编辑器换 inode 后容器里看到的仍是旧文件）。
