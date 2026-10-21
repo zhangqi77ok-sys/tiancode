@@ -12,7 +12,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_roles
 from app.api.v1.auth import get_family_by_id
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
@@ -62,12 +62,15 @@ async def dispatch_plugin_action(
 
     内置 RBAC 防越权守卫与全局熔断拦截。
     """
+    fam = get_family_by_id(u.family_id) or {}
+    settings = fam.get("settings", {})
     try:
         return await plugin_registry.dispatch_action(
             plugin_id=plugin_id,
             action_name=req.action_name,
             payload=req.payload,
             context=u,
+            family_settings=settings,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -76,11 +79,8 @@ async def dispatch_plugin_action(
 
 
 @router.get("/family/plugins", response_model=List[FamilyPluginStatusOut])
-def list_family_plugins(u: UserContext = Depends(get_current_user)):
+def list_family_plugins(u: UserContext = Depends(require_roles([UserRole.GUARDIAN]))):
     """获取当前家庭的所有可用插件及开关状态（仅家庭守护者 Guardian 可访问）。"""
-    if u.role != UserRole.GUARDIAN:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足：仅家庭守护者可管理家庭插件")
-
     fam = get_family_by_id(u.family_id)
     if not fam:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="家庭空间不存在")
@@ -99,12 +99,9 @@ def list_family_plugins(u: UserContext = Depends(get_current_user)):
 def toggle_family_plugin(
     plugin_id: str,
     req: FamilyPluginToggleRequest,
-    u: UserContext = Depends(get_current_user),
+    u: UserContext = Depends(require_roles([UserRole.GUARDIAN])),
 ):
     """守护者为家庭开启或停用特定插件。"""
-    if u.role != UserRole.GUARDIAN:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足：仅家庭守护者可调整插件状态")
-
     fam = get_family_by_id(u.family_id)
     if not fam:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="家庭空间不存在")

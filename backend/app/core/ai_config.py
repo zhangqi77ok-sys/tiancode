@@ -107,6 +107,10 @@ class AiConfigManager:
     def safety_alerts_count(self) -> int:
         return len(self._safety_alerts)
 
+    def reset(self) -> None:
+        """测试隔离：恢复进程内默认配置与计数。"""
+        self.__init__()
+
 
 # 全局单例
 ai_config_manager = AiConfigManager()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import secrets
 import time
 from typing import Any, Dict
 import jwt
@@ -65,7 +66,7 @@ def b64url_decode(s: str) -> bytes:
 def hash_password(password: str, salt: str | None = None) -> str:
     """使用 PBKDF2-HMAC-SHA256 生成安全的密码哈希。"""
     if salt is None:
-        salt = base64.b64encode(hashlib.sha256(str(time.time()).encode("utf-8")).digest()[:16]).decode("utf-8")
+        salt = secrets.token_urlsafe(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000)
     return f"{salt}${b64url_encode(dk)}"
 

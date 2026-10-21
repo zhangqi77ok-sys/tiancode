@@ -58,8 +58,8 @@ Jenkins 全局环境变量沿用现有的 `DEPLOY_HOST` 与 `DEPLOY_USER=deploy`
 
 | 变量 | 含义 |
 |---|---|
-| `JWT_SECRET` | 签发 JWT。`openssl rand -hex 32`，至少替换掉示例值 |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理登录。示例里的 `change-me` 不能直接当线上密码 |
+| `JWT_SECRET` | 签发 JWT。`openssl rand -hex 32`。缺失或仍是 `change-me` / `change-me-openssl-rand-hex-32` / `tiancode-family-secret-32-bytes-min!` 时进程拒绝启动 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理登录。`ADMIN_PASSWORD` 至少 12 位。`change-me` 和 `AdminPassword123!` 会拒绝启动 |
 | `API_PORT` | 宿主端口，默认 `8092`，前面固定 `127.0.0.1` |
 | `ROOT_PATH` | `/tiancode` |
 
@@ -83,7 +83,8 @@ pip install -e '.[dev]'
 pytest -q
 docker build -t tiancode:dev .
 docker run --rm -d --name tiancode-dev -p 127.0.0.1:8092:8000 \
-  -e JWT_SECRET=change-me -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=change-me \
+  -e JWT_SECRET="$(openssl rand -hex 32)" -e ADMIN_USERNAME=admin \
+  -e ADMIN_PASSWORD="$(openssl rand -base64 24)" \
   -e ROOT_PATH=/tiancode tiancode:dev
 curl -sf http://127.0.0.1:8092/healthz
 curl -sf http://127.0.0.1:8092/readyz

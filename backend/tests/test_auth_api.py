@@ -131,9 +131,10 @@ def test_auth_full_family_lifecycle_and_rbac(client):
     )
     assert wrong_pin_resp.status_code == 401
 
-    # 12. 安全防御：不存在的家庭邀请码必须返回 404
+    # 12. 不存在的邀请码与错误 Pin 使用同一 401，避免枚举家庭
     wrong_invite_resp = client.post(
         "/api/v1/auth/member-login",
         json={"invite_code": "ZZZZZZ", "pin_code": "8888"},
     )
-    assert wrong_invite_resp.status_code == 404
+    assert wrong_invite_resp.status_code == 401
+    assert wrong_invite_resp.json()["detail"] == wrong_pin_resp.json()["detail"]

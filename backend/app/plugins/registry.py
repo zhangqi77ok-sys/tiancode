@@ -111,14 +111,16 @@ class PluginRegistry:
         action_name: str,
         payload: Dict[str, Any],
         context: UserContext,
+        family_settings: Optional[Dict[str, Any]] = None,
     ) -> PluginActionResult:
         """安全调度插件动作
 
         安全防线：
         1. 存在性检查：插件不存在时抛出 ValueError；
         2. 全局熔断检查：若管理员全局停用该插件，抛出 PermissionError；
-        3. RBAC 越权拦截：当前角色无权访问该插件时抛出 PermissionError；
-        4. 委托执行：调用插件的 execute_action 处理业务逻辑并记录调用量。
+        3. 家庭开关：守护者停用后拒绝动作；
+        4. RBAC 越权拦截：当前角色无权访问该插件时抛出 PermissionError；
+        5. 委托执行：调用插件的 execute_action 处理业务逻辑并记录调用量。
         """
         plugin = self.get_plugin(plugin_id)
         if not plugin:
@@ -126,6 +128,12 @@ class PluginRegistry:
 
         if not self.is_global_enabled(plugin_id):
             raise PermissionError(f"插件 [{plugin.name}] 已被平台管理员全局紧急熔断下线")
+
+        if family_settings is not None:
+            enabled_map = family_settings.get("plugins", {})
+            is_enabled = enabled_map.get(plugin.id, plugin.manifest.default_enabled)
+            if not is_enabled:
+                raise PermissionError(f"插件 [{plugin.name}] 已在当前家庭中停用")
 
         if not plugin.can_access(context.role):
             raise PermissionError(

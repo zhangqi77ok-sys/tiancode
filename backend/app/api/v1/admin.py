@@ -10,13 +10,21 @@
 """
 from __future__ import annotations
 
-import os
+import hmac
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import JWT_SECRET, require_admin
-from app.api.v1.auth import get_all_families_count, get_all_users
+from app.api.deps import require_admin
+from app.api.v1.auth import (
+    clear_login_failures,
+    enforce_login_attempt,
+    ensure_platform_admin,
+    get_all_families_count,
+    get_all_users,
+    record_login_failure,
+)
 from app.core.ai_config import ai_config_manager
+from app.core.runtime_secrets import admin_password, admin_username, jwt_secret
 from app.core.security import encode_jwt
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
@@ -34,36 +42,44 @@ load_builtin_plugins()
 
 router = APIRouter(prefix="/api/v1/admin")
 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminPassword123!")
+
+def _credentials_match(left: str, right: str) -> bool:
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
 
 
 @router.post("/login", response_model=TokenResponse)
 def admin_login(req: AdminLoginRequest):
-    """平台超级管理员专用登入接口。"""
-    if req.username != ADMIN_USERNAME or req.password != ADMIN_PASSWORD:
+    """平台超级管理员专用登入接口。口令只来自环境变量。"""
+    key = f"admin:{req.username}"
+    enforce_login_attempt(key)
+    username_ok = _credentials_match(req.username, admin_username())
+    password_ok = _credentials_match(req.password, admin_password())
+    if not (username_ok and password_ok):
+        record_login_failure(key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="管理员用户名或密码错误",
         )
-
-    admin_id = "usr_admin_root"
+    clear_login_failures(key)
+    admin = ensure_platform_admin()
     token = encode_jwt(
         {
-            "sub": admin_id,
-            "fam": "fam_admin_system",
+            "sub": admin["id"],
+            "fam": admin["family_id"],
             "role": UserRole.ADMIN.value,
-            "name": "平台超级管理员",
-            "birth": "1990-01-01",
+            "name": admin["nickname"],
+            "birth": admin["birth_date"],
         },
-        JWT_SECRET,
+        jwt_secret(),
     )
     return TokenResponse(
         access_token=token,
         role=UserRole.ADMIN,
-        user_id=admin_id,
-        family_id="fam_admin_system",
-        name="平台超级管理员",
+        user_id=admin["id"],
+        family_id=admin["family_id"],
+        name=admin["nickname"],
     )
 
 

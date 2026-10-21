@@ -192,24 +192,32 @@ tiancode/
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest -q
+export JWT_SECRET="$(openssl rand -hex 32)"
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD="$(openssl rand -base64 24)"
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+`JWT_SECRET` 至少 32 个字符，`ADMIN_PASSWORD` 至少 12 个字符。未设置，或仍等于仓库里的占位符（`tiancode-family-secret-32-bytes-min!`、`AdminPassword123!`、`change-me`、`change-me-openssl-rand-hex-32`），进程会在启动时拒绝服务。模板见 [deploy/.env.example](deploy/.env.example)。pytest 自己注入测试密钥，不需要先 export。
+
 健康检查：`/healthz`、`/readyz`。
+
+家庭账号没有预置数据。守护者通过 `POST /api/v1/auth/register` 建家，再 `POST /api/v1/family/members` 纳管长辈或儿童。创建成员的响应会一次性返回 Pin；之后只保存哈希。平台管理员只走 `POST /api/v1/admin/login`，账号密码来自上面的环境变量。
 
 ### 3. 练习机部署
 公开路径是 `http://<HOST>/tiancode/`，API 只监听 `127.0.0.1:8092`。凭据 ID、nginx 片段和 `docker restart nginx-gw` 见 [docs/deploy.md](docs/deploy.md)。
 
 ---
 
-## 🔑 体验测试预设凭据
+## 🔑 登录入口
 
-| 角色类型 | 登录方式 | 凭证 / Pin 码 | 可访问界面与权限 |
-| :--- | :--- | :--- | :--- |
-| **平台超级管理员** | 管理后台登录 | 账号：`admin` / 密码：`AdminPassword123!` | 全网大盘监控、AI 模型通道/Prompt热更、全网插件全局熔断 |
-| **家庭守护者** | 手机号密码登录 | 手机号：`13800138000` / 密码：`Password123!` | 家庭看护简报、家庭插件功能箱定制、远程用药与防沉迷 |
-| **银发长辈** | 邀请码+Pin码免密登录 | 家庭码：`HAPPY8` / Pin码：`8888` | 长辈暖心主页（戏曲、时光册、用药打卡、紧急求助） |
-| **幼童宝贝** | 邀请码+Pin码免密登录 | 家庭码：`HAPPY8` / Pin码：`6666` | 豆豆熊乐园（双向故事机、习惯星星挑战、奇妙百科） |
+| 角色 | 接口 | 凭证从哪来 |
+| :--- | :--- | :--- |
+| 平台管理员 | `POST /api/v1/admin/login` | 环境变量 `ADMIN_USERNAME` / `ADMIN_PASSWORD` |
+| 家庭守护者 | `POST /api/v1/auth/register` 然后 `POST /api/v1/auth/login` | 请求里的手机号和密码。注册成功的响应带家庭邀请码 |
+| 长辈 / 儿童 | `POST /api/v1/auth/member-login` | 邀请码 + 纳管时一次性返回的 Pin。角色只能是 `elder` 或 `child` |
+
+`prototype/login.html` 仍是本地演示页，不会调用上述接口。
 
 ---
 

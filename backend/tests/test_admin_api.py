@@ -7,6 +7,8 @@
 4. 全局紧急熔断 (Kill-Switch)：管理员全局禁用插件后，家庭端全域下线并禁止调用；
 5. 大盘多租户统计：平台家庭数、老幼成员量与 AI 调用度量。
 """
+import os
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -68,7 +70,7 @@ def test_admin_rbac_ai_config_and_global_killswitch(client):
     # 4. 管理员正确登录
     admin_login_resp = client.post(
         "/api/v1/admin/login",
-        json={"username": "admin", "password": "AdminPassword123!"},
+        json={"username": "admin", "password": os.environ["ADMIN_PASSWORD"]},
     )
     assert admin_login_resp.status_code == 200
     admin_token = admin_login_resp.json()["access_token"]

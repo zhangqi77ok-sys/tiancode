@@ -1,6 +1,19 @@
 # WarmCompanion (伴暖) — severity-ranked code review
 
-Reviewed tree: `5debeec` (`feat: enforce auth route guard, require user name on registration, and dynamically display name post-login`), 2026-10-21. No application code was changed.
+## Phase 1 status
+
+This branch now implements the auth and family-member fixes. The findings below are the original review of `5debeec`; they are not all still open.
+
+| Item | Status |
+| :--- | :--- |
+| C1 privilege escalation | Fixed. Member create accepts only `elder` / `child`. PIN login ignores any other role. `require_roles` guards guardian and admin routes. |
+| C2 fail-open secrets | Fixed. `create_app()` refuses a missing or published `JWT_SECRET` / `ADMIN_PASSWORD`. README no longer prints a live admin password. |
+| H3 settings wipe plugin toggles | Fixed. Settings update merges into the existing dict. |
+| M1 family plugin off still runs the action | Fixed. `dispatch_action` receives family settings and returns 403. |
+| M2 PIN storage, invite oracle, age/role, per-test state | Partially fixed: PIN is hashed, invite codes use `secrets`, bad invite and bad PIN share one 401, age must match role, deleted users fail `get_current_user`, and tests reset the in-memory stores. A 5-failure / 5-minute lockout covers member, guardian, and admin login. |
+| H1, H2, H4, H5, M3 coverage gaps beyond the cases above, M4 session revocation, M5 TLS, L1–L4 | Still open. Phase 2: database, real `login.html` API calls, remove fake admin metrics, extend Jenkins smoke past `/readyz`. |
+
+Reviewed tree: `5debeec` (`feat: enforce auth route guard, require user name on registration, and dynamically display name post-login`), 2026-10-21. The original pass did not change application code. Phase 1 did.
 
 Method: read `README.md`, `docs/PRD_FAMILY_COMPANION.md`, `docs/deploy.md`, `Jenkinsfile`, `Dockerfile`, `pyproject.toml`, the deploy templates, every file under `backend/`, and `prototype/login.html`, `index.html`, and `admin.html`. Then, from a clean import of this tree:
 

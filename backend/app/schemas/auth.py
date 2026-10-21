@@ -4,9 +4,11 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class UserRole(str, Enum):
@@ -17,6 +19,20 @@ class UserRole(str, Enum):
     ADMIN = "admin"        # 平台超级管理员（中枢管控）
 
 
+class FamilyMemberRole(str, Enum):
+    """守护者可纳管的家庭成员角色。不含平台 admin，也不含 guardian。"""
+    ELDER = "elder"
+    CHILD = "child"
+
+
+def _require_iso_date(value: str) -> str:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("出生日期格式应为 YYYY-MM-DD") from exc
+    return value
+
+
 class AdminLoginRequest(BaseModel):
     """平台管理员登录凭证请求"""
     username: str = Field(..., description="管理员账号（如 admin）", min_length=3)
@@ -25,31 +41,57 @@ class AdminLoginRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     """家庭守护者建家注册请求"""
-    phone: str = Field(..., description="守护者手机号", min_length=11, max_length=11)
+    phone: str = Field(..., description="守护者手机号", pattern=r"^\d{11}$")
     password: str = Field(..., description="登录密码", min_length=6)
     family_name: str = Field(..., description="家庭空间名称", min_length=2, max_length=32)
     nickname: str = Field(..., description="守护者称呼（如：小敏）", min_length=1, max_length=16)
     birth_date: str = Field(..., description="出生年月日 (YYYY-MM-DD)")
 
+    @field_validator("birth_date")
+    @classmethod
+    def birth_date_is_iso(cls, value: str) -> str:
+        return _require_iso_date(value)
+
 
 class LoginRequest(BaseModel):
     """守护者手机号密码登录请求"""
-    phone: str = Field(..., description="手机号")
+    phone: str = Field(..., description="手机号", pattern=r"^\d{11}$")
     password: str = Field(..., description="登录密码")
 
 
 class MemberAddRequest(BaseModel):
     """守护者为家庭添加长辈或幼童成员请求"""
     nickname: str = Field(..., description="称呼（如：外婆、小豆豆）", min_length=1, max_length=16)
-    role: UserRole = Field(..., description="角色：elder(长辈) 或 child(幼童)")
+    role: FamilyMemberRole = Field(..., description="角色：elder(长辈) 或 child(幼童)")
     birth_date: str = Field(..., description="出生年月日 (YYYY-MM-DD)")
-    pin_code: Optional[str] = Field(None, description="简易快速登录 4~6 位数字 Pin 码", min_length=4, max_length=6)
+    pin_code: Optional[str] = Field(
+        None, description="简易快速登录 4~6 位数字 Pin 码", pattern=r"^\d{4,6}$"
+    )
+
+    @field_validator("birth_date")
+    @classmethod
+    def birth_date_is_iso(cls, value: str) -> str:
+        return _require_iso_date(value)
+
+
+class MemberUpdateRequest(BaseModel):
+    """守护者更新家庭成员资料。Pin 仅在本次响应中明文返回一次。"""
+    nickname: Optional[str] = Field(None, description="新称呼", min_length=1, max_length=16)
+    birth_date: Optional[str] = Field(None, description="新出生年月日 (YYYY-MM-DD)")
+    pin_code: Optional[str] = Field(None, description="重置后的 4~6 位数字 Pin 码", pattern=r"^\d{4,6}$")
+
+    @field_validator("birth_date")
+    @classmethod
+    def birth_date_is_iso(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _require_iso_date(value)
 
 
 class MemberLoginRequest(BaseModel):
     """长辈/幼童使用家庭邀请码 + Pin 码快捷登录请求"""
     invite_code: str = Field(..., description="家庭 6 位邀请码", min_length=6, max_length=6)
-    pin_code: str = Field(..., description="个人专属简易 Pin 码", min_length=4, max_length=6)
+    pin_code: str = Field(..., description="个人专属简易 Pin 码", pattern=r"^\d{4,6}$")
 
 
 class TokenResponse(BaseModel):
@@ -79,7 +121,9 @@ class FamilyMemberOut(BaseModel):
     role: UserRole
     birth_date: str
     age: int = Field(..., description="系统计算周岁")
-    pin_code: Optional[str] = Field(None, description="登录Pin码（仅守护者可见）")
+    pin_code: Optional[str] = Field(
+        None, description="新建或重置 Pin 时一次性返回；列表接口不回传明文"
+    )
 
 
 class FamilySettingsUpdate(BaseModel):
