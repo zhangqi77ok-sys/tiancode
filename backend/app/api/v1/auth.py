@@ -21,8 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.deps import require_roles
 from app.core.runtime_secrets import jwt_secret
-from app.core.security import encode_jwt, hash_password, verify_password
-from app.core.store import store
+from app.core.security import DEFAULT_EXPIRES_IN, encode_jwt, hash_password, verify_password
+from app.core.store import DuplicateRecord, store
 from app.schemas.auth import (
     FamilyMemberOut,
     FamilyMemberRole,
@@ -102,8 +102,8 @@ def _assert_age_for_role(role: str, birth_date_str: str) -> int:
 
 
 def _pin_taken(family_id: str, pin: str, except_user_id: Optional[str] = None) -> bool:
-    for user in store.list_users():
-        if user.get("family_id") != family_id or user.get("id") == except_user_id:
+    for user in store.list_users_by_family(family_id):
+        if user.get("id") == except_user_id:
             continue
         pin_hash = user.get("pin_hash")
         if pin_hash and verify_password(pin, pin_hash):
@@ -119,44 +119,19 @@ def _allocate_pin(family_id: str) -> str:
     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法分配 Pin 码")
 
 
-def _fail_storage_key(key: str) -> str:
-    return f"login_fail:{key}"
-
-
-def _recent_failures(key: str) -> List[float]:
-    raw = store.kv_get(_fail_storage_key(key)) or ""
-    now = time.time()
-    kept: List[float] = []
-    for part in raw.split(","):
-        if not part:
-            continue
-        try:
-            stamp = float(part)
-        except ValueError:
-            continue
-        if now - stamp < LOGIN_FAIL_WINDOW_SECONDS:
-            kept.append(stamp)
-    if kept:
-        store.kv_set(_fail_storage_key(key), ",".join(str(stamp) for stamp in kept))
-    else:
-        store.kv_delete(_fail_storage_key(key))
-    return kept
-
-
 def enforce_login_attempt(key: str) -> None:
     """连续失败达到上限后，窗口内直接 429。正确口令也不能绕过。"""
-    if len(_recent_failures(key)) >= LOGIN_FAIL_LIMIT:
+    kept = store.read_login_failures(key, window_seconds=LOGIN_FAIL_WINDOW_SECONDS, now=time.time())
+    if len(kept) >= LOGIN_FAIL_LIMIT:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="尝试次数过多，请稍后再试")
 
 
 def record_login_failure(key: str) -> None:
-    kept = _recent_failures(key)
-    kept.append(time.time())
-    store.kv_set(_fail_storage_key(key), ",".join(str(stamp) for stamp in kept))
+    store.append_login_failure(key, window_seconds=LOGIN_FAIL_WINDOW_SECONDS, now=time.time())
 
 
 def clear_login_failures(key: str) -> None:
-    store.kv_delete(_fail_storage_key(key))
+    store.clear_login_failure_bucket(key)
 
 
 def _issue_token(user: dict) -> TokenResponse:
@@ -172,6 +147,7 @@ def _issue_token(user: dict) -> TokenResponse:
     )
     return TokenResponse(
         access_token=token,
+        expires_in=DEFAULT_EXPIRES_IN,
         role=UserRole(user["role"]),
         user_id=user["id"],
         family_id=user["family_id"],
@@ -223,32 +199,38 @@ def register_guardian(req: RegisterRequest):
     if store.get_user_by_phone(req.phone):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该手机号已注册，请直接登录")
 
-    family_id = f"fam_{uuid.uuid4().hex[:10]}"
-    invite_code = _generate_invite_code()
-    store.upsert_family(
-        {
+    password_hash = hash_password(req.password)
+    created_at = datetime.now(timezone.utc).isoformat()
+    for _ in range(8):
+        family_id = f"fam_{uuid.uuid4().hex[:10]}"
+        invite_code = _generate_invite_code()
+        user_id = f"usr_{uuid.uuid4().hex[:10]}"
+        family = {
             "id": family_id,
             "name": req.family_name,
             "invite_code": invite_code,
             "settings": {"medication_reminder_enabled": True, "kids_curfew_enabled": True},
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": created_at,
         }
-    )
-
-    user_id = f"usr_{uuid.uuid4().hex[:10]}"
-    user = {
-        "id": user_id,
-        "family_id": family_id,
-        "nickname": req.nickname,
-        "role": UserRole.GUARDIAN.value,
-        "birth_date": req.birth_date,
-        "phone": req.phone,
-        "password_hash": hash_password(req.password),
-        "pin_hash": None,
-        "pin_code": None,
-    }
-    store.upsert_user(user)
-    return _issue_token(user)
+        user = {
+            "id": user_id,
+            "family_id": family_id,
+            "nickname": req.nickname,
+            "role": UserRole.GUARDIAN.value,
+            "birth_date": req.birth_date,
+            "phone": req.phone,
+            "password_hash": password_hash,
+            "pin_hash": None,
+            "pin_code": None,
+        }
+        try:
+            store.insert_family_with_user(family, user)
+        except DuplicateRecord as exc:
+            if "phone" in exc.constraint:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该手机号已注册，请直接登录") from exc
+            continue
+        return _issue_token(user)
+    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法分配家庭邀请码")
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -355,11 +337,10 @@ def member_quick_login(req: MemberLoginRequest):
     enforce_login_attempt(key)
 
     family = store.get_family_by_invite(invite)
-    family_id = family["id"] if family else None
     matched_user = None
-    if family_id:
-        for user in store.list_users():
-            if user.get("family_id") != family_id or user.get("role") not in PIN_LOGIN_ROLES:
+    if family:
+        for user in store.list_users_by_family(family["id"]):
+            if user.get("role") not in PIN_LOGIN_ROLES:
                 continue
             pin_hash = user.get("pin_hash")
             if pin_hash and verify_password(req.pin_code, pin_hash):
@@ -404,11 +385,7 @@ def get_my_profile(u: UserContext = Depends(require_roles(list(UserRole)))):
 @router.get("/family/members", response_model=List[FamilyMemberOut])
 def list_family_members(u: UserContext = Depends(require_roles(list(UserRole)))):
     """列出当前家庭的成员。Pin 不以明文返回。"""
-    results = []
-    for user in store.list_users():
-        if user.get("family_id") == u.family_id:
-            results.append(_member_out(user, pin_code=None))
-    return results
+    return [_member_out(user, pin_code=None) for user in store.list_users_by_family(u.family_id)]
 
 
 @router.put("/family/settings")
@@ -416,13 +393,16 @@ def update_family_settings(
     req: FamilySettingsUpdate,
     u: UserContext = Depends(require_roles([UserRole.GUARDIAN])),
 ):
-    """合并家庭看护设置。不会清掉 settings.plugins。"""
+    """合并家庭看护设置。只写入请求里出现的字段，不会清掉 settings.plugins，也不会把省略的开关打回默认值。"""
+    patch = req.model_dump(exclude_unset=True)
+    if not patch or any(value is None for value in patch.values()):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="至少提供一项看护设置")
     fam = store.get_family(u.family_id)
     if not fam:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="家庭空间不存在")
 
     settings = fam.setdefault("settings", {})
-    settings.update(req.model_dump())
+    settings.update(patch)
     store.upsert_family(fam)
     return {"status": "ok", "settings": settings}
 

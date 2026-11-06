@@ -35,3 +35,5 @@ CREATE TABLE IF NOT EXISTS revoked_jti (
     jti TEXT PRIMARY KEY,
     exp BIGINT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_revoked_jti_exp ON revoked_jti (exp);

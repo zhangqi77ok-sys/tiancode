@@ -18,11 +18,11 @@ from app.api.v1.auth import (
     enforce_login_attempt,
     ensure_platform_admin,
     get_all_families_count,
-    get_all_users,
     record_login_failure,
 )
 from app.core.runtime_secrets import admin_password, admin_username, jwt_secret
-from app.core.security import encode_jwt
+from app.core.security import DEFAULT_EXPIRES_IN, encode_jwt
+from app.core.store import store
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.admin import (
@@ -71,6 +71,7 @@ def admin_login(req: AdminLoginRequest):
     )
     return TokenResponse(
         access_token=token,
+        expires_in=DEFAULT_EXPIRES_IN,
         role=UserRole.ADMIN,
         user_id=admin["id"],
         family_id=admin["family_id"],
@@ -80,8 +81,11 @@ def admin_login(req: AdminLoginRequest):
 
 @router.get("/plugins", response_model=List[AdminPluginStatus])
 def list_admin_plugins(u: UserContext = Depends(require_admin)):
-    """获取全平台插件清单、全局熔断状态与历史调用量。"""
+    """获取全平台插件清单、全局熔断状态与历史调用量。开关和次数各查一次。"""
     manifests = plugin_registry.list_manifests()
+    plugin_ids = [m.id for m in manifests]
+    enabled = plugin_registry.global_enabled_map(plugin_ids)
+    counts = plugin_registry.invocation_counts(plugin_ids)
     results = []
     for m in manifests:
         results.append(
@@ -92,8 +96,8 @@ def list_admin_plugins(u: UserContext = Depends(require_admin)):
                 category=m.category.value,
                 allowed_roles=[r.value for r in m.allowed_roles],
                 card_template=m.card_template.value,
-                global_enabled=plugin_registry.is_global_enabled(m.id),
-                invocations_count=plugin_registry.get_invocation_count(m.id),
+                global_enabled=enabled.get(m.id, True),
+                invocations_count=counts.get(m.id, 0),
             )
         )
     return results
@@ -123,11 +127,11 @@ def toggle_global_plugin(
 
 @router.get("/dashboard/stats", response_model=AdminDashboardStats)
 def get_admin_dashboard_stats(u: UserContext = Depends(require_admin)):
-    """家庭数、成员数、未熔断插件数。没有模型调用计数。"""
-    users = get_all_users()
-    total_elders = sum(1 for item in users if item.get("role") == UserRole.ELDER.value)
-    total_children = sum(1 for item in users if item.get("role") == UserRole.CHILD.value)
-    total_guardians = sum(1 for item in users if item.get("role") == UserRole.GUARDIAN.value)
+    """家庭数、成员数、未熔断插件数。没有模型调用计数。成员数按角色在数据库里聚合。"""
+    counts = store.count_users_by_role()
+    total_elders = counts.get(UserRole.ELDER.value, 0)
+    total_children = counts.get(UserRole.CHILD.value, 0)
+    total_guardians = counts.get(UserRole.GUARDIAN.value, 0)
 
     active_count = sum(
         1

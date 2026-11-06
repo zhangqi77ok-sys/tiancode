@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from psycopg import InterfaceError, OperationalError
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
@@ -40,6 +42,11 @@ def create_app() -> FastAPI:
     store.ensure_schema()
     load_builtin_plugins()
     app = FastAPI(title="伴暖 WarmCompanion", version="0.1.0")
+
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(InterfaceError)
+    async def database_unavailable(_request: Request, _exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": "database not ready"})
 
     @app.get("/healthz")
     def healthz() -> dict:

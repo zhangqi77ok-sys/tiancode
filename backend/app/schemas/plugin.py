@@ -45,12 +45,12 @@ class PluginManifest(BaseModel):
 
 class PluginActionRequest(BaseModel):
     """插件动作执行请求契约"""
-    action_name: str = Field(..., description="触发的动作名称，如 next_track, select_branch")
+    action_name: str = Field(..., description="触发的动作名称，如 next_track, select_branch", min_length=1, max_length=64)
     payload: Dict[str, Any] = Field(default_factory=dict, description="动作携带的动态参数字典")
 
 
 class PluginActionResult(BaseModel):
-    """插件动作执行返回结果契约"""
+    """插件动作执行返回结果契约。路由把 status=error 映射为 HTTP 400，detail 为 message。"""
     status: str = Field("ok", description="执行状态：ok 成功，error 失败")
     message: str = Field("", description="面向用户的提示文本或语音念白")
     data: Dict[str, Any] = Field(default_factory=dict, description="动作附带的数据结果")

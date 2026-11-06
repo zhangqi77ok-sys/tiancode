@@ -21,6 +21,10 @@ from app.schemas.plugin import (
     PluginManifest,
 )
 
+# 口述史单条上限和每个成员保留的条数。超出后拒绝写入，或丢掉最旧的一条。
+MAX_ORAL_CHARS = 2000
+MAX_ORAL_ENTRIES = 50
+
 # 经典戏曲曲库
 OPERA_PLAYLIST = [
     {"id": "op_01", "name": "黄梅戏《女驸马》选段", "artist": "韩再芬", "lyric": "为救李郎离家园，谁料皇榜中状元..."},
@@ -49,8 +53,8 @@ class OperaPlugin(BasePlugin):
         super().__init__(manifest)
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        idx = int(load_state(self.id, context, {"index": 0}).get("index") or 0)
-        track = OPERA_PLAYLIST[idx % len(OPERA_PLAYLIST)]
+        idx = _playlist_index(load_state(self.id, context, {"index": 0}).get("index"))
+        track = OPERA_PLAYLIST[idx]
         return PluginCardData(
             plugin_id=self.id,
             manifest=self.manifest,
@@ -68,7 +72,7 @@ class OperaPlugin(BasePlugin):
         payload: Dict[str, Any],
         context: UserContext,
     ) -> PluginActionResult:
-        idx = int(load_state(self.id, context, {"index": 0}).get("index") or 0)
+        idx = _playlist_index(load_state(self.id, context, {"index": 0}).get("index"))
         if action_name == "next_track":
             idx = (idx + 1) % len(OPERA_PLAYLIST)
             save_state(self.id, context, {"index": idx})
@@ -102,7 +106,7 @@ class MemoryKeeperPlugin(BasePlugin):
             allowed_roles=[UserRole.ELDER],
             card_template=CardTemplateType.INTERACTIVE_PROMPT,
             title="📖 忆苦思甜·今日老话题",
-            description="固定话题提示。口述文字按家庭和成员写入 PostgreSQL，重启后还在。不调用大模型。",
+            description="固定话题提示。口述文字按家庭和成员写入 PostgreSQL，重启后还在。单条最多 2000 字，每人保留最近 50 条。不调用大模型。",
             icon="📖",
             default_enabled=True,
             sort_order=20,
@@ -110,7 +114,7 @@ class MemoryKeeperPlugin(BasePlugin):
         super().__init__(manifest)
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        memories = load_state(self.id, context, {"memories": []}).get("memories") or []
+        memories = _oral_memories(load_state(self.id, context, {"memories": []}).get("memories"))
         return PluginCardData(
             plugin_id=self.id,
             manifest=self.manifest,
@@ -129,11 +133,18 @@ class MemoryKeeperPlugin(BasePlugin):
         context: UserContext,
     ) -> PluginActionResult:
         if action_name == "save_oral_story":
-            text = payload.get("story_text", "").strip()
+            text = payload.get("story_text", "")
+            if not isinstance(text, str):
+                text = ""
+            text = text.strip()
             if not text:
                 return PluginActionResult(status="error", message="回忆内容不能为空")
-            memories = list(load_state(self.id, context, {"memories": []}).get("memories") or [])
+            if len(text) > MAX_ORAL_CHARS:
+                return PluginActionResult(status="error", message=f"回忆内容不能超过 {MAX_ORAL_CHARS} 字")
+            memories = _oral_memories(load_state(self.id, context, {"memories": []}).get("memories"))
             memories.append(text)
+            if len(memories) > MAX_ORAL_ENTRIES:
+                memories = memories[-MAX_ORAL_ENTRIES:]
             save_state(self.id, context, {"memories": memories})
             return PluginActionResult(
                 status="ok",
@@ -141,6 +152,28 @@ class MemoryKeeperPlugin(BasePlugin):
                 data={"total_count": len(memories)},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+
+
+def _playlist_index(value: Any) -> int:
+    """曲目下标。坏数据回到第一首，避免 int() 把整张卡片打成 500。"""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return 0
+    if not isinstance(value, int):
+        return 0
+    return value % len(OPERA_PLAYLIST)
+
+
+def _oral_memories(value: Any) -> list[str]:
+    """只保留字符串条目，并裁到上限。字符串或数字不会被当成一条回忆。"""
+    if not isinstance(value, list):
+        return []
+    texts = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return texts[-MAX_ORAL_ENTRIES:]
 
 
 class MedicationPlugin(BasePlugin):
@@ -163,7 +196,7 @@ class MedicationPlugin(BasePlugin):
         super().__init__(manifest)
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        is_done = bool(load_state(self.id, context, {"checked_in": False}).get("checked_in"))
+        is_done = load_state(self.id, context, {"checked_in": False}).get("checked_in") is True
         reminder_on = family_state.get("medication_reminder_enabled", True) is not False
         return PluginCardData(
             plugin_id=self.id,

@@ -20,6 +20,9 @@ from app.schemas.plugin import (
     PluginManifest,
 )
 
+MAX_QUESTION_CHARS = 200
+HABIT_KEYS = ("brush_teeth", "drink_milk", "sleep_on_time")
+
 
 class InteractiveStoryPlugin(BasePlugin):
     """双向分幕共创故事机插件"""
@@ -113,11 +116,7 @@ class HabitChallengePlugin(BasePlugin):
         super().__init__(manifest)
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        stars = load_state(
-            self.id,
-            context,
-            {"brush_teeth": False, "drink_milk": False, "sleep_on_time": False},
-        )
+        stars = _habit_stars(context, self.id)
         collected = sum(1 for v in stars.values() if v)
         return PluginCardData(
             plugin_id=self.id,
@@ -140,11 +139,7 @@ class HabitChallengePlugin(BasePlugin):
     ) -> PluginActionResult:
         if action_name == "toggle_habit":
             habit_key = payload.get("habit_key")
-            stars = load_state(
-                self.id,
-                context,
-                {"brush_teeth": False, "drink_milk": False, "sleep_on_time": False},
-            )
+            stars = _habit_stars(context, self.id)
             if habit_key in stars:
                 stars[habit_key] = True
                 save_state(self.id, context, stars)
@@ -198,9 +193,18 @@ class WonderEncyclopediaPlugin(BasePlugin):
     ) -> PluginActionResult:
         if action_name == "ask_question":
             q = payload.get("question", "")
+            if not isinstance(q, str):
+                q = ""
+            q = q.strip()[:MAX_QUESTION_CHARS]
             return PluginActionResult(
                 status="ok",
                 message="这是写死的回复，不是大模型回答。",
                 data={"reply": "页面上的百科句子是固定文案。", "question": q},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+
+
+def _habit_stars(context: UserContext, plugin_id: str) -> Dict[str, bool]:
+    """只认三颗星。多余的键和字符串 true 都不算点亮，避免坏数据凑满勋章。"""
+    raw = load_state(plugin_id, context, {key: False for key in HABIT_KEYS})
+    return {key: raw.get(key) is True for key in HABIT_KEYS}

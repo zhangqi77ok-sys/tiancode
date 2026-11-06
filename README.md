@@ -32,7 +32,7 @@
 ### 1. 长辈页
 - 角色是 `elder`。卡片来自 `GET /api/v1/plugins/active`。
 - `elder_opera` 在三首固定曲目之间切换，进度写入数据库。没有音频文件。
-- `elder_memory` 把口述文字按家庭和成员存进 PostgreSQL，重启后还在。提示语是固定的。
+- `elder_memory` 把口述文字按家庭和成员存进 PostgreSQL，重启后还在。单条最多 2000 字，每个成员保留最近 50 条。提示语是固定的。
 - `elder_medication` 记录一次打卡。守护者关掉用药提醒后，打卡会被拒绝。没有推送，也没有发给家人。
 - 底部麦克风不会识别语音。朗读用的是浏览器 `speechSynthesis`。
 
@@ -45,7 +45,7 @@
 
 ### 3. 守护者
 - 注册、登录、按 `family_id` 列出成员、添加 / 修改 / 删除长辈或儿童。
-- 插件开关和看护两个布尔值合并进家庭 settings，不会清掉另一边。
+- 插件开关和看护两个布尔值合并进家庭 settings，不会清掉另一边。看护请求只改写出现的字段，省略的开关保持原值。
 - 没有心情指数、对讲分钟数或亲情便签接口。那些旧文案已从主页藏掉。
 
 ### 4. 管理页
@@ -100,7 +100,7 @@ flowchart TD
 ```
 
 ### 1. PyJWT
-- 令牌是 PyJWT HS256，默认 30 天，每枚带 `jti`。`satoken` 头和 `Authorization: Bearer` 接受同一枚 JWT，这不是服务端会话。
+- 令牌是 PyJWT HS256，默认 30 天，每枚带 `jti`。响应里的 `expires_in` 就是这枚令牌的 `exp - iat`（秒）。`satoken` 头和 `Authorization: Bearer` 接受同一枚 JWT，这不是服务端会话。
 - `POST /api/v1/auth/logout` 把当前 `jti` 写进 PostgreSQL 拒绝名单，这枚令牌立即 401。同一用户没有注销的其他令牌，在各自到期前仍然有效。用户被删除后，旧令牌也会 401。
 - 密码和 Pin 用 PBKDF2-HMAC-SHA256。邀请码用 `secrets`。
 - 平台 `admin` 只能从 `POST /api/v1/admin/login` 签发。成员创建只接受 `elder` 和 `child`。
@@ -108,7 +108,7 @@ flowchart TD
 ### 2. 可插拔微插件架构 (Micro-Plugin Architecture)
 - 每个功能卡片均为继承 `BasePlugin` 的独立单元，强约束声明 `PluginManifest`；
 - 主页通过 `/api/v1/plugins/active` 渲染当前角色的卡片；
-- 严格 RBAC 隔离：长辈调用儿童故事或儿童调用长辈用药均被 `403 Forbidden` 拦截；
+- 严格 RBAC 隔离：长辈调用儿童故事或儿童调用长辈用药均被 `403 Forbidden` 拦截。插件自己拒绝的动作（空口述、未知动作、用药提醒已关闭）返回 `400`，`detail` 是原来的提示语；
 - 具备“家庭级按需启停”与“平台级全局一键熔断”双层管控机制。
 
 ---
@@ -150,7 +150,8 @@ tiancode/
 │       ├── test_admin_api.py         # 管理员认证、大盘计数、插件全网紧急熔断
 │       ├── test_authz_members.py      # 越权、密钥、成员增删改
 │       ├── test_persistence.py        # 重启后家庭与插件进度仍在
-│       └── test_session_curfew.py    # 注销当前令牌、儿童防沉迷时段
+│       ├── test_session_curfew.py    # 注销当前令牌、儿童防沉迷时段
+│       └── test_runtime_edges.py     # 断线重试、部分设置、坏数据、口述上限、调用计数
 ├── deploy/
 │   ├── docker-compose.yml            # 单 api 服务，127.0.0.1:8092→8000
 │   ├── .env.example                  # JWT / 管理员占位，无真实密钥
