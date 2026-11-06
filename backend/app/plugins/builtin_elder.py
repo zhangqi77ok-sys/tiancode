@@ -7,11 +7,12 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from app.api.v1.auth import get_family_by_id
 from app.plugins.base import BasePlugin
-from app.plugins.state import load_state, save_state
+from app.plugins.state import load_state, save_state, update_state
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import (
     CardTemplateType,
@@ -24,6 +25,8 @@ from app.schemas.plugin import (
 # 口述史单条上限和每个成员保留的条数。超出后拒绝写入，或丢掉最旧的一条。
 MAX_ORAL_CHARS = 2000
 MAX_ORAL_ENTRIES = 50
+# 数据库文本不接受 NUL。其它 C0 控制符也拒绝，换行和制表符可以留下。
+_ILLEGAL_ORAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # 经典戏曲曲库
 OPERA_PLAYLIST = [
@@ -72,26 +75,21 @@ class OperaPlugin(BasePlugin):
         payload: Dict[str, Any],
         context: UserContext,
     ) -> PluginActionResult:
-        idx = _playlist_index(load_state(self.id, context, {"index": 0}).get("index"))
-        if action_name == "next_track":
-            idx = (idx + 1) % len(OPERA_PLAYLIST)
-            save_state(self.id, context, {"index": idx})
-            track = OPERA_PLAYLIST[idx]
-            return PluginActionResult(
-                status="ok",
-                message=f"为您切换到：{track['name']}",
-                data={"track": track},
-            )
-        elif action_name == "prev_track":
-            idx = (idx - 1 + len(OPERA_PLAYLIST)) % len(OPERA_PLAYLIST)
-            save_state(self.id, context, {"index": idx})
-            track = OPERA_PLAYLIST[idx]
-            return PluginActionResult(
-                status="ok",
-                message=f"为您切换到：{track['name']}",
-                data={"track": track},
-            )
-        return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+        if action_name not in {"next_track", "prev_track"}:
+            return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+        delta = 1 if action_name == "next_track" else -1
+
+        def move(state: Dict[str, Any]) -> Dict[str, Any]:
+            idx = (_playlist_index(state.get("index")) + delta) % len(OPERA_PLAYLIST)
+            return {"index": idx}
+
+        saved = update_state(self.id, context, {"index": 0}, move)
+        track = OPERA_PLAYLIST[_playlist_index(saved.get("index"))]
+        return PluginActionResult(
+            status="ok",
+            message=f"为您切换到：{track['name']}",
+            data={"track": track},
+        )
 
 
 class MemoryKeeperPlugin(BasePlugin):
@@ -106,7 +104,7 @@ class MemoryKeeperPlugin(BasePlugin):
             allowed_roles=[UserRole.ELDER],
             card_template=CardTemplateType.INTERACTIVE_PROMPT,
             title="📖 忆苦思甜·今日老话题",
-            description="固定话题提示。口述文字按家庭和成员写入 PostgreSQL，重启后还在。单条最多 2000 字，每人保留最近 50 条。不调用大模型。",
+            description="固定话题提示。口述按家庭和成员各占一行，行锁追加，重启后还在。单条最多 2000 字，每人保留最近 50 条。不调用大模型。",
             icon="📖",
             default_enabled=True,
             sort_order=20,
@@ -139,13 +137,20 @@ class MemoryKeeperPlugin(BasePlugin):
             text = text.strip()
             if not text:
                 return PluginActionResult(status="error", message="回忆内容不能为空")
+            if _ILLEGAL_ORAL.search(text):
+                return PluginActionResult(status="error", message="回忆内容含有无法保存的控制字符")
             if len(text) > MAX_ORAL_CHARS:
                 return PluginActionResult(status="error", message=f"回忆内容不能超过 {MAX_ORAL_CHARS} 字")
-            memories = _oral_memories(load_state(self.id, context, {"memories": []}).get("memories"))
-            memories.append(text)
-            if len(memories) > MAX_ORAL_ENTRIES:
-                memories = memories[-MAX_ORAL_ENTRIES:]
-            save_state(self.id, context, {"memories": memories})
+
+            def append(state: Dict[str, Any]) -> Dict[str, Any]:
+                memories = _oral_memories(state.get("memories"))
+                memories.append(text)
+                if len(memories) > MAX_ORAL_ENTRIES:
+                    memories = memories[-MAX_ORAL_ENTRIES:]
+                return {"memories": memories}
+
+            saved = update_state(self.id, context, {"memories": []}, append)
+            memories = _oral_memories(saved.get("memories"))
             return PluginActionResult(
                 status="ok",
                 message="这段口述已写入家庭数据库，重启后仍然在。",

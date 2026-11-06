@@ -37,6 +37,9 @@ MIN_DB_PASSWORD_LENGTH = 12
 _RETRYABLE = (psycopg.OperationalError, psycopg.InterfaceError)
 _T = TypeVar("_T")
 
+# 50 条 × 2000 字，再留一点 JSON 开销。超过就拒绝，避免一行进度撑满内存。
+MAX_PLUGIN_STATE_CHARS = 150_000
+
 
 class DuplicateRecord(Exception):
     """唯一约束冲突。constraint 是 PostgreSQL 的约束名，调用方据此返回 409。"""
@@ -44,6 +47,10 @@ class DuplicateRecord(Exception):
     def __init__(self, constraint: str) -> None:
         self.constraint = constraint
         super().__init__(constraint)
+
+
+class PluginStateError(Exception):
+    """插件进度无法写入。路由把它收成 400，不落成 500。"""
 
 
 def database_url() -> str:
@@ -66,6 +73,15 @@ def database_url() -> str:
             "Set POSTGRES_PASSWORD and put it in TIANCODE_DATABASE_URL."
         )
     return raw
+
+
+def _encode_plugin_state(state: Dict[str, Any]) -> str:
+    if not isinstance(state, dict):
+        raise PluginStateError("插件进度必须是对象")
+    payload = json.dumps(state, ensure_ascii=False)
+    if len(payload) > MAX_PLUGIN_STATE_CHARS:
+        raise PluginStateError("插件进度超出保存上限")
+    return payload
 
 
 def _loads_object(raw: Any) -> Dict[str, Any]:
@@ -125,16 +141,23 @@ class Store:
         self._url = url
         return conn
 
-    def _run(self, fn: Callable[[psycopg.Connection], _T]) -> _T:
-        """在同一条连接、同一事务里执行 fn，成功后提交。断线时丢掉连接并重试一次。"""
+    def _run(self, fn: Callable[[psycopg.Connection], _T], *, retry: bool = True) -> _T:
+        """在同一条连接、同一事务里执行 fn，成功后提交。
+
+        retry 为真时，断线丢掉连接并重试一次。追加口述这类非幂等写入要传 retry=False，
+        避免提交其实已经成功、客户端却又写了一遍。
+        """
         last: Optional[BaseException] = None
-        for _attempt in range(2):
+        attempts = 2 if retry else 1
+        for _attempt in range(attempts):
             with self._lock:
                 try:
                     conn = self._connect_unlocked()
                 except _RETRYABLE as exc:
                     last = exc
                     self._discard_unlocked()
+                    if not retry:
+                        raise
                     continue
                 try:
                     result = fn(conn)
@@ -147,6 +170,8 @@ class Store:
                     except Exception:
                         pass
                     self._discard_unlocked()
+                    if not retry:
+                        raise
                     continue
                 except Exception:
                     try:
@@ -428,7 +453,7 @@ class Store:
         return self._run(op)
 
     def set_plugin_state(self, plugin_id: str, scope_key: str, state: Dict[str, Any]) -> None:
-        payload = json.dumps(state, ensure_ascii=False)
+        payload = _encode_plugin_state(state)
 
         def op(conn: psycopg.Connection) -> None:
             conn.execute(
@@ -441,6 +466,49 @@ class Store:
             )
 
         self._run(op)
+
+    def update_plugin_state(
+        self,
+        plugin_id: str,
+        scope_key: str,
+        mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """锁住这一行再改。没有行时先插入空对象，第二个事务会等到第一个提交后再读。
+
+        不重试。断线时调用方看到 503，由用户再提交一次，避免同一段口述被写两遍。
+        mutator 收到当前对象（损坏的 JSON 会先变成空对象），必须返回新的对象，且不能再进存储层。
+        """
+
+        def op(conn: psycopg.Connection) -> Dict[str, Any]:
+            conn.execute(
+                """
+                INSERT INTO plugin_state (plugin_id, scope_key, state_json)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (plugin_id, scope_key) DO NOTHING
+                """,
+                (plugin_id, scope_key, "{}"),
+            )
+            row = conn.execute(
+                """
+                SELECT state_json FROM plugin_state
+                WHERE plugin_id = %s AND scope_key = %s
+                FOR UPDATE
+                """,
+                (plugin_id, scope_key),
+            ).fetchone()
+            current = {} if row is None else _loads_object(row["state_json"])
+            new_state = mutator(current)
+            payload = _encode_plugin_state(new_state)
+            conn.execute(
+                """
+                UPDATE plugin_state SET state_json = %s
+                WHERE plugin_id = %s AND scope_key = %s
+                """,
+                (payload, plugin_id, scope_key),
+            )
+            return new_state
+
+        return self._run(op, retry=False)
 
 
 def _apply_schema(conn: psycopg.Connection) -> None:

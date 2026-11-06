@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, require_roles
 from app.api.v1.auth import get_family_by_id, save_family
+from app.core.store import PluginStateError
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.auth import UserContext, UserRole
@@ -77,6 +78,8 @@ async def dispatch_plugin_action(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except PluginStateError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     if result.status != "ok":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

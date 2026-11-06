@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Any, Dict, List
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.auth import UserRole
 
@@ -43,10 +45,21 @@ class PluginManifest(BaseModel):
     sort_order: int = Field(100, description="卡片流排序权重（越小越靠前）")
 
 
+# 口述上限是 2000 字。留出动作名和其它字段后，整包 payload 仍应远小于这个值。
+MAX_ACTION_PAYLOAD_CHARS = 8192
+
+
 class PluginActionRequest(BaseModel):
     """插件动作执行请求契约"""
     action_name: str = Field(..., description="触发的动作名称，如 next_track, select_branch", min_length=1, max_length=64)
-    payload: Dict[str, Any] = Field(default_factory=dict, description="动作携带的动态参数字典")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="动作携带的动态参数字典，编码后不超过 8192 个字符")
+
+    @model_validator(mode="after")
+    def payload_stays_small(self) -> "PluginActionRequest":
+        encoded = json.dumps(self.payload, ensure_ascii=False)
+        if len(encoded) > MAX_ACTION_PAYLOAD_CHARS:
+            raise ValueError(f"payload 不能超过 {MAX_ACTION_PAYLOAD_CHARS} 个字符")
+        return self
 
 
 class PluginActionResult(BaseModel):

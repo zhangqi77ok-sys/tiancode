@@ -32,7 +32,7 @@
 ### 1. 长辈页
 - 角色是 `elder`。卡片来自 `GET /api/v1/plugins/active`。
 - `elder_opera` 在三首固定曲目之间切换，进度写入数据库。没有音频文件。
-- `elder_memory` 把口述文字按家庭和成员存进 PostgreSQL，重启后还在。单条最多 2000 字，每个成员保留最近 50 条。提示语是固定的。
+- `elder_memory` 按 `(plugin_id, family_id, user_id)` 各写一行，追加时锁住这一行，并发保存不会互相覆盖。单条最多 2000 字，每个成员保留最近 50 条，控制字符会被拒绝。同一家庭的两位长辈看不到彼此的口述。提示语是固定的。动作 payload 编码后不能超过 8192 个字符。
 - `elder_medication` 记录一次打卡。守护者关掉用药提醒后，打卡会被拒绝。没有推送，也没有发给家人。
 - 底部麦克风不会识别语音。朗读用的是浏览器 `speechSynthesis`。
 
@@ -151,7 +151,8 @@ tiancode/
 │       ├── test_authz_members.py      # 越权、密钥、成员增删改
 │       ├── test_persistence.py        # 重启后家庭与插件进度仍在
 │       ├── test_session_curfew.py    # 注销当前令牌、儿童防沉迷时段
-│       └── test_runtime_edges.py     # 断线重试、部分设置、坏数据、口述上限、调用计数
+│       ├── test_runtime_edges.py     # 断线重试、部分设置、坏数据、口述上限、调用计数
+│       └── test_memory_reliability.py # 口述行锁、成员隔离、控制字符和 payload 上限
 ├── deploy/
 │   ├── docker-compose.yml            # 单 api 服务，127.0.0.1:8092→8000
 │   ├── .env.example                  # JWT / 管理员占位，无真实密钥
