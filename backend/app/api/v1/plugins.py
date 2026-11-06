@@ -14,10 +14,13 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, require_roles
 from app.api.v1.auth import get_family_by_id, save_family
+from app.core.store import PluginStateError
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.auth import UserContext, UserRole
+from app.schemas.common import ErrorBody
 from app.schemas.plugin import (
+    FamilyPluginToggleResult,
     PluginActionRequest,
     PluginActionResult,
     PluginCardData,
@@ -27,7 +30,13 @@ from app.schemas.plugin import (
 # 确保预置插件均已初始化载入
 load_builtin_plugins()
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    responses={
+        401: {"model": ErrorBody, "description": "未登录或令牌失效"},
+        403: {"model": ErrorBody, "description": "当前角色或插件开关不允许"},
+    },
+)
 
 
 class FamilyPluginStatusOut(BaseModel):
@@ -76,6 +85,8 @@ async def dispatch_plugin_action(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except PluginStateError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
 @router.get("/family/plugins", response_model=List[FamilyPluginStatusOut])
@@ -95,7 +106,7 @@ def list_family_plugins(u: UserContext = Depends(require_roles([UserRole.GUARDIA
     return results
 
 
-@router.put("/family/plugins/{plugin_id}/toggle")
+@router.put("/family/plugins/{plugin_id}/toggle", response_model=FamilyPluginToggleResult)
 def toggle_family_plugin(
     plugin_id: str,
     req: FamilyPluginToggleRequest,

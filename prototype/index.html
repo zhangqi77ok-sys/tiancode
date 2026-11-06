@@ -1716,6 +1716,26 @@
       return { 'Content-Type': 'application/json', satoken: token, Authorization: 'Bearer ' + token };
     }
 
+    function clearSessionAndLogin() {
+      localStorage.removeItem('satoken');
+      localStorage.removeItem('satoken_user');
+      window.location.replace('login.html');
+    }
+
+    function showSessionProblem(message) {
+      let note = document.getElementById('sessionProblem');
+      if (!note) {
+        note = document.createElement('p');
+        note.id = 'sessionProblem';
+        note.className = 'honesty-note';
+        const host = document.getElementById('contentScroll') || document.body;
+        host.prepend(note);
+      }
+      note.textContent = message;
+    }
+
+    let pluginToggleBusy = false;
+
     function layoutOf(role) {
       if (role === 'child' || role === 'kids') return 'kids';
       if (role === 'guardian' || role === 'family' || role === 'admin') return 'family';
@@ -1813,9 +1833,12 @@
     async function logoutAndRedirect() {
       if (!confirm("确定要退出当前账号并返回登录注册门户吗？")) return;
       try {
-        await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: authHeaders() });
+        const resp = await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: authHeaders() });
+        if (!resp.ok && resp.status !== 401) {
+          alert('退出请求没有成功。本机登录会清掉，但这枚令牌在过期前可能仍然有效。');
+        }
       } catch (err) {
-        // 网络失败时只清本机。服务端这枚令牌在过期前仍然有效。
+        alert('网络中断。本机登录会清掉，但这枚令牌在过期前可能仍然有效。');
       }
       localStorage.removeItem('satoken');
       localStorage.removeItem('satoken_user');
@@ -2157,29 +2180,59 @@
       document.getElementById('fontBtn').innerText = titles[zoomLevel];
     }
     // 插件化动态开关联动函数
-    async function toggleFamilyPlugin(pluginId, isEnabled) {
-      const resp = await fetch(apiUrl('/family/plugins/' + pluginId + '/toggle'), {
-        method: 'PUT',
-        headers: authHeaders(),
-        body: JSON.stringify({ enabled: isEnabled }),
-      });
-      if (!resp.ok) {
-        alert('开关没有保存');
+    async function toggleFamilyPlugin(pluginId, isEnabled, checkbox) {
+      if (pluginToggleBusy) {
+        if (checkbox) checkbox.checked = !isEnabled;
         return;
       }
-      await loadFamilyTools();
+      pluginToggleBusy = true;
+      try {
+        const resp = await fetch(apiUrl('/family/plugins/' + pluginId + '/toggle'), {
+          method: 'PUT',
+          headers: authHeaders(),
+          body: JSON.stringify({ enabled: isEnabled }),
+        });
+        if (resp.status === 401) {
+          clearSessionAndLogin();
+          return;
+        }
+        if (!resp.ok) {
+          if (checkbox) checkbox.checked = !isEnabled;
+          alert('开关没有保存');
+          return;
+        }
+        await loadFamilyTools();
+      } catch (err) {
+        if (checkbox) checkbox.checked = !isEnabled;
+        alert('网络中断，开关没有保存');
+      } finally {
+        pluginToggleBusy = false;
+      }
     }
 
     async function saveCareFlags(medication, curfew) {
-      const resp = await fetch(apiUrl('/family/settings'), {
-        method: 'PUT',
-        headers: authHeaders(),
-        body: JSON.stringify({
-          medication_reminder_enabled: medication,
-          kids_curfew_enabled: curfew,
-        }),
-      });
-      if (!resp.ok) alert('看护设置没有保存');
+      try {
+        const resp = await fetch(apiUrl('/family/settings'), {
+          method: 'PUT',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            medication_reminder_enabled: medication,
+            kids_curfew_enabled: curfew,
+          }),
+        });
+        if (resp.status === 401) {
+          clearSessionAndLogin();
+          return;
+        }
+        if (!resp.ok) {
+          alert('看护设置没有保存');
+          await loadFamilyTools();
+          return;
+        }
+        alert('看护设置已保存');
+      } catch (err) {
+        alert('网络中断，看护设置没有保存');
+      }
     }
 
     function escapeHtml(value) {
@@ -2189,12 +2242,22 @@
     }
 
     async function runPluginAction(pluginId, actionName, payload) {
-      const resp = await fetch(apiUrl('/plugins/' + pluginId + '/action'), {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ action_name: actionName, payload: payload || {} }),
-      });
+      let resp;
+      try {
+        resp = await fetch(apiUrl('/plugins/' + pluginId + '/action'), {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ action_name: actionName, payload: payload || {} }),
+        });
+      } catch (err) {
+        alert('网络中断，动作没有保存');
+        return;
+      }
       const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) {
+        clearSessionAndLogin();
+        return;
+      }
       if (!resp.ok) {
         alert(typeof data.detail === 'string' ? data.detail : '动作失败');
         return;
@@ -2239,9 +2302,29 @@
       return `<section class="live-card"><h3>${title}</h3>${body}</section>`;
     }
 
+    function cardHost() {
+      if (serverRole === 'elder') return document.getElementById('liveCardsElder');
+      if (serverRole === 'child') return document.getElementById('liveCardsChild');
+      return null;
+    }
+
     async function loadActiveCards() {
-      const resp = await fetch(apiUrl('/plugins/active'), { headers: authHeaders() });
-      if (!resp.ok) return;
+      const host = cardHost();
+      let resp;
+      try {
+        resp = await fetch(apiUrl('/plugins/active'), { headers: authHeaders() });
+      } catch (err) {
+        if (host) host.innerHTML = '<p class="honesty-note">卡片暂时加载失败，请稍后重试。</p>';
+        return;
+      }
+      if (resp.status === 401) {
+        clearSessionAndLogin();
+        return;
+      }
+      if (!resp.ok) {
+        if (host) host.innerHTML = '<p class="honesty-note">卡片暂时加载失败，请稍后重试。</p>';
+        return;
+      }
       const cards = await resp.json();
       const html = cards.map(renderCard).join('') || '<p class="honesty-note">当前角色没有开启的插件卡片。</p>';
       const elder = document.getElementById('liveCardsElder');
@@ -2256,10 +2339,21 @@
         if (box) box.innerHTML = '';
         return;
       }
-      const meResp = await fetch(apiUrl('/auth/me'), { headers: authHeaders() });
-      const pluginsResp = await fetch(apiUrl('/family/plugins'), { headers: authHeaders() });
+      let meResp;
+      let pluginsResp;
+      try {
+        meResp = await fetch(apiUrl('/auth/me'), { headers: authHeaders() });
+        pluginsResp = await fetch(apiUrl('/family/plugins'), { headers: authHeaders() });
+      } catch (err) {
+        box.innerHTML = '<p class="honesty-note">家庭插件列表加载失败。登录状态还在。</p>';
+        return;
+      }
+      if (meResp.status === 401 || pluginsResp.status === 401) {
+        clearSessionAndLogin();
+        return;
+      }
       if (!meResp.ok || !pluginsResp.ok) {
-        box.innerHTML = '<p class="honesty-note">家庭插件列表加载失败。</p>';
+        box.innerHTML = '<p class="honesty-note">家庭插件列表加载失败。登录状态还在。</p>';
         return;
       }
       const me = await meResp.json();
@@ -2269,7 +2363,7 @@
         const m = item.manifest;
         return `<label class="live-card" style="display:flex;justify-content:space-between;align-items:center;">
           <span><strong>${escapeHtml(m.icon || '')} ${escapeHtml(m.name)}</strong><br><span>${escapeHtml(m.description || '')}</span></span>
-          <input type="checkbox" ${item.enabled ? 'checked' : ''} onchange="toggleFamilyPlugin('${escapeHtml(m.id)}', this.checked)">
+          <input type="checkbox" ${item.enabled ? 'checked' : ''} onchange="toggleFamilyPlugin('${escapeHtml(m.id)}', this.checked, this)">
         </label>`;
       }).join('');
       const med = settings.medication_reminder_enabled !== false;
@@ -2289,11 +2383,19 @@
         window.location.replace('login.html');
         return;
       }
-      const resp = await fetch(apiUrl('/auth/me'), { headers: authHeaders() });
+      let resp;
+      try {
+        resp = await fetch(apiUrl('/auth/me'), { headers: authHeaders() });
+      } catch (err) {
+        showSessionProblem('网络中断，登录状态还在。请稍后重试。');
+        return;
+      }
+      if (resp.status === 401) {
+        clearSessionAndLogin();
+        return;
+      }
       if (!resp.ok) {
-        localStorage.removeItem('satoken');
-        localStorage.removeItem('satoken_user');
-        window.location.replace('login.html');
+        showSessionProblem('服务暂时不可用，登录状态还在。请稍后重试。');
         return;
       }
       const me = await resp.json();

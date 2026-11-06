@@ -23,21 +23,30 @@ from app.api.deps import require_roles
 from app.core.runtime_secrets import jwt_secret
 from app.core.security import encode_jwt, hash_password, verify_password
 from app.core.store import store
+from app.schemas.common import ErrorBody
 from app.schemas.auth import (
     FamilyMemberOut,
     FamilyMemberRole,
+    FamilySettingsResult,
     FamilySettingsUpdate,
     LoginRequest,
     MemberAddRequest,
     MemberLoginRequest,
     MemberUpdateRequest,
+    ProfileOut,
     RegisterRequest,
     TokenResponse,
     UserContext,
     UserRole,
 )
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    responses={
+        401: {"model": ErrorBody, "description": "未登录、令牌失效，或 satoken 与 Authorization 不一致"},
+        403: {"model": ErrorBody, "description": "当前角色不允许"},
+    },
+)
 
 # 登录失败计数写在 PostgreSQL，重启后窗口仍然有效。
 LOGIN_FAIL_LIMIT = 5
@@ -102,8 +111,8 @@ def _assert_age_for_role(role: str, birth_date_str: str) -> int:
 
 
 def _pin_taken(family_id: str, pin: str, except_user_id: Optional[str] = None) -> bool:
-    for user in store.list_users():
-        if user.get("family_id") != family_id or user.get("id") == except_user_id:
+    for user in store.list_users_by_family(family_id):
+        if user.get("id") == except_user_id:
             continue
         pin_hash = user.get("pin_hash")
         if pin_hash and verify_password(pin, pin_hash):
@@ -355,11 +364,10 @@ def member_quick_login(req: MemberLoginRequest):
     enforce_login_attempt(key)
 
     family = store.get_family_by_invite(invite)
-    family_id = family["id"] if family else None
     matched_user = None
-    if family_id:
-        for user in store.list_users():
-            if user.get("family_id") != family_id or user.get("role") not in PIN_LOGIN_ROLES:
+    if family:
+        for user in store.list_users_by_family(family["id"]):
+            if user.get("role") not in PIN_LOGIN_ROLES:
                 continue
             pin_hash = user.get("pin_hash")
             if pin_hash and verify_password(req.pin_code, pin_hash):
@@ -381,7 +389,7 @@ def logout(u: UserContext = Depends(require_roles(list(UserRole)))):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/auth/me")
+@router.get("/auth/me", response_model=ProfileOut, response_model_exclude_none=True)
 def get_my_profile(u: UserContext = Depends(require_roles(list(UserRole)))):
     """获取当前登录使用者的上下文。邀请码只返回给守护者。"""
     fam = store.get_family(u.family_id) or {}
@@ -404,14 +412,10 @@ def get_my_profile(u: UserContext = Depends(require_roles(list(UserRole)))):
 @router.get("/family/members", response_model=List[FamilyMemberOut])
 def list_family_members(u: UserContext = Depends(require_roles(list(UserRole)))):
     """列出当前家庭的成员。Pin 不以明文返回。"""
-    results = []
-    for user in store.list_users():
-        if user.get("family_id") == u.family_id:
-            results.append(_member_out(user, pin_code=None))
-    return results
+    return [_member_out(user, pin_code=None) for user in store.list_users_by_family(u.family_id)]
 
 
-@router.put("/family/settings")
+@router.put("/family/settings", response_model=FamilySettingsResult)
 def update_family_settings(
     req: FamilySettingsUpdate,
     u: UserContext = Depends(require_roles([UserRole.GUARDIAN])),

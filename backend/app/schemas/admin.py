@@ -22,6 +22,13 @@ class AdminPluginToggleRequest(BaseModel):
     global_enabled: bool = Field(..., description="是否全局开启（False 为全局熔断关停）")
 
 
+class AdminPluginToggleResult(BaseModel):
+    """全局熔断写回结果。"""
+    status: str = "ok"
+    plugin_id: str
+    global_enabled: bool
+
+
 class AdminDashboardStats(BaseModel):
     """全平台中控大盘。数字来自 PostgreSQL 和插件注册表，没有模型调用计数。"""
     total_families: int = Field(0, description="已注册家庭空间总数")

@@ -10,12 +10,15 @@ import json
 import os
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 from urllib.parse import unquote, urlparse
 
 import psycopg
 from psycopg.rows import dict_row
+
+from app.core.schema_guard import assert_additive_schema, schema_checksum, schema_statements
 
 SCHEMA_SQL = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
 
@@ -196,6 +199,20 @@ class Store:
             rows = conn.execute("SELECT * FROM users").fetchall()
         return [_user_from_row(row) for row in rows]
 
+    def list_users_by_family(self, family_id: str) -> List[Dict[str, Any]]:
+        """只读一个家庭。成员列表和 Pin 校验不再扫全表。"""
+        with self._session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM users WHERE family_id = %s ORDER BY id",
+                (family_id,),
+            ).fetchall()
+        return [_user_from_row(row) for row in rows]
+
+    def count_users_by_role(self) -> Dict[str, int]:
+        with self._session() as conn:
+            rows = conn.execute("SELECT role, COUNT(*) AS n FROM users GROUP BY role").fetchall()
+        return {str(row["role"]): int(row["n"]) for row in rows}
+
     def delete_user(self, user_id: str) -> None:
         with self._session() as conn:
             conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
@@ -204,6 +221,35 @@ class Store:
         with self._session() as conn:
             row = conn.execute("SELECT value FROM kv WHERE key = %s", (key,)).fetchone()
         return None if row is None else str(row["value"])
+
+    def kv_get_many(self, keys: List[str]) -> Dict[str, str]:
+        if not keys:
+            return {}
+        with self._session() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM kv WHERE key = ANY(%s)",
+                (list(keys),),
+            ).fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
+    def kv_add_int(self, key: str, delta: int = 1) -> int:
+        """原子加一。原值不是非负整数时从 0 起算，避免读改写丢掉并发次数。"""
+        with self._session() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO kv (key, value) VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = (
+                        CASE
+                            WHEN kv.value ~ '^[0-9]+$' THEN kv.value::bigint
+                            ELSE 0
+                        END + %s
+                    )::text
+                RETURNING value
+                """,
+                (key, str(delta), delta),
+            ).fetchone()
+        return int(row["value"]) if row else delta
 
     def kv_delete(self, key: str) -> None:
         with self._session() as conn:
@@ -269,12 +315,78 @@ class Store:
                 (plugin_id, scope_key, payload),
             )
 
+    def update_plugin_state(
+        self,
+        plugin_id: str,
+        scope_key: str,
+        mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """锁住这一行再改。没有行时先插入空对象，另一个事务会等到提交后再读。
+
+        mutator 收到当前对象，必须返回新对象，且不能再进存储层。
+        """
+        with self._session() as conn:
+            conn.execute(
+                """
+                INSERT INTO plugin_state (plugin_id, scope_key, state_json)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (plugin_id, scope_key) DO NOTHING
+                """,
+                (plugin_id, scope_key, "{}"),
+            )
+            row = conn.execute(
+                """
+                SELECT state_json FROM plugin_state
+                WHERE plugin_id = %s AND scope_key = %s
+                FOR UPDATE
+                """,
+                (plugin_id, scope_key),
+            ).fetchone()
+            current = {} if row is None else _loads_object(row["state_json"])
+            new_state = mutator(current)
+            if not isinstance(new_state, dict):
+                raise PluginStateError("插件进度必须是对象")
+            conn.execute(
+                """
+                UPDATE plugin_state SET state_json = %s
+                WHERE plugin_id = %s AND scope_key = %s
+                """,
+                (json.dumps(new_state, ensure_ascii=False), plugin_id, scope_key),
+            )
+            return new_state
+
+
+class PluginStateError(Exception):
+    """插件进度无法写入。路由把它收成 400。"""
+
+
+def _loads_object(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
 
 def _apply_schema(conn: psycopg.Connection) -> None:
-    for part in SCHEMA_SQL.split(";"):
-        statement = part.strip()
-        if statement:
-            conn.execute(statement)
+    statements = schema_statements(SCHEMA_SQL)
+    assert_additive_schema(statements)
+    for statement in statements:
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT INTO schema_migrations (version, checksum, applied_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (version) DO UPDATE SET
+            checksum = EXCLUDED.checksum,
+            applied_at = EXCLUDED.applied_at
+        """,
+        ("schema.sql", schema_checksum(SCHEMA_SQL), datetime.now(timezone.utc).isoformat()),
+    )
 
 
 def _family_from_row(row: Dict[str, Any]) -> Dict[str, Any]:

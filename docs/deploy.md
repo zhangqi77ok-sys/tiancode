@@ -4,7 +4,7 @@
 
 家庭、成员、设置、插件开关、插件进度、登录失败计数和注销名单都在 PostgreSQL。compose 里的服务名是 `postgres`（镜像 `postgres:16-alpine`），数据在卷 `tiancode-pg`。5432 不映射到宿主，避免和同机别的库抢端口。重启容器不会清空卷。清空：`docker compose -p tiancode down` 之后删除卷 `tiancode_tiancode-pg`。
 
-以前的 `TIANCODE_DB` SQLite 文件不再读取，也不会被导入。那份文件和旧卷 `tiancode_tiancode-data` 可以删掉。表结构在 `backend/app/core/schema.sql`，API 进程启动时执行 `CREATE TABLE IF NOT EXISTS`。没有单独的 Alembic 版本链。
+以前的 `TIANCODE_DB` SQLite 文件不再读取，也不会被导入。那份文件和旧卷 `tiancode_tiancode-data` 可以删掉。表结构在 `backend/app/core/schema.sql`。没有 Alembic。启动规则见下面的「迁移」。
 
 这台练习机的公开地址是 HTTP。令牌会经过这条链路。在 nginx 前面加上 TLS 之前，不要把它当成公网生产入口。uvicorn 的 `--forwarded-allow-ips` 默认是 `127.0.0.1`，不再使用 `*`。容器里看到的对端通常是 Docker 网桥而不是 127.0.0.1，所以默认不会采信 `X-Forwarded-*`。只有在 TLS 终结的那一跳地址写进 `FORWARDED_ALLOW_IPS` 时才放行。
 
@@ -29,6 +29,14 @@ Jenkins ──SSH deploy──> 宿主 /opt/tiancode
 nginx 使用 `proxy_pass http://127.0.0.1:8092/;`（末尾斜杠），把 `/tiancode/` 剥掉后再交给应用。应用路由仍是 `/readyz`、`/`、`/admin.html`。
 
 镜像启动命令是 `uvicorn app.main:app --root-path "$ROOT_PATH"`。`ROOT_PATH=/tiancode` 只修正 OpenAPI / Swagger 的对外地址。应用不会再挂一层 `/tiancode`，也不会把前缀剥第二次。`X-Forwarded-Prefix` 与 `ROOT_PATH` 保持一致。当前 uvicorn 不会用这个头再改一次 `root_path`。
+
+## 迁移
+
+没有 Alembic，也不要为了这个仓库再引入一套迁移框架。进程每次新建数据库连接时执行 `backend/app/core/schema.sql`。语句必须可以重复执行：`CREATE TABLE IF NOT EXISTS`、`CREATE INDEX IF NOT EXISTS`、`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
+
+`backend/app/core/schema_guard.py` 会在执行前拒绝 `DROP`、`TRUNCATE`、`DELETE`、`UPDATE`、`GRANT`、`REVOKE`，以及带 `DROP` 的 `ALTER`。加列用 `ADD COLUMN IF NOT EXISTS`，不要改已有列的类型，也不要在这份文件里修数据。
+
+应用过的文件校验和写在 `schema_migrations`，`version` 固定为 `schema.sql`。这张表只说明当前脚本跑过，不会按历史版本重放。已有库不会因为 `CREATE TABLE IF NOT EXISTS` 而改掉旧列。要加列，把新的 `ADD COLUMN IF NOT EXISTS` 放进 `schema.sql` 再部署。
 
 ## 凭据（只写 ID）
 

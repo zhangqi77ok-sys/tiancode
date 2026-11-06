@@ -211,7 +211,7 @@ cd backend && uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 `JWT_SECRET` 至少 32 个字符，`ADMIN_PASSWORD` 至少 12 个字符。未设置，或仍等于仓库里的占位符（`tiancode-family-secret-32-bytes-min!`、`AdminPassword123!`、`change-me`、`change-me-openssl-rand-hex-32`），进程会在启动时拒绝服务。数据库口令同样至少 12 位，`change-me-pg-password` 会拒绝启动。模板见 [deploy/.env.example](deploy/.env.example)。
 
-进程只连 PostgreSQL。`TIANCODE_DB` 不再使用。以前的 SQLite 文件不会被导入，可以删掉。表在启动时按 `backend/app/core/schema.sql` 创建（`CREATE TABLE IF NOT EXISTS`），测试、本机和容器走同一段 SQL。
+进程只连 PostgreSQL。`TIANCODE_DB` 不再使用。以前的 SQLite 文件不会被导入，可以删掉。表在启动时按 `backend/app/core/schema.sql` 创建（`CREATE TABLE IF NOT EXISTS`），测试、本机和容器走同一段 SQL。这份脚本只允许加性语句，禁止 `DROP` / `TRUNCATE`。没有 Alembic，说明见 [docs/deploy.md](docs/deploy.md) 的「迁移」。
 
 健康检查：`/healthz` 只表示进程在。`/readyz` 还会查数据库。
 

@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from app.api.v1.auth import get_family_by_id
 from app.plugins.base import BasePlugin
-from app.plugins.state import load_state, save_state
+from app.plugins.state import load_state, save_state, update_state
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import (
     CardTemplateType,
@@ -68,26 +68,21 @@ class OperaPlugin(BasePlugin):
         payload: Dict[str, Any],
         context: UserContext,
     ) -> PluginActionResult:
-        idx = int(load_state(self.id, context, {"index": 0}).get("index") or 0)
-        if action_name == "next_track":
-            idx = (idx + 1) % len(OPERA_PLAYLIST)
-            save_state(self.id, context, {"index": idx})
-            track = OPERA_PLAYLIST[idx]
-            return PluginActionResult(
-                status="ok",
-                message=f"为您切换到：{track['name']}",
-                data={"track": track},
-            )
-        elif action_name == "prev_track":
-            idx = (idx - 1 + len(OPERA_PLAYLIST)) % len(OPERA_PLAYLIST)
-            save_state(self.id, context, {"index": idx})
-            track = OPERA_PLAYLIST[idx]
-            return PluginActionResult(
-                status="ok",
-                message=f"为您切换到：{track['name']}",
-                data={"track": track},
-            )
-        return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+        if action_name not in {"next_track", "prev_track"}:
+            return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+        delta = 1 if action_name == "next_track" else -1
+
+        def move(state: Dict[str, Any]) -> Dict[str, Any]:
+            idx = (_playlist_index(state.get("index")) + delta) % len(OPERA_PLAYLIST)
+            return {"index": idx}
+
+        saved = update_state(self.id, context, {"index": 0}, move)
+        track = OPERA_PLAYLIST[_playlist_index(saved.get("index"))]
+        return PluginActionResult(
+            status="ok",
+            message=f"为您切换到：{track['name']}",
+            data={"track": track},
+        )
 
 
 class MemoryKeeperPlugin(BasePlugin):
@@ -110,7 +105,7 @@ class MemoryKeeperPlugin(BasePlugin):
         super().__init__(manifest)
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        memories = load_state(self.id, context, {"memories": []}).get("memories") or []
+        memories = _oral_memories(load_state(self.id, context, {"memories": []}).get("memories"))
         return PluginCardData(
             plugin_id=self.id,
             manifest=self.manifest,
@@ -129,18 +124,38 @@ class MemoryKeeperPlugin(BasePlugin):
         context: UserContext,
     ) -> PluginActionResult:
         if action_name == "save_oral_story":
-            text = payload.get("story_text", "").strip()
+            text = payload.get("story_text", "")
+            if not isinstance(text, str):
+                text = ""
+            text = text.strip()
             if not text:
                 return PluginActionResult(status="error", message="回忆内容不能为空")
-            memories = list(load_state(self.id, context, {"memories": []}).get("memories") or [])
-            memories.append(text)
-            save_state(self.id, context, {"memories": memories})
+
+            def append(state: Dict[str, Any]) -> Dict[str, Any]:
+                memories = _oral_memories(state.get("memories"))
+                memories.append(text)
+                return {"memories": memories}
+
+            saved = update_state(self.id, context, {"memories": []}, append)
+            memories = _oral_memories(saved.get("memories"))
             return PluginActionResult(
                 status="ok",
                 message="这段口述已写入家庭数据库，重启后仍然在。",
                 data={"total_count": len(memories)},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+
+
+def _playlist_index(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value % len(OPERA_PLAYLIST)
+
+
+def _oral_memories(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 class MedicationPlugin(BasePlugin):

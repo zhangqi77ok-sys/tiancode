@@ -90,10 +90,11 @@ class PluginRegistry:
         """
         enabled_map = family_settings.get("plugins", {})
         cards: List[PluginCardData] = []
+        global_flags = self.global_enabled_map([plugin.id for plugin in self._plugins.values()])
 
         for plugin in self._plugins.values():
-            # 1. 管理员全局熔断拦截
-            if not self.is_global_enabled(plugin.id):
+            # 1. 管理员全局熔断拦截。开关一次读出，不再每个插件打一趟数据库。
+            if not global_flags.get(plugin.id, True):
                 continue
 
             # 2. 严格角色权限校验
@@ -110,6 +111,25 @@ class PluginRegistry:
             cards.append(card_data)
 
         return sorted(cards, key=lambda c: c.manifest.sort_order)
+
+    def global_enabled_map(self, plugin_ids: List[str]) -> Dict[str, bool]:
+        raw = store.kv_get_many([f"plugin_global:{plugin_id}" for plugin_id in plugin_ids])
+        flags: Dict[str, bool] = {}
+        for plugin_id in plugin_ids:
+            value = raw.get(f"plugin_global:{plugin_id}")
+            flags[plugin_id] = True if value is None else value == "1"
+        return flags
+
+    def invocation_counts(self, plugin_ids: List[str]) -> Dict[str, int]:
+        raw = store.kv_get_many([f"plugin_invocations:{plugin_id}" for plugin_id in plugin_ids])
+        counts: Dict[str, int] = {}
+        for plugin_id in plugin_ids:
+            value = raw.get(f"plugin_invocations:{plugin_id}")
+            try:
+                counts[plugin_id] = int(value) if value is not None else 0
+            except ValueError:
+                counts[plugin_id] = 0
+        return counts
 
     async def dispatch_action(
         self,
@@ -149,9 +169,7 @@ class PluginRegistry:
                 f"权限不足：当前角色 [{context.role.value}] 无权操作插件 [{plugin.name}]"
             )
 
-        count = self.get_invocation_count(plugin_id) + 1
-        store.kv_set(f"plugin_invocations:{plugin_id}", str(count))
-        self._invocations[plugin_id] = count
+        self._invocations[plugin_id] = store.kv_add_int(f"plugin_invocations:{plugin_id}", 1)
         return await plugin.execute_action(action_name, payload, context)
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -114,6 +114,25 @@ class UserContext(BaseModel):
     birth_date: str
     jti: str
     token_exp: int
+
+
+class ProfileOut(BaseModel):
+    """当前登录身份。邀请码和 settings 只在守护者响应里出现。"""
+    user_id: str
+    family_id: str
+    family_name: str
+    invite_code: str = ""
+    nickname: str
+    role: UserRole
+    birth_date: str
+    age: int
+    settings: Optional[Dict[str, Any]] = Field(None, description="仅守护者返回。含看护开关和插件开关。")
+
+
+class FamilySettingsResult(BaseModel):
+    """看护设置写回后的结果。settings 是合并后的整份家庭设置。"""
+    status: str = "ok"
+    settings: Dict[str, Any]
 
 
 class FamilyMemberOut(BaseModel):
