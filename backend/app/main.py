@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from psycopg import InterfaceError, OperationalError
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
@@ -19,6 +21,7 @@ from app.core.runtime_secrets import assert_runtime_secrets
 from app.core.store import store
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
+from app.schemas.common import ServiceStatus
 
 
 def prototype_directory() -> Path | None:
@@ -41,19 +44,24 @@ def create_app() -> FastAPI:
     load_builtin_plugins()
     app = FastAPI(title="伴暖 WarmCompanion", version="0.1.0")
 
-    @app.get("/healthz")
-    def healthz() -> dict:
-        return {"status": "ok"}
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(InterfaceError)
+    async def database_unavailable(_request: Request, _exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": "database not ready"})
 
-    @app.get("/readyz")
-    def readyz() -> dict:
+    @app.get("/healthz", response_model=ServiceStatus)
+    def healthz() -> ServiceStatus:
+        return ServiceStatus(status="ok")
+
+    @app.get("/readyz", response_model=ServiceStatus)
+    def readyz() -> ServiceStatus:
         if not plugin_registry.list_manifests():
             raise HTTPException(status_code=503, detail="builtin plugins not ready")
         try:
             store.ping()
         except Exception as exc:
             raise HTTPException(status_code=503, detail="database not ready") from exc
-        return {"status": "ready"}
+        return ServiceStatus(status="ready")
 
     app.include_router(auth_router)
     app.include_router(plugins_router)

@@ -15,6 +15,25 @@ from app.core.security import decode_jwt
 from app.schemas.auth import UserContext, UserRole
 
 
+def _clean_token(value: str) -> str:
+    """令牌内部不能有空白。空字符串表示这个头没带令牌。"""
+    token = value.strip()
+    if any(ch.isspace() for ch in token):
+        raise ValueError("token contains whitespace")
+    return token
+
+
+def _bearer_token(authorization: str) -> str:
+    """接受 Bearer 的任意大小写。没有 Bearer 前缀时，把整段当作令牌。"""
+    text = authorization.strip()
+    if not text:
+        return ""
+    scheme, _, rest = text.partition(" ")
+    if scheme.lower() == "bearer":
+        return _clean_token(rest)
+    return _clean_token(text)
+
+
 def get_current_user(
     authorization: str = Header(default=""),
     satoken: str = Header(default=""),
@@ -27,15 +46,14 @@ def get_current_user(
     """
     auth_val = authorization if isinstance(authorization, str) else ""
     sa_val = satoken if isinstance(satoken, str) else ""
-
-    token = ""
-    if sa_val.strip():
-        token = sa_val.strip()
-    elif auth_val.strip():
-        if auth_val.startswith("Bearer "):
-            token = auth_val[7:].strip()
-        else:
-            token = auth_val.strip()
+    try:
+        sa_token = _clean_token(sa_val)
+        bearer_token = _bearer_token(auth_val)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或已过期的访问令牌") from exc
+    if sa_token and bearer_token and sa_token != bearer_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="satoken 与 Authorization 不一致")
+    token = sa_token or bearer_token
 
     if not token:
         raise HTTPException(
@@ -45,11 +63,11 @@ def get_current_user(
     secret = jwt_secret()
     try:
         claims = decode_jwt(token, secret)
-    except ValueError as e:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"无效或已过期的访问令牌: {str(e)}",
-        ) from e
+            detail="无效或已过期的访问令牌",
+        ) from exc
 
     if not claims.get("sub") or not claims.get("fam") or not claims.get("role") or not claims.get("jti"):
         raise HTTPException(

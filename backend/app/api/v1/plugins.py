@@ -14,10 +14,13 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, require_roles
 from app.api.v1.auth import get_family_by_id, save_family
+from app.core.store import PluginStateError
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.auth import UserContext, UserRole
+from app.schemas.common import ErrorBody
 from app.schemas.plugin import (
+    FamilyPluginToggleResult,
     PluginActionRequest,
     PluginActionResult,
     PluginCardData,
@@ -27,7 +30,13 @@ from app.schemas.plugin import (
 # 确保预置插件均已初始化载入
 load_builtin_plugins()
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    responses={
+        401: {"model": ErrorBody, "description": "未登录或令牌失效"},
+        403: {"model": ErrorBody, "description": "当前角色或插件开关不允许"},
+    },
+)
 
 
 class FamilyPluginStatusOut(BaseModel):
@@ -61,11 +70,12 @@ async def dispatch_plugin_action(
     """触发指定插件的业务动作（如切换戏曲、做出故事分支决策、打卡星星）。
 
     内置 RBAC 防越权守卫与全局熔断拦截。
+    插件返回 status=error 时，这里改成 HTTP 400，detail 是给页面看的 message。
     """
     fam = get_family_by_id(u.family_id) or {}
     settings = fam.get("settings", {})
     try:
-        return await plugin_registry.dispatch_action(
+        result = await plugin_registry.dispatch_action(
             plugin_id=plugin_id,
             action_name=req.action_name,
             payload=req.payload,
@@ -76,6 +86,14 @@ async def dispatch_plugin_action(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except PluginStateError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    if result.status != "ok":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.message or "插件动作未完成",
+        )
+    return result
 
 
 @router.get("/family/plugins", response_model=List[FamilyPluginStatusOut])
@@ -95,7 +113,7 @@ def list_family_plugins(u: UserContext = Depends(require_roles([UserRole.GUARDIA
     return results
 
 
-@router.put("/family/plugins/{plugin_id}/toggle")
+@router.put("/family/plugins/{plugin_id}/toggle", response_model=FamilyPluginToggleResult)
 def toggle_family_plugin(
     plugin_id: str,
     req: FamilyPluginToggleRequest,

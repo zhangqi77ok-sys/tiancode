@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.core.security import DEFAULT_EXPIRES_IN
 
 
 class UserRole(str, Enum):
@@ -95,10 +97,13 @@ class MemberLoginRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    """JWT / Sa-Token 令牌响应契约"""
+    """JWT 令牌响应契约。satoken 头和 Authorization: Bearer 用的是同一枚令牌。"""
     access_token: str = Field(..., description="访问令牌 (Bearer / satoken)")
     token_type: str = Field("bearer", description="令牌类型")
-    expires_in: int = Field(2592000, description="令牌有效期（秒），默认 30 天 (2,592,000 秒)")
+    expires_in: int = Field(
+        DEFAULT_EXPIRES_IN,
+        description="本次签发的有效期（秒），等于令牌里的 exp 减 iat。默认 30 天，不是剩余寿命。",
+    )
     role: UserRole = Field(..., description="当前使用者角色")
     user_id: str = Field(..., description="用户唯一标识 ID")
     family_id: str = Field(..., description="所属家庭空间 ID")
@@ -116,6 +121,25 @@ class UserContext(BaseModel):
     token_exp: int
 
 
+class ProfileOut(BaseModel):
+    """当前登录身份。邀请码和 settings 只在守护者响应里出现。"""
+    user_id: str
+    family_id: str
+    family_name: str
+    invite_code: str = ""
+    nickname: str
+    role: UserRole
+    birth_date: str
+    age: int
+    settings: Optional[Dict[str, Any]] = Field(None, description="仅守护者返回。含看护开关和插件开关。")
+
+
+class FamilySettingsResult(BaseModel):
+    """看护设置写回后的结果。settings 是合并后的整份家庭设置。"""
+    status: str = "ok"
+    settings: Dict[str, Any]
+
+
 class FamilyMemberOut(BaseModel):
     """家庭成员信息输出"""
     id: str
@@ -129,9 +153,15 @@ class FamilyMemberOut(BaseModel):
 
 
 class FamilySettingsUpdate(BaseModel):
-    """家庭看护配置更新请求（仅守护者可调）"""
-    medication_reminder_enabled: bool = Field(True, description="长辈用药提醒总开关")
-    kids_curfew_enabled: bool = Field(
-        True,
-        description="儿童防沉迷。北京时间 21:00–06:00 拒绝儿童插件动作",
+    """家庭看护配置更新请求（仅守护者可调）。
+
+    两个字段都可省略。省略的字段保持原值，不会被默认值 true 写回去。
+    请求体至少要带一个字段。
+    """
+    medication_reminder_enabled: Optional[bool] = Field(
+        None, description="长辈用药提醒总开关。省略表示不修改。"
+    )
+    kids_curfew_enabled: Optional[bool] = Field(
+        None,
+        description="儿童防沉迷。北京时间 21:00–06:00 拒绝儿童插件动作。省略表示不修改。",
     )
