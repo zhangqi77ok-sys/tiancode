@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from app.plugins.base import BasePlugin
-from app.plugins.state import load_state, save_state
+from app.plugins.state import load_state, save_state, update_state
 from app.schemas.auth import UserContext, UserRole
 from app.schemas.plugin import (
     CardTemplateType,
@@ -19,6 +19,9 @@ from app.schemas.plugin import (
     PluginCategory,
     PluginManifest,
 )
+
+MAX_QUESTION_CHARS = 200
+HABIT_KEYS = ("brush_teeth", "drink_milk", "sleep_on_time")
 
 
 class InteractiveStoryPlugin(BasePlugin):
@@ -113,11 +116,7 @@ class HabitChallengePlugin(BasePlugin):
         super().__init__(manifest)
 
     async def render_card(self, context: UserContext, family_state: Dict[str, Any]) -> PluginCardData:
-        stars = load_state(
-            self.id,
-            context,
-            {"brush_teeth": False, "drink_milk": False, "sleep_on_time": False},
-        )
+        stars = _habit_stars(context, self.id)
         collected = sum(1 for v in stars.values() if v)
         return PluginCardData(
             plugin_id=self.id,
@@ -140,22 +139,22 @@ class HabitChallengePlugin(BasePlugin):
     ) -> PluginActionResult:
         if action_name == "toggle_habit":
             habit_key = payload.get("habit_key")
-            stars = load_state(
-                self.id,
-                context,
-                {"brush_teeth": False, "drink_milk": False, "sleep_on_time": False},
+            if habit_key not in HABIT_KEYS:
+                return PluginActionResult(status="error", message="未知的习惯任务标识")
+
+            def mark(state: Dict[str, Any]) -> Dict[str, Any]:
+                stars = {key: state.get(key) is True for key in HABIT_KEYS}
+                stars[str(habit_key)] = True
+                return stars
+
+            stars = update_state(self.id, context, {key: False for key in HABIT_KEYS}, mark)
+            collected = sum(1 for value in stars.values() if value)
+            msg = "恭喜你点亮一颗小金星！" if collected < 3 else "太棒啦！集齐 3 颗星，荣获【晚安小勇士勋章】🎖️！"
+            return PluginActionResult(
+                status="ok",
+                message=msg,
+                data={"stars": stars, "collected_count": collected, "badge_unlocked": collected >= 3},
             )
-            if habit_key in stars:
-                stars[habit_key] = True
-                save_state(self.id, context, stars)
-                collected = sum(1 for v in stars.values() if v)
-                msg = "恭喜你点亮一颗小金星！" if collected < 3 else "太棒啦！集齐 3 颗星，荣获【晚安小勇士勋章】🎖️！"
-                return PluginActionResult(
-                    status="ok",
-                    message=msg,
-                    data={"stars": stars, "collected_count": collected, "badge_unlocked": collected >= 3},
-                )
-            return PluginActionResult(status="error", message="未知的习惯任务标识")
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
 
 
@@ -198,9 +197,18 @@ class WonderEncyclopediaPlugin(BasePlugin):
     ) -> PluginActionResult:
         if action_name == "ask_question":
             q = payload.get("question", "")
+            if not isinstance(q, str):
+                q = ""
+            q = q.strip()[:MAX_QUESTION_CHARS]
             return PluginActionResult(
                 status="ok",
                 message="这是写死的回复，不是大模型回答。",
                 data={"reply": "页面上的百科句子是固定文案。", "question": q},
             )
         return PluginActionResult(status="error", message=f"不支持的动作: {action_name}")
+
+
+def _habit_stars(context: UserContext, plugin_id: str) -> Dict[str, bool]:
+    """只认三颗星。多余的键和字符串 true 都不算点亮，避免坏数据凑满勋章。"""
+    raw = load_state(plugin_id, context, {key: False for key in HABIT_KEYS})
+    return {key: raw.get(key) is True for key in HABIT_KEYS}

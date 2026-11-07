@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, require_roles
 from app.api.v1.auth import get_family_by_id, save_family
+from app.core.store import PluginStateError
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.auth import UserContext, UserRole
@@ -61,11 +62,12 @@ async def dispatch_plugin_action(
     """触发指定插件的业务动作（如切换戏曲、做出故事分支决策、打卡星星）。
 
     内置 RBAC 防越权守卫与全局熔断拦截。
+    插件返回 status=error 时，这里改成 HTTP 400，detail 是给页面看的 message。
     """
     fam = get_family_by_id(u.family_id) or {}
     settings = fam.get("settings", {})
     try:
-        return await plugin_registry.dispatch_action(
+        result = await plugin_registry.dispatch_action(
             plugin_id=plugin_id,
             action_name=req.action_name,
             payload=req.payload,
@@ -76,6 +78,14 @@ async def dispatch_plugin_action(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except PluginStateError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    if result.status != "ok":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.message or "插件动作未完成",
+        )
+    return result
 
 
 @router.get("/family/plugins", response_model=List[FamilyPluginStatusOut])

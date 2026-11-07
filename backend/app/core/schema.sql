@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS kv (
     value TEXT NOT NULL
 );
 
+-- scope_key 是 family_id || ':' || user_id。两端都不含冒号，所以不会串家庭或串人。
 CREATE TABLE IF NOT EXISTS plugin_state (
     plugin_id TEXT NOT NULL,
     scope_key TEXT NOT NULL,
@@ -35,3 +36,5 @@ CREATE TABLE IF NOT EXISTS revoked_jti (
     jti TEXT PRIMARY KEY,
     exp BIGINT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_revoked_jti_exp ON revoked_jti (exp);
