@@ -38,3 +38,10 @@ CREATE TABLE IF NOT EXISTS revoked_jti (
 );
 
 CREATE INDEX IF NOT EXISTS idx_revoked_jti_exp ON revoked_jti (exp);
+
+-- 只记录当前 schema.sql 的校验和。不是 Alembic 版本链，也不会重放旧脚本。
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);

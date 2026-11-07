@@ -23,19 +23,27 @@ from app.api.v1.auth import (
 from app.core.runtime_secrets import admin_password, admin_username, jwt_secret
 from app.core.security import DEFAULT_EXPIRES_IN, encode_jwt
 from app.core.store import store
+from app.schemas.common import ErrorBody
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
 from app.schemas.admin import (
     AdminDashboardStats,
     AdminPluginStatus,
     AdminPluginToggleRequest,
+    AdminPluginToggleResult,
 )
 from app.schemas.auth import AdminLoginRequest, TokenResponse, UserContext, UserRole
 
 # 确保预置插件均已初始化
 load_builtin_plugins()
 
-router = APIRouter(prefix="/api/v1/admin")
+router = APIRouter(
+    prefix="/api/v1/admin",
+    responses={
+        401: {"model": ErrorBody, "description": "未登录或令牌失效"},
+        403: {"model": ErrorBody, "description": "不是平台管理员"},
+    },
+)
 
 
 def _credentials_match(left: str, right: str) -> bool:
@@ -103,7 +111,7 @@ def list_admin_plugins(u: UserContext = Depends(require_admin)):
     return results
 
 
-@router.put("/plugins/{plugin_id}/toggle")
+@router.put("/plugins/{plugin_id}/toggle", response_model=AdminPluginToggleResult)
 def toggle_global_plugin(
     plugin_id: str,
     req: AdminPluginToggleRequest,
@@ -133,11 +141,9 @@ def get_admin_dashboard_stats(u: UserContext = Depends(require_admin)):
     total_children = counts.get(UserRole.CHILD.value, 0)
     total_guardians = counts.get(UserRole.GUARDIAN.value, 0)
 
-    active_count = sum(
-        1
-        for p in plugin_registry.list_manifests()
-        if plugin_registry.is_global_enabled(p.id)
-    )
+    manifests = plugin_registry.list_manifests()
+    flags = plugin_registry.global_enabled_map([item.id for item in manifests])
+    active_count = sum(1 for item in manifests if flags.get(item.id, True))
 
     return AdminDashboardStats(
         total_families=get_all_families_count(),

@@ -6,18 +6,22 @@
 
 同一条连接会复用。连接已关闭、连接串变了，或请求遇到断线（OperationalError /
 InterfaceError）时会丢掉这条连接并重试一次。重试只包住这一次存储调用。
+追加口述这类非幂等写入不重试。schema.sql 只执行加性语句，校验和记在 schema_migrations。
 """
 from __future__ import annotations
 
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 from urllib.parse import unquote, urlparse
 
 import psycopg
 from psycopg.rows import dict_row
+
+from app.core.schema_guard import assert_additive_schema, schema_checksum, schema_statements
 
 SCHEMA_SQL = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
 
@@ -512,10 +516,21 @@ class Store:
 
 
 def _apply_schema(conn: psycopg.Connection) -> None:
-    for part in SCHEMA_SQL.split(";"):
-        statement = part.strip()
-        if statement:
-            conn.execute(statement)
+    """执行加性 schema.sql，并把当前脚本的 sha256 记到 schema_migrations。"""
+    statements = schema_statements(SCHEMA_SQL)
+    assert_additive_schema(statements)
+    for statement in statements:
+        conn.execute(statement)
+    conn.execute(
+        """
+        INSERT INTO schema_migrations (version, checksum, applied_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (version) DO UPDATE SET
+            checksum = EXCLUDED.checksum,
+            applied_at = EXCLUDED.applied_at
+        """,
+        ("schema.sql", schema_checksum(SCHEMA_SQL), datetime.now(timezone.utc).isoformat()),
+    )
 
 
 def _family_params(family: Dict[str, Any]) -> tuple:

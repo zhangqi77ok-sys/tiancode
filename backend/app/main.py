@@ -21,6 +21,7 @@ from app.core.runtime_secrets import assert_runtime_secrets
 from app.core.store import store
 from app.plugins.loader import load_builtin_plugins
 from app.plugins.registry import plugin_registry
+from app.schemas.common import ServiceStatus
 
 
 def prototype_directory() -> Path | None:
@@ -48,19 +49,19 @@ def create_app() -> FastAPI:
     async def database_unavailable(_request: Request, _exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": "database not ready"})
 
-    @app.get("/healthz")
-    def healthz() -> dict:
-        return {"status": "ok"}
+    @app.get("/healthz", response_model=ServiceStatus)
+    def healthz() -> ServiceStatus:
+        return ServiceStatus(status="ok")
 
-    @app.get("/readyz")
-    def readyz() -> dict:
+    @app.get("/readyz", response_model=ServiceStatus)
+    def readyz() -> ServiceStatus:
         if not plugin_registry.list_manifests():
             raise HTTPException(status_code=503, detail="builtin plugins not ready")
         try:
             store.ping()
         except Exception as exc:
             raise HTTPException(status_code=503, detail="database not ready") from exc
-        return {"status": "ready"}
+        return ServiceStatus(status="ready")
 
     app.include_router(auth_router)
     app.include_router(plugins_router)

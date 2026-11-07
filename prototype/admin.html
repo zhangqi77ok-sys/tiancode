@@ -428,45 +428,69 @@
       return { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, satoken: token };
     }
 
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[ch]));
+    }
+
+    function showLogin() {
+      sessionStorage.removeItem('admin_token');
+      document.getElementById('admin-name').innerText = '未登录';
+      document.getElementById('admin-login').style.display = 'flex';
+    }
+
     function renderPlugins(plugins) {
       const tbody = document.getElementById('plugin-table-body');
       tbody.innerHTML = '';
       plugins.forEach((p) => {
         const tr = document.createElement('tr');
-        const roles = (p.allowed_roles || []).join(', ');
+        const roles = escapeHtml((p.allowed_roles || []).join(', '));
         const statusDot = p.global_enabled ? '<span style="color: var(--success)">运行中</span>' : '<span style="color: var(--danger)">已熔断</span>';
         tr.innerHTML = `
-          <td><strong>${p.name}</strong></td>
-          <td style="font-family: var(--font-mono); color: var(--text-sub);">${p.id}</td>
-          <td>${p.category}</td>
+          <td><strong>${escapeHtml(p.name)}</strong></td>
+          <td style="font-family: var(--font-mono); color: var(--text-sub);">${escapeHtml(p.id)}</td>
+          <td>${escapeHtml(p.category)}</td>
           <td>${roles}</td>
-          <td style="font-family: var(--font-mono); font-size: 11px;">${p.card_template}</td>
-          <td>${p.invocations_count} 次</td>
+          <td style="font-family: var(--font-mono); font-size: 11px;">${escapeHtml(p.card_template)}</td>
+          <td>${escapeHtml(p.invocations_count)} 次</td>
           <td>${statusDot}</td>
           <td>
             <label class="switch">
-              <input type="checkbox" ${p.global_enabled ? 'checked' : ''} onchange="toggleKillswitch('${p.id}', this.checked)">
+              <input type="checkbox">
               <span class="slider"></span>
             </label>
           </td>
         `;
+        const input = tr.querySelector('input');
+        input.checked = !!p.global_enabled;
+        input.addEventListener('change', () => toggleKillswitch(p.id, input.checked));
         tbody.appendChild(tr);
       });
     }
 
     async function toggleKillswitch(pluginId, isEnabled) {
-      const resp = await fetch(apiUrl('/admin/plugins/' + pluginId + '/toggle'), {
-        method: 'PUT',
-        headers: adminHeaders(),
-        body: JSON.stringify({ global_enabled: isEnabled }),
-      });
-      if (!resp.ok) {
-        showToast('熔断没有保存');
+      try {
+        const resp = await fetch(apiUrl('/admin/plugins/' + pluginId + '/toggle'), {
+          method: 'PUT',
+          headers: adminHeaders(),
+          body: JSON.stringify({ global_enabled: isEnabled }),
+        });
+        if (resp.status === 401) {
+          showLogin();
+          return;
+        }
+        if (!resp.ok) {
+          showToast('熔断没有保存');
+          await refreshData();
+          return;
+        }
+        showToast(isEnabled ? '插件已恢复' : '插件已全局关闭');
         await refreshData();
-        return;
+      } catch (err) {
+        showToast('网络中断，熔断没有保存');
+        await refreshData();
       }
-      showToast(isEnabled ? '插件已恢复' : '插件已全局关闭');
-      await refreshData();
     }
 
     function switchTab(tabId, el) {
@@ -485,21 +509,32 @@
 
     async function adminLogout() {
       try {
-        await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: adminHeaders() });
+        const resp = await fetch(apiUrl('/auth/logout'), { method: 'POST', headers: adminHeaders() });
+        if (!resp.ok && resp.status !== 401) {
+          showToast('退出请求没有成功。本机登录会清掉，但这枚令牌在过期前可能仍然有效。');
+        }
       } catch (err) {
-        // 请求失败时只清本机。这枚令牌在过期前仍然有效。
+        showToast('网络中断。本机登录会清掉，但这枚令牌在过期前可能仍然有效。');
       }
-      sessionStorage.removeItem('admin_token');
-      document.getElementById('admin-name').innerText = '未登录';
-      document.getElementById('admin-login').style.display = 'flex';
+      showLogin();
     }
 
     async function refreshData() {
-      const statsResp = await fetch(apiUrl('/admin/dashboard/stats'), { headers: adminHeaders() });
-      const pluginsResp = await fetch(apiUrl('/admin/plugins'), { headers: adminHeaders() });
+      let statsResp;
+      let pluginsResp;
+      try {
+        statsResp = await fetch(apiUrl('/admin/dashboard/stats'), { headers: adminHeaders() });
+        pluginsResp = await fetch(apiUrl('/admin/plugins'), { headers: adminHeaders() });
+      } catch (err) {
+        showToast('网络中断，大盘没有刷新。登录状态还在');
+        return;
+      }
+      if (statsResp.status === 401 || pluginsResp.status === 401) {
+        showLogin();
+        return;
+      }
       if (!statsResp.ok || !pluginsResp.ok) {
-        sessionStorage.removeItem('admin_token');
-        document.getElementById('admin-login').style.display = 'flex';
+        showToast('大盘暂时加载失败，登录状态还在');
         return;
       }
       const stats = await statsResp.json();
@@ -517,25 +552,36 @@
       setTimeout(() => { t.style.display = 'none'; }, 3000);
     }
 
+    let adminLoginBusy = false;
     document.getElementById('admin-login-form').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const resp = await fetch(apiUrl('/admin/login'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: document.getElementById('admin-user').value,
-          password: document.getElementById('admin-pass').value,
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        document.getElementById('admin-login-error').innerText = data.detail || '登录失败';
-        return;
+      if (adminLoginBusy) return;
+      adminLoginBusy = true;
+      let resp;
+      try {
+        resp = await fetch(apiUrl('/admin/login'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('admin-user').value,
+            password: document.getElementById('admin-pass').value,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const detail = data.detail;
+          document.getElementById('admin-login-error').innerText = typeof detail === 'string' ? detail : '登录失败';
+          return;
+        }
+        sessionStorage.setItem('admin_token', data.access_token);
+        document.getElementById('admin-name').innerText = data.name || '管理员';
+        document.getElementById('admin-login').style.display = 'none';
+        await refreshData();
+      } catch (err) {
+        document.getElementById('admin-login-error').innerText = '网络中断，请稍后重试';
+      } finally {
+        adminLoginBusy = false;
       }
-      sessionStorage.setItem('admin_token', data.access_token);
-      document.getElementById('admin-name').innerText = data.name || '管理员';
-      document.getElementById('admin-login').style.display = 'none';
-      await refreshData();
     });
 
     if (sessionStorage.getItem('admin_token')) {

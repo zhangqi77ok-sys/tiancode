@@ -93,7 +93,7 @@ class PluginRegistry:
         global_flags = self.global_enabled_map([plugin.id for plugin in self._plugins.values()])
 
         for plugin in self._plugins.values():
-            # 1. 管理员全局熔断拦截
+            # 1. 管理员全局熔断拦截。开关一次读出，不再每个插件打一趟数据库。
             if not global_flags.get(plugin.id, True):
                 continue
 
@@ -175,8 +175,7 @@ class PluginRegistry:
                 f"权限不足：当前角色 [{context.role.value}] 无权操作插件 [{plugin.name}]"
             )
 
-        count = store.kv_add_int(f"plugin_invocations:{plugin_id}", 1)
-        self._invocations[plugin_id] = count
+        self._invocations[plugin_id] = store.kv_add_int(f"plugin_invocations:{plugin_id}", 1)
         return await plugin.execute_action(action_name, payload, context)
 
 

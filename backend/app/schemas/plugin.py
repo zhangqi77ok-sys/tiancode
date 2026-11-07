@@ -69,6 +69,13 @@ class PluginActionResult(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict, description="动作附带的数据结果")
 
 
+class FamilyPluginToggleResult(BaseModel):
+    """家庭插件开关写回结果。"""
+    status: str = "ok"
+    plugin_id: str
+    enabled: bool
+
+
 class PluginCardData(BaseModel):
     """动态卡片流输出契约（用于前端插槽渲染）"""
     plugin_id: str = Field(..., description="对应的插件 ID")

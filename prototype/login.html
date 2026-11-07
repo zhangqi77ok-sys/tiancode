@@ -453,15 +453,22 @@
       }, 900);
     }
 
+    let authRequestBusy = false;
     async function postJson(path, body) {
-      const resp = await fetch(apiUrl(path), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(errorText(data));
-      return data;
+      if (authRequestBusy) throw new Error('正在提交，请稍候');
+      authRequestBusy = true;
+      try {
+        const resp = await fetch(apiUrl(path), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(errorText(data));
+        return data;
+      } finally {
+        authRequestBusy = false;
+      }
     }
 
     async function submitMemberLogin() {
@@ -486,7 +493,7 @@
 
     async function submitGuardianLogin() {
       const phone = document.getElementById('loginPhone').value.trim();
-      const pass = document.getElementById('loginPassword').value.trim();
+      const pass = document.getElementById('loginPassword').value;
       if (!phone || !pass) {
         showToast("请输入手机号与密码");
         return;
@@ -507,7 +514,7 @@
     async function submitGuardianRegister() {
       const nickname = document.getElementById('regNickname').value.trim();
       const phone = document.getElementById('regPhone').value.trim();
-      const pass = document.getElementById('regPassword').value.trim();
+      const pass = document.getElementById('regPassword').value;
       const famName = document.getElementById('regFamilyName').value.trim();
       const birth = document.getElementById('regBirthDate').value;
       if (!nickname || !phone || !pass || !famName || !birth) {

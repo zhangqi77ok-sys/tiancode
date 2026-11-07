@@ -23,21 +23,30 @@ from app.api.deps import require_roles
 from app.core.runtime_secrets import jwt_secret
 from app.core.security import DEFAULT_EXPIRES_IN, encode_jwt, hash_password, verify_password
 from app.core.store import DuplicateRecord, store
+from app.schemas.common import ErrorBody
 from app.schemas.auth import (
     FamilyMemberOut,
     FamilyMemberRole,
+    FamilySettingsResult,
     FamilySettingsUpdate,
     LoginRequest,
     MemberAddRequest,
     MemberLoginRequest,
     MemberUpdateRequest,
+    ProfileOut,
     RegisterRequest,
     TokenResponse,
     UserContext,
     UserRole,
 )
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    responses={
+        401: {"model": ErrorBody, "description": "未登录、令牌失效，或 satoken 与 Authorization 不一致"},
+        403: {"model": ErrorBody, "description": "当前角色不允许"},
+    },
+)
 
 # 登录失败计数写在 PostgreSQL，重启后窗口仍然有效。
 LOGIN_FAIL_LIMIT = 5
@@ -362,7 +371,7 @@ def logout(u: UserContext = Depends(require_roles(list(UserRole)))):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/auth/me")
+@router.get("/auth/me", response_model=ProfileOut, response_model_exclude_none=True)
 def get_my_profile(u: UserContext = Depends(require_roles(list(UserRole)))):
     """获取当前登录使用者的上下文。邀请码只返回给守护者。"""
     fam = store.get_family(u.family_id) or {}
@@ -388,7 +397,7 @@ def list_family_members(u: UserContext = Depends(require_roles(list(UserRole))))
     return [_member_out(user, pin_code=None) for user in store.list_users_by_family(u.family_id)]
 
 
-@router.put("/family/settings")
+@router.put("/family/settings", response_model=FamilySettingsResult)
 def update_family_settings(
     req: FamilySettingsUpdate,
     u: UserContext = Depends(require_roles([UserRole.GUARDIAN])),

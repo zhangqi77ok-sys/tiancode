@@ -1,7 +1,7 @@
 """插件进度按 (plugin_id, family_id, user_id) 写入 PostgreSQL。
 
 scope_key 的形状是 ``{family_id}:{user_id}``。家庭标识和成员标识都不能含冒号，
-所以两个长辈、两个家庭的口述、曲目和星星不会写进同一行。
+也不能超过 64 个字符。两个长辈、两个家庭的口述、曲目和星星不会写进同一行。
 
 读改写必须走 update_state。它在一行上 SELECT ... FOR UPDATE，追加口述时不会丢掉
 另一个并发请求刚写进去的内容。这种写入不在断线后自动重试。
@@ -21,11 +21,11 @@ def scope_key(context: UserContext) -> str:
     family_id = str(context.family_id or "").strip()
     user_id = str(context.user_id or "").strip()
     if not family_id or not user_id:
-        raise PluginStateError("插件进度缺少家庭或成员标识")
+        raise PluginStateError("插件进度标识无效：缺少家庭或成员标识")
     if ":" in family_id or ":" in user_id:
-        raise PluginStateError("插件进度标识不能包含冒号")
+        raise PluginStateError("插件进度标识无效：不能包含冒号")
     if len(family_id) > _MAX_SCOPE_ID_CHARS or len(user_id) > _MAX_SCOPE_ID_CHARS:
-        raise PluginStateError("插件进度标识过长")
+        raise PluginStateError("插件进度标识无效：标识过长")
     return f"{family_id}:{user_id}"
 
 

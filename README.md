@@ -128,7 +128,8 @@ tiancode/
 │   │   │       └── admin.py          # 管理员登录、插件全局熔断、家庭计数
 │   │   ├── core/
 │   │   │   ├── security.py           # PyJWT HS256 与 PBKDF2
-│   │   │   ├── schema.sql            # 启动时执行的 PostgreSQL 表
+│   │   │   ├── schema.sql            # 启动时执行的加性 PostgreSQL 表
+│   │   │   ├── schema_guard.py       # 拒绝 DROP / TRUNCATE 等非加性语句
 │   │   │   ├── store.py              # PostgreSQL：家庭、用户、注销名单、插件状态
 │   │   │   ├── runtime_secrets.py    # 拒绝缺失或公开的 JWT / 管理员密码
 │   │   │   └── curfew.py             # 北京时间 21:00–06:00 儿童插件动作
@@ -141,7 +142,8 @@ tiancode/
 │   │   └── schemas/
 │   │       ├── auth.py               # 认证请求/响应模型与 UserRole (guardian/elder/child/admin)
 │   │       ├── plugin.py             # PluginManifest、CardTemplateType、动作契约
-│   │       └── admin.py              # 插件状态与大盘计数
+│   │       ├── admin.py              # 插件状态与大盘计数
+│   │       └── common.py             # ErrorBody、ServiceStatus
 │   └── tests/
 │       ├── test_main_health.py       # /healthz、原型页、ROOT_PATH 不改写路由
 │       ├── test_auth_unit.py         # JWT 签名、验签、篡改防御、过期拦截单元测试
@@ -152,7 +154,8 @@ tiancode/
 │       ├── test_persistence.py        # 重启后家庭与插件进度仍在
 │       ├── test_session_curfew.py    # 注销当前令牌、儿童防沉迷时段
 │       ├── test_runtime_edges.py     # 断线重试、部分设置、坏数据、口述上限、调用计数
-│       └── test_memory_reliability.py # 口述行锁、成员隔离、控制字符和 payload 上限
+│       ├── test_memory_reliability.py # 口述行锁、成员隔离、控制字符和 payload 上限
+│       └── test_followup_edges.py    # 会话头、加性迁移、OpenAPI、401 才退出登录
 ├── deploy/
 │   ├── docker-compose.yml            # 单 api 服务，127.0.0.1:8092→8000
 │   ├── .env.example                  # JWT / 管理员占位，无真实密钥
@@ -213,7 +216,7 @@ cd backend && uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 `JWT_SECRET` 至少 32 个字符，`ADMIN_PASSWORD` 至少 12 个字符。未设置，或仍等于仓库里的占位符（`tiancode-family-secret-32-bytes-min!`、`AdminPassword123!`、`change-me`、`change-me-openssl-rand-hex-32`），进程会在启动时拒绝服务。数据库口令同样至少 12 位，`change-me-pg-password` 会拒绝启动。模板见 [deploy/.env.example](deploy/.env.example)。
 
-进程只连 PostgreSQL。`TIANCODE_DB` 不再使用。以前的 SQLite 文件不会被导入，可以删掉。表在启动时按 `backend/app/core/schema.sql` 创建（`CREATE TABLE IF NOT EXISTS`），测试、本机和容器走同一段 SQL。
+进程只连 PostgreSQL。`TIANCODE_DB` 不再使用。以前的 SQLite 文件不会被导入，可以删掉。表在启动时按 `backend/app/core/schema.sql` 创建（`CREATE TABLE IF NOT EXISTS`），测试、本机和容器走同一段 SQL。这份脚本只允许加性语句，禁止 `DROP` / `TRUNCATE`。没有 Alembic，说明见 [docs/deploy.md](docs/deploy.md) 的「迁移」。
 
 健康检查：`/healthz` 只表示进程在。`/readyz` 还会查数据库。
 
