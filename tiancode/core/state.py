@@ -1,16 +1,11 @@
 """State helpers and context window trimming for TianCode."""
 
 from typing import List
-from langchain_core.messages import BaseMessage, SystemMessage
-from langgraph.graph import MessagesState
+from langchain_core.messages import BaseMessage
+from tiancode.core.compactor import ContextCompactor
 
 
-def prune_messages(messages: List[BaseMessage], max_retained: int = 12) -> List[BaseMessage]:
-    """Prune conversation history while preserving the first task instruction and recent turns."""
-    if len(messages) <= max_retained:
-        return list(messages)
-
-    # Keep the initial user instruction/context and the most recent (max_retained - 1) turns
-    first_msg = messages[0]
-    tail_msgs = messages[-(max_retained - 1):]
-    return [first_msg] + tail_msgs
+def prune_messages(messages: List[BaseMessage], max_retained: int = 14) -> List[BaseMessage]:
+    """Prune conversation history safely using ContextCompactor."""
+    compactor = ContextCompactor(max_retained_messages=max_retained)
+    return compactor.compact(messages)
