@@ -6,7 +6,7 @@ from typing import Any, List
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from tiancode.domain.models import SubagentReport
-from tiancode.tools.file_ops import resolve_safe_path
+from tiancode.tools.file_ops import IGNORED_DIR_NAMES, resolve_safe_path
 
 SUBAGENT_SYSTEM_PROMPT = """你是一个在独立沙箱中工作的只读型子智能体（TianCode Subagent: {role}）。
 你的唯一职责是：深度检索代码、排查日志、分析架构并提炼事实。
@@ -47,10 +47,18 @@ class SubagentRunner:
                 return f"❌ 目录 {directory} 不存在！"
             exts = (".py", ".json", ".txt", ".md", ".toml", ".yaml", ".yml", ".java", ".go", ".rs", ".js", ".ts", ".log")
             matched = []
-            for root, _, files in os.walk(target):
+            for root, dirs, files in os.walk(target):
+                dirs[:] = [d for d in dirs if d.lower() not in IGNORED_DIR_NAMES and not d.startswith(".")]
                 for f in files:
                     if f.endswith(exts):
-                        rel = Path(root, f).relative_to(target)
+                        full_p = Path(root, f)
+                        try:
+                            real_p = full_p.resolve()
+                            if not real_p.is_relative_to(self.work_dir) or not real_p.is_file():
+                                continue
+                        except Exception:
+                            continue
+                        rel = full_p.relative_to(target)
                         matched.append(str(rel))
             return f"当前项目文件：{matched}" if matched else "目录为空或未发现代码文件。"
 

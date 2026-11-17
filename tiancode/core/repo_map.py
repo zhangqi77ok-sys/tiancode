@@ -83,7 +83,10 @@ def generate_repo_map(work_dir: Path, max_depth: int = 4) -> str:
         for py_file in py_files:
             file_path = Path(root) / py_file
             try:
-                content = open(file_path, "r", encoding="utf-8", errors="replace").read()
+                real_file = file_path.resolve()
+                if not real_file.is_relative_to(resolved_dir) or not real_file.is_file():
+                    continue
+                content = real_file.read_text(encoding="utf-8", errors="replace")
                 symbols = extract_file_symbols(content)
             except Exception:
                 symbols = []
