@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 from langchain_core.tools import BaseTool, tool
-from tiancode.core.diff import compute_text_diff
 from tiancode.domain.interfaces import SnapshotStore
 
 
@@ -164,10 +163,18 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         is_new = not target.exists()
         original = "" if is_new else open(target, "r", encoding="utf-8", errors="replace").read()
 
+        from tiancode.core.diff import compute_text_diff
         diff = compute_text_diff(filename, original, content)
         _print_visual_diff(diff)
 
         store.record_snapshot(str(target), original, is_new=is_new)
+        # Protect external files from hardlink tampering: unlink if hardlinked before rewriting
+        if target.exists() and not target.is_symlink():
+            try:
+                if target.stat().st_nlink > 1:
+                    target.unlink()
+            except Exception:
+                pass
         with open(target, "w", encoding="utf-8") as f:
             f.write(content)
 
@@ -194,10 +201,18 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return f"❌ 替换失败：文件中未找到完全匹配的旧代码！当前源码如下，请对照后再修改：\n{src}"
 
         modified = src.replace(old_code, new_code, 1)
+        from tiancode.core.diff import compute_text_diff
         diff = compute_text_diff(filename, src, modified)
         _print_visual_diff(diff)
 
         store.record_snapshot(str(target), src, is_new=False)
+        # Protect external files from hardlink tampering: unlink if hardlinked before rewriting
+        if target.exists() and not target.is_symlink():
+            try:
+                if target.stat().st_nlink > 1:
+                    target.unlink()
+            except Exception:
+                pass
         with open(target, "w", encoding="utf-8") as f:
             f.write(modified)
 

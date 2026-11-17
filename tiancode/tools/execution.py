@@ -10,19 +10,17 @@ from langchain_core.tools import BaseTool, tool
 from tiancode.domain.models import ExecutionResult
 
 DANGEROUS_PATTERNS = [
-    r"\brm\s+-[rRfF]*\s+[/~]",                         # rm -rf / or ~
-    r"\brm\s+-[rRfF]*\s+[\.\*]",                       # rm -rf . or *
-    r"\brm\s+-[a-zA-Z]*\s+--\s+\.\.",                  # rm -rf -- ..
-    r"\brm\s+-[a-zA-Z]*\s+\.\.",                       # rm -rf ..
-    r"\bdel\s+/[sSqQ]*\s+[cC]:\\",                     # del /s c:\
-    r"\bdel\s+/[sSqQ]*\s+[\.\*]",                      # del /s . or *
+    # rm with recursive/force flags targeting whole-repo, root, home, or current directory
+    r"\brm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\s+(--\s+)?(\.|\.\/|\*|\/\*|\/|~|~\/)(\s|$)",
+    # rm with recursive/force flags targeting traversal
+    r"\brm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\s+(--\s+)?\.\.(\/.*|\s|$)",
+    r"\bdel\s+/[sSqQ]*\s+([cC]:\\|\\|\.|\*)(\s|$)",
     r"\bformat\s+[a-zA-Z]:",                           # format C:
     r"\bmkfs\b",                                       # mkfs
     r"\bgit\s+reset\s+--hard\b",                       # git reset --hard
     r"\bgit\s+clean\s+-[a-zA-Z]*[fF]",                 # git clean -xdf, -fd, -f
-    r"\bgit\s+(checkout|restore)\s+(\.|--\s*\.|\*)",  # git restore ., git checkout -- ., git restore *
-    r"\bcurl\b.*\|\s*(/usr/bin/|/bin/)?(ba)?sh\b",     # curl | /bin/sh or bash
-    r"\bwget\b.*\|\s*(/usr/bin/|/bin/)?(ba)?sh\b",     # wget | /bin/sh or bash
+    r"\bgit\s+(checkout|restore)\s+(\.|--\s*\.|\*)(\s|$)",  # git restore ., git checkout -- ., git restore *
+    r"\b(curl|wget)\b.*\|\s*(/usr/bin/|/bin/)?(ba)?sh\b",     # curl | /bin/sh or bash
     r"\bchmod\s+-R\s+777\b",                           # chmod -R 777
     r"\bfind\b.*\s+-delete\b",                         # find . -delete
     r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",      # fork bomb
@@ -66,6 +64,35 @@ def truncate_output(output: str, max_length: int = 8000) -> str:
     return f"{output[:head_len]}\n\n... [输出过长已截断，保留头部与尾部关键信息] ...\n\n{output[-tail_len:]}"
 
 
+def kill_process_tree(proc: subprocess.Popen) -> None:
+    """Recursively kill the entire process tree to eliminate orphan background processes."""
+    if proc.poll() is not None:
+        return
+
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+                creationflags=0x08000000,
+            )
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    else:
+        try:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
 def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> ExecutionResult:
     """Execute arbitrary shell command in work_dir with timeout, safety checks, and env scrubbing."""
     if is_dangerous_command(command):
@@ -78,32 +105,39 @@ def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> Ex
 
     try:
         creationflags = 0x08000000 if sys.platform == "win32" else 0
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(work_dir),
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=get_sanitized_env(),
             creationflags=creationflags,
+            start_new_session=(sys.platform != "win32"),
         )
-        return ExecutionResult(
-            exit_code=proc.returncode,
-            stdout=proc.stdout or "",
-            stderr=proc.stderr or "",
-            timed_out=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout_txt = exc.stdout if isinstance(exc.stdout, str) else ""
-        return ExecutionResult(
-            exit_code=-1,
-            stdout=stdout_txt,
-            stderr=f"命令执行超时（超过 {timeout} 秒被强制终止）",
-            timed_out=True,
-        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return ExecutionResult(
+                exit_code=proc.returncode if proc.returncode is not None else 0,
+                stdout=stdout or "",
+                stderr=stderr or "",
+                timed_out=False,
+            )
+        except subprocess.TimeoutExpired:
+            kill_process_tree(proc)
+            try:
+                stdout, _ = proc.communicate(timeout=2)
+            except Exception:
+                stdout = ""
+            return ExecutionResult(
+                exit_code=-1,
+                stdout=stdout or "",
+                stderr=f"命令执行超时（超过 {timeout} 秒被强制终止）",
+                timed_out=True,
+            )
     except Exception as exc:
         return ExecutionResult(
             exit_code=-1,
@@ -117,28 +151,36 @@ def execute_python_script(script_path: Path, work_dir: Path, timeout: int = 15) 
     """Execute python script using current interpreter with env scrubbing."""
     try:
         creationflags = 0x08000000 if sys.platform == "win32" else 0
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, str(script_path)],
             cwd=str(work_dir),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=get_sanitized_env(),
             creationflags=creationflags,
+            start_new_session=(sys.platform != "win32"),
         )
-        return ExecutionResult(
-            exit_code=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            timed_out=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return ExecutionResult(
-            exit_code=-1,
-            stdout=exc.stdout or "",
-            stderr=f"执行超时（超过 {timeout} 秒被强制终止）",
-            timed_out=True,
-        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return ExecutionResult(
+                exit_code=proc.returncode if proc.returncode is not None else 0,
+                stdout=stdout or "",
+                stderr=stderr or "",
+                timed_out=False,
+            )
+        except subprocess.TimeoutExpired:
+            kill_process_tree(proc)
+            try:
+                stdout, _ = proc.communicate(timeout=2)
+            except Exception:
+                stdout = ""
+            return ExecutionResult(
+                exit_code=-1,
+                stdout=stdout or "",
+                stderr=f"执行超时（超过 {timeout} 秒被强制终止）",
+                timed_out=True,
+            )
     except Exception as exc:
         return ExecutionResult(
             exit_code=-1,
