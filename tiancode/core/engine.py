@@ -57,6 +57,7 @@ class TianCodeEngine:
         # 4. Session Persistence Store
         from tiancode.core.session_store import SessionStore
         self.session_store = SessionStore()
+        self.active_session_id: str = "tiancode_repl"
 
         # 5. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
@@ -227,6 +228,7 @@ class TianCodeEngine:
                 self.graph.update_state(config, {"messages": rehydrated_msgs})
             except Exception:
                 pass
+        self.active_session_id = session_id
         return True
 
     def reset_session(self) -> None:

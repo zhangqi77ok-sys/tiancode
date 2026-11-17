@@ -6,6 +6,7 @@ from typing import Any, List
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from tiancode.domain.models import SubagentReport
+from tiancode.tools.file_ops import resolve_safe_path
 
 SUBAGENT_SYSTEM_PROMPT = """你是一个在独立沙箱中工作的只读型子智能体（TianCode Subagent: {role}）。
 你的唯一职责是：深度检索代码、排查日志、分析架构并提炼事实。
@@ -32,13 +33,16 @@ class SubagentRunner:
         """Provide strictly read-only tools to prevent workspace mutation during research."""
 
         def _resolve(filename: str) -> Path:
-            p = Path(filename)
-            return p if p.is_absolute() else (self.work_dir / p)
+            return resolve_safe_path(filename, self.work_dir)
 
         @tool
         def list_files(directory: str = ".") -> str:
             """列出指定目录下的代码和配置文件。"""
-            target = _resolve(directory)
+            try:
+                target = _resolve(directory)
+            except PermissionError as err:
+                return f"❌ {str(err)}"
+
             if not target.exists():
                 return f"❌ 目录 {directory} 不存在！"
             exts = (".py", ".json", ".txt", ".md", ".toml", ".yaml", ".yml", ".java", ".go", ".rs", ".js", ".ts", ".log")
@@ -59,7 +63,10 @@ class SubagentRunner:
         @tool
         def read_file(filename: str) -> str:
             """读取文件源码或日志内容。"""
-            target = _resolve(filename)
+            try:
+                target = _resolve(filename)
+            except PermissionError as err:
+                return f"❌ {str(err)}"
             if not target.exists():
                 return f"❌ 文件 '{filename}' 不存在！"
             with open(target, "r", encoding="utf-8", errors="replace") as f:

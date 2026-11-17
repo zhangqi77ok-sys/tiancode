@@ -5,16 +5,34 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 from langchain_core.tools import BaseTool, tool
 from tiancode.domain.models import ExecutionResult
 
 DANGEROUS_PATTERNS = [
-    r"\brm\s+-[rRfF]*\s+[/~]",
-    r"\bdel\s+/[sSqQ]*\s+[cC]:\\",
-    r"\bformat\s+[a-zA-Z]:",
-    r"\bmkfs\b",
+    r"\brm\s+-[rRfF]*\s+[/~]",           # rm -rf / or ~
+    r"\brm\s+-[rRfF]*\s+[\.\*]",         # rm -rf . or *
+    r"\brm\s+-[rRfF]*\s+\.\.",           # rm -rf ..
+    r"\bdel\s+/[sSqQ]*\s+[cC]:\\",       # del /s c:\
+    r"\bdel\s+/[sSqQ]*\s+[\.\*]",        # del /s . or *
+    r"\bformat\s+[a-zA-Z]:",             # format C:
+    r"\bmkfs\b",                         # mkfs
+    r"\bgit\s+reset\s+--hard\b",         # git reset --hard
+    r"\bgit\s+clean\s+-[fF]",            # git clean -f
+    r"\bcurl\b.*\|\s*(ba)?sh\b",         # curl | sh
+    r"\bwget\b.*\|\s*(ba)?sh\b",         # wget | sh
+    r"\bchmod\s+-R\s+777\b",             # chmod -R 777
+    r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", # fork bomb
 ]
+
+SENSITIVE_ENV_KEYS = {
+    "TIANCODE_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+}
 
 
 def is_dangerous_command(command: str) -> bool:
@@ -23,6 +41,14 @@ def is_dangerous_command(command: str) -> bool:
         if re.search(pattern, command, re.IGNORECASE):
             return True
     return False
+
+
+def get_sanitized_env() -> Dict[str, str]:
+    """Scrub sensitive credentials and API tokens from subprocess environment."""
+    env = os.environ.copy()
+    for key in SENSITIVE_ENV_KEYS:
+        env.pop(key, None)
+    return env
 
 
 def truncate_output(output: str, max_length: int = 8000) -> str:
@@ -35,7 +61,7 @@ def truncate_output(output: str, max_length: int = 8000) -> str:
 
 
 def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> ExecutionResult:
-    """Execute arbitrary shell command in work_dir with timeout and safety checks."""
+    """Execute arbitrary shell command in work_dir with timeout, safety checks, and env scrubbing."""
     if is_dangerous_command(command):
         return ExecutionResult(
             exit_code=126,
@@ -45,6 +71,7 @@ def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> Ex
         )
 
     try:
+        creationflags = 0x08000000 if sys.platform == "win32" else 0
         proc = subprocess.run(
             command,
             cwd=str(work_dir),
@@ -54,6 +81,8 @@ def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> Ex
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            env=get_sanitized_env(),
+            creationflags=creationflags,
         )
         return ExecutionResult(
             exit_code=proc.returncode,
@@ -79,14 +108,17 @@ def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> Ex
 
 
 def execute_python_script(script_path: Path, work_dir: Path, timeout: int = 15) -> ExecutionResult:
-    """Execute python script using the current python interpreter."""
+    """Execute python script using current interpreter with env scrubbing."""
     try:
+        creationflags = 0x08000000 if sys.platform == "win32" else 0
         proc = subprocess.run(
             [sys.executable, str(script_path)],
             cwd=str(work_dir),
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=get_sanitized_env(),
+            creationflags=creationflags,
         )
         return ExecutionResult(
             exit_code=proc.returncode,

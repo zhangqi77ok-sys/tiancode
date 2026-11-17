@@ -2,11 +2,30 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 from langchain_core.tools import BaseTool, tool
 from tiancode.core.diff import compute_text_diff
 from tiancode.domain.interfaces import SnapshotStore
+
+
+def resolve_safe_path(filename: str | Path, work_dir: Path) -> Path:
+    """Resolve path and verify it is strictly within work_dir (anti-traversal)."""
+    target = Path(filename)
+    resolved_work_dir = work_dir.resolve()
+
+    if target.is_absolute():
+        resolved_target = target.resolve()
+    else:
+        resolved_target = (work_dir / target).resolve()
+
+    try:
+        resolved_target.relative_to(resolved_work_dir)
+    except ValueError:
+        raise PermissionError(f"安全拦截：路径 '{filename}' 越界，位于工作区 '{work_dir}' 外部，禁止访问！")
+
+    return resolved_target
 
 
 def _print_visual_diff(diff) -> None:
@@ -27,14 +46,17 @@ def _run_post_edit_verification(work_dir: Path) -> Optional[str]:
         return None
 
     try:
+        creationflags = 0x08000000 if sys.platform == "win32" else 0
         res = subprocess.run(
             cmd,
             cwd=str(work_dir),
+            shell=True,
             capture_output=True,
             text=True,
             timeout=8,
             encoding="utf-8",
             errors="replace",
+            creationflags=creationflags,
         )
         if res.returncode == 0:
             return "单测验证通过 (100% 绿灯)"
@@ -42,7 +64,7 @@ def _run_post_edit_verification(work_dir: Path) -> Optional[str]:
             err_msg = (res.stderr.strip() or res.stdout.strip())[-1000:]
             return f"自动化测试未通过 (Exit {res.returncode})：\n{err_msg}\n请根据上述报错自我修正；若修复陷入死胡同，可调用 'rollback_turn' 安全回滚。"
     except subprocess.TimeoutExpired:
-        return "自动化测试执行耗时超过 8 秒，已转为后台跳过直接交付。"
+        return "自动化测试超时（超过 8 秒未完成，已终止）"
     except Exception as exc:
         return f"自动化测试跳过: {str(exc)}"
 
@@ -51,13 +73,16 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
     """Factory to create file operation tools bound to a specific snapshot store and directory."""
 
     def _resolve(filename: str) -> Path:
-        p = Path(filename)
-        return p if p.is_absolute() else (work_dir / p)
+        return resolve_safe_path(filename, work_dir)
 
     @tool
     def list_files(directory: str = ".") -> str:
         """列出指定目录下的代码和配置文件。不了解项目结构时优先调用。"""
-        target = _resolve(directory)
+        try:
+            target = _resolve(directory)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
         if not target.exists():
             return f"❌ 目录 {directory} 不存在！"
         exts = (".py", ".json", ".txt", ".md", ".toml", ".yaml", ".yml")
@@ -78,7 +103,11 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
     @tool
     def read_file(filename: str) -> str:
         """读取文件源码内容。"""
-        target = _resolve(filename)
+        try:
+            target = _resolve(filename)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
         if not target.exists():
             parent = target.parent if target.parent.exists() else work_dir
             nearby = [f for f in os.listdir(parent) if f.endswith(".py")]
@@ -89,7 +118,11 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
     @tool
     def write_file(filename: str, content: str) -> str:
         """全量新建或覆盖写入文件（自动渲染 Visual Diff 与安全快照）。"""
-        target = _resolve(filename)
+        try:
+            target = _resolve(filename)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
         target.parent.mkdir(parents=True, exist_ok=True)
         is_new = not target.exists()
         original = "" if is_new else open(target, "r", encoding="utf-8", errors="replace").read()
@@ -111,7 +144,11 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
     @tool
     def edit_file(filename: str, old_code: str, new_code: str) -> str:
         """局部修改文件：将原代码中唯一的 old_code 精准替换为 new_code（自动渲染 Visual Diff 与安全快照）。"""
-        target = _resolve(filename)
+        try:
+            target = _resolve(filename)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
         if not target.exists():
             return f"❌ 文件 '{filename}' 不存在，请先确认路径！"
         with open(target, "r", encoding="utf-8", errors="replace") as f:

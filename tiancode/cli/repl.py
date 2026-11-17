@@ -7,6 +7,7 @@ from tiancode.core.engine import TianCodeEngine
 
 def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> None:
     """Launch the interactive terminal REPL."""
+    engine.active_session_id = session_id
     TerminalFormatter.print_banner(
         work_dir=str(engine.settings.work_dir),
         model=engine.settings.model,
@@ -36,7 +37,8 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
         # Execute normal coding request
         try:
             in_agent_message = False
-            for event in engine.stream_task(user_input, thread_id=session_id):
+            current_thread = getattr(engine, "active_session_id", session_id)
+            for event in engine.stream_task(user_input, thread_id=current_thread):
                 ev_type = event.get("type") if isinstance(event, dict) else None
                 if ev_type == "token":
                     content = event.get("content", "")

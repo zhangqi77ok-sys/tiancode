@@ -108,7 +108,6 @@ class GitSnapshotStore(SnapshotStore):
 
         if self.is_git_repo():
             self._run_git(["restore", "--staged", rel_name])
-            self._run_git(["restore", rel_name])
 
         return snap is not None or target_path.exists()
 
@@ -131,17 +130,11 @@ class GitSnapshotStore(SnapshotStore):
                 target_path.write_text(snap.original_content, encoding="utf-8")
                 reverted.append(f"{rel_name} (快照还原)")
 
-        # In git repositories, ensure staged/unstaged tracked changes are restored
+        # In git repositories, unstage touched files so git index is clean,
+        # but NEVER run git restore on working tree to avoid destroying user's uncommitted work.
         if self.is_git_repo():
-            status_res = self._run_git(["status", "--porcelain"])
-            for line in status_res.stdout.splitlines():
-                if len(line) > 3:
-                    code, fname = line[:2].strip(), line[3:].strip()
-                    if fname in self._touched_files and not code.startswith("??"):
-                        self._run_git(["restore", "--staged", fname])
-                        self._run_git(["restore", fname])
-                        if not any(fname in r for r in reverted):
-                            reverted.append(f"{fname} (Git还原)")
+            for fname in self._touched_files:
+                self._run_git(["restore", "--staged", fname])
 
         self._touched_files.clear()
         self._memory_snapshots.clear()
