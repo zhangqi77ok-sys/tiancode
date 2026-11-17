@@ -39,6 +39,18 @@ class TaskPlan:
         """Check if all steps are completed."""
         return len(self.steps) > 0 and all(s.status == StepStatus.COMPLETED for s in self.steps)
 
+    @property
+    def is_terminated(self) -> bool:
+        """Check if all steps have reached a terminal state (COMPLETED or FAILED)."""
+        return len(self.steps) > 0 and all(
+            s.status in (StepStatus.COMPLETED, StepStatus.FAILED) for s in self.steps
+        )
+
+    @property
+    def has_failed(self) -> bool:
+        """Check if any step has failed."""
+        return any(s.status == StepStatus.FAILED for s in self.steps)
+
     def current_step(self) -> Optional[PlanStep]:
         """Return the current step object."""
         if 0 <= self.current_step_index < len(self.steps):
@@ -55,27 +67,36 @@ class TaskPlan:
         return False
 
     def complete_step(self, step_id: int, summary: str = "") -> bool:
-        """Mark step as completed and advance current_step_index."""
-        for idx, s in enumerate(self.steps):
-            if s.step_id == step_id:
-                s.status = StepStatus.COMPLETED
-                s.result_summary = summary
-                next_idx = idx + 1
-                if next_idx < len(self.steps):
-                    self.current_step_index = next_idx
-                    if self.steps[next_idx].status == StepStatus.TODO:
-                        self.steps[next_idx].status = StepStatus.IN_PROGRESS
-                return True
-        return False
+        """Mark current step as completed and advance current_step_index."""
+        curr = self.current_step()
+        if curr is None or curr.step_id != step_id:
+            return False
+        curr.status = StepStatus.COMPLETED
+        curr.result_summary = summary
+        next_idx = self.current_step_index + 1
+        if next_idx < len(self.steps):
+            self.current_step_index = next_idx
+            if self.steps[next_idx].status == StepStatus.TODO:
+                self.steps[next_idx].status = StepStatus.IN_PROGRESS
+        else:
+            self.current_step_index = len(self.steps)
+        return True
 
     def fail_step(self, step_id: int, reason: str = "") -> bool:
-        """Mark step as failed."""
-        for s in self.steps:
-            if s.step_id == step_id:
-                s.status = StepStatus.FAILED
-                s.result_summary = reason
-                return True
-        return False
+        """Mark current step as failed and advance current_step_index."""
+        curr = self.current_step()
+        if curr is None or curr.step_id != step_id:
+            return False
+        curr.status = StepStatus.FAILED
+        curr.result_summary = reason
+        next_idx = self.current_step_index + 1
+        if next_idx < len(self.steps):
+            self.current_step_index = next_idx
+            if self.steps[next_idx].status == StepStatus.TODO:
+                self.steps[next_idx].status = StepStatus.IN_PROGRESS
+        else:
+            self.current_step_index = len(self.steps)
+        return True
 
 
 @dataclass(frozen=True)

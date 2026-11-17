@@ -47,19 +47,36 @@ class TaskPlanner:
                 lines.append(f"  • 步骤 {s.step_id}: {s.title}{summary_text}")
             lines.append("")
 
-        curr = plan.current_step()
-        if curr:
-            lines.extend([
-                f"🔥 【当前聚焦步骤 [{curr.step_id}]】: {curr.title}",
-                f"  • 详细任务说明: {curr.description}",
-            ])
-            if curr.verification:
-                lines.append(f"  • 验收与验证标准: {curr.verification}")
-            lines.append(
-                "💡 提示：完成当前步骤的代码编写与验证后，请调用 'complete_step(step_id, summary)' 工具流转至下一步。"
-            )
+        # Failed steps summary
+        failed_steps = [s for s in plan.steps if s.status == StepStatus.FAILED]
+        if failed_steps:
+            lines.append("❌ 【已失败步骤与记录原因】:")
+            for s in failed_steps:
+                reason_text = f" -> {s.result_summary}" if s.result_summary else ""
+                lines.append(f"  • 步骤 {s.step_id}: {s.title}{reason_text}")
+            lines.append("")
+
+        if plan.is_terminated:
+            if plan.is_finished:
+                lines.append("🎉 恭喜！当前任务计划中的所有步骤均已圆满完成（已达终态）。")
+            else:
+                lines.append(
+                    f"🏁 当前任务计划已达到终态（成功: {len(completed_steps)} 步，失败: {len(failed_steps)} 步）。"
+                )
         else:
-            lines.append("🎉 恭喜！当前计划中的所有步骤均已完成。")
+            curr = plan.current_step()
+            if curr:
+                lines.extend([
+                    f"🔥 【当前聚焦步骤 [{curr.step_id}]】: {curr.title}",
+                    f"  • 详细任务说明: {curr.description}",
+                ])
+                if curr.verification:
+                    lines.append(f"  • 验收与验证标准: {curr.verification}")
+                lines.append(
+                    "💡 提示：完成当前步骤后请调用 'complete_step(step_id, summary)'；若执行受阻且无法修复，请调用 'fail_step(step_id, reason)' 如实记录并流转。"
+                )
+            else:
+                lines.append("🎉 恭喜！当前计划中的所有步骤均已完成。")
 
         lines.append("━" * 50)
         return "\n".join(lines)

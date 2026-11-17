@@ -94,7 +94,7 @@ class TerminalFormatter:
                 suffix = f" {cls.YELLOW}(进行中...){cls.RESET}"
             elif s.status == StepStatus.FAILED:
                 icon = f"{cls.RED}[✗]{cls.RESET}"
-                suffix = f" {cls.RED}(失败){cls.RESET}"
+                suffix = f" {cls.RED}(失败: {s.result_summary}){cls.RESET}" if s.result_summary else f" {cls.RED}(失败){cls.RESET}"
             else:
                 icon = "[ ]"
                 suffix = ""
