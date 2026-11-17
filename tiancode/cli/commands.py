@@ -168,7 +168,7 @@ class SlashCommandHandler:
         from tiancode.eval.runner import BenchmarkRunner
         runner = BenchmarkRunner(engine=self.engine)
         pids = [problem_arg.strip()] if problem_arg.strip() else None
-        TerminalFormatter.print_info("⚡ 正在启动 TianCode 自动化基准评测 (SWE-bench 体系)...")
+        TerminalFormatter.print_info("⚡ 正在启动 TianCode 自动化本地微型基准评测 (Micro Benchmark)...")
         report = runner.run_suite(problem_ids=pids)
         print(report.format_table())
 

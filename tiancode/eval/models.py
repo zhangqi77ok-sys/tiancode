@@ -57,7 +57,7 @@ class EvalReport:
         divider = "-" * len(header)
         lines = [
             "",
-            "📊 ====== [TianCode Agentic Evals 评测战报] ======",
+            "📊 ====== [TianCode 本地微型基准评测战报 (Micro Benchmark)] ======",
             divider,
             header,
             divider,

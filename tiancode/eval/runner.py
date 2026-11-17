@@ -5,12 +5,40 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from tiancode.config.settings import Settings
 from tiancode.core.engine import TianCodeEngine
 from tiancode.eval.challenges import get_all_challenges, get_challenge
 from tiancode.eval.models import BenchmarkProblem, EvalReport, EvalResult
+
+
+class AgentTurnTracker:
+    """Accurately tracks agent tool execution cycles from stream_task events."""
+
+    def __init__(self, max_turns: int = 5) -> None:
+        self.max_turns = max_turns
+        self.tool_turns = 0
+        self.has_token_output = False
+
+    def observe(self, event: Dict[str, Any]) -> bool:
+        """Record an event and return True if execution should terminate."""
+        if not isinstance(event, dict):
+            return False
+
+        event_type = event.get("type")
+        if event_type == "token":
+            self.has_token_output = True
+        elif event_type == "tool_end":
+            self.tool_turns += 1
+            if self.tool_turns >= self.max_turns:
+                return True
+        return False
+
+    @property
+    def final_turn_count(self) -> int:
+        """Return the actual turn count (at least 1 if tokens were emitted, otherwise tool_turns)."""
+        return max(self.tool_turns, 1 if self.has_token_output else 0)
 
 
 class BenchmarkRunner:
@@ -55,20 +83,22 @@ class BenchmarkRunner:
                 solve_fn(sandbox_path)
                 turn_count = 1
             else:
-                # Spawn isolated engine for this sandbox
+                # Spawn isolated engine for this sandbox with auto_heal disabled
                 eval_settings = Settings(
                     api_key=self.settings.api_key,
                     base_url=self.settings.base_url,
                     model=self.settings.model,
                     work_dir=sandbox_path,
+                    auto_heal=False,
                 )
                 sandbox_engine = TianCodeEngine(settings=eval_settings)
+                tracker = AgentTurnTracker(max_turns=problem.max_turns)
 
                 try:
                     for step in sandbox_engine.stream_task(problem.description, thread_id=f"eval_{problem.id}"):
-                        turn_count += 1
-                        if turn_count >= problem.max_turns * 3:
+                        if tracker.observe(step):
                             break
+                    turn_count = tracker.final_turn_count
                 except Exception as exc:
                     duration = time.time() - start_time
                     return EvalResult(
@@ -76,7 +106,7 @@ class BenchmarkRunner:
                         title=problem.title,
                         success=False,
                         duration_seconds=duration,
-                        turn_count=turn_count,
+                        turn_count=tracker.final_turn_count,
                         error_message=f"Agent runtime exception: {str(exc)}",
                     )
 

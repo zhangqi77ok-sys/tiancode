@@ -41,8 +41,9 @@ tiancode/
    - **交互终端 (REPL)**：`tiancode` 进入持续对话工作台，保持多轮上下文。
 2. **Git-Native 智能协同 (时光倒流与自动微提交)**：
    - `/diff`：实时查看当前会话修改的所有文件的 Git 风格红绿 Diff 补丁。
-   - `/undo`：一键执行 `git restore . && git clean -fd`，瞬间恢复到修改前。
+   - `/undo`：安全无损快照回滚，精准撤销智能体在本轮修改与新建的文件，不破坏用户自身未暂存的修改或 Git 暂存区。
    - `/commit`：AI 自动根据代码变动生成符合 Conventional Commits 规范的提交信息并自动执行 `git commit`。
+   - `/eval`：本地微型基准评测机 (Micro Benchmark)，支持算法与工程挑战题的自主求解与沙箱验证。
 3. **真实子进程自愈闭环**：
    - 绝不“只写不测”，改完代码自动调用系统 Python 真实运行，捕获 Traceback 自动自我修复。
 4. **上下文自动瘦身**：
