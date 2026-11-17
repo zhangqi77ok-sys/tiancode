@@ -40,5 +40,14 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
                     msg = step["brain"]["messages"][-1]
                     if msg.content:
                         TerminalFormatter.print_agent_message(msg.content)
+                    if getattr(msg, "tool_calls", None):
+                        for tc in msg.tool_calls:
+                            TerminalFormatter.print_info(f"⚙️ 调用工具: {tc.get('name')}")
+                elif "tools" in step:
+                    for tmsg in step["tools"]["messages"]:
+                        content_str = str(tmsg.content).strip()
+                        if content_str:
+                            first_line = content_str.splitlines()[0]
+                            TerminalFormatter.print_info(f"↳ {first_line[:120]}")
         except Exception as exc:
             TerminalFormatter.print_warning(f"任务执行异常: {str(exc)}")
