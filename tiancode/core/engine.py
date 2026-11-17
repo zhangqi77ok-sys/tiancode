@@ -35,10 +35,15 @@ class TianCodeEngine:
             git_store = GitSnapshotStore(work_dir=settings.work_dir)
             self.snapshot_store = git_store if git_store.is_git_repo() else InMemorySnapshotStore(work_dir=settings.work_dir)
 
-        # 2. Build Tools
+        # 2. Build Tools & Planner
+        from tiancode.core.planner import TaskPlanner
+        from tiancode.tools.plan_ops import create_plan_tools
+
+        self.planner = TaskPlanner()
         self.tools = []
         self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir, auto_heal=settings.auto_heal))
         self.tools.extend(create_execution_tools(settings.work_dir, settings.timeout_seconds))
+        self.tools.extend(create_plan_tools(self.planner))
 
         # 3. Dynamic Skills Extension
         from tiancode.skills.loader import SkillLoader
@@ -116,7 +121,11 @@ class TianCodeEngine:
         def brain_node(state: MessagesState) -> Dict[str, Any]:
             trimmed = prune_messages(state["messages"], max_retained=self.settings.max_history_messages)
             skills_catalog = self.skill_loader.format_prompt_catalog()
-            full_prompt = TIANCODE_SYSTEM_PROMPT + (f"\n{skills_catalog}" if skills_catalog else "")
+            plan_context = ""
+            if self.planner.active_plan and not self.planner.active_plan.is_finished:
+                plan_context = "\n" + self.planner.format_worker_prompt_context(self.planner.active_plan)
+
+            full_prompt = TIANCODE_SYSTEM_PROMPT + (f"\n{skills_catalog}" if skills_catalog else "") + plan_context
             sys_msg = SystemMessage(content=full_prompt)
             response = self.llm_with_tools.invoke([sys_msg] + trimmed)
             return {"messages": [response]}
@@ -147,9 +156,10 @@ class TianCodeEngine:
         )
 
     def reset_session(self) -> None:
-        """Clear conversation memory and recorded file snapshots."""
+        """Clear conversation memory, recorded file snapshots, and active plan."""
         self.memory.storage.clear()
         self.snapshot_store.clear()
+        self.planner.active_plan = None
 
     def generate_commit_message(self, task_description: str, diff_text: str) -> str:
         """Use LLM to generate a conventional commit message based on task and diff."""

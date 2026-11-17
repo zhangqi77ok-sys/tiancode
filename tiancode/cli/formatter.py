@@ -73,3 +73,28 @@ class TerminalFormatter:
     def print_warning(cls, message: str) -> None:
         """Print warning status."""
         print(f"{cls.YELLOW}⚠️ {message}{cls.RESET}")
+
+    @classmethod
+    def print_task_plan(cls, plan) -> None:
+        """Render the dynamic task execution checklist."""
+        from tiancode.domain.models import StepStatus
+
+        line = "═" * 55
+        print(f"\n{cls.CYAN}{cls.BOLD}📋 {line}{cls.RESET}")
+        print(f"{cls.BOLD}  TianCode 任务执行看板: {plan.task_title}{cls.RESET}")
+        print(f"{cls.CYAN}{line}{cls.RESET}")
+        for s in plan.steps:
+            if s.status == StepStatus.COMPLETED:
+                icon = f"{cls.GREEN}[✓]{cls.RESET}"
+                suffix = f" {cls.GREEN}(已完成){cls.RESET}" if s.result_summary else ""
+            elif s.status == StepStatus.IN_PROGRESS:
+                icon = f"{cls.YELLOW}{cls.BOLD}[▶]{cls.RESET}"
+                suffix = f" {cls.YELLOW}(进行中...){cls.RESET}"
+            elif s.status == StepStatus.FAILED:
+                icon = f"{cls.RED}[✗]{cls.RESET}"
+                suffix = f" {cls.RED}(失败){cls.RESET}"
+            else:
+                icon = "[ ]"
+                suffix = ""
+            print(f"  {icon} {s.step_id}. {s.title}{suffix}")
+        print(f"{cls.CYAN}{line}{cls.RESET}\n")

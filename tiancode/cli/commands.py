@@ -19,6 +19,7 @@ class SlashCommandHandler:
             "/commit": self._handle_commit,
             "/config": self._handle_config,
             "/map": lambda _: self._handle_map(),
+            "/plan": lambda _: self._handle_plan(),
             "/skills": lambda _: self._handle_skills(),
             "/eval": self._handle_eval,
             "/clear": lambda _: self._handle_clear(),
@@ -126,6 +127,12 @@ class SlashCommandHandler:
         map_text = generate_repo_map(self.engine.settings.work_dir)
         print(map_text)
 
+    def _handle_plan(self) -> None:
+        if not hasattr(self.engine, "planner") or not self.engine.planner.active_plan:
+            TerminalFormatter.print_info("当前没有进行中的任务计划看板。遇到复杂任务时 AI 将自动创建。")
+            return
+        TerminalFormatter.print_task_plan(self.engine.planner.active_plan)
+
     def _handle_skills(self) -> None:
         skills = self.engine.skill_loader.load_all_skills()
         if not skills:
@@ -163,6 +170,7 @@ class SlashCommandHandler:
 【TianCode 快捷斜杠指令】
   /config  - 查看或修改模型连接配置 (/config show, /config set key xxx)
   /map     - 查看当前项目的 AST 代码拓扑全景图 (Repo Map)
+  /plan    - 查看当前活跃的 Planner-Worker 任务执行看板
   /skills  - 查看已安装的扩展技能列表 (Skills)
   /diff    - 查看当前工作区代码变更补丁对比
   /undo    - 一键回滚并撤销当前所有未提交改动 (Git Restore)
