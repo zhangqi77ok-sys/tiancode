@@ -45,6 +45,7 @@ class Settings:
     temperature: float = 0.0
     timeout_seconds: int = 15
     max_history_messages: int = 12
+    max_context_chars: int = 40000
     work_dir: Path = Path(".")
     auto_heal: bool = True
 

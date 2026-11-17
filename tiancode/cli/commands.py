@@ -23,6 +23,7 @@ class SlashCommandHandler:
             "/skills": lambda _: self._handle_skills(),
             "/sessions": lambda _: self._handle_sessions(),
             "/switch": self._handle_switch,
+            "/compact": lambda _: self._handle_compact(),
             "/eval": self._handle_eval,
             "/clear": lambda _: self._handle_clear(),
             "/help": lambda _: self._handle_help(),
@@ -203,6 +204,49 @@ class SlashCommandHandler:
         else:
             TerminalFormatter.print_warning(f"未能找到或恢复会话 [{target_id}]，请先运行 /sessions 查看可用列表。")
 
+    def _handle_compact(self) -> None:
+        if not hasattr(self.engine, "graph") or not self.engine.graph:
+            TerminalFormatter.print_info("当前引擎尚未初始化执行图，无需压缩。")
+            return
+
+        session_id = getattr(self.engine, "active_session_id", "tiancode_repl")
+        config = {"configurable": {"thread_id": session_id}}
+
+        try:
+            state = self.engine.graph.get_state(config)
+            messages = state.values.get("messages", []) if state and hasattr(state, "values") and state.values else []
+        except Exception:
+            messages = []
+
+        if not messages:
+            TerminalFormatter.print_info("当前上下文无历史交互消息，无需压缩。")
+            return
+
+        from tiancode.core.compactor import ContextCompactor
+
+        settings = getattr(self.engine, "settings", None)
+        max_msgs = getattr(settings, "max_history_messages", 12)
+        if not isinstance(max_msgs, int):
+            max_msgs = 12
+        max_chars = getattr(settings, "max_context_chars", 40000)
+        if not isinstance(max_chars, int):
+            max_chars = 40000
+
+        compactor = ContextCompactor(
+            max_retained_messages=max_msgs,
+            max_context_chars=max_chars,
+        )
+
+        result = compactor.compact_with_stats(messages)
+        if result.compacted_chars < result.original_chars or len(result.messages) < len(messages):
+            self.engine.graph.update_state(config, {"messages": result.messages})
+            saved_chars = max(0, result.original_chars - result.compacted_chars)
+            TerminalFormatter.print_success(
+                f"上下文压缩完成！已折叠 {result.folded_count} 条消息，释放约 {saved_chars} 字符 (当前共 {len(result.messages)} 条消息)。"
+            )
+        else:
+            TerminalFormatter.print_info("当前上下文未超出预算阈值，无需压缩。")
+
     def _handle_status(self) -> None:
         snapshots = self.engine.snapshot_store.get_all_snapshots()
         TerminalFormatter.print_info(f"当前已追踪修改文件数: {len(snapshots)}")
@@ -218,6 +262,7 @@ class SlashCommandHandler:
   /skills   - 查看已安装的扩展技能列表 (Skills)
   /sessions - 查看磁盘持久化的历史会话列表
   /switch   - 快速切换恢复至指定历史会话 (/switch <session_id>)
+  /compact  - 立即执行上下文智能压缩与 Token 预算折叠，释放上下文窗口
   /diff    - 查看当前工作区代码变更补丁对比
   /undo    - 一键回滚并撤销当前所有未提交改动 (安全无损快照回滚)
   /commit  - 智能生成 Conventional Commit 并提交 (或指定: /commit feat: 自定义信息)

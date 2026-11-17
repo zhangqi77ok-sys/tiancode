@@ -46,8 +46,10 @@ tiancode/
    - `/eval`：本地微型基准评测机 (Micro Benchmark)，支持算法与工程挑战题的自主求解与沙箱验证。
 3. **真实子进程自愈闭环**：
    - 绝不“只写不测”，改完代码自动调用系统 Python 真实运行，捕获 Traceback 自动自我修复。
-4. **上下文自动瘦身**：
-   - 动态裁剪陈旧的中间报错，保留原始目标与最近操作，避免 Token 爆炸。
+4. **上下文智能压缩与 Token 预算熔断 (Smart Context Compaction)**：
+   - 动态字符与消息双轨预算控制，防止长会话或海量工具输出导致上下文窗口爆炸。
+   - 自动生成结构化【上下文智能折叠摘要】卡片保留历史关键事实与文件变更，无缝桥接前后文。
+   - 提供 `/compact` 斜杠指令，支持在交互终端中手动触发压缩并查看节省字符统计。
 
 ---
 
@@ -91,5 +93,8 @@ tc
 - `tiancode > 帮我给 utils.py 加上阶乘函数并测试`
 - `tiancode > /diff` (查看代码变动)
 - `tiancode > /undo` (后悔了？一键撤回修改)
+- `tiancode > /compact` (智能折叠长会话历史，释放 Token 预算)
+- `tiancode > /sessions` (查看历史持久化会话)
+- `tiancode > /switch <session_id>` (恢复历史会话)
 - `tiancode > /clear` (清空对话记忆)
 - `tiancode > exit` (退出)
