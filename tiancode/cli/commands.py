@@ -17,6 +17,7 @@ class SlashCommandHandler:
             "/commit": self._handle_commit,
             "/config": self._handle_config,
             "/map": lambda _: self._handle_map(),
+            "/skills": lambda _: self._handle_skills(),
             "/eval": self._handle_eval,
             "/clear": lambda _: self._handle_clear(),
             "/help": lambda _: self._handle_help(),
@@ -123,6 +124,20 @@ class SlashCommandHandler:
         map_text = generate_repo_map(self.engine.settings.work_dir)
         print(map_text)
 
+    def _handle_skills(self) -> None:
+        skills = self.engine.skill_loader.load_all_skills()
+        if not skills:
+            TerminalFormatter.print_info("当前环境未安装任何扩展技能 (Skills)。")
+            print("💡 提示：可在当前工程创建 '.tiancode/skills/<name>/SKILL.md' 进行零代码扩展！\n")
+            return
+
+        TerminalFormatter.print_info(f"✨ 当前已加载 {len(skills)} 个扩展技能：")
+        for s in skills:
+            scope = "全局" if s.is_global else "工作区"
+            print(f"  • {TerminalFormatter.BOLD}{s.name}{TerminalFormatter.RESET} [{scope}]: {s.description}")
+            print(f"    路径: {s.file_path}")
+        print()
+
     def _handle_eval(self, problem_arg: str = "") -> None:
         from tiancode.eval.runner import BenchmarkRunner
         runner = BenchmarkRunner(engine=self.engine)
@@ -146,6 +161,7 @@ class SlashCommandHandler:
 【TianCode 快捷斜杠指令】
   /config  - 查看或修改模型连接配置 (/config show, /config set key xxx)
   /map     - 查看当前项目的 AST 代码拓扑全景图 (Repo Map)
+  /skills  - 查看已安装的扩展技能列表 (Skills)
   /diff    - 查看当前工作区代码变更补丁对比
   /undo    - 一键回滚并撤销当前所有未提交改动 (Git Restore)
   /commit  - 智能生成 Conventional Commit 并提交 (或指定: /commit feat: 自定义信息)

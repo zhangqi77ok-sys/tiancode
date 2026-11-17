@@ -40,7 +40,11 @@ class TianCodeEngine:
         self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir))
         self.tools.extend(create_execution_tools(settings.work_dir, settings.timeout_seconds))
 
-        # 3. Assemble LangGraph Workflow
+        # 3. Dynamic Skills Extension
+        from tiancode.skills.loader import SkillLoader
+        self.skill_loader = SkillLoader(workspace_dir=settings.work_dir)
+
+        # 4. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
         self.reload_llm()
 
@@ -111,7 +115,9 @@ class TianCodeEngine:
     def _build_graph(self):
         def brain_node(state: MessagesState) -> Dict[str, Any]:
             trimmed = prune_messages(state["messages"], max_retained=self.settings.max_history_messages)
-            sys_msg = SystemMessage(content=TIANCODE_SYSTEM_PROMPT)
+            skills_catalog = self.skill_loader.format_prompt_catalog()
+            full_prompt = TIANCODE_SYSTEM_PROMPT + (f"\n{skills_catalog}" if skills_catalog else "")
+            sys_msg = SystemMessage(content=full_prompt)
             response = self.llm_with_tools.invoke([sys_msg] + trimmed)
             return {"messages": [response]}
 
