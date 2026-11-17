@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiancode"
+version = "0.1.0"
+description = "A lightweight, stateful, self-healing AI Coding CLI Agent built with LangGraph."
+readme = "README.md"
+authors = [{ name = "TianCode Team" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+tiancode = "tiancode.cli.main:main"
+tc = "tiancode.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tiancode*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
