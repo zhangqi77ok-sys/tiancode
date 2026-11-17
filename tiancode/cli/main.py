@@ -117,10 +117,17 @@ def main() -> None:
 
     if args.task:
         task_str = " ".join(args.task)
-        TerminalFormatter.print_info(f"⚡ [单发任务] 正在处理: '{task_str}' ...")
+        if session_id:
+            active_task_session_id = session_id
+        else:
+            import time
+            import uuid
+            active_task_session_id = f"oneshot_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
+        TerminalFormatter.print_info(f"⚡ [单发任务] 正在处理: '{task_str}' (会话ID: {active_task_session_id}) ...")
         try:
             in_agent_message = False
-            for event in engine.stream_task(task_str, thread_id="tiancode_oneshot"):
+            for event in engine.stream_task(task_str, thread_id=active_task_session_id):
                 ev_type = event.get("type") if isinstance(event, dict) else None
                 if ev_type == "token":
                     content = event.get("content", "")

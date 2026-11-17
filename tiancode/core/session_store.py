@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import urllib.parse
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,10 +26,27 @@ def get_default_sessions_dir() -> Path:
     return Path.home() / ".tiancode" / "sessions"
 
 
+def encode_session_id(session_id: str) -> str:
+    """Lossless, collision-free encoding for session IDs onto filesystem-safe names."""
+    if not session_id:
+        return "session_default"
+    res = []
+    for ch in session_id.strip():
+        if ch.isalnum() or ch in ("-", "_"):
+            res.append(ch)
+        else:
+            res.append(f"%{ord(ch):02X}")
+    return "".join(res) or "session_default"
+
+
+def decode_session_id(encoded: str) -> str:
+    """Decode encoded filesystem session name back to original session ID."""
+    return urllib.parse.unquote(encoded)
+
+
 def sanitize_session_id(session_id: str) -> str:
-    """Strip traversal characters and keep alphanumeric, underscores, hyphens."""
-    cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "_", session_id.strip())
-    return cleaned or "session_default"
+    """Backward-compatible wrapper routing to lossless encode_session_id."""
+    return encode_session_id(session_id)
 
 
 class SessionStore:
@@ -41,10 +59,14 @@ class SessionStore:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
     def _file_path(self, session_id: str) -> Path:
-        safe_id = sanitize_session_id(session_id)
+        safe_id = encode_session_id(session_id)
         file_path = (self.storage_dir / f"{safe_id}.json").resolve()
         if not file_path.is_relative_to(self.storage_dir):
             raise PermissionError(f"会话路径越界拦截: {session_id}")
+        if not file_path.exists():
+            direct = (self.storage_dir / f"{session_id}.json").resolve()
+            if direct.is_relative_to(self.storage_dir) and direct.exists():
+                return direct
         return file_path
 
     def save(
@@ -57,7 +79,7 @@ class SessionStore:
     ) -> SessionMetadata:
         """Serialize session state, atomic task plan, and file snapshots to disk atomically."""
         now_iso = datetime.now(timezone.utc).isoformat()
-        safe_id = sanitize_session_id(session_id)
+        safe_id = encode_session_id(session_id)
         file_path = self._file_path(session_id)
 
         created_at = now_iso
@@ -101,9 +123,12 @@ class SessionStore:
 
         # Atomic write: write to .tmp then replace
         tmp_path = file_path.with_suffix(".json.tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, file_path)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, file_path)
+        except OSError as exc:
+            raise IOError(f"无法保存会话文件 [{file_path}]: {exc}") from exc
 
         return metadata
 
@@ -155,7 +180,7 @@ class SessionStore:
                 meta_data = data.get("metadata", {})
                 results.append(
                     SessionMetadata(
-                        session_id=meta_data.get("session_id", p.stem),
+                        session_id=meta_data.get("session_id", decode_session_id(p.stem)),
                         work_dir=meta_data.get("work_dir", "."),
                         created_at=meta_data.get("created_at", ""),
                         updated_at=meta_data.get("updated_at", ""),

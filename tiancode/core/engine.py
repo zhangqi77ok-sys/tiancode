@@ -213,8 +213,9 @@ class TianCodeEngine:
                     plan=self.planner.active_plan,
                     snapshots=exported_snapshots,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
 
     def resume_session(self, session_id: str) -> bool:
         """Resume a saved session from disk and restore messages, TaskPlan, and file snapshots."""
