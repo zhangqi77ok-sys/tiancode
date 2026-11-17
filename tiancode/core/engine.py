@@ -37,7 +37,7 @@ class TianCodeEngine:
 
         # 2. Build Tools
         self.tools = []
-        self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir))
+        self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir, auto_heal=settings.auto_heal))
         self.tools.extend(create_execution_tools(settings.work_dir, settings.timeout_seconds))
 
         # 3. Dynamic Skills Extension

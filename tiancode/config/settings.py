@@ -46,6 +46,7 @@ class Settings:
     timeout_seconds: int = 15
     max_history_messages: int = 12
     work_dir: Path = Path(".")
+    auto_heal: bool = True
 
     @classmethod
     def load(

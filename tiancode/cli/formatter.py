@@ -36,13 +36,12 @@ class TerminalFormatter:
         print(f"\n{cls.BOLD}{header}{cls.RESET}")
         print(f"{cls.YELLOW}{'─' * 50}{cls.RESET}")
         for line in diff.diff_text.splitlines():
-            line_str = line.strip()
-            if line_str.startswith("-") and not line_str.startswith("---"):
-                print(f"{cls.RED}{line_str}{cls.RESET}")
-            elif line_str.startswith("+") and not line_str.startswith("+++"):
-                print(f"{cls.GREEN}{line_str}{cls.RESET}")
+            if line.startswith("-") and not line.startswith("---"):
+                print(f"{cls.RED}{line}{cls.RESET}")
+            elif line.startswith("+") and not line.startswith("+++"):
+                print(f"{cls.GREEN}{line}{cls.RESET}")
             else:
-                print(line_str)
+                print(line)
         print(f"{cls.YELLOW}{'─' * 50}{cls.RESET}\n")
 
     @classmethod

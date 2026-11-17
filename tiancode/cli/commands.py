@@ -1,15 +1,17 @@
 """Slash command handlers for TianCode REPL."""
 
-from typing import Callable, Dict
+from typing import TYPE_CHECKING, Callable, Dict
 from tiancode.cli.formatter import TerminalFormatter
 from tiancode.config.settings import get_default_config_path
-from tiancode.core.engine import TianCodeEngine
+
+if TYPE_CHECKING:
+    from tiancode.core.engine import TianCodeEngine
 
 
 class SlashCommandHandler:
     """Dispatches and executes REPL slash commands."""
 
-    def __init__(self, engine: TianCodeEngine) -> None:
+    def __init__(self, engine: "TianCodeEngine") -> None:
         self.engine = engine
         self._handlers: Dict[str, Callable[[str], None]] = {
             "/diff": lambda _: self._handle_diff(),

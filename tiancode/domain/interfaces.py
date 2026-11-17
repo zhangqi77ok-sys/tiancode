@@ -5,7 +5,7 @@ from tiancode.domain.models import FileSnapshot, FileDiff
 
 
 class SnapshotStore(Protocol):
-    """Protocol for managing file modification snapshots and rollbacks."""
+    """Protocol for managing file modification snapshots, checkpoints, and rollbacks."""
 
     def record_snapshot(self, filename: str, content: str, is_new: bool = False) -> None:
         """Record original state before a file is touched."""
@@ -19,12 +19,20 @@ class SnapshotStore(Protocol):
         """Retrieve all recorded snapshots in current session."""
         ...
 
-    def rollback(self) -> List[str]:
+    def create_checkpoint(self, tag: str = "") -> str:
+        """Create a point-in-time checkpoint and return its identifier."""
+        ...
+
+    def rollback(self, checkpoint_id: Optional[str] = None) -> List[str]:
         """Revert all modified files to original states and delete newly created files."""
         ...
 
+    def rollback_file(self, filename: str) -> bool:
+        """Rollback a single file to its pre-modification state."""
+        ...
+
     def clear(self) -> None:
-        """Clear all snapshots."""
+        """Clear all snapshots and checkpoints."""
         ...
 
     def compute_diffs(self) -> List[FileDiff]:
