@@ -111,3 +111,29 @@ class FileSnapshot:
     filename: str
     original_content: str
     is_created_new: bool = False
+
+
+@dataclass
+class SubagentReport:
+    """Synthesized research report returned by an isolated subagent."""
+
+    role: str
+    objective: str
+    key_findings: List[str] = field(default_factory=list)
+    referenced_files: List[str] = field(default_factory=list)
+    summary_text: str = ""
+
+    def format_for_master(self) -> str:
+        """Format the report into clean, high-density observation text for the master agent."""
+        lines = [
+            f"📋 【子智能体调研报告 (Role: {self.role})】",
+            f"• 调研目标: {self.objective}",
+            f"• 核心结论: {self.summary_text}",
+        ]
+        if self.key_findings:
+            lines.append("• 关键事实清单:")
+            for item in self.key_findings:
+                lines.append(f"  - {item}")
+        if self.referenced_files:
+            lines.append(f"• 关联文件: {', '.join(self.referenced_files)}")
+        return "\n".join(lines)

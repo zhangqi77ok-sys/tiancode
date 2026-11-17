@@ -35,15 +35,20 @@ class TianCodeEngine:
             git_store = GitSnapshotStore(work_dir=settings.work_dir)
             self.snapshot_store = git_store if git_store.is_git_repo() else InMemorySnapshotStore(work_dir=settings.work_dir)
 
-        # 2. Build Tools & Planner
+        # 2. Build Tools, Planner & Subagent Runner
         from tiancode.core.planner import TaskPlanner
+        from tiancode.core.subagent import SubagentRunner
         from tiancode.tools.plan_ops import create_plan_tools
+        from tiancode.tools.subagent_ops import create_subagent_tools
 
         self.planner = TaskPlanner()
+        self.subagent_runner = SubagentRunner(work_dir=settings.work_dir, llm_client=None)
+
         self.tools = []
         self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir, auto_heal=settings.auto_heal))
         self.tools.extend(create_execution_tools(settings.work_dir, settings.timeout_seconds))
         self.tools.extend(create_plan_tools(self.planner))
+        self.tools.extend(create_subagent_tools(self.subagent_runner))
 
         # 3. Dynamic Skills Extension
         from tiancode.skills.loader import SkillLoader
@@ -114,6 +119,7 @@ class TianCodeEngine:
             base_url=self.settings.base_url,
             temperature=self.settings.temperature,
         )
+        self.subagent_runner.llm = self.llm
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         self.graph = self._build_graph()
 
