@@ -201,17 +201,23 @@ class TianCodeEngine:
             try:
                 state = self.graph.get_state(config)
                 all_messages = state.values.get("messages", [])
+                exported_snapshots = (
+                    self.snapshot_store.export_snapshots()
+                    if hasattr(self.snapshot_store, "export_snapshots")
+                    else []
+                )
                 self.session_store.save(
                     session_id=thread_id,
                     work_dir=str(self.settings.work_dir),
                     messages=all_messages,
                     plan=self.planner.active_plan,
+                    snapshots=exported_snapshots,
                 )
             except Exception:
                 pass
 
     def resume_session(self, session_id: str) -> bool:
-        """Resume a saved session from disk and restore messages and TaskPlan."""
+        """Resume a saved session from disk and restore messages, TaskPlan, and file snapshots."""
         persisted = self.session_store.load(session_id)
         if not persisted:
             return False
@@ -220,6 +226,9 @@ class TianCodeEngine:
 
         if persisted.plan:
             self.planner.active_plan = self.session_store.rehydrate_plan(persisted.plan)
+
+        if getattr(persisted, "snapshots", None) and hasattr(self.snapshot_store, "import_snapshots"):
+            self.snapshot_store.import_snapshots(persisted.snapshots)
 
         if persisted.messages:
             rehydrated_msgs = messages_from_dict(persisted.messages)

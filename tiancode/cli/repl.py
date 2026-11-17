@@ -1,7 +1,7 @@
-"""Interactive REPL shell for TianCode."""
+"""Interactive REPL shell for TianCode with live tool spinner and typewriter streaming."""
 
 from tiancode.cli.commands import SlashCommandHandler
-from tiancode.cli.formatter import TerminalFormatter
+from tiancode.cli.formatter import LiveToolSpinner, TerminalFormatter
 from tiancode.core.engine import TianCodeEngine
 
 
@@ -35,12 +35,17 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
             continue
 
         # Execute normal coding request
+        active_spinner = None
         try:
             in_agent_message = False
             current_thread = getattr(engine, "active_session_id", session_id)
             for event in engine.stream_task(user_input, thread_id=current_thread):
                 ev_type = event.get("type") if isinstance(event, dict) else None
                 if ev_type == "token":
+                    if active_spinner:
+                        active_spinner.stop()
+                        active_spinner = None
+
                     content = event.get("content", "")
                     if content:
                         if not in_agent_message:
@@ -51,8 +56,16 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
                     if in_agent_message:
                         print()
                         in_agent_message = False
-                    TerminalFormatter.print_info(f"⚙️ 正在调用工具: {event.get('name')}...")
+                    if active_spinner:
+                        active_spinner.stop()
+                    tool_name = event.get("name", "tool")
+                    tool_args = str(event.get("args", ""))
+                    active_spinner = LiveToolSpinner(tool_name=tool_name, args=tool_args)
+                    active_spinner.start()
                 elif ev_type == "tool_end":
+                    if active_spinner:
+                        active_spinner.stop()
+                        active_spinner = None
                     if in_agent_message:
                         print()
                         in_agent_message = False
@@ -65,7 +78,13 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
                     if msg.content:
                         TerminalFormatter.print_agent_message(msg.content)
 
+            if active_spinner:
+                active_spinner.stop()
+                active_spinner = None
+
             if in_agent_message:
                 print()
         except Exception as exc:
+            if active_spinner:
+                active_spinner.stop()
             TerminalFormatter.print_warning(f"任务执行异常: {str(exc)}")

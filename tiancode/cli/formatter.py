@@ -1,7 +1,9 @@
-"""Terminal formatting and ANSI styling for TianCode CLI."""
+"""Terminal formatting, ANSI styling, and animated tool execution spinners for TianCode CLI."""
 
 import sys
-from typing import List
+import threading
+import time
+from typing import List, Optional, TextIO
 from tiancode.domain.models import FileDiff
 
 
@@ -98,3 +100,62 @@ class TerminalFormatter:
                 suffix = ""
             print(f"  {icon} {s.step_id}. {s.title}{suffix}")
         print(f"{cls.CYAN}{line}{cls.RESET}\n")
+
+
+class LiveToolSpinner:
+    """Animated Braille spinner with elapsed seconds and in-place terminal updates."""
+
+    SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(
+        self,
+        tool_name: str,
+        args: str = "",
+        stream: Optional[TextIO] = None,
+    ) -> None:
+        self.tool_name = tool_name
+        self.args = str(args)[:60].replace("\n", " ") if args else ""
+        self.stream = stream or sys.stdout
+        self.is_running = False
+        self._thread: Optional[threading.Thread] = None
+        self._start_time: float = 0.0
+
+    def start(self) -> None:
+        """Start the spinner animation on a background daemon thread."""
+        if self.is_running:
+            return
+        self.is_running = True
+        self._start_time = time.time()
+        self._thread = threading.Thread(target=self._spin_loop, daemon=True)
+        self._thread.start()
+
+    def _spin_loop(self) -> None:
+        idx = 0
+        arg_disp = f"({self.args})" if self.args else ""
+        while self.is_running:
+            elapsed = time.time() - self._start_time
+            frame = self.SPINNER_FRAMES[idx % len(self.SPINNER_FRAMES)]
+            msg = f"\r\033[K\033[96m{frame}\033[0m ⚙️  正在执行工具: \033[1m{self.tool_name}\033[0m{arg_disp} ... \033[93m[{elapsed:.1f}s]\033[0m"
+            try:
+                self.stream.write(msg)
+                self.stream.flush()
+            except Exception:
+                pass
+            idx += 1
+            time.sleep(0.08)
+
+    def stop(self, status_text: str = "") -> None:
+        """Stop the spinner, clear line, and write final state."""
+        if not self.is_running:
+            return
+        self.is_running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.3)
+
+        elapsed = time.time() - self._start_time
+        final_msg = status_text or f"✔ ⚙️  工具执行完成: {self.tool_name} [{elapsed:.1f}s]"
+        try:
+            self.stream.write(f"\r\033[K\033[92m{final_msg}\033[0m\n")
+            self.stream.flush()
+        except Exception:
+            pass

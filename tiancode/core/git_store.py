@@ -3,7 +3,7 @@
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.domain.models import FileDiff, FileSnapshot
@@ -145,6 +145,30 @@ class GitSnapshotStore(SnapshotStore):
         self._touched_files.clear()
         self._memory_snapshots.clear()
         self._checkpoints.clear()
+
+    def export_snapshots(self) -> List[Dict[str, Any]]:
+        """Export all recorded snapshots for persistent storage."""
+        return [
+            {
+                "filename": snap.filename,
+                "original_content": snap.original_content,
+                "is_created_new": snap.is_created_new,
+            }
+            for snap in self._memory_snapshots.values()
+        ]
+
+    def import_snapshots(self, snapshots_data: List[Dict[str, Any]]) -> None:
+        """Import snapshots from persistent storage to restore rollback state."""
+        for item in snapshots_data or []:
+            fname = item.get("filename", "")
+            if fname:
+                _, rel_name = self._normalize_path(fname)
+                self._touched_files.add(rel_name)
+                self._memory_snapshots[rel_name] = FileSnapshot(
+                    filename=rel_name,
+                    original_content=item.get("original_content", ""),
+                    is_created_new=item.get("is_created_new", False),
+                )
 
     def compute_diffs(self) -> List[FileDiff]:
         """Compute unified diffs for all modified and untracked files."""

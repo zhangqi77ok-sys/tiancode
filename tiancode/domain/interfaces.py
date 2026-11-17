@@ -1,6 +1,6 @@
 """Domain interfaces and protocols for TianCode."""
 
-from typing import Protocol, Dict, Optional, List
+from typing import Any, Protocol, Dict, Optional, List
 from tiancode.domain.models import FileSnapshot, FileDiff
 
 
@@ -37,4 +37,12 @@ class SnapshotStore(Protocol):
 
     def compute_diffs(self) -> List[FileDiff]:
         """Compute unified diffs for all modified files."""
+        ...
+
+    def export_snapshots(self) -> List[Dict[str, Any]]:
+        """Export all recorded snapshots for persistent storage."""
+        ...
+
+    def import_snapshots(self, snapshots_data: List[Dict[str, Any]]) -> None:
+        """Import snapshots from persistent storage to restore rollback state."""
         ...

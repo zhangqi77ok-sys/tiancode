@@ -160,3 +160,4 @@ class PersistedSession:
     metadata: SessionMetadata
     messages: List[dict]
     plan: Optional[dict] = None
+    snapshots: Optional[List[dict]] = None

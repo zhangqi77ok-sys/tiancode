@@ -56,6 +56,21 @@ class SlashCommandHandler:
             TerminalFormatter.print_success("已完成时光倒流回滚：")
             for item in reverted:
                 print(f"  ⏪ {item}")
+
+            # Clear persisted snapshots from active session on disk
+            try:
+                active_id = getattr(self.engine, "active_session_id", "tiancode_repl")
+                persisted = self.engine.session_store.load(active_id)
+                if persisted:
+                    self.engine.session_store.save(
+                        session_id=active_id,
+                        work_dir=persisted.metadata.work_dir,
+                        messages=persisted.messages,
+                        plan=self.engine.planner.active_plan,
+                        snapshots=[],
+                    )
+            except Exception:
+                pass
         else:
             TerminalFormatter.print_info("当前没有可回滚的修改。")
 
@@ -204,7 +219,7 @@ class SlashCommandHandler:
   /sessions - 查看磁盘持久化的历史会话列表
   /switch   - 快速切换恢复至指定历史会话 (/switch <session_id>)
   /diff    - 查看当前工作区代码变更补丁对比
-  /undo    - 一键回滚并撤销当前所有未提交改动 (Git Restore)
+  /undo    - 一键回滚并撤销当前所有未提交改动 (安全无损快照回滚)
   /commit  - 智能生成 Conventional Commit 并提交 (或指定: /commit feat: 自定义信息)
   /eval    - 运行自动化基准评测机 (可指定: /eval p1_lru_cache)
   /clear   - 清空上下文记忆并重置会话

@@ -53,8 +53,9 @@ class SessionStore:
         work_dir: str,
         messages: List[Any],
         plan: Optional[TaskPlan] = None,
+        snapshots: Optional[List[Dict[str, Any]]] = None,
     ) -> SessionMetadata:
-        """Serialize session state and atomic task plan to disk atomically."""
+        """Serialize session state, atomic task plan, and file snapshots to disk atomically."""
         now_iso = datetime.now(timezone.utc).isoformat()
         safe_id = sanitize_session_id(session_id)
         file_path = self._file_path(session_id)
@@ -95,6 +96,7 @@ class SessionStore:
             "metadata": asdict(metadata),
             "messages": serialized_msgs,
             "plan": plan_dict,
+            "snapshots": snapshots or [],
         }
 
         # Atomic write: write to .tmp then replace
@@ -138,6 +140,7 @@ class SessionStore:
                 metadata=metadata,
                 messages=data.get("messages", []),
                 plan=raw_plan,
+                snapshots=data.get("snapshots", []),
             )
         except Exception:
             return None

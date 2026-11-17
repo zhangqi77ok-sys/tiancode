@@ -28,6 +28,23 @@ def resolve_safe_path(filename: str | Path, work_dir: Path) -> Path:
     return resolved_target
 
 
+IGNORED_DIR_NAMES = {
+    ".git",
+    "node_modules",
+    "appdata",
+    ".cache",
+    "target",
+    "build",
+    "dist",
+    "__pycache__",
+    ".vscode",
+    ".idea",
+    "venv",
+    ".venv",
+    ".pytest_cache",
+}
+
+
 def _print_visual_diff(diff) -> None:
     """Safely print visual diff via TerminalFormatter without tight coupling."""
     try:
@@ -85,14 +102,29 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
 
         if not target.exists():
             return f"❌ 目录 {directory} 不存在！"
-        exts = (".py", ".json", ".txt", ".md", ".toml", ".yaml", ".yml")
+        exts = (".py", ".json", ".txt", ".md", ".toml", ".yaml", ".yml", ".java", ".go", ".rs", ".js", ".ts")
         matched = []
-        for root, _, files in os.walk(target):
+        for root, dirs, files in os.walk(target):
+            # Prune heavy directories in-place to stop traversal instantly
+            dirs[:] = [d for d in dirs if d.lower() not in IGNORED_DIR_NAMES and not d.startswith(".")]
+            rel_depth = len(Path(root).relative_to(target).parts)
+            if rel_depth > 3:
+                dirs.clear()
+                continue
+
             for f in files:
                 if f.endswith(exts):
                     rel = Path(root, f).relative_to(target)
                     matched.append(str(rel))
-        return f"当前项目文件：{matched}" if matched else "目录为空或未发现代码文件。"
+                    if len(matched) >= 100:
+                        break
+            if len(matched) >= 100:
+                break
+
+        if not matched:
+            return "目录为空或未发现代码文件。"
+        trunc_note = " (已显示前 100 个文件)" if len(matched) >= 100 else ""
+        return f"当前项目文件{trunc_note}：{matched}"
 
     @tool
     def get_repo_map() -> str:

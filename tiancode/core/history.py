@@ -3,7 +3,7 @@
 import difflib
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.domain.models import FileDiff, FileSnapshot
@@ -59,6 +59,29 @@ class InMemorySnapshotStore(SnapshotStore):
     def clear(self) -> None:
         """Clear all snapshots."""
         self._snapshots.clear()
+
+    def export_snapshots(self) -> List[Dict[str, Any]]:
+        """Export all recorded snapshots for persistent storage."""
+        return [
+            {
+                "filename": snap.filename,
+                "original_content": snap.original_content,
+                "is_created_new": snap.is_created_new,
+            }
+            for snap in self._snapshots.values()
+        ]
+
+    def import_snapshots(self, snapshots_data: List[Dict[str, Any]]) -> None:
+        """Import snapshots from persistent storage to restore rollback state."""
+        for item in snapshots_data or []:
+            fname = item.get("filename", "")
+            if fname:
+                norm_name = str(Path(fname))
+                self._snapshots[norm_name] = FileSnapshot(
+                    filename=norm_name,
+                    original_content=item.get("original_content", ""),
+                    is_created_new=item.get("is_created_new", False),
+                )
 
     def compute_diffs(self) -> List[FileDiff]:
         """Generate unified diffs between original snapshots and current disk states."""
