@@ -35,19 +35,35 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
 
         # Execute normal coding request
         try:
-            for step in engine.stream_task(user_input, thread_id=session_id):
-                if "brain" in step:
-                    msg = step["brain"]["messages"][-1]
+            in_agent_message = False
+            for event in engine.stream_task(user_input, thread_id=session_id):
+                ev_type = event.get("type") if isinstance(event, dict) else None
+                if ev_type == "token":
+                    content = event.get("content", "")
+                    if content:
+                        if not in_agent_message:
+                            print(f"\n{TerminalFormatter.CYAN}{TerminalFormatter.BOLD}🤖 TianCode:{TerminalFormatter.RESET} ", end="", flush=True)
+                            in_agent_message = True
+                        print(content, end="", flush=True)
+                elif ev_type == "tool_start":
+                    if in_agent_message:
+                        print()
+                        in_agent_message = False
+                    TerminalFormatter.print_info(f"⚙️ 正在调用工具: {event.get('name')}...")
+                elif ev_type == "tool_end":
+                    if in_agent_message:
+                        print()
+                        in_agent_message = False
+                    summary = str(event.get("content", "")).strip().splitlines()
+                    summary_text = summary[0][:120] if summary else ""
+                    if summary_text:
+                        TerminalFormatter.print_info(f"↳ {summary_text}")
+                elif isinstance(event, dict) and "brain" in event:
+                    msg = event["brain"]["messages"][-1]
                     if msg.content:
                         TerminalFormatter.print_agent_message(msg.content)
-                    if getattr(msg, "tool_calls", None):
-                        for tc in msg.tool_calls:
-                            TerminalFormatter.print_info(f"⚙️ 调用工具: {tc.get('name')}")
-                elif "tools" in step:
-                    for tmsg in step["tools"]["messages"]:
-                        content_str = str(tmsg.content).strip()
-                        if content_str:
-                            first_line = content_str.splitlines()[0]
-                            TerminalFormatter.print_info(f"↳ {first_line[:120]}")
+
+            if in_agent_message:
+                print()
         except Exception as exc:
             TerminalFormatter.print_warning(f"任务执行异常: {str(exc)}")

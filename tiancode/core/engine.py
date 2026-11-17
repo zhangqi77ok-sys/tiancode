@@ -54,7 +54,11 @@ class TianCodeEngine:
         from tiancode.skills.loader import SkillLoader
         self.skill_loader = SkillLoader(workspace_dir=settings.work_dir)
 
-        # 4. Assemble LangGraph Workflow
+        # 4. Session Persistence Store
+        from tiancode.core.session_store import SessionStore
+        self.session_store = SessionStore()
+
+        # 5. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
         self.reload_llm()
 
@@ -149,17 +153,81 @@ class TianCodeEngine:
     def stream_task(
         self, prompt: str, thread_id: str = "tiancode_default"
     ) -> Generator[Dict[str, Any], None, None]:
-        """Stream steps from the underlying graph execution, auto-syncing config before execution."""
+        """Stream real-time tokens and tool lifecycle events from the underlying graph."""
         if self.sync_config_if_changed():
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")
 
         config = {"configurable": {"thread_id": thread_id}}
-        return self.graph.stream(
-            {"messages": [HumanMessage(content=prompt)]},
-            config=config,
-            stream_mode="updates",
-        )
+        seen_tools = set()
+
+        try:
+            for item in self.graph.stream(
+                {"messages": [HumanMessage(content=prompt)]},
+                config=config,
+                stream_mode="messages",
+            ):
+                if isinstance(item, tuple) and len(item) == 2:
+                    chunk, meta = item
+                    node = meta.get("langgraph_node") if isinstance(meta, dict) else None
+
+                    if node == "brain":
+                        if getattr(chunk, "content", None):
+                            yield {"type": "token", "content": chunk.content}
+
+                        if getattr(chunk, "tool_call_chunks", None):
+                            for tc in chunk.tool_call_chunks:
+                                name = tc.get("name")
+                                call_id = tc.get("id") or tc.get("index")
+                                if name and call_id not in seen_tools:
+                                    seen_tools.add(call_id)
+                                    yield {"type": "tool_start", "name": name, "args": tc.get("args", "")}
+                        elif getattr(chunk, "tool_calls", None):
+                            for tc in chunk.tool_calls:
+                                call_id = tc.get("id") or tc.get("name")
+                                if call_id not in seen_tools:
+                                    seen_tools.add(call_id)
+                                    yield {"type": "tool_start", "name": tc.get("name"), "args": tc.get("args", {})}
+
+                    elif node == "tools":
+                        name = getattr(chunk, "name", "tool")
+                        content = getattr(chunk, "content", "")
+                        yield {"type": "tool_end", "name": name, "content": content}
+
+                elif isinstance(item, dict):
+                    yield item
+        finally:
+            try:
+                state = self.graph.get_state(config)
+                all_messages = state.values.get("messages", [])
+                self.session_store.save(
+                    session_id=thread_id,
+                    work_dir=str(self.settings.work_dir),
+                    messages=all_messages,
+                    plan=self.planner.active_plan,
+                )
+            except Exception:
+                pass
+
+    def resume_session(self, session_id: str) -> bool:
+        """Resume a saved session from disk and restore messages and TaskPlan."""
+        persisted = self.session_store.load(session_id)
+        if not persisted:
+            return False
+
+        from langchain_core.messages import messages_from_dict
+
+        if persisted.plan:
+            self.planner.active_plan = self.session_store.rehydrate_plan(persisted.plan)
+
+        if persisted.messages:
+            rehydrated_msgs = messages_from_dict(persisted.messages)
+            config = {"configurable": {"thread_id": session_id}}
+            try:
+                self.graph.update_state(config, {"messages": rehydrated_msgs})
+            except Exception:
+                pass
+        return True
 
     def reset_session(self) -> None:
         """Clear conversation memory, recorded file snapshots, and active plan."""

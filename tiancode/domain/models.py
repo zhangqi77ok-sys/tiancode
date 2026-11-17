@@ -137,3 +137,26 @@ class SubagentReport:
         if self.referenced_files:
             lines.append(f"• 关联文件: {', '.join(self.referenced_files)}")
         return "\n".join(lines)
+
+
+@dataclass
+class SessionMetadata:
+    """Metadata describing a saved TianCode session."""
+
+    session_id: str
+    work_dir: str
+    created_at: str
+    updated_at: str
+    task_title: str = ""
+    steps_total: int = 0
+    steps_completed: int = 0
+    message_count: int = 0
+
+
+@dataclass
+class PersistedSession:
+    """Full session payload persisted to disk."""
+
+    metadata: SessionMetadata
+    messages: List[dict]
+    plan: Optional[dict] = None

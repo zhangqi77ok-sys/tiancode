@@ -5,6 +5,7 @@ from tiancode.core.engine import TianCodeEngine
 from tiancode.core.git_store import GitSnapshotStore
 from tiancode.core.history import InMemorySnapshotStore
 from tiancode.core.planner import TaskPlanner
+from tiancode.core.session_store import SessionStore
 from tiancode.core.subagent import SubagentRunner
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "compute_text_diff",
     "TaskPlanner",
     "SubagentRunner",
+    "SessionStore",
 ]

@@ -21,6 +21,8 @@ class SlashCommandHandler:
             "/map": lambda _: self._handle_map(),
             "/plan": lambda _: self._handle_plan(),
             "/skills": lambda _: self._handle_skills(),
+            "/sessions": lambda _: self._handle_sessions(),
+            "/switch": self._handle_switch,
             "/eval": self._handle_eval,
             "/clear": lambda _: self._handle_clear(),
             "/help": lambda _: self._handle_help(),
@@ -159,6 +161,33 @@ class SlashCommandHandler:
         self.engine.reset_session()
         TerminalFormatter.print_success("已清空对话记忆并重置所有文件快照。")
 
+    def _handle_sessions(self) -> None:
+        sessions = self.engine.session_store.list_sessions()
+        if not sessions:
+            TerminalFormatter.print_info("当前暂无历史持久化会话记录。")
+            return
+        print(f"\n{TerminalFormatter.CYAN}{TerminalFormatter.BOLD}📜 ====== [TianCode 历史会话列表] ======{TerminalFormatter.RESET}")
+        for s in sessions:
+            progress = f"(进度: {s.steps_completed}/{s.steps_total} 步)" if s.steps_total else ""
+            title = f": {s.task_title}" if s.task_title else ""
+            print(f"  • {TerminalFormatter.BOLD}[{s.session_id}]{TerminalFormatter.RESET}{title} {progress}")
+            print(f"    工作目录: {s.work_dir}")
+            print(f"    消息条数: {s.message_count} 条 | 更新时间: {s.updated_at[:19].replace('T', ' ')}")
+        print(f"{TerminalFormatter.CYAN}========================================{TerminalFormatter.RESET}\n")
+        print("💡 快捷切换会话: /switch <session_id>\n")
+
+    def _handle_switch(self, target_id: str) -> None:
+        target_id = target_id.strip()
+        if not target_id:
+            TerminalFormatter.print_info("用法: /switch <session_id>")
+            return
+        if self.engine.resume_session(target_id):
+            TerminalFormatter.print_success(f"已成功切换并恢复至会话 [{target_id}]！")
+            if self.engine.planner.active_plan:
+                TerminalFormatter.print_task_plan(self.engine.planner.active_plan)
+        else:
+            TerminalFormatter.print_warning(f"未能找到或恢复会话 [{target_id}]，请先运行 /sessions 查看可用列表。")
+
     def _handle_status(self) -> None:
         snapshots = self.engine.snapshot_store.get_all_snapshots()
         TerminalFormatter.print_info(f"当前已追踪修改文件数: {len(snapshots)}")
@@ -168,10 +197,12 @@ class SlashCommandHandler:
     def _handle_help(self) -> None:
         print("""
 【TianCode 快捷斜杠指令】
-  /config  - 查看或修改模型连接配置 (/config show, /config set key xxx)
-  /map     - 查看当前项目的 AST 代码拓扑全景图 (Repo Map)
-  /plan    - 查看当前活跃的 Planner-Worker 任务执行看板
-  /skills  - 查看已安装的扩展技能列表 (Skills)
+  /config   - 查看或修改模型连接配置 (/config show, /config set key xxx)
+  /map      - 查看当前项目的 AST 代码拓扑全景图 (Repo Map)
+  /plan     - 查看当前活跃的 Planner-Worker 任务执行看板
+  /skills   - 查看已安装的扩展技能列表 (Skills)
+  /sessions - 查看磁盘持久化的历史会话列表
+  /switch   - 快速切换恢复至指定历史会话 (/switch <session_id>)
   /diff    - 查看当前工作区代码变更补丁对比
   /undo    - 一键回滚并撤销当前所有未提交改动 (Git Restore)
   /commit  - 智能生成 Conventional Commit 并提交 (或指定: /commit feat: 自定义信息)
