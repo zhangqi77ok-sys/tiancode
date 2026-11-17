@@ -235,8 +235,10 @@ class TianCodeEngine:
             config = {"configurable": {"thread_id": session_id}}
             try:
                 self.graph.update_state(config, {"messages": rehydrated_msgs})
-            except Exception:
-                pass
+            except Exception as exc:
+                from tiancode.cli.formatter import TerminalFormatter
+                TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
+                return False
         self.active_session_id = session_id
         return True
 

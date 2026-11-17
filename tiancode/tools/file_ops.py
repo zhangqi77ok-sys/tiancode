@@ -55,12 +55,16 @@ def _print_visual_diff(diff) -> None:
 
 
 def _run_post_edit_verification(work_dir: Path) -> Optional[str]:
-    """Helper to detect and run project test suite for self-healing verification."""
+    """Helper to detect and run project test suite for self-healing verification with safety and env scrubbing."""
     from tiancode.core.polyglot import detect_project_test_command
+    from tiancode.tools.execution import get_sanitized_env, is_dangerous_command
 
     cmd = detect_project_test_command(work_dir)
     if not cmd:
         return None
+
+    if is_dangerous_command(cmd):
+        return "自动化测试安全拦截：检测到高危测试命令，已阻止执行。"
 
     try:
         creationflags = 0x08000000 if sys.platform == "win32" else 0
@@ -73,6 +77,7 @@ def _run_post_edit_verification(work_dir: Path) -> Optional[str]:
             timeout=8,
             encoding="utf-8",
             errors="replace",
+            env=get_sanitized_env(),
             creationflags=creationflags,
         )
         if res.returncode == 0:

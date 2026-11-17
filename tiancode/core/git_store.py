@@ -106,9 +106,6 @@ class GitSnapshotStore(SnapshotStore):
             else:
                 target_path.write_text(snap.original_content, encoding="utf-8")
 
-        if self.is_git_repo():
-            self._run_git(["restore", "--staged", rel_name])
-
         return snap is not None or target_path.exists()
 
     def rollback(self, checkpoint_id: Optional[str] = None) -> List[str]:
@@ -130,11 +127,8 @@ class GitSnapshotStore(SnapshotStore):
                 target_path.write_text(snap.original_content, encoding="utf-8")
                 reverted.append(f"{rel_name} (快照还原)")
 
-        # In git repositories, unstage touched files so git index is clean,
-        # but NEVER run git restore on working tree to avoid destroying user's uncommitted work.
-        if self.is_git_repo():
-            for fname in self._touched_files:
-                self._run_git(["restore", "--staged", fname])
+        if reverted:
+            reverted.append("提示：由终端命令间接修改或新建的文件不在快照追踪中，请手动核对。")
 
         self._touched_files.clear()
         self._memory_snapshots.clear()

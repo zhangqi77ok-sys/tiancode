@@ -1,4 +1,4 @@
-"""Subprocess execution tools with timeout, safety guardrails, and output capture."""
+"""Subprocess execution tools with timeout, safety guardrails, env scrubbing, and output capture."""
 
 import os
 import re
@@ -10,19 +10,22 @@ from langchain_core.tools import BaseTool, tool
 from tiancode.domain.models import ExecutionResult
 
 DANGEROUS_PATTERNS = [
-    r"\brm\s+-[rRfF]*\s+[/~]",           # rm -rf / or ~
-    r"\brm\s+-[rRfF]*\s+[\.\*]",         # rm -rf . or *
-    r"\brm\s+-[rRfF]*\s+\.\.",           # rm -rf ..
-    r"\bdel\s+/[sSqQ]*\s+[cC]:\\",       # del /s c:\
-    r"\bdel\s+/[sSqQ]*\s+[\.\*]",        # del /s . or *
-    r"\bformat\s+[a-zA-Z]:",             # format C:
-    r"\bmkfs\b",                         # mkfs
-    r"\bgit\s+reset\s+--hard\b",         # git reset --hard
-    r"\bgit\s+clean\s+-[fF]",            # git clean -f
-    r"\bcurl\b.*\|\s*(ba)?sh\b",         # curl | sh
-    r"\bwget\b.*\|\s*(ba)?sh\b",         # wget | sh
-    r"\bchmod\s+-R\s+777\b",             # chmod -R 777
-    r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", # fork bomb
+    r"\brm\s+-[rRfF]*\s+[/~]",                         # rm -rf / or ~
+    r"\brm\s+-[rRfF]*\s+[\.\*]",                       # rm -rf . or *
+    r"\brm\s+-[a-zA-Z]*\s+--\s+\.\.",                  # rm -rf -- ..
+    r"\brm\s+-[a-zA-Z]*\s+\.\.",                       # rm -rf ..
+    r"\bdel\s+/[sSqQ]*\s+[cC]:\\",                     # del /s c:\
+    r"\bdel\s+/[sSqQ]*\s+[\.\*]",                      # del /s . or *
+    r"\bformat\s+[a-zA-Z]:",                           # format C:
+    r"\bmkfs\b",                                       # mkfs
+    r"\bgit\s+reset\s+--hard\b",                       # git reset --hard
+    r"\bgit\s+clean\s+-[a-zA-Z]*[fF]",                 # git clean -xdf, -fd, -f
+    r"\bgit\s+(checkout|restore)\s+(\.|--\s*\.|\*)",  # git restore ., git checkout -- ., git restore *
+    r"\bcurl\b.*\|\s*(/usr/bin/|/bin/)?(ba)?sh\b",     # curl | /bin/sh or bash
+    r"\bwget\b.*\|\s*(/usr/bin/|/bin/)?(ba)?sh\b",     # wget | /bin/sh or bash
+    r"\bchmod\s+-R\s+777\b",                           # chmod -R 777
+    r"\bfind\b.*\s+-delete\b",                         # find . -delete
+    r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",      # fork bomb
 ]
 
 SENSITIVE_ENV_KEYS = {
@@ -32,19 +35,22 @@ SENSITIVE_ENV_KEYS = {
     "GEMINI_API_KEY",
     "DEEPSEEK_API_KEY",
     "AWS_SECRET_ACCESS_KEY",
+    "GITHUB_TOKEN",
+    "GIT_TOKEN",
 }
 
 
-def is_dangerous_command(command: str) -> bool:
+def is_dangerous_command(command: str | List[str]) -> bool:
     """Check if command matches high-risk destructive signatures."""
+    cmd_str = " ".join(command) if isinstance(command, (list, tuple)) else str(command)
     for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
+        if re.search(pattern, cmd_str, re.IGNORECASE):
             return True
     return False
 
 
 def get_sanitized_env() -> Dict[str, str]:
-    """Scrub sensitive credentials and API tokens from subprocess environment."""
+    """Scrub sensitive credentials, API tokens, and secrets from subprocess environment."""
     env = os.environ.copy()
     for key in SENSITIVE_ENV_KEYS:
         env.pop(key, None)
@@ -170,8 +176,12 @@ def create_execution_tools(work_dir: Path, timeout: int = 30) -> List[BaseTool]:
     @tool
     def run_python(filename: str) -> str:
         """在当前工程目录运行 Python 脚本，并捕获运行结果、print 打印或报错 Traceback。"""
-        target = Path(filename)
-        resolved = target if target.is_absolute() else (work_dir / target)
+        from tiancode.tools.file_ops import resolve_safe_path
+        try:
+            resolved = resolve_safe_path(filename, work_dir)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
         if not resolved.exists():
             return f"❌ 运行失败：文件 '{filename}' 不存在！"
 
