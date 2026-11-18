@@ -233,7 +233,7 @@ class TianCodeEngine:
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")
 
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 60}
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
         seen_tools: set = set()
         splitter = ThinkTagStreamSplitter()
         before_tokens = self.usage_tracker.get_session_stats()[0].total_tokens if hasattr(self, "usage_tracker") else 0
@@ -248,7 +248,7 @@ class TianCodeEngine:
                     elif isinstance(item, dict):
                         yield item
             except GraphRecursionError:
-                yield {"type": "token", "content": "\n\n⚠️ [已达单轮推理步数上限 (60 步)，已保存当前分析进度；可继续追问或拆分子任务推进]\n"}
+                yield {"type": "token", "content": "\n\n⚠️ [已达单轮推理步数上限 (50 步)，已保存当前分析进度；可继续追问或拆分子任务推进]\n"}
             for kind, piece in splitter.flush():
                 yield {"type": kind, "content": piece}
 
