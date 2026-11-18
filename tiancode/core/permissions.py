@@ -1,4 +1,4 @@
-"""Human-in-the-loop (HITL) permission guard and safety modes for tool execution."""
+"""Human-in-the-loop (HITL) permission guard, human correction responses, and safety modes."""
 
 from dataclasses import dataclass
 from enum import Enum
@@ -34,6 +34,14 @@ class PermissionDecision(str, Enum):
 
 
 @dataclass(frozen=True)
+class ApprovalResponse:
+    """Rich approval outcome carrying optional human correction feedback for the agent."""
+
+    decision: PermissionDecision
+    feedback: str = ""
+
+
+@dataclass(frozen=True)
 class PermissionCheckResult:
     """Outcome of checking a tool invocation against PermissionGuard."""
 
@@ -41,7 +49,7 @@ class PermissionCheckResult:
     reason: str = ""
 
 
-ApprovalPromptFn = Callable[[str, Dict[str, Any]], PermissionDecision]
+ApprovalPromptFn = Callable[[str, Dict[str, Any]], Union[PermissionDecision, ApprovalResponse]]
 
 SAFE_READ_TOOLS = frozenset({
     "read_file",
@@ -57,7 +65,7 @@ SAFE_READ_TOOLS = frozenset({
 
 
 class PermissionGuard:
-    """Thread-safe coordinator gate enforcing read-only, auto, and interactive approval modes."""
+    """Thread-safe coordinator gate enforcing read-only, auto, and interactive approval/steering."""
 
     def __init__(
         self,
@@ -105,7 +113,7 @@ class PermissionGuard:
         return self._request_approval(tool_name, args if isinstance(args, dict) else {"raw_args": args})
 
     def _request_approval(self, tool_name: str, args: Dict[str, Any]) -> PermissionCheckResult:
-        """Prompt operator via callback using strict fail-closed semantics."""
+        """Prompt operator via callback using strict fail-closed and human-steering semantics."""
         if self.prompt_fn is None:
             return PermissionCheckResult(
                 allowed=False,
@@ -113,18 +121,34 @@ class PermissionGuard:
             )
 
         try:
-            decision = self.prompt_fn(tool_name, args)
+            raw_outcome = self.prompt_fn(tool_name, args)
         except Exception as exc:
             return PermissionCheckResult(
                 allowed=False,
                 reason=f"⛔ 【权限异常拒绝】确认过程出错 ({exc})，已拒绝执行 '{tool_name}'。",
             )
 
+        if isinstance(raw_outcome, ApprovalResponse):
+            decision = raw_outcome.decision
+            feedback = raw_outcome.feedback.strip()
+        else:
+            decision = raw_outcome
+            feedback = ""
+
         if decision is PermissionDecision.ALLOW_ONCE:
             return PermissionCheckResult(allowed=True)
         if decision is PermissionDecision.ALLOW_SESSION:
             self._session_approved_tools.add(tool_name)
             return PermissionCheckResult(allowed=True)
+
+        if feedback:
+            return PermissionCheckResult(
+                allowed=False,
+                reason=(
+                    f"⛔ 【人工纠正指导 (Human Correction)】用户拦截了工具 '{tool_name}' 的本次调用，"
+                    f"并给出明确修正指令：“{feedback}”。请严格按照该人工指令调整下一步操作！"
+                ),
+            )
 
         return PermissionCheckResult(
             allowed=False,

@@ -5,14 +5,14 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from tiancode import __version__
-from tiancode.cli.formatter import TerminalFormatter
-from tiancode.cli.repl import start_repl
+from tiancode.cli.formatter import LiveToolSpinner, TerminalFormatter
+from tiancode.cli.repl import can_use_interactive_tty, run_mouse_approval_dialog, start_repl
 from tiancode.config.settings import Settings, prompt_setup_wizard
 from tiancode.core.engine import TianCodeEngine
-from tiancode.core.permissions import PermissionDecision, PermissionMode
+from tiancode.core.permissions import ApprovalResponse, PermissionDecision, PermissionMode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,13 +119,17 @@ def _format_tool_preview(args_dict: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def _terminal_approval_prompt(tool_name: str, args_dict: Dict[str, Any]) -> PermissionDecision:
-    """Prompt human operator with a rounded Rich approval card (fail-closed)."""
+def _terminal_approval_prompt(
+    tool_name: str, args_dict: Dict[str, Any]
+) -> Union[PermissionDecision, ApprovalResponse]:
+    """Pause spinner, display rounded approval card, and run mouse/steering prompt (fail-closed)."""
     from rich import box
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
     from tiancode.cli.theme import TEXT_MUTED, TEXT_PRIMARY, WARNING_COLOR, get_console
+
+    LiveToolSpinner.pause_active()
 
     preview = _format_tool_preview(args_dict)
     grid = Table.grid(padding=(0, 2))
@@ -133,21 +137,48 @@ def _terminal_approval_prompt(tool_name: str, args_dict: Dict[str, Any]) -> Perm
     grid.add_column(style=TEXT_PRIMARY)
     grid.add_row("目标工具", Text(tool_name, style=f"bold {WARNING_COLOR}"))
     grid.add_row("参数摘要", Text(preview, style=TEXT_PRIMARY))
-    grid.add_row("快捷操作", Text("[y] 仅本次允许   [a] 本会话允许此类工具   [n] 拒绝 (默认)", style=TEXT_MUTED))
+    if not can_use_interactive_tty():
+        grid.add_row(
+            "快捷操作",
+            Text("[y] 允许本次  [a] 本会话允许  [e] 人工纠正  [n] 拒绝 (或直接输入纠正指令)", style=TEXT_MUTED),
+        )
 
     console = get_console()
     console.print()
-    console.print(Panel(grid, title=Text("⚠️ 工具执行权限确认", style=f"bold {WARNING_COLOR}"), title_align="left", box=box.ROUNDED, border_style=WARNING_COLOR, padding=(0, 2)))
+    console.print(
+        Panel(
+            grid,
+            title=Text("⚠️ 工具执行权限与人工干预", style=f"bold {WARNING_COLOR}"),
+            title_align="left",
+            box=box.ROUNDED,
+            border_style=WARNING_COLOR,
+            padding=(0, 2),
+        )
+    )
+
+    if can_use_interactive_tty():
+        return run_mouse_approval_dialog(tool_name)
+
     try:
-        answer = input(f"   ❯ 是否允许 '{tool_name}'? [y/a/n]: ").strip().lower()
+        raw_answer = input(f"   ❯ 操作选择 [y/a/e/n 或直接输入纠正指令]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return PermissionDecision.DENY
 
-    if answer in ("y", "yes"):
+    low = raw_answer.lower()
+    if low in ("y", "yes"):
         return PermissionDecision.ALLOW_ONCE
-    if answer in ("a", "always"):
+    if low in ("a", "always"):
         return PermissionDecision.ALLOW_SESSION
-    return PermissionDecision.DENY
+    if low in ("", "n", "no"):
+        return PermissionDecision.DENY
+    if low in ("e", "edit"):
+        try:
+            correction = input("   ✎ 请输入人工纠正指令: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return PermissionDecision.DENY
+        return ApprovalResponse(decision=PermissionDecision.DENY, feedback=correction) if correction else PermissionDecision.DENY
+
+    return ApprovalResponse(decision=PermissionDecision.DENY, feedback=raw_answer)
 
 
 def _resolve_resumed_session(engine: TianCodeEngine, args: argparse.Namespace) -> Optional[str]:
