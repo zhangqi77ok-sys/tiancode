@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Union
 
 from tiancode import __version__
 from tiancode.cli.formatter import LiveToolSpinner, TerminalFormatter
-from tiancode.cli.repl import can_use_interactive_tty, run_mouse_approval_dialog, start_repl
+from tiancode.cli.repl import can_use_interactive_tty, prepare_task_prompt, run_mouse_approval_dialog, start_repl
 from tiancode.config.settings import Settings, prompt_setup_wizard
 from tiancode.core.engine import TianCodeEngine
 from tiancode.core.permissions import ApprovalResponse, PermissionDecision, PermissionMode
@@ -207,9 +207,11 @@ def _run_oneshot_task(engine: TianCodeEngine, task_str: str, thread_id: str) -> 
     """Execute a single CLI task with clean header and unified Rich stream output."""
     TerminalFormatter.print_user_turn(task_str)
     TerminalFormatter.print_info(f"单发会话 {thread_id}")
+    work_dir = getattr(getattr(engine, "settings", None), "work_dir", None)
+    effective_prompt = prepare_task_prompt(task_str, work_dir)
     try:
         TerminalFormatter.render_task_stream(
-            engine.stream_task(task_str, thread_id=thread_id),
+            engine.stream_task(effective_prompt, thread_id=thread_id),
             use_spinner=False,
         )
     except Exception as exc:

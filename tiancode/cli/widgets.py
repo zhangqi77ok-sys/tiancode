@@ -1,9 +1,11 @@
 """Interactive CLI widgets: Braille live spinner, command completer, and mouse approval bar."""
 
+import re
 import sys
 import threading
 import time
-from typing import Callable, List, Optional, TextIO, Tuple, Union
+from pathlib import Path
+from typing import Any, Callable, List, Optional, TextIO, Tuple, Union
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
@@ -64,17 +66,51 @@ PTK_STYLE = Style.from_dict({
 })
 
 
-class _SlashCommandCompleter(Completer):
-    """Offer interactive dropdown completions only when typing a slash command."""
+_AT_TRIGGER_RE = re.compile(r"(?:^|(?<=[\s(\[\"'，、。：；（]))@([^\s@#]*)$")
+
+
+class CompositeInputCompleter(Completer):
+    """Unified interactive completer supporting '/' slash commands and '@' fuzzy workspace files."""
+
+    def __init__(self, get_work_dir: Optional[Callable[[], Any]] = None) -> None:
+        self._get_work_dir = get_work_dir
+        self._cached_root: Optional[str] = None
+        self._cached_at: float = 0.0
+        self._cached_files: List[str] = []
+
+    def _get_files(self) -> List[str]:
+        if self._get_work_dir is None:
+            return []
+        raw_dir = self._get_work_dir()
+        if not isinstance(raw_dir, (str, Path)):
+            return []
+        root_key = str(Path(raw_dir).resolve())
+        now = time.monotonic()
+        if self._cached_root != root_key or (now - self._cached_at) > 3.0:
+            from tiancode.core.context_mentions import list_workspace_files
+            self._cached_files = list_workspace_files(root_key)
+            self._cached_root = root_key
+            self._cached_at = now
+        return self._cached_files
 
     def get_completions(self, document, complete_event):
-        text = document.text_before_cursor.lstrip()
-        if not text.startswith("/") or " " in text:
+        raw_before = document.text_before_cursor
+        stripped = raw_before.lstrip()
+        if stripped.startswith("/") and " " not in stripped:
+            prefix = stripped.lower()
+            for cmd, desc in SLASH_COMMAND_HINTS:
+                if cmd.startswith(prefix):
+                    yield Completion(cmd, start_position=-len(stripped), display_meta=desc)
             return
-        prefix = text.lower()
-        for cmd, desc in SLASH_COMMAND_HINTS:
-            if cmd.startswith(prefix):
-                yield Completion(cmd, start_position=-len(text), display_meta=desc)
+
+        if match := _AT_TRIGGER_RE.search(raw_before):
+            from tiancode.core.context_mentions import fuzzy_match_files
+            fragment = match.group(1)
+            for rel in fuzzy_match_files(fragment, self._get_files(), limit=10):
+                yield Completion(rel, start_position=-len(fragment), display_meta="📄 文件引用 (支持 #L起始-结束)")
+
+
+_SlashCommandCompleter = CompositeInputCompleter
 
 
 class LiveToolSpinner:

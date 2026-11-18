@@ -4,7 +4,8 @@ import builtins
 import sys
 import time
 import uuid
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
@@ -17,14 +18,17 @@ from tiancode.cli.theme import BRAND_COLOR, PERMISSION_BADGES, TEXT_SUBTLE
 from tiancode.cli.widgets import (
     PTK_STYLE,
     SLASH_COMMAND_HINTS,
+    CompositeInputCompleter,
     _ApprovalBarController,
     _SlashCommandCompleter,
     run_mouse_approval_dialog,
 )
+from tiancode.core.context_mentions import resolve_file_mentions
 from tiancode.core.engine import TianCodeEngine
 from tiancode.core.permissions import PermissionMode
 
 __all__ = [
+    "CompositeInputCompleter",
     "SLASH_COMMAND_HINTS",
     "_ApprovalBarController",
     "_SlashCommandCompleter",
@@ -32,6 +36,7 @@ __all__ = [
     "_build_prompt",
     "_cycle_engine_permission_mode",
     "can_use_interactive_tty",
+    "prepare_task_prompt",
     "run_mouse_approval_dialog",
     "start_repl",
 ]
@@ -105,8 +110,21 @@ def _build_bottom_toolbar(engine: TianCodeEngine) -> FormattedText:
         ("bg:#78350f #fef3c7 bold", f" 🔐 模式:{mode} ", _on_mode_click),
         ("", " "),
         (heal_style, heal_label, _on_heal_click),
-        ("#94a3b8", "  |  🖱 点击切换 · Shift+Tab 切模式 · / 补全 · Shift+拖拽复制"),
+        ("#94a3b8", "  |  🖱 点击切换 · Shift+Tab 切模式 · / 命令 @ 文件 · Shift+拖拽复制"),
     ])
+
+
+def prepare_task_prompt(raw_prompt: str, work_dir: Any) -> str:
+    """Resolve safe @file mentions into prompt context while surfacing concise UI notices."""
+    if not isinstance(work_dir, (str, Path)) or "@" not in raw_prompt:
+        return raw_prompt
+    res = resolve_file_mentions(raw_prompt, work_dir)
+    for w in res.warnings:
+        TerminalFormatter.print_warning(w)
+    if res.attachments:
+        tags = ", ".join(f"{a.rel_path}#L{a.start_line}-{a.end_line}" for a in res.attachments)
+        TerminalFormatter.print_info(f"📎 已直注 {len(res.attachments)} 份源码上下文: {tags}")
+    return res.expanded_prompt
 
 
 def can_use_interactive_tty() -> bool:
@@ -146,7 +164,10 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
     repl_kb = KeyBindings()
     repl_kb.add("s-tab")(lambda event: (_cycle_engine_permission_mode(engine), event.app.invalidate()))
     ptk_session = (
-        PromptSession(completer=_SlashCommandCompleter(), style=PTK_STYLE, key_bindings=repl_kb, complete_while_typing=True, mouse_support=True)
+        PromptSession(
+            completer=CompositeInputCompleter(get_work_dir=lambda: engine.settings.work_dir),
+            style=PTK_STYLE, key_bindings=repl_kb, complete_while_typing=True, mouse_support=True,
+        )
         if can_use_interactive_tty() else None
     )
 
@@ -171,6 +192,8 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
 
         try:
             current_thread = getattr(engine, "active_session_id", resolved_id)
-            TerminalFormatter.render_task_stream(engine.stream_task(user_input, thread_id=current_thread), use_spinner=True)
+            work_dir = getattr(getattr(engine, "settings", None), "work_dir", None)
+            effective_prompt = prepare_task_prompt(user_input, work_dir)
+            TerminalFormatter.render_task_stream(engine.stream_task(effective_prompt, thread_id=current_thread), use_spinner=True)
         except Exception as exc:
             TerminalFormatter.print_warning(f"任务执行异常: {str(exc)}")
