@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Union
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import tools_condition
@@ -11,6 +10,7 @@ from langgraph.prebuilt import tools_condition
 from tiancode.config.settings import Settings
 from tiancode.core.git_store import GitSnapshotStore
 from tiancode.core.history import InMemorySnapshotStore
+from tiancode.core.llm_adapter import ReasonerChatOpenAI, ThinkTagStreamSplitter
 from tiancode.core.permissions import ApprovalPromptFn, PermissionGuard, PermissionMode
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
@@ -142,7 +142,7 @@ class TianCodeEngine:
         """Re-initialize LLM client, tool closures, and state machine when settings update."""
         self._register_tools()
         llm_timeout = max(30.0, float(self.settings.timeout_seconds) * 2)
-        self.llm = ChatOpenAI(
+        self.llm = ReasonerChatOpenAI(
             model=self.settings.model,
             api_key=self.settings.api_key or "sk-dummy",
             base_url=self.settings.base_url,
@@ -223,14 +223,30 @@ class TianCodeEngine:
             import logging
             logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
 
-    def _iter_message_events(self, chunk: Any, meta: Any, seen_tools: set) -> Generator[Dict[str, Any], None, None]:
-        """Translate a LangGraph stream tuple into structured token/tool events."""
+    def _iter_message_events(
+        self,
+        chunk: Any,
+        meta: Any,
+        seen_tools: set,
+        splitter: ThinkTagStreamSplitter,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Translate a LangGraph stream tuple into structured thinking/token/tool events."""
         node = meta.get("langgraph_node") if isinstance(meta, dict) else None
         if node == "brain":
-            if getattr(chunk, "content", None):
-                yield {"type": "token", "content": chunk.content}
+            add_kw = getattr(chunk, "additional_kwargs", None) or {}
+            reasoning = add_kw.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                yield {"type": "thinking", "content": reasoning}
+
+            raw_content = getattr(chunk, "content", None)
+            if isinstance(raw_content, str) and raw_content:
+                for kind, piece in splitter.feed(raw_content):
+                    yield {"type": kind, "content": piece}
+
             tool_chunks = getattr(chunk, "tool_call_chunks", None)
             if tool_chunks:
+                for kind, piece in splitter.flush():
+                    yield {"type": kind, "content": piece}
                 for tc in tool_chunks:
                     name = tc.get("name")
                     call_id = tc.get("id") or tc.get("index")
@@ -238,32 +254,39 @@ class TianCodeEngine:
                         seen_tools.add(call_id)
                         yield {"type": "tool_start", "name": name, "args": tc.get("args", "")}
             elif getattr(chunk, "tool_calls", None):
+                for kind, piece in splitter.flush():
+                    yield {"type": kind, "content": piece}
                 for tc in chunk.tool_calls:
                     call_id = tc.get("id") or tc.get("name")
                     if call_id not in seen_tools:
                         seen_tools.add(call_id)
                         yield {"type": "tool_start", "name": tc.get("name"), "args": tc.get("args", {})}
         elif node == "tools":
+            for kind, piece in splitter.flush():
+                yield {"type": kind, "content": piece}
             yield {"type": "tool_end", "name": getattr(chunk, "name", "tool"), "content": getattr(chunk, "content", "")}
 
     def stream_task(
         self, prompt: str, thread_id: str = "tiancode_default"
     ) -> Generator[Dict[str, Any], None, None]:
-        """Stream real-time tokens, tool lifecycle events, and turn usage telemetry."""
+        """Stream real-time thinking, tokens, tool lifecycle events, and turn usage telemetry."""
         if self.sync_config_if_changed():
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")
 
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
         seen_tools: set = set()
+        splitter = ThinkTagStreamSplitter()
         before_tokens = self.usage_tracker.get_session_stats()[0].total_tokens if hasattr(self, "usage_tracker") else 0
 
         try:
             for item in self.graph.stream({"messages": [HumanMessage(content=prompt)]}, config=config, stream_mode="messages"):
                 if isinstance(item, tuple) and len(item) == 2:
-                    yield from self._iter_message_events(item[0], item[1], seen_tools)
+                    yield from self._iter_message_events(item[0], item[1], seen_tools, splitter)
                 elif isinstance(item, dict):
                     yield item
+            for kind, piece in splitter.flush():
+                yield {"type": kind, "content": piece}
 
             if hasattr(self, "usage_tracker"):
                 tokens, cost = self.usage_tracker.get_session_stats()
