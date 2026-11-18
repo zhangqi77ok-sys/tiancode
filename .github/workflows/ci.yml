@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Static syntax & lint gate
+        run: |
+          python -m compileall -q tiancode
+          ruff check --select E9,F63,F7,F82 tiancode
+
+      - name: CLI and core module smoke test
+        run: |
+          tiancode --version
+          python -c "from tiancode.cli.main import build_parser; p = build_parser(); args = p.parse_args(['--read-only', 'audit']); assert args.read_only is True"
+          python -c "from tiancode.core.syntax_guard import SyntaxGuard; assert SyntaxGuard().validate('pyproject.toml', 'name = \"ok\"').is_valid"
+
+      - name: Run pytest suite when tests directory exists
+        run: |
+          if ls tests/test_*.py >/dev/null 2>&1; then
+            pytest tests -q
+          else
+            echo "No tracked tests/ directory found; packaging, lint, and smoke checks passed."
+          fi

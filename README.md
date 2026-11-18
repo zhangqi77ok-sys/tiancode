@@ -1,8 +1,8 @@
 # ⚡ TianCode
 
 > **极简、高可用、可控状态机的终端 AI 编程智能体 (Coding Agent CLI)**
-> 
-> 基于 **LangGraph 状态机** + **Clean Architecture (整洁架构)** 设计，为开发者提供类 Claude Code / Cursor CLI 的纯终端自主编程体验。
+>
+> 基于 **LangGraph 状态机** + **Clean Architecture (整洁架构)** 设计，内置人机协同权限门禁 (HITL)、跨平台命令与语法安全守卫、智能上下文折叠与 Token 成本计量，为开发者提供可控可回滚的纯终端编程体验。
 
 ---
 
@@ -12,67 +12,73 @@ TianCode 严格遵循**整洁架构 / 六边形架构 (Ports and Adapters)** 原
 
 ```text
 tiancode/
-├── config/             # 配置适配层 (分层加载: CLI参数 > 环境变量 > 默认配置)
+├── config/                  # 配置适配层 (CLI 参数 > 环境变量 > ~/.tiancode/config.json)
 │   └── settings.py
-├── domain/             # 领域实体与抽象契约层 (零外部框架依赖)
-│   ├── models.py       # FileDiff, ExecutionResult, FileSnapshot 实体
-│   └── interfaces.py   # SnapshotStore 协议契约
-├── core/               # 核心编排引擎层 (状态机驱动)
-│   ├── engine.py       # LangGraph StateGraph 装配与调度器
-│   ├── history.py      # 时光倒流与统一 Diff 计算引擎
-│   ├── prompts.py      # 自愈提示词与工程规约
-│   └── state.py        # 消息裁剪与上下文瘦身
-├── tools/              # 基础设施与原子工具层 (适配器)
-│   ├── file_ops.py     # 局部手术级读写改与防御
-│   └── execution.py    # 跨平台子进程安全沙箱
-└── cli/                # 终端表现层 (用户交互)
-    ├── main.py         # CLI 统一入口 (argparse)
-    ├── repl.py         # 交互式 Shell 工作台
-    ├── commands.py     # Slash 命令分发器 (/undo, /diff, /clear)
-    └── formatter.py    # ANSI 彩色渲染与 Diff 补丁展示
+├── domain/                  # 领域实体与抽象契约层 (零外部框架依赖)
+│   ├── models.py            # FileDiff, ExecutionResult, FileSnapshot 等实体
+│   └── interfaces.py        # SnapshotStore 协议契约
+├── core/                    # 核心编排引擎层 (状态机与安全治理)
+│   ├── engine.py            # LangGraph StateGraph 装配、热重载与预算调度
+│   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only 模式)
+│   ├── tool_dispatcher.py   # 只读并发 + 写串行调度器 & Doom-Loop 熔断
+│   ├── syntax_guard.py      # 落盘前 JIT 静态预审 (Python / JSON / TOML / XML)
+│   ├── compactor.py         # 智能上下文压缩与结构化摘要折叠
+│   ├── doctor.py            # 环境体检 (/doctor) 与上下文占用剖析 (/context)
+│   ├── search.py            # 跨平台沙箱 grep_search 与分页 read_file
+│   ├── repo_map.py          # AST 代码拓扑全景生成 (含行号范围与安全剪枝)
+│   ├── planner.py           # Planner-Worker 任务看板状态管理
+│   ├── subagent.py          # 只读沙箱子智能体执行器
+│   ├── usage_meter.py       # Token 计量器与阶梯缓存计费
+│   ├── polyglot.py          # 多语言项目识别与验证命令探测
+│   ├── history.py           # 内存级可逆快照与 Rollback
+│   ├── git_store.py         # Git-Native 无损 Diff / 回滚 / 提交适配器
+│   ├── session_store.py     # 会话、计划与快照磁盘持久化
+│   └── diff.py / state.py / prompts.py
+├── tools/                   # 基础设施与原子工具层
+│   ├── file_ops.py          # 原子写入、单点替换/replace_all 编辑与可逆删除
+│   ├── execution.py         # 跨平台子进程与危险命令防线沙箱
+│   ├── plan_ops.py          # 任务计划看板工具
+│   └── subagent_ops.py      # 子智能体调研委托工具
+├── skills/                  # 扩展技能加载层 (.tiancode/skills/<name>/SKILL.md)
+├── eval/                    # 本地自动化基准评测框架 (BenchmarkRunner)
+└── cli/                     # 终端表现层
+    ├── main.py              # CLI 参数解析与入口
+    ├── repl.py              # 交互式 Shell 工作台
+    ├── commands.py          # Slash 斜杠命令分发器
+    └── formatter.py         # 流式输出、Diff 着色与交互渲染
 ```
 
 ---
 
 ## 🚀 核心特性
 
-1. **双模启动**：
-   - **单发模式 (One-Shot)**：`tiancode "修复 main.py 的除零异常"`，自动改代码、测代码、汇报后退出。
-   - **交互终端 (REPL)**：`tiancode` 进入持续对话工作台，保持多轮上下文。
-2. **Git-Native 智能协同 (时光倒流与自动微提交)**：
-   - `/diff`：实时查看当前会话修改的所有文件的 Git 风格红绿 Diff 补丁。
-   - `/undo`：安全无损快照回滚，精准撤销智能体在本轮修改与新建的文件，不破坏用户自身未暂存的修改或 Git 暂存区。
-   - `/commit`：AI 自动根据代码变动生成符合 Conventional Commits 规范的提交信息并自动执行 `git commit`。
-   - `/eval`：本地微型基准评测机 (Micro Benchmark)，支持算法与工程挑战题的自主求解与沙箱验证。
-3. **真实子进程自愈闭环**：
-   - 绝不“只写不测”，改完代码自动调用系统 Python 真实运行，捕获 Traceback 自动自我修复。
-4. **上下文智能压缩与 Token 预算熔断 (Smart Context Compaction)**：
-   - 动态字符与消息双轨预算控制，防止长会话或海量工具输出导致上下文窗口爆炸。
-   - 自动生成结构化【上下文智能折叠摘要】卡片保留历史关键事实与文件变更，无缝桥接前后文。
-   - 提供 `/compact` 斜杠指令，支持在交互终端中手动触发压缩并查看节省字符统计。
-5. **落盘前 AST 语法即时守卫与极速自愈 (Pre-Write JIT AST Syntax Guard)**：
-   - 在 `write_file` / `edit_file` 文件真正落盘前，执行毫秒级内存静态语法预审 (支持 Python `ast.parse` 与 JSON 格式校验)。
-   - 发现语法错误立即在落盘前阻断，杜绝污染工作区代码，并输出包含行号、列号与代码指针切片的诊断卡片，驱动大模型极速自愈修复。
-6. **会话 Token 计量器与费用实时看板 (Token Usage & Cost Meter)**：
-   - 精确追踪每轮推理的冷启动输入、Prompt 缓存命中与输出生成 Tokens，并内置多模型阶梯费率计算。
-   - 提供 `/cost`（或 `/usage`）斜杠指令查看缓存命中率、节省金额与分项账单，且会话消耗随磁盘持久化同步还原。
-7. **跨平台沙箱检索与混合并发熔断调度器 (`grep_search` & `SafeToolDispatcher`)**：
-   - 内置纯 Python 跨平台 `grep_search` 与行号分页 `read_file`，支持目录剪枝、二进制过滤及软链接物理防逃逸。
-   - 混合调度引擎使多条只读检索工具在线程池中并发加速，写入与执行工具严格串行保障快照一致，并对连续重复调用自动触发 Doom-Loop 死循环熔断。
+1. **双模启动与可控权限门禁 (HITL Permissions)**：
+   - **默认交互审批 (`ask`)**：非只读工具（`write_file`、`edit_file`、`delete_file`、`rollback_turn`、`shell`、`run_python`）在执行前弹窗确认，支持 `[y] 仅本次 / [a] 本会话允许 / [n] 拒绝`（非交互无回调严格 Fail-Closed）。
+   - **全自动模式 (`--yes` / `-y` / `/mode auto`)**：跳过确认，适合受信任仓库或自动化流；仍受底层危险命令沙箱与 `recursion_limit` 保护。
+   - **只读审计模式 (`--read-only` / `/mode read_only`)**：禁止一切写操作与外部命令执行，仅允许只读源码检索与子智能体分析。
+2. **Git-Native 无损快照与可逆编辑**：
+   - `write_file` / `edit_file`（含唯一性防误替换与 `replace_all`）/ `delete_file` / `rollback_turn` 统一纳入快照追踪。
+   - `/diff` 实时对比补丁，`/undo` 安全撤销本轮全部文件变更，`/commit` 自动生成 Conventional Commit。
+3. **落盘前 AST / 格式即时守卫与闭环自愈**：
+   - 写入前校验 Python AST、JSON、TOML（Python 3.10 自动兼容 `tomli`）与防 XXE XML；写后按语言/构建工具探测测试并触发自愈修复（可用 `--no-heal` 关闭）。
+4. **混合并发调度与死循环 / 超时双重保险**：
+   - `SafeToolDispatcher` 将只读检索线程池并发执行、修改操作严格串行，触发重复参数调用自动启用 Doom-Loop 熔断，同时为 LLM 配置重试与超时上限及状态机 `recursion_limit=50`。
+5. **上下文智能压缩、环境体检与成本看板**：
+   - 字符/消息双轨预算控制、`max_context_chars` 超限自动折叠，配套 `/compact`、`/context`、`/doctor` 与 `/cost`（`/usage`）。
 
 ---
 
 ## 📦 安装与配置
 
 ### 1. 安装开发模式
-在项目根目录下执行：
+在项目根目录下执行（支持 Python `>= 3.10`）：
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
-安装后，系统将注册 `tiancode` 与 `tc` 两个全局命令。
+安装后将注册 `tiancode` 与 `tc` 全局 CLI 命令。
 
 ### 2. 配置 API Key
-TianCode 支持任何兼容 OpenAI 协议的模型（推荐 DeepSeek）：
+支持任意 OpenAI 协议兼容模型（默认适配 DeepSeek）：
 ```bash
 # Windows PowerShell
 $env:TIANCODE_API_KEY = "你的_API_KEY"
@@ -84,27 +90,31 @@ export TIANCODE_API_KEY="你的_API_KEY"
 export TIANCODE_BASE_URL="https://api.deepseek.com"
 export TIANCODE_MODEL="deepseek-chat"
 ```
+首次无环境变量启动时将自动引导写入用户配置，并在运行期间侦测外部配置变化实现热重载。
 
 ---
 
-## 💡 使用示例
+## 💡 CLI 参数与斜杠指令
 
-### 单发执行
-```bash
-tc "在当前目录下创建一个 utils.py，写一个斐波那契数列函数并用 assert 自测"
-```
+### 常用命令行参数
+- `tc "任务描述"`：单发执行（One-Shot），默认隔离生成 `oneshot_*` 会话；可配合 `--yes` / `-y` 自动授权，或 `--read-only` 进行纯只读审查。
+- `tc --continue` (`-c`) / `tc --resume <session_id>`：断点恢复最近一次或指定历史会话。
+- `tc --no-heal`：禁用写后自动测试与自愈循环。
+- `tc --max-chars 60000`：指定上下文字符预算阈值（超出自动压缩折叠）。
+- `tc --dir <path>` / `--model <name>` / `--key <key>` / `--base-url <url>` / `--version`。
 
-### 进入交互式工作台
-```bash
-tc
-```
-进入后可使用以下指令：
-- `tiancode > 帮我给 utils.py 加上阶乘函数并测试`
-- `tiancode > /diff` (查看代码变动)
-- `tiancode > /undo` (后悔了？一键撤回修改)
-- `tiancode > /compact` (智能折叠长会话历史，释放 Token 预算)
-- `tiancode > /cost` (查看当前会话 Token 消耗、缓存命中率与预估费用)
-- `tiancode > /sessions` (查看历史持久化会话)
-- `tiancode > /switch <session_id>` (恢复历史会话)
-- `tiancode > /clear` (清空对话记忆)
-- `tiancode > exit` (退出)
+### REPL 交互式斜杠指令
+- `/mode [ask|auto|read_only]`：查看或动态切换当前运行时安全权限模式
+- `/config show` 与 `/config set <prop> <val>`：查看或修改持久化配置并即时生效（支持 `key`、`url`、`model`、`max_chars`、`max_msgs`、`timeout`、`auto_heal`）
+- `/doctor`：一键诊断配置、工作目录读写权限、Git 状态与 Python/pytest 环境
+- `/context` & `/compact`：分析当前消息字符占用或立即执行上下文折叠压缩
+- `/cost`（`/usage`）：查看推理轮次、缓存命中率与预估费用
+- `/map` / `/plan` / `/skills`：查看 Repo Map 代码拓扑、Planner-Worker 看板及已加载技能
+- `/sessions` / `/switch <id>` / `/clear` / `/status` / `/help`：会话列表、热切换、清空与状态查看
+- `/diff` / `/undo` / `/commit [msg]` / `/eval [problem_id]`：代码补丁对比、无损回滚、提交与基准评测
+
+---
+
+## 📄 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。
