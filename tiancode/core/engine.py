@@ -14,6 +14,7 @@ from tiancode.core.llm_adapter import ReasonerChatOpenAI, ThinkTagStreamSplitter
 from tiancode.core.permissions import ApprovalPromptFn, PermissionGuard, PermissionMode
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
+from tiancode.core.stream_events import iter_message_events, persist_engine_session, resume_engine_session
 from tiancode.core.tool_dispatcher import SafeToolDispatcher
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.tools.execution import create_execution_tools
@@ -232,95 +233,12 @@ class TianCodeEngine:
         return builder.compile(checkpointer=self.memory)
 
     def _persist_session_state(self, thread_id: str, config: Dict[str, Any]) -> None:
-        """Persist graph messages, active plan, snapshots, and usage metrics safely."""
-        try:
-            state = self.graph.get_state(config)
-            all_messages = state.values.get("messages", [])
-            exported_snapshots = (
-                self.snapshot_store.export_snapshots()
-                if hasattr(self.snapshot_store, "export_snapshots")
-                else []
-            )
-            if hasattr(self, "usage_tracker"):
-                tokens, cost = self.usage_tracker.get_session_stats()
-                total_tokens = tokens.total_tokens
-                estimated_cost = cost.total_cost
-                usage_dict = self.usage_tracker.to_dict()
-            else:
-                total_tokens, estimated_cost, usage_dict = 0, 0.0, None
-            self.session_store.save(
-                session_id=thread_id,
-                work_dir=str(self.settings.work_dir),
-                messages=all_messages,
-                plan=self.planner.active_plan,
-                snapshots=exported_snapshots,
-                total_tokens=total_tokens,
-                estimated_cost=estimated_cost,
-                usage=usage_dict,
-            )
-            if all_messages and hasattr(self, "memory_store"):
-                modified = (
-                    list(self.snapshot_store.get_all_snapshots().keys())
-                    if hasattr(self.snapshot_store, "get_all_snapshots")
-                    else []
-                )
-                self.memory_store.consolidate_session(
-                    session_id=thread_id,
-                    work_dir=self.settings.work_dir,
-                    messages=all_messages,
-                    plan=self.planner.active_plan,
-                    modified_files=modified,
-                )
-        except Exception as exc:
-            import logging
-            logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
+        persist_engine_session(self, thread_id, config)
 
-    def _iter_message_events(
-        self,
-        chunk: Any,
-        meta: Any,
-        seen_tools: set,
-        splitter: ThinkTagStreamSplitter,
-    ) -> Generator[Dict[str, Any], None, None]:
-        """Translate a LangGraph stream tuple into structured thinking/token/tool events."""
-        node = meta.get("langgraph_node") if isinstance(meta, dict) else None
-        if node == "brain":
-            add_kw = getattr(chunk, "additional_kwargs", None) or {}
-            reasoning = add_kw.get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning:
-                yield {"type": "thinking", "content": reasoning}
+    def _iter_message_events(self, chunk: Any, meta: Any, seen_tools: set, splitter: ThinkTagStreamSplitter) -> Generator[Dict[str, Any], None, None]:
+        yield from iter_message_events(chunk, meta, seen_tools, splitter)
 
-            raw_content = getattr(chunk, "content", None)
-            if isinstance(raw_content, str) and raw_content:
-                for kind, piece in splitter.feed(raw_content):
-                    yield {"type": kind, "content": piece}
-
-            tool_chunks = getattr(chunk, "tool_call_chunks", None)
-            if tool_chunks:
-                for kind, piece in splitter.flush():
-                    yield {"type": kind, "content": piece}
-                for tc in tool_chunks:
-                    name = tc.get("name")
-                    call_id = tc.get("id") or tc.get("index")
-                    if name and call_id not in seen_tools:
-                        seen_tools.add(call_id)
-                        yield {"type": "tool_start", "name": name, "args": tc.get("args", "")}
-            elif getattr(chunk, "tool_calls", None):
-                for kind, piece in splitter.flush():
-                    yield {"type": kind, "content": piece}
-                for tc in chunk.tool_calls:
-                    call_id = tc.get("id") or tc.get("name")
-                    if call_id not in seen_tools:
-                        seen_tools.add(call_id)
-                        yield {"type": "tool_start", "name": tc.get("name"), "args": tc.get("args", {})}
-        elif node == "tools":
-            for kind, piece in splitter.flush():
-                yield {"type": kind, "content": piece}
-            yield {"type": "tool_end", "name": getattr(chunk, "name", "tool"), "content": getattr(chunk, "content", "")}
-
-    def stream_task(
-        self, prompt: str, thread_id: str = "tiancode_default"
-    ) -> Generator[Dict[str, Any], None, None]:
+    def stream_task(self, prompt: str, thread_id: str = "tiancode_default") -> Generator[Dict[str, Any], None, None]:
         """Stream real-time thinking, tokens, tool lifecycle events, and turn usage telemetry."""
         if self.sync_config_if_changed():
             from tiancode.cli.formatter import TerminalFormatter
@@ -344,55 +262,15 @@ class TianCodeEngine:
                 tokens, cost = self.usage_tracker.get_session_stats()
                 turn_tokens = max(0, tokens.total_tokens - before_tokens)
                 if turn_tokens > 0:
-                    yield {
-                        "type": "usage_summary",
-                        "turn_tokens": turn_tokens,
-                        "session_tokens": tokens.total_tokens,
-                        "session_cost": cost.total_cost,
-                    }
+                    yield {"type": "usage_summary", "turn_tokens": turn_tokens, "session_tokens": tokens.total_tokens, "session_cost": cost.total_cost}
         finally:
             self._persist_session_state(thread_id, config)
 
     def resume_session(self, session_id: str) -> bool:
         """Resume a saved session from disk and restore messages, TaskPlan, and file snapshots."""
-        persisted = self.session_store.load(session_id)
-        if not persisted:
-            return False
+        return resume_engine_session(self, session_id)
 
-        from langchain_core.messages import messages_from_dict
-
-        if persisted.plan:
-            self.planner.active_plan = self.session_store.rehydrate_plan(persisted.plan)
-
-        if getattr(persisted, "snapshots", None) and hasattr(self.snapshot_store, "import_snapshots"):
-            self.snapshot_store.import_snapshots(persisted.snapshots)
-
-        if hasattr(self, "usage_tracker"):
-            if getattr(persisted, "usage", None):
-                self.usage_tracker.load_from_dict(persisted.usage)
-            else:
-                self.usage_tracker.reset()
-
-        if persisted.messages:
-            rehydrated_msgs = messages_from_dict(persisted.messages)
-            config = {"configurable": {"thread_id": session_id}}
-            try:
-                self.graph.update_state(config, {"messages": rehydrated_msgs})
-            except Exception as exc:
-                from tiancode.cli.formatter import TerminalFormatter
-                TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
-                return False
-        self.active_session_id = session_id
-        self.permission_guard.clear_session_approvals()
-        if hasattr(self, "tool_dispatcher"):
-            self.tool_dispatcher.reset_loop_guard()
-        return True
-
-    def set_permission_mode(
-        self,
-        mode: Union[PermissionMode, str],
-        prompt_fn: Optional[ApprovalPromptFn] = None,
-    ) -> PermissionMode:
+    def set_permission_mode(self, mode: Union[PermissionMode, str], prompt_fn: Optional[ApprovalPromptFn] = None) -> PermissionMode:
         """Dynamically switch execution permission mode (ask / auto / read_only)."""
         return self.permission_guard.set_mode(mode, prompt_fn=prompt_fn)
 
@@ -410,14 +288,11 @@ class TianCodeEngine:
     def generate_commit_message(self, task_description: str, diff_text: str) -> str:
         """Use LLM to generate a conventional commit message based on task and diff."""
         prompt = (
-            "请根据以下任务说明与代码变更，生成一条符合 Conventional Commits 规范的简短单行 Git Commit 消息（例如：feat: add login 或 fix(calc): resolve float precision）。"
-            "直接输出单行 Commit 文本，严禁包含多余解释、引号或 markdown 标记。\n\n"
-            f"任务说明：{task_description}\n"
-            f"代码差异：\n{diff_text[:2000]}"
+            "请根据以下任务说明与代码变更，生成一条符合 Conventional Commits 规范的简短单行 Git Commit 消息（例如：feat: add login）。"
+            f"直接输出单行 Commit 文本，严禁包含引号或 markdown。\n\n任务说明：{task_description}\n代码差异：\n{diff_text[:2000]}"
         )
         try:
-            raw = self.llm.invoke(prompt).content.strip()
-            return raw.splitlines()[0].strip("`'\" ")
+            return self.llm.invoke(prompt).content.strip().splitlines()[0].strip("`'\" ")
         except Exception:
             return f"feat: {task_description[:40]}"
 
