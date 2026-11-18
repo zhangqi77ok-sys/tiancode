@@ -42,6 +42,7 @@ class McpServerConfig:
     command: str = ""
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
+    cwd: str = ""
     url: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
@@ -100,6 +101,7 @@ def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerC
 
     configs: Dict[str, McpServerConfig] = {}
     errors: List[str] = []
+    base_dir = path.parent.parent if path.parent.name == ".tiancode" else path.parent
     for name, entry in payload.get("mcpServers", {}).items():
         if not isinstance(entry, dict):
             errors.append(f"MCP 服务 '{name}' 配置不是对象 ({path})")
@@ -112,12 +114,18 @@ def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerC
         if not url and not cmd and not disabled:
             errors.append(f"MCP 服务 '{name}' 缺少 command 或 url ({path})")
             continue
+        raw_cwd = str(entry.get("cwd") or "").strip()
+        resolved_cwd = ""
+        if raw_cwd:
+            p = Path(raw_cwd).expanduser()
+            resolved_cwd = str((p if p.is_absolute() else (base_dir / p)).resolve())
         configs[str(name)] = McpServerConfig(
             name=str(name),
             transport="http" if url else "stdio",
             command=cmd,
             args=[str(a) for a in (entry.get("args") or [])],
             env={str(k): str(v) for k, v in (entry.get("env") or {}).items()},
+            cwd=resolved_cwd,
             url=url,
             headers={str(k): str(v) for k, v in (entry.get("headers") or {}).items()},
             timeout_seconds=timeout_s,
@@ -186,7 +194,7 @@ class McpManager:
         transport = (
             HttpMcpTransport(cfg.url, headers=cfg.headers, timeout_seconds=cfg.timeout_seconds)
             if cfg.transport == "http"
-            else StdioMcpTransport(cfg.command, args=cfg.args, env=cfg.env, timeout_seconds=cfg.timeout_seconds, cwd=str(self.work_dir))
+            else StdioMcpTransport(cfg.command, args=cfg.args, env=cfg.env, timeout_seconds=cfg.timeout_seconds, cwd=cfg.cwd or str(self.work_dir))
         )
         try:
             transport.connect()

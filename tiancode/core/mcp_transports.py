@@ -5,16 +5,23 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
+import sys
 import threading
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 import httpx
 
 _MCP_PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_TIMEOUT_SECONDS = 30
 _SENSITIVE_ENV_KEYS = frozenset({"TIANCODE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"})
-_SAFE_BASE_ENV = frozenset({"PATH", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE", "PATHEXT", "WINDIR", "LANG"})
+_SAFE_BASE_ENV = frozenset({
+    "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
+    "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "PROGRAMDATA", "OS",
+    "PATHEXT", "WINDIR", "LANG", "NUMBER_OF_PROCESSORS",
+})
 
 
 def _build_scrubbed_env(server_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -100,11 +107,17 @@ class StdioMcpTransport:
         self._lock = threading.Lock()
         self._pending: Dict[int, queue.Queue[Any]] = {}
         self._next_id = 0
+        self._stderr_tail: Deque[str] = deque(maxlen=15)
+        self._stderr_done = threading.Event()
 
     def connect(self) -> None:
         """Start subprocess and execute MCP initialize handshake."""
+        cmd_bin = shutil.which(self.command) or self.command
+        flags = 0x08000000 if sys.platform == "win32" else 0
+        self._stderr_tail.clear()
+        self._stderr_done.clear()
         self._proc = subprocess.Popen(
-            [self.command, *self.args],
+            [cmd_bin, *self.args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -114,11 +127,17 @@ class StdioMcpTransport:
             bufsize=1,
             env=_build_scrubbed_env(self.env),
             cwd=self.cwd,
+            creationflags=flags,
+            start_new_session=(sys.platform != "win32"),
         )
         threading.Thread(target=self._reader_loop, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
-        self._request("initialize", _init_params())
-        self._send_line({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        try:
+            self._request("initialize", _init_params())
+            self._send_line({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        except Exception:
+            self.close()
+            raise
 
     def list_tools(self) -> List[Dict[str, Any]]:
         return list((self._request("tools/list", {}) or {}).get("tools") or [])
@@ -140,10 +159,17 @@ class StdioMcpTransport:
             self._pending[req_id] = waiter
         try:
             self._send_line({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
-            return _unwrap_rpc_result(waiter.get(timeout=self.timeout_seconds))
+            msg = waiter.get(timeout=self.timeout_seconds)
+            if msg is None:
+                self._stderr_done.wait(0.25)
+                tail = " | ".join(self._stderr_tail)
+                raise RuntimeError(f"MCP 通道已关闭: {tail}" if tail else "MCP 通道已关闭或响应格式无效")
+            return _unwrap_rpc_result(msg)
         except queue.Empty as exc:
             self.close()
-            raise TimeoutError(f"MCP 请求超时 ({self.timeout_seconds}s): {method}") from exc
+            tail = " | ".join(self._stderr_tail)
+            detail = f" ({tail})" if tail else ""
+            raise TimeoutError(f"MCP 请求超时 ({self.timeout_seconds}s): {method}{detail}") from exc
         finally:
             with self._lock:
                 self._pending.pop(req_id, None)
@@ -170,9 +196,15 @@ class StdioMcpTransport:
             self._wake_pending()
 
     def _drain_stderr(self) -> None:
-        if self._proc and self._proc.stderr:
-            for _ in self._proc.stderr:
-                pass
+        proc = self._proc
+        try:
+            if proc and proc.stderr:
+                for line in proc.stderr:
+                    text = line.strip()
+                    if text:
+                        self._stderr_tail.append(text[:240])
+        finally:
+            self._stderr_done.set()
 
     def _wake_pending(self) -> None:
         with self._lock:
@@ -196,11 +228,11 @@ class StdioMcpTransport:
         except OSError:
             pass
         if proc.poll() is None:
-            proc.terminate()
             try:
-                proc.wait(timeout=1.0)
+                proc.wait(timeout=0.35)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                from tiancode.tools.execution import kill_process_tree
+                kill_process_tree(proc)
         for stream in (proc.stdout, proc.stderr):
             try:
                 if stream:
