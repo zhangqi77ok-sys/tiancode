@@ -141,13 +141,25 @@ def _print_startup_hints(engine: TianCodeEngine) -> None:
             TerminalFormatter.print_info(f"📜 已加载工程规约: {', '.join(d.filename for d in docs)}")
 
     workspaces = getattr(getattr(engine, "memory_store", None), "workspaces", None)
-    if not isinstance(workspaces, dict) or not workspaces:
-        return
-    curr = str(engine.settings.work_dir.resolve()) if hasattr(engine, "settings") else ""
-    recent = sorted(workspaces.values(), key=lambda w: getattr(w, "last_active_at", ""), reverse=True)
-    others = [w for w in recent if getattr(w, "path", "") != curr]
-    if others:
-        TerminalFormatter.print_info(f"🧠 记忆已唤醒: 最近活跃项目 [{others[0].name}] ({others[0].path}) · 可直接聊起或 /cd 切换")
+    if isinstance(workspaces, dict) and workspaces:
+        curr = str(engine.settings.work_dir.resolve()) if hasattr(engine, "settings") else ""
+        recent = sorted(workspaces.values(), key=lambda w: getattr(w, "last_active_at", ""), reverse=True)
+        others = [w for w in recent if getattr(w, "path", "") != curr]
+        if others:
+            TerminalFormatter.print_info(f"🧠 记忆已唤醒: 最近活跃项目 [{others[0].name}] ({others[0].path}) · 可直接聊起或 /cd 切换")
+
+    mcp_mgr = getattr(engine, "mcp_manager", None)
+    if mcp_mgr is not None:
+        errs = mcp_mgr.get_config_errors() if hasattr(mcp_mgr, "get_config_errors") else []
+        for err in (errs if isinstance(errs, list) else []):
+            TerminalFormatter.print_warning(str(err))
+        statuses = mcp_mgr.get_server_statuses() if hasattr(mcp_mgr, "get_server_statuses") else []
+        if isinstance(statuses, list) and statuses:
+            summary = ", ".join(
+                f"{s.name}:{'在线' if s.connected else ('停用' if not s.enabled else '离线')}({s.tool_count})"
+                for s in statuses
+            )
+            TerminalFormatter.print_info(f"🔌 MCP 服务: {summary} (/mcp 查看详情)")
 
 
 def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None:
@@ -183,7 +195,7 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
 
         if not user_input:
             continue
-        if user_input.lower() in ("exit", "quit", ":q"):
+        if user_input.lower() in ("exit", "quit", ":q", "/exit", "/quit"):
             print("👋 已安全退出 TianCode。")
             break
         if cmd_handler.is_slash_command(user_input):
