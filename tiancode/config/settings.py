@@ -20,7 +20,7 @@ def load_user_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     path = config_path or get_default_config_path()
     if path.exists():
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 return json.load(f)
         except Exception:
             return {}
@@ -44,8 +44,8 @@ class Settings:
     model: str = "deepseek-chat"
     temperature: float = 0.0
     timeout_seconds: int = 15
-    max_history_messages: int = 12
-    max_context_chars: int = 40000
+    max_history_messages: int = 40
+    max_context_chars: int = 60000
     work_dir: Path = Path(".")
     auto_heal: bool = True
 
@@ -91,10 +91,10 @@ class Settings:
         timeout_seconds = raw_timeout if type(raw_timeout) is int and raw_timeout > 0 else 15
 
         raw_max_hist = user_cfg.get("max_history_messages")
-        max_history = raw_max_hist if type(raw_max_hist) is int and raw_max_hist > 1 else 12
+        max_history = raw_max_hist if type(raw_max_hist) is int and raw_max_hist > 1 else 40
 
         raw_max_chars = user_cfg.get("max_context_chars")
-        max_chars = raw_max_chars if type(raw_max_chars) is int and raw_max_chars >= 500 else 40000
+        max_chars = raw_max_chars if type(raw_max_chars) is int and raw_max_chars >= 500 else 60000
 
         raw_auto_heal = user_cfg.get("auto_heal")
         auto_heal = raw_auto_heal if isinstance(raw_auto_heal, bool) else True
