@@ -53,6 +53,9 @@ tiancode/
 5. **落盘前 AST 语法即时守卫与极速自愈 (Pre-Write JIT AST Syntax Guard)**：
    - 在 `write_file` / `edit_file` 文件真正落盘前，执行毫秒级内存静态语法预审 (支持 Python `ast.parse` 与 JSON 格式校验)。
    - 发现语法错误立即在落盘前阻断，杜绝污染工作区代码，并输出包含行号、列号与代码指针切片的诊断卡片，驱动大模型极速自愈修复。
+6. **会话 Token 计量器与费用实时看板 (Token Usage & Cost Meter)**：
+   - 精确追踪每轮推理的冷启动输入、Prompt 缓存命中与输出生成 Tokens，并内置多模型阶梯费率计算。
+   - 提供 `/cost`（或 `/usage`）斜杠指令查看缓存命中率、节省金额与分项账单，且会话消耗随磁盘持久化同步还原。
 
 ---
 
@@ -97,6 +100,7 @@ tc
 - `tiancode > /diff` (查看代码变动)
 - `tiancode > /undo` (后悔了？一键撤回修改)
 - `tiancode > /compact` (智能折叠长会话历史，释放 Token 预算)
+- `tiancode > /cost` (查看当前会话 Token 消耗、缓存命中率与预估费用)
 - `tiancode > /sessions` (查看历史持久化会话)
 - `tiancode > /switch <session_id>` (恢复历史会话)
 - `tiancode > /clear` (清空对话记忆)

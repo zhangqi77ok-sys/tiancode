@@ -24,6 +24,8 @@ class SlashCommandHandler:
             "/sessions": lambda _: self._handle_sessions(),
             "/switch": self._handle_switch,
             "/compact": lambda _: self._handle_compact(),
+            "/cost": lambda _: self._handle_cost(),
+            "/usage": lambda _: self._handle_cost(),
             "/eval": self._handle_eval,
             "/clear": lambda _: self._handle_clear(),
             "/help": lambda _: self._handle_help(),
@@ -188,7 +190,8 @@ class SlashCommandHandler:
             title = f": {s.task_title}" if s.task_title else ""
             print(f"  • {TerminalFormatter.BOLD}[{s.session_id}]{TerminalFormatter.RESET}{title} {progress}")
             print(f"    工作目录: {s.work_dir}")
-            print(f"    消息条数: {s.message_count} 条 | 更新时间: {s.updated_at[:19].replace('T', ' ')}")
+            cost_info = f" | 消耗: {s.total_tokens:,} Tokens (¥{s.estimated_cost:.4f})" if getattr(s, "total_tokens", 0) > 0 else ""
+            print(f"    消息条数: {s.message_count} 条{cost_info} | 更新时间: {s.updated_at[:19].replace('T', ' ')}")
         print(f"{TerminalFormatter.CYAN}========================================{TerminalFormatter.RESET}\n")
         print("💡 快捷切换会话: /switch <session_id>\n")
 
@@ -247,11 +250,50 @@ class SlashCommandHandler:
         else:
             TerminalFormatter.print_info("当前上下文未超出预算阈值，无需压缩。")
 
+    def _handle_cost(self) -> None:
+        tracker = getattr(self.engine, "usage_tracker", None)
+        if not tracker:
+            TerminalFormatter.print_info("当前引擎未启用 Token 计量器。")
+            return
+
+        tokens, cost = tracker.get_session_stats()
+        model = getattr(getattr(self.engine, "settings", None), "model", "unknown")
+        if not isinstance(model, str):
+            model = "unknown"
+
+        from tiancode.core.usage_meter import get_model_pricing
+        pricing = get_model_pricing(model)
+        pricing_label = pricing.display_name if pricing else "本地模型/未配置费率"
+
+        print(f"\n📊 ====== [TianCode 会话 Token 与成本账单] ======")
+        print(f"  • 当前模型: {model} ({pricing_label})")
+        print(f"  • 推理轮次: {tokens.turn_count} 轮")
+        print(
+            f"  • 输入 Tokens: {tokens.total_input_tokens:,} "
+            f"(其中缓存命中: {tokens.cache_read_tokens:,}, 命中率: {tokens.cache_hit_rate:.1f}%)"
+        )
+        print(f"  • 输出 Tokens: {tokens.output_tokens:,}")
+        print(f"  • 累计消耗: {tokens.total_tokens:,} Tokens")
+        if cost.is_known_pricing:
+            saved_str = f" (命中缓存节省约: ¥{cost.saved_by_cache:.4f})" if cost.saved_by_cache > 0 else ""
+            print(f"  • 预估总费用: ¥{cost.total_cost:.4f}{saved_str}")
+        else:
+            print("  • 预估总费用: ¥0.0000 (本地/自定义模型无计费)")
+        print("================================================\n")
+
     def _handle_status(self) -> None:
         snapshots = self.engine.snapshot_store.get_all_snapshots()
         TerminalFormatter.print_info(f"当前已追踪修改文件数: {len(snapshots)}")
         for fname in snapshots:
             print(f"  • {fname}")
+
+        tracker = getattr(self.engine, "usage_tracker", None)
+        if tracker:
+            tokens, cost = tracker.get_session_stats()
+            if tokens.total_tokens > 0:
+                TerminalFormatter.print_info(
+                    f"会话累计消耗: {tokens.total_tokens:,} Tokens | 预估费用: ¥{cost.total_cost:.4f}"
+                )
 
     def _handle_help(self) -> None:
         print("""
@@ -263,6 +305,7 @@ class SlashCommandHandler:
   /sessions - 查看磁盘持久化的历史会话列表
   /switch   - 快速切换恢复至指定历史会话 (/switch <session_id>)
   /compact  - 立即执行上下文智能压缩与 Token 预算折叠，释放上下文窗口
+  /cost     - 查看当前会话 Token 消耗、缓存命中率与预估费用账单 (别名 /usage)
   /diff    - 查看当前工作区代码变更补丁对比
   /undo    - 一键回滚并撤销当前所有未提交改动 (安全无损快照回滚)
   /commit  - 智能生成 Conventional Commit 并提交 (或指定: /commit feat: 自定义信息)

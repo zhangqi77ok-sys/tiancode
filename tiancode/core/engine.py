@@ -54,9 +54,11 @@ class TianCodeEngine:
         from tiancode.skills.loader import SkillLoader
         self.skill_loader = SkillLoader(workspace_dir=settings.work_dir)
 
-        # 4. Session Persistence Store
+        # 4. Session Persistence Store & Usage Tracker
         from tiancode.core.session_store import SessionStore
+        from tiancode.core.usage_meter import TokenUsageTracker
         self.session_store = SessionStore()
+        self.usage_tracker = TokenUsageTracker()
         self.active_session_id: str = "tiancode_repl"
 
         # 5. Assemble LangGraph Workflow
@@ -123,6 +125,7 @@ class TianCodeEngine:
             api_key=self.settings.api_key or "sk-dummy",
             base_url=self.settings.base_url,
             temperature=self.settings.temperature,
+            stream_usage=True,
         )
         self.subagent_runner.llm = self.llm
         self.llm_with_tools = self.llm.bind_tools(self.tools)
@@ -139,6 +142,11 @@ class TianCodeEngine:
             full_prompt = TIANCODE_SYSTEM_PROMPT + (f"\n{skills_catalog}" if skills_catalog else "") + plan_context
             sys_msg = SystemMessage(content=full_prompt)
             response = self.llm_with_tools.invoke([sys_msg] + trimmed)
+            if hasattr(self, "usage_tracker") and getattr(response, "usage_metadata", None):
+                self.usage_tracker.record_turn(
+                    model=self.settings.model,
+                    usage_metadata=response.usage_metadata,
+                )
             return {"messages": [response]}
 
         builder = StateGraph(MessagesState)
@@ -206,12 +214,16 @@ class TianCodeEngine:
                     if hasattr(self.snapshot_store, "export_snapshots")
                     else []
                 )
+                tokens, cost = self.usage_tracker.get_session_stats()
                 self.session_store.save(
                     session_id=thread_id,
                     work_dir=str(self.settings.work_dir),
                     messages=all_messages,
                     plan=self.planner.active_plan,
                     snapshots=exported_snapshots,
+                    total_tokens=tokens.total_tokens,
+                    estimated_cost=cost.total_cost,
+                    usage=self.usage_tracker.to_dict(),
                 )
             except Exception as exc:
                 import logging
@@ -231,6 +243,12 @@ class TianCodeEngine:
         if getattr(persisted, "snapshots", None) and hasattr(self.snapshot_store, "import_snapshots"):
             self.snapshot_store.import_snapshots(persisted.snapshots)
 
+        if hasattr(self, "usage_tracker"):
+            if getattr(persisted, "usage", None):
+                self.usage_tracker.load_from_dict(persisted.usage)
+            else:
+                self.usage_tracker.reset()
+
         if persisted.messages:
             rehydrated_msgs = messages_from_dict(persisted.messages)
             config = {"configurable": {"thread_id": session_id}}
@@ -244,10 +262,12 @@ class TianCodeEngine:
         return True
 
     def reset_session(self) -> None:
-        """Clear conversation memory, recorded file snapshots, and active plan."""
+        """Clear conversation memory, recorded file snapshots, active plan, and usage metrics."""
         self.memory.storage.clear()
         self.snapshot_store.clear()
         self.planner.active_plan = None
+        if hasattr(self, "usage_tracker"):
+            self.usage_tracker.reset()
 
     def generate_commit_message(self, task_description: str, diff_text: str) -> str:
         """Use LLM to generate a conventional commit message based on task and diff."""

@@ -76,6 +76,9 @@ class SessionStore:
         messages: List[Any],
         plan: Optional[TaskPlan] = None,
         snapshots: Optional[List[Dict[str, Any]]] = None,
+        total_tokens: int = 0,
+        estimated_cost: float = 0.0,
+        usage: Optional[Dict[str, Any]] = None,
     ) -> SessionMetadata:
         """Serialize session state, atomic task plan, and file snapshots to disk atomically."""
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -112,6 +115,8 @@ class SessionStore:
             steps_total=steps_total,
             steps_completed=steps_completed,
             message_count=len(serialized_msgs),
+            total_tokens=total_tokens,
+            estimated_cost=estimated_cost,
         )
 
         payload = {
@@ -119,6 +124,7 @@ class SessionStore:
             "messages": serialized_msgs,
             "plan": plan_dict,
             "snapshots": snapshots or [],
+            "usage": usage,
         }
 
         # Atomic write: write to .tmp then replace
@@ -156,6 +162,8 @@ class SessionStore:
                 steps_total=meta_data.get("steps_total", 0),
                 steps_completed=meta_data.get("steps_completed", 0),
                 message_count=meta_data.get("message_count", 0),
+                total_tokens=meta_data.get("total_tokens", 0),
+                estimated_cost=meta_data.get("estimated_cost", 0.0),
             )
 
             raw_plan = data.get("plan")
@@ -166,6 +174,7 @@ class SessionStore:
                 messages=data.get("messages", []),
                 plan=raw_plan,
                 snapshots=data.get("snapshots", []),
+                usage=data.get("usage"),
             )
         except Exception:
             return None
@@ -188,6 +197,8 @@ class SessionStore:
                         steps_total=meta_data.get("steps_total", 0),
                         steps_completed=meta_data.get("steps_completed", 0),
                         message_count=meta_data.get("message_count", 0),
+                        total_tokens=meta_data.get("total_tokens", 0),
+                        estimated_cost=meta_data.get("estimated_cost", 0.0),
                     )
                 )
             except Exception:

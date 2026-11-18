@@ -172,6 +172,8 @@ class SessionMetadata:
     steps_total: int = 0
     steps_completed: int = 0
     message_count: int = 0
+    total_tokens: int = 0
+    estimated_cost: float = 0.0
 
 
 @dataclass
@@ -182,3 +184,4 @@ class PersistedSession:
     messages: List[dict]
     plan: Optional[dict] = None
     snapshots: Optional[List[dict]] = None
+    usage: Optional[dict] = None
