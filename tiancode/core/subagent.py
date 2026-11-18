@@ -2,11 +2,14 @@
 
 import os
 from pathlib import Path
-from typing import Any, List
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from typing import Any, List, Optional
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, tool
+from tiancode.core.tool_dispatcher import SafeToolDispatcher
 from tiancode.domain.models import SubagentReport
 from tiancode.tools.file_ops import IGNORED_DIR_NAMES, resolve_safe_path
+
+MAX_SUBAGENT_STEPS = 4
 
 SUBAGENT_SYSTEM_PROMPT = """你是一个在独立沙箱中工作的只读型子智能体（TianCode Subagent: {role}）。
 你的唯一职责是：深度检索代码、排查日志、分析架构并提炼事实。
@@ -26,9 +29,18 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个在独立沙箱中工作的只读型子�
 class SubagentRunner:
     """Manages the lifecycle and sandboxed execution of lightweight subagents."""
 
-    def __init__(self, work_dir: Path, llm_client: Any) -> None:
+    def __init__(
+        self,
+        work_dir: Path,
+        llm_client: Any,
+        *,
+        usage_tracker: Optional[Any] = None,
+        model_name: str = "",
+    ) -> None:
         self.work_dir = Path(work_dir).resolve()
         self.llm = llm_client
+        self.usage_tracker = usage_tracker
+        self.model_name = model_name
 
     def get_sandboxed_tools(self) -> List[BaseTool]:
         """Provide strictly read-only tools to prevent workspace mutation during research."""
@@ -72,43 +84,21 @@ class SubagentRunner:
         from tiancode.core.search import create_search_tools
         return [list_files, get_repo_map, *create_search_tools(self.work_dir, IGNORED_DIR_NAMES)]
 
-    def run(self, objective: str, role: str = "researcher") -> SubagentReport:
-        """Execute sandboxed subagent loop and synthesize a SubagentReport."""
-        tools = self.get_sandboxed_tools()
-        tool_map = {t.name: t for t in tools}
+    def _invoke_tracked(self, runnable: Any, messages: List[Any]) -> Any:
+        """Invoke LLM runnable and forward usage_metadata to master TokenUsageTracker."""
+        ai_msg = runnable.invoke(messages)
+        if self.usage_tracker and getattr(ai_msg, "usage_metadata", None):
+            self.usage_tracker.record_turn(
+                model=self.model_name,
+                usage_metadata=ai_msg.usage_metadata,
+            )
+        return ai_msg
 
-        sys_prompt = SUBAGENT_SYSTEM_PROMPT.format(role=role)
-        messages = [
-            SystemMessage(content=sys_prompt),
-            HumanMessage(content=f"调研任务目标: {objective}\n请调用只读工具深入排查并给出结论。"),
-        ]
-
-        llm_with_tools = self.llm.bind_tools(tools) if hasattr(self.llm, "bind_tools") else self.llm
-
-        # Run up to 4 autonomous research iterations
-        final_text = ""
-        for _ in range(4):
-            ai_msg = llm_with_tools.invoke(messages)
-            messages.append(ai_msg)
-
-            if not getattr(ai_msg, "tool_calls", None):
-                final_text = ai_msg.content or ""
-                break
-
-            for tc in ai_msg.tool_calls:
-                t_name = tc.get("name")
-                t_args = tc.get("args", {})
-                t_id = tc.get("id", "call_dummy")
-                tool_fn = tool_map.get(t_name)
-                obs = tool_fn.invoke(t_args) if tool_fn else f"未知工具 {t_name}"
-                messages.append(ToolMessage(tool_call_id=t_id, content=str(obs)))
-
-        if not final_text and messages:
-            final_text = messages[-1].content or ""
-
-        # Parse findings and referenced files from output
-        findings = []
-        files = []
+    @staticmethod
+    def _parse_report(final_text: str, role: str, objective: str) -> SubagentReport:
+        """Extract structured key findings, file references, and summary from synthesis text."""
+        findings: List[str] = []
+        files: List[str] = []
         summary = ""
 
         for line in final_text.splitlines():
@@ -135,3 +125,34 @@ class SubagentRunner:
             referenced_files=files,
             summary_text=summary,
         )
+
+    def run(self, objective: str, role: str = "researcher") -> SubagentReport:
+        """Execute sandboxed subagent loop with SafeToolDispatcher and forced synthesis fallback."""
+        tools = self.get_sandboxed_tools()
+        dispatcher = SafeToolDispatcher(tools)
+
+        messages: List[Any] = [
+            SystemMessage(content=SUBAGENT_SYSTEM_PROMPT.format(role=role)),
+            HumanMessage(content=f"调研任务目标: {objective}\n请调用只读工具深入排查并给出结论。"),
+        ]
+        llm_with_tools = self.llm.bind_tools(tools) if hasattr(self.llm, "bind_tools") else self.llm
+
+        final_text = ""
+        for _ in range(MAX_SUBAGENT_STEPS):
+            ai_msg = self._invoke_tracked(llm_with_tools, messages)
+            messages.append(ai_msg)
+            if not getattr(ai_msg, "tool_calls", None):
+                final_text = str(ai_msg.content or "")
+                break
+            messages.extend(dispatcher({"messages": messages})["messages"])
+
+        if not final_text:
+            messages.append(
+                HumanMessage(
+                    content="调研工具步数已达上限，请立即基于以上所有检索结果给出精炼的结构化总结（核心结论、关键事实、关联文件），不要再调用工具。"
+                )
+            )
+            synth_msg = self._invoke_tracked(self.llm, messages)
+            final_text = str(getattr(synth_msg, "content", "") or "")
+
+        return self._parse_report(final_text, role, objective)

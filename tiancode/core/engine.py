@@ -36,14 +36,25 @@ class TianCodeEngine:
             git_store = GitSnapshotStore(work_dir=settings.work_dir)
             self.snapshot_store = git_store if git_store.is_git_repo() else InMemorySnapshotStore(work_dir=settings.work_dir)
 
-        # 2. Build Tools, Planner & Subagent Runner
+        # 2. Session Store, Usage Tracker & Subagent Runner
         from tiancode.core.planner import TaskPlanner
+        from tiancode.core.session_store import SessionStore
         from tiancode.core.subagent import SubagentRunner
+        from tiancode.core.usage_meter import TokenUsageTracker
         from tiancode.tools.plan_ops import create_plan_tools
         from tiancode.tools.subagent_ops import create_subagent_tools
 
+        self.session_store = SessionStore()
+        self.usage_tracker = TokenUsageTracker()
+        self.active_session_id: str = "tiancode_repl"
+
         self.planner = TaskPlanner()
-        self.subagent_runner = SubagentRunner(work_dir=settings.work_dir, llm_client=None)
+        self.subagent_runner = SubagentRunner(
+            work_dir=settings.work_dir,
+            llm_client=None,
+            usage_tracker=self.usage_tracker,
+            model_name=settings.model,
+        )
 
         self.tools = []
         self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir, auto_heal=settings.auto_heal))
@@ -55,14 +66,7 @@ class TianCodeEngine:
         from tiancode.skills.loader import SkillLoader
         self.skill_loader = SkillLoader(workspace_dir=settings.work_dir)
 
-        # 4. Session Persistence Store & Usage Tracker
-        from tiancode.core.session_store import SessionStore
-        from tiancode.core.usage_meter import TokenUsageTracker
-        self.session_store = SessionStore()
-        self.usage_tracker = TokenUsageTracker()
-        self.active_session_id: str = "tiancode_repl"
-
-        # 5. Assemble LangGraph Workflow
+        # 4. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
         self.reload_llm()
 
@@ -129,6 +133,7 @@ class TianCodeEngine:
             stream_usage=True,
         )
         self.subagent_runner.llm = self.llm
+        self.subagent_runner.model_name = self.settings.model
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         self.graph = self._build_graph()
 
