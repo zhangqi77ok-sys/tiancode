@@ -63,6 +63,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="恢复指定的历史会话 ID",
     )
     parser.add_argument(
+        "--no-heal",
+        dest="no_heal",
+        action="store_true",
+        help="禁用写后自动运行项目测试与自愈循环",
+    )
+    parser.add_argument(
+        "--max-chars",
+        dest="max_chars",
+        type=int,
+        default=None,
+        help="指定上下文最大字符预算阈值（超出将触发智能折叠压缩）",
+    )
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -93,43 +106,13 @@ def _resolve_resumed_session(engine: TianCodeEngine, args: argparse.Namespace) -
 
 
 def _run_oneshot_task(engine: TianCodeEngine, task_str: str, thread_id: str) -> None:
-    """Execute a single CLI task with streaming output and compact usage telemetry."""
+    """Execute a single CLI task with unified streaming output and telemetry."""
     TerminalFormatter.print_info(f"⚡ [单发任务] 正在处理: '{task_str}' (会话ID: {thread_id}) ...")
-    usage_footer: Optional[str] = None
-    in_agent_message = False
     try:
-        for event in engine.stream_task(task_str, thread_id=thread_id):
-            ev_type = event.get("type") if isinstance(event, dict) else None
-            if ev_type == "token" and event.get("content"):
-                if not in_agent_message:
-                    print(f"\n{TerminalFormatter.CYAN}{TerminalFormatter.BOLD}🤖 TianCode:{TerminalFormatter.RESET} ", end="", flush=True)
-                    in_agent_message = True
-                print(event["content"], end="", flush=True)
-            elif ev_type == "tool_start":
-                if in_agent_message:
-                    print()
-                    in_agent_message = False
-                TerminalFormatter.print_info(f"⚙️ 正在调用工具: {event.get('name')}...")
-            elif ev_type == "tool_end":
-                if in_agent_message:
-                    print()
-                    in_agent_message = False
-                lines = str(event.get("content", "")).strip().splitlines()
-                if lines:
-                    TerminalFormatter.print_info(f"↳ {lines[0][:120]}")
-            elif ev_type == "usage_summary":
-                usage_footer = (
-                    f"⚡ [本次消耗: {event.get('turn_tokens', 0):,} Tokens | "
-                    f"会话累计: {event.get('session_tokens', 0):,} Tokens (¥{event.get('session_cost', 0.0):.4f})]"
-                )
-            elif isinstance(event, dict) and "brain" in event:
-                msg = event["brain"]["messages"][-1]
-                if msg.content:
-                    TerminalFormatter.print_agent_message(msg.content)
-        if in_agent_message:
-            print()
-        if usage_footer:
-            TerminalFormatter.print_info(usage_footer)
+        TerminalFormatter.render_task_stream(
+            engine.stream_task(task_str, thread_id=thread_id),
+            use_spinner=False,
+        )
     except Exception as exc:
         TerminalFormatter.print_warning(f"单发任务执行失败: {str(exc)}")
         sys.exit(1)
@@ -147,6 +130,10 @@ def main() -> None:
         model=args.model,
         work_dir=work_dir,
     )
+    if getattr(args, "no_heal", False):
+        settings.auto_heal = False
+    if getattr(args, "max_chars", None) and args.max_chars > 0:
+        settings.max_context_chars = args.max_chars
 
     if not settings.api_key:
         settings = prompt_setup_wizard(settings)

@@ -3,7 +3,7 @@
 import sys
 import threading
 import time
-from typing import List, Optional, TextIO
+from typing import Any, Dict, Iterable, List, Optional, TextIO
 from tiancode.domain.models import FileDiff
 
 
@@ -100,6 +100,88 @@ class TerminalFormatter:
                 suffix = ""
             print(f"  {icon} {s.step_id}. {s.title}{suffix}")
         print(f"{cls.CYAN}{line}{cls.RESET}\n")
+
+    @classmethod
+    def _dispatch_stream_event(cls, state: "_StreamRenderState", event: Dict[str, Any]) -> None:
+        """Process a single event emitted by TianCodeEngine.stream_task."""
+        ev_type = event.get("type")
+        if ev_type == "token" and event.get("content"):
+            state.stop_spinner()
+            if not state.in_msg:
+                print(f"\n{cls.CYAN}{cls.BOLD}🤖 TianCode:{cls.RESET} ", end="", flush=True)
+                state.in_msg = True
+            print(event["content"], end="", flush=True)
+            return
+
+        if ev_type == "tool_start":
+            state.close_msg()
+            state.stop_spinner()
+            name = str(event.get("name", "tool"))
+            if state.use_spinner:
+                state.spinner = LiveToolSpinner(tool_name=name, args=str(event.get("args", "")))
+                state.spinner.start()
+            else:
+                cls.print_info(f"⚙️ 正在调用工具: {name}...")
+            return
+
+        if ev_type == "tool_end":
+            state.stop_spinner()
+            state.close_msg()
+            lines = str(event.get("content", "")).strip().splitlines()
+            if lines:
+                cls.print_info(f"↳ {lines[0][:120]}")
+        elif ev_type == "usage_summary":
+            state.usage_ev = event
+        elif "brain" in event:
+            msg = event["brain"]["messages"][-1]
+            if getattr(msg, "content", None):
+                cls.print_agent_message(msg.content)
+
+    @classmethod
+    def render_task_stream(
+        cls,
+        events: Iterable[Dict[str, Any]],
+        *,
+        use_spinner: bool = False,
+    ) -> None:
+        """Render streamed token, tool lifecycle, and usage telemetry uniformly across CLI and REPL."""
+        t0 = time.perf_counter()
+        state = _StreamRenderState(use_spinner=use_spinner)
+        try:
+            for event in events:
+                if isinstance(event, dict):
+                    cls._dispatch_stream_event(state, event)
+        finally:
+            state.stop_spinner()
+
+        state.close_msg()
+        if state.usage_ev:
+            elapsed = time.perf_counter() - t0
+            ev = state.usage_ev
+            cls.print_info(
+                f"⚡ [耗时 {elapsed:.1f}s | 本轮: {ev.get('turn_tokens', 0):,} Tokens | "
+                f"累计: {ev.get('session_tokens', 0):,} Tokens (¥{ev.get('session_cost', 0.0):.4f})]"
+            )
+
+
+class _StreamRenderState:
+    """Mutable cursor state for rendering a single agent streaming task."""
+
+    def __init__(self, *, use_spinner: bool) -> None:
+        self.use_spinner = use_spinner
+        self.spinner: Optional["LiveToolSpinner"] = None
+        self.in_msg = False
+        self.usage_ev: Optional[Dict[str, Any]] = None
+
+    def stop_spinner(self) -> None:
+        if self.spinner:
+            self.spinner.stop()
+            self.spinner = None
+
+    def close_msg(self) -> None:
+        if self.in_msg:
+            print()
+            self.in_msg = False
 
 
 class LiveToolSpinner:
