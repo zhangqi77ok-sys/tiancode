@@ -20,7 +20,9 @@ tiancode/
 │   └── interfaces.py        # SnapshotStore 协议契约
 ├── core/                    # 核心编排引擎层 (状态机与安全治理)
 │   ├── engine.py            # LangGraph StateGraph 装配、记忆唤醒与动态切目录
+│   ├── stream_events.py     # 流式事件转换与会话状态快照恢复助手
 │   ├── project_rules.py     # AGENTS.md / TIANCODE.md 分层加载与 /init 生成器
+│   ├── context_mentions.py  # @file 模糊路径匹配与安全沙箱源码片段直注
 │   ├── llm_adapter.py       # 推理模型 reasoning_content 与 <think> 流式适配器
 │   ├── cognitive_memory.py  # 跨会话三层大脑记忆仓库、时间衰减与联想召回
 │   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only + 人工纠正)
@@ -49,9 +51,11 @@ tiancode/
 └── cli/                     # 终端表现层
     ├── main.py              # CLI 参数解析与入口
     ├── theme.py             # Dark Mode 色板令牌与 CleanMarkdown 组件库
-    ├── repl.py              # 交互式工作台 (/ 补全、鼠标点击审批、模式切换)
-    ├── commands.py          # Slash 斜杠命令分发器
-    └── formatter.py         # 思考折叠面板、Rich 流式渲染与实时 Spinner
+    ├── widgets.py           # / & @file 复合补全、鼠标审批胶囊栏与 Live Spinner
+    ├── repl.py              # 交互式工作台 (点击状态栏、@file 展开与启动提示)
+    ├── command_ops.py       # 配置、费用、记忆、工作区与规约卡片渲染实现
+    ├── commands.py          # Slash 斜杠命令分发路由
+    └── formatter.py         # 思考折叠面板与 Rich 流式渲染引擎
 ```
 
 ---
@@ -71,6 +75,9 @@ tiancode/
    - 统一纳入 `write_file` / `edit_file` / `delete_file` / `rollback_turn` 快照追踪；支持 Python AST、JSON、TOML、防 XXE XML 预审与多语言探测测试自愈（可用 `--no-heal` 关闭）。
 5. **混合并发调度、上下文智能压缩与成本看板**：
    - `SafeToolDispatcher` 并发只读、串行修改并启用 Doom-Loop 死循环熔断；双轨预算超限自动折叠，配套 `/compact`、`/context`、`/doctor` 与 `/cost`（`/usage`）。
+6. **`@file` 模糊引用与项目规约自动加载 (`AGENTS.md` / `TIANCODE.md`)**：
+   - 输入 `@` 实时模糊弹出当前工作区文件列表，支持 `@path#L10-50` 精确行号直注并拦截越界与 `.env`/私钥等敏感文件；
+   - 自动按全局 → 工作区顺序挂载 `AGENTS.md`/`TIANCODE.md`，支持 `/init [--force]` 扫描技术栈生成专属规范与 `/rules` 查看。
 
 ---
 
