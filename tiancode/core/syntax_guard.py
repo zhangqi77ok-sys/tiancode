@@ -1,10 +1,13 @@
-"""Pre-write JIT AST and format validation guard for TianCode."""
+"""Pre-write JIT AST and format validation guard for Python, JSON, TOML, and XML."""
 
 import ast
-import json
 from dataclasses import dataclass
+import json
 from pathlib import Path
-from typing import Optional, Union
+import re
+import tomllib
+from typing import Callable, Dict, Optional, Union
+import xml.parsers.expat as expat
 
 
 @dataclass
@@ -15,62 +18,124 @@ class SyntaxCheckResult:
     error_message: Optional[str] = None
 
 
+class _DisallowedXmlDtdError(ValueError):
+    """Raised when an XML payload declares DOCTYPE or ENTITY (XXE/DTD bomb protection)."""
+
+
 class SyntaxGuard:
     """Performs millisecond-level static validation on file content prior to disk mutation."""
 
     def validate(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
-        """Validate syntax of code/config files. Returns validation result."""
-        path = Path(filename)
-        ext = path.suffix.lower()
+        """Validate syntax of code/config files via uniform extension dispatch."""
+        ext = Path(filename).suffix.lower()
+        validators: Dict[str, Callable[[Union[str, Path], str], SyntaxCheckResult]] = {
+            ".py": self._validate_python,
+            ".json": self._validate_json,
+            ".toml": self._validate_toml,
+            ".xml": self._validate_xml,
+        }
+        validator = validators.get(ext)
+        if validator is None:
+            return SyntaxCheckResult(is_valid=True)
+        return validator(filename, content)
 
-        if ext == ".py":
-            return self._validate_python(filename, content)
-        if ext == ".json":
-            return self._validate_json(filename, content)
-
-        # Non-code or unsupported formats are passed gracefully
-        return SyntaxCheckResult(is_valid=True)
+    def _build_error_result(
+        self,
+        filename: Union[str, Path],
+        content: str,
+        *,
+        error_type: str,
+        lineno: int,
+        colno: int,
+        msg: str,
+    ) -> SyntaxCheckResult:
+        """Format unified, high-signal static syntax diagnostic blocking disk write."""
+        snippet = self._format_snippet(content, max(1, lineno), max(1, colno))
+        err_msg = (
+            f"❌ 语法守卫拦截 (Pre-Write Syntax Guard)：\n"
+            f"文件 '{filename}' 存在静态语法/格式错误，已阻断写入以保护工作区！\n"
+            f"• 错误类型: {error_type} (第 {lineno} 行, 第 {colno} 列)\n"
+            f"• 错误原因: {msg}\n"
+            f"• 代码片段诊断:\n{snippet}\n"
+            f"👉 请根据上述定位修正错误后重新提交！"
+        )
+        return SyntaxCheckResult(is_valid=False, error_message=err_msg)
 
     def _validate_python(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
         try:
             ast.parse(content, filename=str(filename))
             return SyntaxCheckResult(is_valid=True)
         except (SyntaxError, IndentationError) as e:
-            error_type = type(e).__name__
-            lineno = getattr(e, "lineno", 1) or 1
-            offset = getattr(e, "offset", 1) or 1
-            msg = getattr(e, "msg", str(e)) or str(e)
-
-            snippet = self._format_snippet(content, lineno, offset)
-            err_msg = (
-                f"❌ 语法守卫拦截 (Pre-Write Syntax Guard)：\n"
-                f"文件 '{filename}' 存在静态语法错误，已阻断写入以保护工作区！\n"
-                f"• 错误类型: {error_type} (第 {lineno} 行, 第 {offset} 列)\n"
-                f"• 错误原因: {msg}\n"
-                f"• 代码片段诊断:\n{snippet}\n"
-                f"👉 请根据上述定位修正语法错误后重新提交！"
+            return self._build_error_result(
+                filename,
+                content,
+                error_type=type(e).__name__,
+                lineno=getattr(e, "lineno", 1) or 1,
+                colno=getattr(e, "offset", 1) or 1,
+                msg=getattr(e, "msg", str(e)) or str(e),
             )
-            return SyntaxCheckResult(is_valid=False, error_message=err_msg)
 
     def _validate_json(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
         try:
             json.loads(content)
             return SyntaxCheckResult(is_valid=True)
         except json.JSONDecodeError as e:
-            lineno = e.lineno
-            colno = e.colno
-            msg = e.msg
-
-            snippet = self._format_snippet(content, lineno, colno)
-            err_msg = (
-                f"❌ 语法守卫拦截 (Pre-Write Syntax Guard)：\n"
-                f"文件 '{filename}' 存在静态 JSON 格式错误，已阻断写入以保护工作区！\n"
-                f"• 错误类型: JSONDecodeError (第 {lineno} 行, 第 {colno} 列)\n"
-                f"• 错误原因: {msg}\n"
-                f"• 代码片段诊断:\n{snippet}\n"
-                f"👉 请根据上述定位修正 JSON 格式后重新提交！"
+            return self._build_error_result(
+                filename,
+                content,
+                error_type="JSONDecodeError",
+                lineno=e.lineno,
+                colno=e.colno,
+                msg=e.msg,
             )
-            return SyntaxCheckResult(is_valid=False, error_message=err_msg)
+
+    def _validate_toml(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
+        try:
+            tomllib.loads(content)
+            return SyntaxCheckResult(is_valid=True)
+        except tomllib.TOMLDecodeError as e:
+            raw = str(e)
+            match = re.search(r"\(at line (\d+), column (\d+)\)", raw)
+            lineno = int(match.group(1)) if match else 1
+            colno = int(match.group(2)) if match else 1
+            return self._build_error_result(
+                filename,
+                content,
+                error_type="TOMLDecodeError",
+                lineno=lineno,
+                colno=colno,
+                msg=raw,
+            )
+
+    def _validate_xml(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
+        parser = expat.ParserCreate()
+
+        def _reject_dtd(*_args: object) -> None:
+            raise _DisallowedXmlDtdError("出于 XXE 与 DTD 炸弹安全防护，禁止在 XML 中声明 <!DOCTYPE> 或 <!ENTITY>。")
+
+        parser.StartDoctypeDeclHandler = _reject_dtd
+        parser.EntityDeclHandler = _reject_dtd
+        try:
+            parser.Parse(content.encode("utf-8"), True)
+            return SyntaxCheckResult(is_valid=True)
+        except _DisallowedXmlDtdError as e:
+            return self._build_error_result(
+                filename,
+                content,
+                error_type="XMLSecurityGuard",
+                lineno=1,
+                colno=1,
+                msg=str(e),
+            )
+        except expat.ExpatError as e:
+            return self._build_error_result(
+                filename,
+                content,
+                error_type="XMLParseError",
+                lineno=getattr(e, "lineno", 1) or 1,
+                colno=(getattr(e, "offset", 0) or 0) + 1,
+                msg=str(e),
+            )
 
     def _format_snippet(self, content: str, error_line: int, error_col: int) -> str:
         """Render snippet with line numbers and a pointer column."""

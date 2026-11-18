@@ -44,6 +44,19 @@ IGNORED_DIR_NAMES = {
 }
 
 
+def _find_match_lines(src: str, needle: str) -> List[int]:
+    """Find 1-based starting line numbers for all non-overlapping occurrences of needle."""
+    lines: List[int] = []
+    pos = 0
+    while True:
+        idx = src.find(needle, pos)
+        if idx == -1:
+            break
+        lines.append(src[:idx].count("\n") + 1)
+        pos = idx + max(1, len(needle))
+    return lines
+
+
 def _print_visual_diff(diff) -> None:
     """Safely print visual diff via TerminalFormatter without tight coupling."""
     try:
@@ -139,75 +152,27 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
     from tiancode.core.search import create_search_tools
     search_tools = create_search_tools(work_dir, IGNORED_DIR_NAMES)
 
-    @tool
-    def write_file(filename: str, content: str) -> str:
-        """全量新建或覆盖写入文件（自动渲染 Visual Diff 与安全快照）。"""
-        try:
-            target = _resolve(filename)
-        except PermissionError as err:
-            return f"❌ {str(err)}"
-
-        # 1. JIT AST / syntax validation before touching disk or snapshot
-        from tiancode.core.syntax_guard import SyntaxGuard
-        check_res = SyntaxGuard().validate(filename, content)
-        if not check_res.is_valid:
-            return check_res.error_message or "❌ 语法校验失败，已阻断写入！"
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-        is_new = not target.exists()
-        original = "" if is_new else open(target, "r", encoding="utf-8", errors="replace").read()
-
-        from tiancode.core.diff import compute_text_diff
-        diff = compute_text_diff(filename, original, content)
-        _print_visual_diff(diff)
-
-        store.record_snapshot(str(target), original, is_new=is_new)
-        # Protect external files from hardlink tampering: unlink if hardlinked before rewriting
-        if target.exists() and not target.is_symlink():
-            try:
-                if target.stat().st_nlink > 1:
-                    target.unlink()
-            except Exception:
-                pass
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        summary = f"✅ 文件 '{filename}' 写入成功 (+{diff.additions} / -{diff.deletions})"
-        if auto_heal:
-            test_res = _run_post_edit_verification(work_dir)
-            if test_res:
-                summary += f"，{test_res}"
-        return summary
-
-    @tool
-    def edit_file(filename: str, old_code: str, new_code: str) -> str:
-        """局部修改文件：将原代码中唯一的 old_code 精准替换为 new_code（自动渲染 Visual Diff 与安全快照）。"""
-        try:
-            target = _resolve(filename)
-        except PermissionError as err:
-            return f"❌ {str(err)}"
-
-        if not target.exists():
-            return f"❌ 文件 '{filename}' 不存在，请先确认路径！"
-        with open(target, "r", encoding="utf-8", errors="replace") as f:
-            src = f.read()
-        if old_code not in src:
-            return f"❌ 替换失败：文件中未找到完全匹配的旧代码！当前源码如下，请对照后再修改：\n{src}"
-
-        modified = src.replace(old_code, new_code, 1)
-
-        # 1. JIT AST / syntax validation before touching disk or snapshot
+    def _persist_change(
+        target: Path,
+        original: str,
+        modified: str,
+        *,
+        filename: str,
+        is_new: bool,
+        action_label: str,
+    ) -> str:
+        """Validate syntax, record snapshot, guard hardlinks, atomically rewrite, and run self-heal."""
         from tiancode.core.syntax_guard import SyntaxGuard
         check_res = SyntaxGuard().validate(filename, modified)
         if not check_res.is_valid:
             return check_res.error_message or "❌ 语法校验失败，已阻断写入！"
 
+        target.parent.mkdir(parents=True, exist_ok=True)
         from tiancode.core.diff import compute_text_diff
-        diff = compute_text_diff(filename, src, modified)
+        diff = compute_text_diff(filename, original, modified)
         _print_visual_diff(diff)
 
-        store.record_snapshot(str(target), src, is_new=False)
-        # Protect external files from hardlink tampering: unlink if hardlinked before rewriting
+        store.record_snapshot(str(target), original, is_new=is_new)
         if target.exists() and not target.is_symlink():
             try:
                 if target.stat().st_nlink > 1:
@@ -217,12 +182,68 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         with open(target, "w", encoding="utf-8") as f:
             f.write(modified)
 
-        summary = f"✅ 文件 '{filename}' 局部替换成功 (+{diff.additions} / -{diff.deletions})"
+        summary = f"✅ 文件 '{filename}' {action_label} (+{diff.additions} / -{diff.deletions})"
         if auto_heal:
             test_res = _run_post_edit_verification(work_dir)
             if test_res:
                 summary += f"，{test_res}"
         return summary
+
+    @tool
+    def write_file(filename: str, content: str) -> str:
+        """全量新建或覆盖写入文件（自动渲染 Visual Diff 与安全快照）。"""
+        try:
+            target = _resolve(filename)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
+        is_new = not target.exists()
+        original = "" if is_new else target.read_text(encoding="utf-8", errors="replace")
+        return _persist_change(target, original, content, filename=filename, is_new=is_new, action_label="写入成功")
+
+    @tool
+    def edit_file(filename: str, old_code: str, new_code: str, replace_all: bool = False) -> str:
+        """局部修改文件：将原代码中唯一的 old_code 精准替换为 new_code；若存在多处匹配需补充上下文或显式传 replace_all=True。"""
+        if not old_code:
+            return "❌ 替换失败：old_code 不能为空字符串！若需新建或全量覆盖文件，请调用 write_file。"
+        try:
+            target = _resolve(filename)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
+        if not target.exists():
+            return f"❌ 文件 '{filename}' 不存在，请先确认路径！"
+        src = target.read_text(encoding="utf-8", errors="replace")
+
+        match_lines = _find_match_lines(src, old_code)
+        if not match_lines:
+            return f"❌ 替换失败：文件中未找到完全匹配的旧代码！当前源码如下，请对照后再修改：\n{src}"
+        if len(match_lines) > 1 and not replace_all:
+            return (
+                f"❌ 替换拦截：old_code 在 '{filename}' 中匹配到 {len(match_lines)} 处（位于第 {match_lines} 行），"
+                f"存在歧义风险！请补充更多上下文使其唯一，或显式传入 replace_all=True。"
+            )
+
+        modified = src.replace(old_code, new_code) if replace_all else src.replace(old_code, new_code, 1)
+        return _persist_change(target, src, modified, filename=filename, is_new=False, action_label="局部替换成功")
+
+    @tool
+    def delete_file(filename: str) -> str:
+        """安全删除文件：删除前自动捕获全文快照，支持随时通过 /undo 或 rollback_turn 无损恢复。"""
+        try:
+            target = _resolve(filename)
+        except PermissionError as err:
+            return f"❌ {str(err)}"
+
+        if not target.exists() and not target.is_symlink():
+            return f"❌ 文件 '{filename}' 不存在，无法删除！"
+        if target.is_dir():
+            return f"❌ '{filename}' 是目录而非文件，为防止误删已拦截！"
+
+        original = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
+        store.record_snapshot(str(target), original, is_new=False)
+        target.unlink()
+        return f"✅ 已安全删除文件 '{filename}' (已记录快照，可随时通过 /undo 无损恢复)。"
 
     @tool
     def rollback_turn() -> str:
@@ -232,4 +253,4 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return "⏪ 已完成工作区安全回滚：\n" + "\n".join(f"  • {item}" for item in reverted)
         return "ℹ️ 当前没有可回滚的修改。"
 
-    return [list_files, get_repo_map, *search_tools, write_file, edit_file, rollback_turn]
+    return [list_files, get_repo_map, *search_tools, write_file, edit_file, delete_file, rollback_turn]
