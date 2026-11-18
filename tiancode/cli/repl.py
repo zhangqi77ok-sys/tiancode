@@ -185,10 +185,11 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
 
     while True:
         try:
-            user_input = (
-                ptk_session.prompt(lambda: _build_ptk_prompt(engine), bottom_toolbar=lambda: _build_bottom_toolbar(engine)).strip()
-                if ptk_session is not None else input(_build_prompt(engine)).strip()
+            raw_line = (
+                ptk_session.prompt(lambda: _build_ptk_prompt(engine), bottom_toolbar=lambda: _build_bottom_toolbar(engine))
+                if ptk_session is not None else input(_build_prompt(engine))
             )
+            user_input = raw_line.lstrip("\ufeff").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n👋 已安全退出 TianCode。")
             break

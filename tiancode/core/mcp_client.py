@@ -93,7 +93,7 @@ def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerC
     if not path.is_file():
         return {}, []
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         return {}, [f"读取 MCP 配置失败 ({path}): {exc}"]
     if not isinstance(payload, dict) or not isinstance(payload.get("mcpServers", {}), dict):

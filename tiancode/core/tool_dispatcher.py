@@ -13,6 +13,7 @@ READ_ONLY_TOOLS: FrozenSet[str] = frozenset({
     "read_file",
     "list_files",
     "get_repo_map",
+    "web_fetch",
 })
 
 DEFAULT_MAX_WORKERS = 4
