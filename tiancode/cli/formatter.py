@@ -1,14 +1,34 @@
-"""Terminal formatting, ANSI styling, and animated tool execution spinners for TianCode CLI."""
+"""Terminal UI formatting, Rich streaming Markdown renderer, and live tool spinners."""
 
 import sys
 import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional, TextIO
+
+from rich.live import Live
+from rich.padding import Padding
+from rich.rule import Rule
+from rich.text import Text
+
+from tiancode.cli.theme import (
+    BORDER_MUTED,
+    BRAND_COLOR,
+    SUCCESS_COLOR,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TEXT_SUBTLE,
+    WARNING_COLOR,
+    build_banner_panel,
+    build_diff_panel,
+    build_plan_panel,
+    get_console,
+    render_markdown,
+)
 from tiancode.domain.models import FileDiff
 
 
 class TerminalFormatter:
-    """Provides consistent ANSI coloring and UI panels."""
+    """Modern dark-mode terminal UI kit with graceful plain fallback under capture/pipes."""
 
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -19,117 +39,102 @@ class TerminalFormatter:
     CYAN = "\033[96m"
 
     @classmethod
-    def print_banner(cls, work_dir: str, model: str) -> None:
-        """Display the welcome banner."""
-        line = "━" * 60
-        print(f"\n{cls.CYAN}{cls.BOLD}⚡ TianCode AI 编程智能体就绪{cls.RESET}")
-        print(f"{cls.BLUE}{line}{cls.RESET}")
-        print(f" 工作目录 : {work_dir}")
-        print(f" 底层模型 : {model}")
-        print(f" 快捷指令 : [/diff 变动对比] [/map 全景图] [/eval 评测] [/undo 撤销] [/commit 提交] [/config 配置] [exit 退出]")
-        print(f"{cls.BLUE}{line}{cls.RESET}\n")
+    def print_banner(
+        cls,
+        work_dir: str,
+        model: str,
+        permission_mode: str = "ask",
+        auto_heal: bool = True,
+        timeout_seconds: int = 15,
+    ) -> None:
+        """Display rounded Bento welcome card with environment and mode badges."""
+        console = get_console()
+        console.print()
+        console.print(build_banner_panel(work_dir, model, permission_mode, auto_heal, timeout_seconds))
+        console.print()
+
+    @classmethod
+    def print_user_turn(cls, prompt_text: str) -> None:
+        """Print clear visual divider for a user turn."""
+        get_console().print(Text.assemble(("\n❯ ", f"bold {BRAND_COLOR}"), (prompt_text, f"bold {TEXT_PRIMARY}")))
 
     @classmethod
     def print_diff(cls, diff: FileDiff) -> None:
-        """Render a unified diff with green additions and red deletions."""
+        """Render a unified diff card with color-coded lines and change badges."""
         if diff.is_empty:
             return
-        header = f"📄 变更对比: {diff.filename} (+{diff.additions} / -{diff.deletions})"
-        print(f"\n{cls.BOLD}{header}{cls.RESET}")
-        print(f"{cls.YELLOW}{'─' * 50}{cls.RESET}")
-        for line in diff.diff_text.splitlines():
-            if line.startswith("-") and not line.startswith("---"):
-                print(f"{cls.RED}{line}{cls.RESET}")
-            elif line.startswith("+") and not line.startswith("+++"):
-                print(f"{cls.GREEN}{line}{cls.RESET}")
-            else:
-                print(line)
-        print(f"{cls.YELLOW}{'─' * 50}{cls.RESET}\n")
+        console = get_console()
+        console.print()
+        console.print(build_diff_panel(diff))
+        console.print()
 
     @classmethod
     def print_diffs(cls, diffs: List[FileDiff]) -> None:
-        """Render multiple file diffs."""
+        """Render multiple file diffs cleanly."""
         non_empty = [d for d in diffs if not d.is_empty]
         if not non_empty:
-            print(f"{cls.YELLOW}💡 当前没有检测到任何代码文件修改。{cls.RESET}")
+            cls.print_info("当前没有检测到任何代码文件修改。")
             return
         for d in non_empty:
             cls.print_diff(d)
 
     @classmethod
     def print_agent_message(cls, content: str) -> None:
-        """Print assistant message."""
-        print(f"\n{cls.CYAN}{cls.BOLD}🤖 TianCode:{cls.RESET} {content}")
+        """Print assistant Markdown message with header divider."""
+        console = get_console()
+        console.print()
+        console.print(Rule(f"[bold {BRAND_COLOR}]◆ TianCode[/]", align="left", style=BORDER_MUTED))
+        console.print(Padding(render_markdown(content), (0, 2)))
 
     @classmethod
     def print_info(cls, message: str) -> None:
-        """Print informational status."""
-        print(f"{cls.BLUE}ℹ️ {message}{cls.RESET}")
+        """Print low-noise informational status line."""
+        get_console().print(Text.assemble(("● ", BRAND_COLOR), (message, TEXT_MUTED)))
 
     @classmethod
     def print_success(cls, message: str) -> None:
-        """Print success status."""
-        print(f"{cls.GREEN}✅ {message}{cls.RESET}")
+        """Print success status line."""
+        get_console().print(Text.assemble(("✔ ", f"bold {SUCCESS_COLOR}"), (message, TEXT_PRIMARY)))
 
     @classmethod
     def print_warning(cls, message: str) -> None:
-        """Print warning status."""
-        print(f"{cls.YELLOW}⚠️ {message}{cls.RESET}")
+        """Print warning status line."""
+        get_console().print(Text.assemble(("▲ ", f"bold {WARNING_COLOR}"), (message, WARNING_COLOR)))
 
     @classmethod
     def print_task_plan(cls, plan) -> None:
-        """Render the dynamic task execution checklist."""
-        from tiancode.domain.models import StepStatus
-
-        line = "═" * 55
-        print(f"\n{cls.CYAN}{cls.BOLD}📋 {line}{cls.RESET}")
-        print(f"{cls.BOLD}  TianCode 任务执行看板: {plan.task_title}{cls.RESET}")
-        print(f"{cls.CYAN}{line}{cls.RESET}")
-        for s in plan.steps:
-            if s.status == StepStatus.COMPLETED:
-                icon = f"{cls.GREEN}[✓]{cls.RESET}"
-                suffix = f" {cls.GREEN}(已完成){cls.RESET}" if s.result_summary else ""
-            elif s.status == StepStatus.IN_PROGRESS:
-                icon = f"{cls.YELLOW}{cls.BOLD}[▶]{cls.RESET}"
-                suffix = f" {cls.YELLOW}(进行中...){cls.RESET}"
-            elif s.status == StepStatus.FAILED:
-                icon = f"{cls.RED}[✗]{cls.RESET}"
-                suffix = f" {cls.RED}(失败: {s.result_summary}){cls.RESET}" if s.result_summary else f" {cls.RED}(失败){cls.RESET}"
-            else:
-                icon = "[ ]"
-                suffix = ""
-            print(f"  {icon} {s.step_id}. {s.title}{suffix}")
-        print(f"{cls.CYAN}{line}{cls.RESET}\n")
+        """Render the dynamic task execution checklist inside a rounded card."""
+        console = get_console()
+        console.print()
+        console.print(build_plan_panel(plan))
+        console.print()
 
     @classmethod
     def _dispatch_stream_event(cls, state: "_StreamRenderState", event: Dict[str, Any]) -> None:
-        """Process a single event emitted by TianCodeEngine.stream_task."""
+        """Route a single LangGraph stream event to Rich Live Markdown or tool timeline."""
         ev_type = event.get("type")
         if ev_type == "token" and event.get("content"):
             state.stop_spinner()
-            if not state.in_msg:
-                print(f"\n{cls.CYAN}{cls.BOLD}🤖 TianCode:{cls.RESET} ", end="", flush=True)
-                state.in_msg = True
-            print(event["content"], end="", flush=True)
+            state.append_token(str(event["content"]))
             return
 
         if ev_type == "tool_start":
-            state.close_msg()
+            state.flush_markdown()
             state.stop_spinner()
             name = str(event.get("name", "tool"))
             if state.use_spinner:
                 state.spinner = LiveToolSpinner(tool_name=name, args=str(event.get("args", "")))
                 state.spinner.start()
             else:
-                cls.print_info(f"⚙️ 正在调用工具: {name}...")
+                state.console.print(Text.assemble(("  ⚙ ", BRAND_COLOR), (f"调用工具: {name}", TEXT_MUTED)))
             return
 
         if ev_type == "tool_end":
             state.stop_spinner()
-            state.close_msg()
+            state.flush_markdown()
             lines = str(event.get("content", "")).strip().splitlines()
             if lines:
-                cls.print_info(f"↳ {lines[0][:120]}")
+                state.console.print(Text(f"    │ ↳ {lines[0][:120]}", style=TEXT_SUBTLE))
         elif ev_type == "usage_summary":
             state.usage_ev = event
         elif "brain" in event:
@@ -144,48 +149,83 @@ class TerminalFormatter:
         *,
         use_spinner: bool = False,
     ) -> None:
-        """Render streamed token, tool lifecycle, and usage telemetry uniformly across CLI and REPL."""
+        """Stream live Markdown tokens, tool timeline, and low-noise usage footer."""
         t0 = time.perf_counter()
-        state = _StreamRenderState(use_spinner=use_spinner)
+        state = _StreamRenderState(use_spinner=use_spinner, console=get_console())
         try:
             for event in events:
                 if isinstance(event, dict):
                     cls._dispatch_stream_event(state, event)
         finally:
             state.stop_spinner()
+            state.flush_markdown()
 
-        state.close_msg()
         if state.usage_ev:
             elapsed = time.perf_counter() - t0
             ev = state.usage_ev
-            cls.print_info(
-                f"⚡ [耗时 {elapsed:.1f}s | 本轮: {ev.get('turn_tokens', 0):,} Tokens | "
-                f"累计: {ev.get('session_tokens', 0):,} Tokens (¥{ev.get('session_cost', 0.0):.4f})]"
+            footer = (
+                f"  ┄ ⏱ 耗时 {elapsed:.1f}s · 本轮: {ev.get('turn_tokens', 0):,} Tokens · "
+                f"累计: {ev.get('session_tokens', 0):,} Tokens (¥{ev.get('session_cost', 0.0):.4f}) ┄"
             )
+            state.console.print(Text(footer, style=TEXT_SUBTLE))
 
 
 class _StreamRenderState:
-    """Mutable cursor state for rendering a single agent streaming task."""
+    """Mutable render state buffering Markdown tokens with Rich Live on interactive TTYs."""
 
-    def __init__(self, *, use_spinner: bool) -> None:
+    def __init__(self, *, use_spinner: bool, console) -> None:
         self.use_spinner = use_spinner
+        self.console = console
         self.spinner: Optional["LiveToolSpinner"] = None
-        self.in_msg = False
+        self.md_chunks: List[str] = []
+        self.live: Optional[Live] = None
+        self.header_printed = False
         self.usage_ev: Optional[Dict[str, Any]] = None
+
+    def append_token(self, chunk: str) -> None:
+        if not self.header_printed:
+            self.console.print()
+            self.console.print(Rule(f"[bold {BRAND_COLOR}]◆ TianCode[/]", align="left", style=BORDER_MUTED))
+            self.header_printed = True
+
+        self.md_chunks.append(chunk)
+        full_md = "".join(self.md_chunks)
+        if self.console.is_terminal:
+            if self.live is None:
+                self.live = Live(
+                    Padding(render_markdown(full_md), (0, 2)),
+                    console=self.console,
+                    refresh_per_second=12,
+                    vertical_overflow="visible",
+                )
+                self.live.start()
+            else:
+                self.live.update(Padding(render_markdown(full_md), (0, 2)))
+
+    def flush_markdown(self) -> None:
+        if self.live is not None:
+            try:
+                self.live.stop()
+            finally:
+                self.live = None
+            self.md_chunks.clear()
+            self.header_printed = False
+            return
+
+        if self.md_chunks:
+            text = "".join(self.md_chunks)
+            self.md_chunks.clear()
+            self.header_printed = False
+            self.console.print(Padding(render_markdown(text), (0, 2)))
 
     def stop_spinner(self) -> None:
         if self.spinner:
             self.spinner.stop()
             self.spinner = None
 
-    def close_msg(self) -> None:
-        if self.in_msg:
-            print()
-            self.in_msg = False
-
 
 class LiveToolSpinner:
-    """Animated Braille spinner with elapsed seconds and in-place terminal updates."""
+    """Animated Braille spinner with elapsed seconds and clean single-line status."""
 
     SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -203,7 +243,7 @@ class LiveToolSpinner:
         self._start_time: float = 0.0
 
     def start(self) -> None:
-        """Start the spinner animation on a background daemon thread."""
+        """Start the spinner animation on a daemon thread."""
         if self.is_running:
             return
         self.is_running = True
@@ -213,11 +253,11 @@ class LiveToolSpinner:
 
     def _spin_loop(self) -> None:
         idx = 0
-        arg_disp = f"({self.args})" if self.args else ""
+        arg_disp = f"\033[2m({self.args})\033[0m" if self.args else ""
         while self.is_running:
             elapsed = time.time() - self._start_time
             frame = self.SPINNER_FRAMES[idx % len(self.SPINNER_FRAMES)]
-            msg = f"\r\033[K\033[96m{frame}\033[0m ⚙️  正在执行工具: \033[1m{self.tool_name}\033[0m{arg_disp} ... \033[93m[{elapsed:.1f}s]\033[0m"
+            msg = f"\r\033[K  \033[38;2;56;189;248m{frame}\033[0m ⚙ \033[1m{self.tool_name}\033[0m{arg_disp} \033[2m· {elapsed:.1f}s\033[0m"
             try:
                 self.stream.write(msg)
                 self.stream.flush()
@@ -227,7 +267,7 @@ class LiveToolSpinner:
             time.sleep(0.08)
 
     def stop(self, status_text: str = "") -> None:
-        """Stop the spinner, clear line, and write final state."""
+        """Stop spinner and write calm summary line."""
         if not self.is_running:
             return
         self.is_running = False
@@ -235,9 +275,9 @@ class LiveToolSpinner:
             self._thread.join(timeout=0.3)
 
         elapsed = time.time() - self._start_time
-        final_msg = status_text or f"✔ ⚙️  工具执行完成: {self.tool_name} [{elapsed:.1f}s]"
+        final_msg = status_text or f"  ✓ {self.tool_name} · {elapsed:.1f}s"
         try:
-            self.stream.write(f"\r\033[K\033[92m{final_msg}\033[0m\n")
+            self.stream.write(f"\r\033[K\033[38;2;16;185;129m{final_msg}\033[0m\n")
             self.stream.flush()
         except Exception:
             pass
