@@ -61,6 +61,7 @@ SAFE_READ_TOOLS = frozenset({
     "complete_step",
     "fail_step",
     "invoke_subagent",
+    "recall_memory",
 })
 
 

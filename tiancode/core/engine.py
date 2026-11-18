@@ -108,6 +108,7 @@ class TianCodeEngine:
 
     def _register_tools(self) -> None:
         """Rebuild all engine tool closures from current settings."""
+        from tiancode.tools.memory_ops import create_memory_tools
         from tiancode.tools.plan_ops import create_plan_tools
         from tiancode.tools.subagent_ops import create_subagent_tools
 
@@ -118,6 +119,7 @@ class TianCodeEngine:
         self.tools.extend(create_execution_tools(self.settings.work_dir, self.settings.timeout_seconds))
         self.tools.extend(create_plan_tools(self.planner))
         self.tools.extend(create_subagent_tools(self.subagent_runner))
+        self.tools.extend(create_memory_tools(self))
 
     def sync_config_if_changed(self, config_path: Optional[Path] = None) -> bool:
         """Inspect config file on disk; if modified, hot-reload settings and LLM immediately."""
