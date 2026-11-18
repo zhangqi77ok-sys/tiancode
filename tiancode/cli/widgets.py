@@ -25,6 +25,7 @@ SLASH_COMMAND_HINTS: Tuple[Tuple[str, str], ...] = (
     ("/mode", "切换安全权限模式 (ask / auto / read_only)"),
     ("/init", "扫描项目生成 TIANCODE.md (--force 覆盖)"),
     ("/rules", "查看已自动加载的工程规范 (AGENTS.md/TIANCODE.md)"),
+    ("/mcp", "查看或重载外部 MCP 服务状态与工具 (/mcp [reload|tools])"),
     ("/cd", "切换当前工作区项目目录 (/cd <path>)"),
     ("/memory", "查看或清空跨会话认知记忆"),
     ("/remember", "固化一条长期事实/规范进语义记忆"),

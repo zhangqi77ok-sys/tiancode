@@ -11,6 +11,7 @@ from tiancode.cli.command_ops import (
     apply_config_set,
     handle_cd,
     handle_init,
+    handle_mcp,
     handle_memory,
     handle_remember,
     handle_rules,
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 _HELP_GROUPS: Tuple[Tuple[str, str], ...] = (
     ("/mode [ask|auto|read_only]", "查看或动态切换 HITL 安全权限模式"),
     ("/init [--force] | /rules", "扫描技术栈生成 TIANCODE.md 规范或查看已加载工程规约"),
+    ("/mcp [reload|tools]", "查看外部 MCP 服务状态、已挂载工具或重连 mcp.json 服务"),
     ("/cd <dir>", "切换当前工作区沙箱并重锚 Git/文件工具"),
     ("/memory [clear] | /remember <事实>", "查看跨会话认知记忆档案或固化长期知识"),
     ("/config show | set <k> <v>", "查看或热更新配置 (key/url/model/max_chars/timeout/auto_heal)"),
@@ -60,6 +62,7 @@ class SlashCommandHandler:
             "/context": lambda _: self._handle_context(),
             "/mode": self._handle_mode,
             "/init": lambda arg: handle_init(self.engine, arg),
+            "/mcp": lambda arg: handle_mcp(self.engine, arg),
             "/rules": lambda _: handle_rules(self.engine),
             "/cd": lambda arg: handle_cd(self.engine, arg),
             "/memory": lambda arg: handle_memory(self.engine, arg),
