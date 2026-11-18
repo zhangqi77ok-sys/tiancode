@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 _HELP_GROUPS: Tuple[Tuple[str, str], ...] = (
     ("/mode [ask|auto|read_only]", "查看或动态切换 HITL 安全权限模式"),
+    ("/cd <dir>", "切换当前工作区沙箱并重锚 Git/文件工具"),
+    ("/memory [clear] | /remember <事实>", "查看跨会话认知记忆档案或固化长期知识"),
     ("/config show | set <k> <v>", "查看或热更新配置 (key/url/model/max_chars/timeout/auto_heal)"),
     ("/doctor", "一键执行配置、目录权限、Git 与 pytest 健康自检"),
     ("/context | /compact", "可视化上下文窗口占用或立即智能压缩折叠"),
@@ -80,6 +82,9 @@ class SlashCommandHandler:
             "/compact": lambda _: self._handle_compact(),
             "/context": lambda _: self._handle_context(),
             "/mode": self._handle_mode,
+            "/cd": self._handle_cd,
+            "/memory": self._handle_memory,
+            "/remember": self._handle_remember,
             "/doctor": lambda _: self._handle_doctor(),
             "/cost": lambda _: self._handle_cost(),
             "/usage": lambda _: self._handle_cost(),
@@ -374,3 +379,58 @@ class SlashCommandHandler:
         console.print()
         console.print(Panel(table, title=Text("📖 TianCode 快捷斜杠指令", style=f"bold {BRAND_COLOR}"), title_align="left", box=box.ROUNDED, border_style=BORDER_MUTED, padding=(0, 1)))
         console.print()
+
+    def _handle_cd(self, arg: str = "") -> None:
+        target = arg.strip().strip("\"'")
+        if not target:
+            TerminalFormatter.print_info(f"当前工作区: {self.engine.settings.work_dir} (用法: /cd <目标目录>)")
+            return
+        if not hasattr(self.engine, "switch_workspace"):
+            TerminalFormatter.print_warning("当前引擎版本不支持动态切换工作区。")
+            return
+        try:
+            new_path = self.engine.switch_workspace(target)
+            TerminalFormatter.print_success(f"工作区已安全切换至: {new_path}")
+        except Exception as exc:
+            TerminalFormatter.print_warning(f"切换工作区失败: {exc}")
+
+    def _handle_memory(self, arg: str = "") -> None:
+        store = getattr(self.engine, "memory_store", None)
+        if store is None:
+            TerminalFormatter.print_info("当前未启用跨会话认知记忆存储。")
+            return
+        if arg.strip().lower() == "clear":
+            store.clear()
+            TerminalFormatter.print_success("已清空全部跨会话认知记忆档案。")
+            return
+        rows = [(f"工程:{w.name}", f"{w.path} [{'/'.join(w.tags)}]") for w in list(store.workspaces.values())[:5]]
+        rows.extend((f"情景:{ep.project_name}", f"{ep.intent} -> {ep.summary[:80]}") for ep in store.episodes[:5])
+        rows.extend((f"认知:{f.scope.value}", f"[{f.key}] {f.content}") for f in store.facts[:8])
+        if not rows:
+            TerminalFormatter.print_info("当前认知记忆为空，对话后将自动沉淀或用 /remember 添加。")
+            return
+        _print_kv_panel("🧠 TianCode 跨会话认知记忆档案", rows, border_style=ACCENT_COLOR)
+
+    def _handle_remember(self, arg: str = "") -> None:
+        store = getattr(self.engine, "memory_store", None)
+        if store is None:
+            TerminalFormatter.print_info("当前未启用跨会话认知记忆存储。")
+            return
+        raw = arg.strip()
+        if not raw:
+            TerminalFormatter.print_info("用法: /remember [project:]<需要长期记住的规范、别名或事实>")
+            return
+        scope = "global"
+        if raw.lower().startswith("project:"):
+            scope = "project"
+            raw = raw[8:].strip()
+        try:
+            saved = store.upsert_fact(
+                raw,
+                scope=scope,
+                workspace_path=str(self.engine.settings.work_dir),
+                source_session_id=getattr(self.engine, "active_session_id", ""),
+            )
+            TerminalFormatter.print_success(f"已写入长期记忆 [{saved.scope.value}/{saved.key}]: {saved.content}")
+        except Exception as exc:
+            TerminalFormatter.print_warning(f"记忆写入失败: {exc}")

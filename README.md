@@ -16,10 +16,13 @@ tiancode/
 │   └── settings.py
 ├── domain/                  # 领域实体与抽象契约层 (零外部框架依赖)
 │   ├── models.py            # FileDiff, ExecutionResult, FileSnapshot 等实体
+│   ├── memory.py            # 三层认知记忆实体 (Workspace / Episode / Semantic)
 │   └── interfaces.py        # SnapshotStore 协议契约
 ├── core/                    # 核心编排引擎层 (状态机与安全治理)
-│   ├── engine.py            # LangGraph StateGraph 装配、热重载与预算调度
-│   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only 模式)
+│   ├── engine.py            # LangGraph StateGraph 装配、记忆唤醒与动态切目录
+│   ├── llm_adapter.py       # 推理模型 reasoning_content 与 <think> 流式适配器
+│   ├── cognitive_memory.py  # 跨会话三层大脑记忆仓库、时间衰减与联想召回
+│   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only + 人工纠正)
 │   ├── tool_dispatcher.py   # 只读并发 + 写串行调度器 & Doom-Loop 熔断
 │   ├── syntax_guard.py      # 落盘前 JIT 静态预审 (Python / JSON / TOML / XML)
 │   ├── compactor.py         # 智能上下文压缩与结构化摘要折叠
@@ -32,39 +35,41 @@ tiancode/
 │   ├── polyglot.py          # 多语言项目识别与验证命令探测
 │   ├── history.py           # 内存级可逆快照与 Rollback
 │   ├── git_store.py         # Git-Native 无损 Diff / 回滚 / 提交适配器
-│   ├── session_store.py     # 会话、计划与快照磁盘持久化
+│   ├── session_store.py     # 会话、计划、历史搜索与快照磁盘持久化
 │   └── diff.py / state.py / prompts.py
 ├── tools/                   # 基础设施与原子工具层
 │   ├── file_ops.py          # 原子写入、单点替换/replace_all 编辑与可逆删除
 │   ├── execution.py         # 跨平台子进程与危险命令防线沙箱
+│   ├── memory_ops.py        # 跨会话联想回忆 recall_memory、固化事实与切工作区
 │   ├── plan_ops.py          # 任务计划看板工具
 │   └── subagent_ops.py      # 子智能体调研委托工具
 ├── skills/                  # 扩展技能加载层 (.tiancode/skills/<name>/SKILL.md)
 ├── eval/                    # 本地自动化基准评测框架 (BenchmarkRunner)
 └── cli/                     # 终端表现层
     ├── main.py              # CLI 参数解析与入口
-    ├── repl.py              # 交互式 Shell 工作台
+    ├── theme.py             # Dark Mode 色板令牌与 CleanMarkdown 组件库
+    ├── repl.py              # 交互式工作台 (/ 补全、鼠标点击审批、模式切换)
     ├── commands.py          # Slash 斜杠命令分发器
-    └── formatter.py         # 流式输出、Diff 着色与交互渲染
+    └── formatter.py         # 思考折叠面板、Rich 流式渲染与实时 Spinner
 ```
 
 ---
 
 ## 🚀 核心特性
 
-1. **双模启动与可控权限门禁 (HITL Permissions)**：
-   - **默认交互审批 (`ask`)**：非只读工具（`write_file`、`edit_file`、`delete_file`、`rollback_turn`、`shell`、`run_python`）在执行前弹窗确认，支持 `[y] 仅本次 / [a] 本会话允许 / [n] 拒绝`（非交互无回调严格 Fail-Closed）。
+1. **双模启动、鼠标审批交互与人工实时纠正 (HITL Permissions & Steering)**：
+   - **默认交互审批 (`ask`)**：非只读工具执行前弹窗提示，支持**鼠标左键直接点击胶囊按钮**或快捷键切换（`[y] 允许本次 / [a] 本会话允许 / [e] 人工纠正 / [n] 拒绝`），点击或输入自然语言纠正指令可立即指导 Agent 改道，底部状态栏支持鼠标点击/`Shift+Tab` 切换权限与自愈开关。
    - **全自动模式 (`--yes` / `-y` / `/mode auto`)**：跳过确认，适合受信任仓库或自动化流；仍受底层危险命令沙箱与 `recursion_limit` 保护。
-   - **只读审计模式 (`--read-only` / `/mode read_only`)**：禁止一切写操作与外部命令执行，仅允许只读源码检索与子智能体分析。
-2. **Git-Native 无损快照与可逆编辑**：
-   - `write_file` / `edit_file`（含唯一性防误替换与 `replace_all`）/ `delete_file` / `rollback_turn` 统一纳入快照追踪。
-   - `/diff` 实时对比补丁，`/undo` 安全撤销本轮全部文件变更，`/commit` 自动生成 Conventional Commit。
-3. **落盘前 AST / 格式即时守卫与闭环自愈**：
-   - 写入前校验 Python AST、JSON、TOML（Python 3.10 自动兼容 `tomli`）与防 XXE XML；写后按语言/构建工具探测测试并触发自愈修复（可用 `--no-heal` 关闭）。
-4. **混合并发调度与死循环 / 超时双重保险**：
-   - `SafeToolDispatcher` 将只读检索线程池并发执行、修改操作严格串行，触发重复参数调用自动启用 Doom-Loop 熔断，同时为 LLM 配置重试与超时上限及状态机 `recursion_limit=50`。
-5. **上下文智能压缩、环境体检与成本看板**：
-   - 字符/消息双轨预算控制、`max_context_chars` 超限自动折叠，配套 `/compact`、`/context`、`/doctor` 与 `/cost`（`/usage`）。
+   - **只读审计模式 (`--read-only` / `/mode read_only`)**：禁止一切写操作与外部命令执行，仅允许只读源码与历史记忆检索及子智能体分析。
+2. **类人脑三层认知记忆与跨项目联想 (`CognitiveMemory`)**：
+   - REPL 默认分配独立 `repl_*` 会话 ID 永不互相覆盖；每次对话存盘零额外 Token 自动巩固工程档案与情景简报。
+   - 新会话启动默认注入轻量级近期工程索引（Subconscious Priming），聊起“刚刚那个项目”或其它工程时通过 `recall_memory` 跨库联想，需要读取代码时经 HITL 确认后 `switch_workspace` 安全切往目标沙箱目录。
+3. **推理思考链可视化 & Dark Mode Rich 流式渲染**：
+   - `ReasonerChatOpenAI` 兼容 DeepSeek-R1 `reasoning_content` 与 `<think>` 流（多轮工具调用自动回传且剥离历史旧思考防 400 报错）；思考过程展示 6 行滚动圆角微卡并随正文/工具调用自动折叠为单行摘要，正文 Markdown 与代码块使用 Monokai 卡片渲染。
+4. **Git-Native 无损快照、落盘前语法守卫与自愈闭环**：
+   - 统一纳入 `write_file` / `edit_file` / `delete_file` / `rollback_turn` 快照追踪；支持 Python AST、JSON、TOML、防 XXE XML 预审与多语言探测测试自愈（可用 `--no-heal` 关闭）。
+5. **混合并发调度、上下文智能压缩与成本看板**：
+   - `SafeToolDispatcher` 并发只读、串行修改并启用 Doom-Loop 死循环熔断；双轨预算超限自动折叠，配套 `/compact`、`/context`、`/doctor` 与 `/cost`（`/usage`）。
 
 ---
 
@@ -105,6 +110,8 @@ export TIANCODE_MODEL="deepseek-chat"
 
 ### REPL 交互式斜杠指令
 - `/mode [ask|auto|read_only]`：查看或动态切换当前运行时安全权限模式
+- `/cd <目录>`：手动切换当前会话工作区沙箱并重锚 Git/文件工具
+- `/memory [clear]` 与 `/remember [project:]<事实>`：查看、清空跨会话认知记忆档案或固化长期知识
 - `/config show` 与 `/config set <prop> <val>`：查看或修改持久化配置并即时生效（支持 `key`、`url`、`model`、`max_chars`、`max_msgs`、`timeout`、`auto_heal`）
 - `/doctor`：一键诊断配置、工作目录读写权限、Git 状态与 Python/pytest 环境
 - `/context` & `/compact`：分析当前消息字符占用或立即执行上下文折叠压缩
