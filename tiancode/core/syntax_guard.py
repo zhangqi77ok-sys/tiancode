@@ -5,7 +5,13 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-import tomllib
+try:
+    import tomllib
+except ImportError:  # Python 3.10 fallback
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
 from typing import Callable, Dict, Optional, Union
 import xml.parsers.expat as expat
 
@@ -90,6 +96,8 @@ class SyntaxGuard:
             )
 
     def _validate_toml(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
+        if tomllib is None:
+            return SyntaxCheckResult(is_valid=True)
         try:
             tomllib.loads(content)
             return SyntaxCheckResult(is_valid=True)

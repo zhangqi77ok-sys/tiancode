@@ -41,8 +41,6 @@ class TianCodeEngine:
         from tiancode.core.session_store import SessionStore
         from tiancode.core.subagent import SubagentRunner
         from tiancode.core.usage_meter import TokenUsageTracker
-        from tiancode.tools.plan_ops import create_plan_tools
-        from tiancode.tools.subagent_ops import create_subagent_tools
 
         self.session_store = SessionStore()
         self.usage_tracker = TokenUsageTracker()
@@ -55,12 +53,6 @@ class TianCodeEngine:
             usage_tracker=self.usage_tracker,
             model_name=settings.model,
         )
-
-        self.tools = []
-        self.tools.extend(create_file_tools(self.snapshot_store, settings.work_dir, auto_heal=settings.auto_heal))
-        self.tools.extend(create_execution_tools(settings.work_dir, settings.timeout_seconds))
-        self.tools.extend(create_plan_tools(self.planner))
-        self.tools.extend(create_subagent_tools(self.subagent_runner))
 
         # 3. Dynamic Skills Extension
         from tiancode.skills.loader import SkillLoader
@@ -86,6 +78,19 @@ class TianCodeEngine:
             except Exception:
                 self._last_config_mtime = 0.0
 
+    def _register_tools(self) -> None:
+        """Rebuild all engine tool closures from current settings."""
+        from tiancode.tools.plan_ops import create_plan_tools
+        from tiancode.tools.subagent_ops import create_subagent_tools
+
+        self.tools = []
+        self.tools.extend(
+            create_file_tools(self.snapshot_store, self.settings.work_dir, auto_heal=self.settings.auto_heal)
+        )
+        self.tools.extend(create_execution_tools(self.settings.work_dir, self.settings.timeout_seconds))
+        self.tools.extend(create_plan_tools(self.planner))
+        self.tools.extend(create_subagent_tools(self.subagent_runner))
+
     def sync_config_if_changed(self, config_path: Optional[Path] = None) -> bool:
         """Inspect config file on disk; if modified, hot-reload settings and LLM immediately."""
         cfg_file = self._get_config_path(config_path)
@@ -102,34 +107,39 @@ class TianCodeEngine:
 
         from tiancode.config.settings import load_user_config
         new_cfg = load_user_config(cfg_file)
-        new_key = new_cfg.get("api_key", "")
-        new_url = new_cfg.get("base_url", "https://api.deepseek.com")
-        new_model = new_cfg.get("model", "deepseek-chat")
+        candidate: Dict[str, Any] = {
+            "api_key": new_cfg.get("api_key", ""),
+            "base_url": new_cfg.get("base_url", "https://api.deepseek.com"),
+            "model": new_cfg.get("model", "deepseek-chat"),
+        }
+        for key in ("timeout_seconds", "max_history_messages", "max_context_chars"):
+            val = new_cfg.get(key)
+            candidate[key] = val if (isinstance(val, int) and not isinstance(val, bool) and val > 0) else getattr(self.settings, key)
+        auto_heal_val = new_cfg.get("auto_heal")
+        candidate["auto_heal"] = auto_heal_val if isinstance(auto_heal_val, bool) else self.settings.auto_heal
 
-        differs = (
-            new_key != self.settings.api_key
-            or new_url != self.settings.base_url
-            or new_model != self.settings.model
-        )
-
+        differs = any(getattr(self.settings, k) != v for k, v in candidate.items())
         self._last_config_mtime = current_mtime
 
         if differs:
-            self.settings.api_key = new_key
-            self.settings.base_url = new_url
-            self.settings.model = new_model
+            for k, v in candidate.items():
+                setattr(self.settings, k, v)
             self.reload_llm()
             return True
 
         return False
 
     def reload_llm(self) -> None:
-        """Re-initialize LLM client and rebuild state machine when settings are updated dynamically."""
+        """Re-initialize LLM client, tool closures, and state machine when settings update."""
+        self._register_tools()
+        llm_timeout = max(30.0, float(self.settings.timeout_seconds) * 2)
         self.llm = ChatOpenAI(
             model=self.settings.model,
             api_key=self.settings.api_key or "sk-dummy",
             base_url=self.settings.base_url,
             temperature=self.settings.temperature,
+            timeout=llm_timeout,
+            max_retries=2,
             stream_usage=True,
         )
         self.subagent_runner.llm = self.llm
@@ -235,7 +245,7 @@ class TianCodeEngine:
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")
 
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
         seen_tools: set = set()
         before_tokens = self.usage_tracker.get_session_stats()[0].total_tokens if hasattr(self, "usage_tracker") else 0
 
