@@ -159,6 +159,12 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         except PermissionError as err:
             return f"❌ {str(err)}"
 
+        # 1. JIT AST / syntax validation before touching disk or snapshot
+        from tiancode.core.syntax_guard import SyntaxGuard
+        check_res = SyntaxGuard().validate(filename, content)
+        if not check_res.is_valid:
+            return check_res.error_message or "❌ 语法校验失败，已阻断写入！"
+
         target.parent.mkdir(parents=True, exist_ok=True)
         is_new = not target.exists()
         original = "" if is_new else open(target, "r", encoding="utf-8", errors="replace").read()
@@ -201,6 +207,13 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return f"❌ 替换失败：文件中未找到完全匹配的旧代码！当前源码如下，请对照后再修改：\n{src}"
 
         modified = src.replace(old_code, new_code, 1)
+
+        # 1. JIT AST / syntax validation before touching disk or snapshot
+        from tiancode.core.syntax_guard import SyntaxGuard
+        check_res = SyntaxGuard().validate(filename, modified)
+        if not check_res.is_valid:
+            return check_res.error_message or "❌ 语法校验失败，已阻断写入！"
+
         from tiancode.core.diff import compute_text_diff
         diff = compute_text_diff(filename, src, modified)
         _print_visual_diff(diff)
