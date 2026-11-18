@@ -116,6 +116,7 @@ class TianCodeEngine:
         from tiancode.tools.memory_ops import create_memory_tools
         from tiancode.tools.plan_ops import create_plan_tools
         from tiancode.tools.subagent_ops import create_subagent_tools
+        from tiancode.tools.web_ops import create_web_tools
 
         self.tools = [
             *create_file_tools(self.snapshot_store, self.settings.work_dir, auto_heal=self.settings.auto_heal),
@@ -123,6 +124,7 @@ class TianCodeEngine:
             *create_plan_tools(self.planner),
             *create_subagent_tools(self.subagent_runner),
             *create_memory_tools(self),
+            *create_web_tools(),
             *sync_engine_mcp(self),
         ]
 
