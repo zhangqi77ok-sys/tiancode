@@ -120,11 +120,26 @@ def _format_tool_preview(args_dict: Dict[str, Any]) -> str:
 
 
 def _terminal_approval_prompt(tool_name: str, args_dict: Dict[str, Any]) -> PermissionDecision:
-    """Prompt human operator on terminal stdin before mutating/executing tools (fail-closed)."""
+    """Prompt human operator with a rounded Rich approval card (fail-closed)."""
+    from rich import box
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from tiancode.cli.theme import TEXT_MUTED, TEXT_PRIMARY, WARNING_COLOR, get_console
+
     preview = _format_tool_preview(args_dict)
-    print(f"\n⚠️  [权限确认] 智能体请求执行 '{tool_name}' ({preview})")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style=TEXT_MUTED, no_wrap=True)
+    grid.add_column(style=TEXT_PRIMARY)
+    grid.add_row("目标工具", Text(tool_name, style=f"bold {WARNING_COLOR}"))
+    grid.add_row("参数摘要", Text(preview, style=TEXT_PRIMARY))
+    grid.add_row("快捷操作", Text("[y] 仅本次允许   [a] 本会话允许此类工具   [n] 拒绝 (默认)", style=TEXT_MUTED))
+
+    console = get_console()
+    console.print()
+    console.print(Panel(grid, title=Text("⚠️ 工具执行权限确认", style=f"bold {WARNING_COLOR}"), title_align="left", box=box.ROUNDED, border_style=WARNING_COLOR, padding=(0, 2)))
     try:
-        answer = input(f"   允许执行吗? [y] 仅本次允许 / [a] 本会话始终允许 {tool_name} / [n] 拒绝 (默认 n): ").strip().lower()
+        answer = input(f"   ❯ 是否允许 '{tool_name}'? [y/a/n]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return PermissionDecision.DENY
 
@@ -158,8 +173,9 @@ def _resolve_resumed_session(engine: TianCodeEngine, args: argparse.Namespace) -
 
 
 def _run_oneshot_task(engine: TianCodeEngine, task_str: str, thread_id: str) -> None:
-    """Execute a single CLI task with unified streaming output and telemetry."""
-    TerminalFormatter.print_info(f"⚡ [单发任务] 正在处理: '{task_str}' (会话ID: {thread_id}) ...")
+    """Execute a single CLI task with clean header and unified Rich stream output."""
+    TerminalFormatter.print_user_turn(task_str)
+    TerminalFormatter.print_info(f"单发会话 {thread_id}")
     try:
         TerminalFormatter.render_task_stream(
             engine.stream_task(task_str, thread_id=thread_id),
