@@ -24,7 +24,8 @@ from tiancode.core.permissions import ApprovalResponse, PermissionDecision, Perm
 from rich.text import Text
 
 SLASH_COMMAND_HINTS: Tuple[Tuple[str, str], ...] = (
-    ("/mode", "切换安全权限模式 (ask / auto / read_only)"), ("/cd", "切换当前工作区项目目录 (/cd <path>)"),
+    ("/mode", "切换安全权限模式 (ask / auto / read_only)"), ("/init", "扫描项目生成 TIANCODE.md (--force 覆盖)"),
+    ("/rules", "查看已自动加载的工程规范 (AGENTS.md/TIANCODE.md)"), ("/cd", "切换当前工作区项目目录 (/cd <path>)"),
     ("/memory", "查看或清空跨会话认知记忆"), ("/remember", "固化一条长期事实/规范进语义记忆"),
     ("/config", "查看或热更新配置"), ("/doctor", "一键体检环境配置、Git 与 pytest"),
     ("/context", "查看上下文窗口字符占比"), ("/compact", "智能折叠上下文历史释放 Token 预算"),
@@ -240,18 +241,22 @@ def can_use_interactive_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty() and getattr(builtins.input, "__module__", "") == "builtins"
 
 
-def _print_memory_wakeup_hint(engine: TianCodeEngine) -> None:
-    """Display concise hint if previous active workspace exists outside current work_dir."""
-    store = getattr(engine, "memory_store", None)
-    workspaces = getattr(store, "workspaces", None)
+def _print_startup_hints(engine: TianCodeEngine) -> None:
+    """Display subtle startup hints for detected project rules and recent other workspaces."""
+    rules_loader = getattr(engine, "rules_loader", None)
+    if rules_loader is not None and hasattr(engine, "settings"):
+        docs = rules_loader.load_rules(engine.settings.work_dir)
+        if isinstance(docs, list) and docs:
+            TerminalFormatter.print_info(f"📜 已加载工程规约: {', '.join(d.filename for d in docs)}")
+
+    workspaces = getattr(getattr(engine, "memory_store", None), "workspaces", None)
     if not isinstance(workspaces, dict) or not workspaces:
         return
-    curr = str(engine.settings.work_dir.resolve()) if hasattr(engine.settings, "work_dir") else ""
+    curr = str(engine.settings.work_dir.resolve()) if hasattr(engine, "settings") else ""
     recent = sorted(workspaces.values(), key=lambda w: getattr(w, "last_active_at", ""), reverse=True)
     others = [w for w in recent if getattr(w, "path", "") != curr]
     if others:
-        w = others[0]
-        TerminalFormatter.print_info(f"🧠 记忆已唤醒: 最近活跃项目 [{w.name}] ({w.path}) · 可直接聊起或 /cd 切换")
+        TerminalFormatter.print_info(f"🧠 记忆已唤醒: 最近活跃项目 [{others[0].name}] ({others[0].path}) · 可直接聊起或 /cd 切换")
 
 
 def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None:
@@ -263,7 +268,7 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
         work_dir=str(engine.settings.work_dir), model=model or "deepseek-chat",
         permission_mode=mode, auto_heal=auto_heal, timeout_seconds=timeout,
     )
-    _print_memory_wakeup_hint(engine)
+    _print_startup_hints(engine)
     cmd_handler = SlashCommandHandler(engine)
     repl_kb = KeyBindings()
     repl_kb.add("s-tab")(lambda event: (_cycle_engine_permission_mode(engine), event.app.invalidate()))

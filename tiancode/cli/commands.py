@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 _HELP_GROUPS: Tuple[Tuple[str, str], ...] = (
     ("/mode [ask|auto|read_only]", "查看或动态切换 HITL 安全权限模式"),
+    ("/init [--force] | /rules", "扫描技术栈生成 TIANCODE.md 规范或查看已加载工程规约"),
     ("/cd <dir>", "切换当前工作区沙箱并重锚 Git/文件工具"),
     ("/memory [clear] | /remember <事实>", "查看跨会话认知记忆档案或固化长期知识"),
     ("/config show | set <k> <v>", "查看或热更新配置 (key/url/model/max_chars/timeout/auto_heal)"),
@@ -82,6 +83,8 @@ class SlashCommandHandler:
             "/compact": lambda _: self._handle_compact(),
             "/context": lambda _: self._handle_context(),
             "/mode": self._handle_mode,
+            "/init": self._handle_init,
+            "/rules": lambda _: self._handle_rules(),
             "/cd": self._handle_cd,
             "/memory": self._handle_memory,
             "/remember": self._handle_remember,
@@ -434,3 +437,35 @@ class SlashCommandHandler:
             TerminalFormatter.print_success(f"已写入长期记忆 [{saved.scope.value}/{saved.key}]: {saved.content}")
         except Exception as exc:
             TerminalFormatter.print_warning(f"记忆写入失败: {exc}")
+
+    def _handle_init(self, arg: str = "") -> None:
+        from tiancode.core.project_rules import write_project_guide
+
+        tokens = arg.strip().split()
+        force = any(tok in ("--force", "-f") for tok in tokens)
+        try:
+            target, written = write_project_guide(self.engine.settings.work_dir, force=force)
+        except Exception as exc:
+            TerminalFormatter.print_warning(f"生成工程规约失败: {exc}")
+            return
+        if written:
+            TerminalFormatter.print_success(f"已扫描工程结构并生成规范文件: {target} (可运行 /rules 预览)")
+        else:
+            TerminalFormatter.print_warning(f"规范文件已存在: {target}，跳过覆写。若需重新生成请执行: /init --force")
+
+    def _handle_rules(self) -> None:
+        from tiancode.core.project_rules import ProjectRulesLoader
+
+        loader = getattr(self.engine, "rules_loader", None) or ProjectRulesLoader()
+        docs = loader.load_rules(self.engine.settings.work_dir)
+        if not docs:
+            TerminalFormatter.print_info("当前未检测到全局或工程规范文件 (AGENTS.md / TIANCODE.md)，可输入 /init 自动生成。")
+            return
+        headers = [
+            ("层级", {"style": SUCCESS_COLOR, "no_wrap": True}),
+            ("文件名", {"style": f"bold {BRAND_COLOR}", "no_wrap": True}),
+            ("字符数", {"style": TEXT_MUTED, "justify": "right"}),
+            ("物理路径", {"style": TEXT_SUBTLE}),
+        ]
+        rows = [(d.scope, d.filename, f"{len(d.content):,}", Text(str(d.path))) for d in docs]
+        _print_table("📜 已自动加载工程规范清单", headers, rows)

@@ -20,6 +20,7 @@ tiancode/
 │   └── interfaces.py        # SnapshotStore 协议契约
 ├── core/                    # 核心编排引擎层 (状态机与安全治理)
 │   ├── engine.py            # LangGraph StateGraph 装配、记忆唤醒与动态切目录
+│   ├── project_rules.py     # AGENTS.md / TIANCODE.md 分层加载与 /init 生成器
 │   ├── llm_adapter.py       # 推理模型 reasoning_content 与 <think> 流式适配器
 │   ├── cognitive_memory.py  # 跨会话三层大脑记忆仓库、时间衰减与联想召回
 │   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only + 人工纠正)
@@ -110,6 +111,7 @@ export TIANCODE_MODEL="deepseek-chat"
 
 ### REPL 交互式斜杠指令
 - `/mode [ask|auto|read_only]`：查看或动态切换当前运行时安全权限模式
+- `/init [--force]` 与 `/rules`：自动探测技术栈/模块生成 `TIANCODE.md`，或查看当前已挂载规约清单
 - `/cd <目录>`：手动切换当前会话工作区沙箱并重锚 Git/文件工具
 - `/memory [clear]` 与 `/remember [project:]<事实>`：查看、清空跨会话认知记忆档案或固化长期知识
 - `/config show` 与 `/config set <prop> <val>`：查看或修改持久化配置并即时生效（支持 `key`、`url`、`model`、`max_chars`、`max_msgs`、`timeout`、`auto_heal`）
