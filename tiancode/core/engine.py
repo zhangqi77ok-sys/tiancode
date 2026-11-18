@@ -6,13 +6,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import tools_condition
 
 from tiancode.config.settings import Settings
 from tiancode.core.git_store import GitSnapshotStore
 from tiancode.core.history import InMemorySnapshotStore
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
+from tiancode.core.tool_dispatcher import SafeToolDispatcher
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.tools.execution import create_execution_tools
 from tiancode.tools.file_ops import create_file_tools
@@ -149,9 +150,10 @@ class TianCodeEngine:
                 )
             return {"messages": [response]}
 
+        self.tool_dispatcher = SafeToolDispatcher(self.tools)
         builder = StateGraph(MessagesState)
         builder.add_node("brain", brain_node)
-        builder.add_node("tools", ToolNode(self.tools))
+        builder.add_node("tools", self.tool_dispatcher)
 
         builder.add_edge(START, "brain")
         builder.add_conditional_edges("brain", tools_condition)
@@ -259,6 +261,8 @@ class TianCodeEngine:
                 TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
                 return False
         self.active_session_id = session_id
+        if hasattr(self, "tool_dispatcher"):
+            self.tool_dispatcher.reset_loop_guard()
         return True
 
     def reset_session(self) -> None:
@@ -268,6 +272,8 @@ class TianCodeEngine:
         self.planner.active_plan = None
         if hasattr(self, "usage_tracker"):
             self.usage_tracker.reset()
+        if hasattr(self, "tool_dispatcher"):
+            self.tool_dispatcher.reset_loop_guard()
 
     def generate_commit_message(self, task_description: str, diff_text: str) -> str:
         """Use LLM to generate a conventional commit message based on task and diff."""
