@@ -1,6 +1,6 @@
 """Slash command handlers for TianCode REPL."""
 
-from typing import TYPE_CHECKING, Callable, Dict
+from typing import TYPE_CHECKING, Callable, Dict, Optional
 from tiancode.cli.formatter import TerminalFormatter
 from tiancode.config.settings import get_default_config_path
 
@@ -24,6 +24,8 @@ class SlashCommandHandler:
             "/sessions": lambda _: self._handle_sessions(),
             "/switch": self._handle_switch,
             "/compact": lambda _: self._handle_compact(),
+            "/context": lambda _: self._handle_context(),
+            "/doctor": lambda _: self._handle_doctor(),
             "/cost": lambda _: self._handle_cost(),
             "/usage": lambda _: self._handle_cost(),
             "/eval": self._handle_eval,
@@ -100,47 +102,73 @@ class SlashCommandHandler:
         else:
             TerminalFormatter.print_warning("Git 提交未成功，请检查工作区状态。")
 
+    def _apply_config_set(self, prop: str, val: str) -> None:
+        """Validate and persist a single /config set property update uniformly."""
+        s = self.engine.settings
+        str_map = {"key": "api_key", "api_key": "api_key", "url": "base_url", "base_url": "base_url", "model": "model", "model_name": "model"}
+        if prop in str_map:
+            setattr(s, str_map[prop], val)
+            s.persist()
+            self.engine.reload_llm()
+            TerminalFormatter.print_success(f"已更新 {str_map[prop]} 并持久化保存。")
+            return
+
+        int_limits = {
+            "max_chars": ("max_context_chars", 500),
+            "max_context_chars": ("max_context_chars", 500),
+            "max_msgs": ("max_history_messages", 2),
+            "max_history_messages": ("max_history_messages", 2),
+            "timeout": ("timeout_seconds", 1),
+            "timeout_seconds": ("timeout_seconds", 1),
+        }
+        if prop in int_limits:
+            attr, min_val = int_limits[prop]
+            try:
+                num = int(val)
+            except ValueError:
+                TerminalFormatter.print_warning(f"参数值 '{val}' 必须为正整数。")
+                return
+            if num < min_val:
+                TerminalFormatter.print_warning(f"参数 {prop} 不能小于 {min_val}: {num}")
+                return
+            setattr(s, attr, num)
+            s.persist()
+            TerminalFormatter.print_success(f"已更新 {attr} = {num} 并持久化保存。")
+            return
+
+        if prop in ("auto_heal", "heal"):
+            low = val.lower()
+            if low not in ("true", "false", "1", "0", "on", "off", "yes", "no"):
+                TerminalFormatter.print_warning("布尔值仅支持 true/false/on/off。")
+                return
+            s.auto_heal = low in ("true", "1", "on", "yes")
+            s.persist()
+            TerminalFormatter.print_success(f"已更新 auto_heal = {s.auto_heal} 并持久化保存。")
+            return
+
+        TerminalFormatter.print_warning(f"未知属性 '{prop}'。支持: key, url, model, max_chars, max_msgs, timeout, auto_heal")
+
     def _handle_config(self, arg: str) -> None:
         parts = arg.strip().split()
         subcmd = parts[0].lower() if parts else "show"
 
         if subcmd == "show":
-            key_str = self.engine.settings.api_key
-            masked_key = f"****{key_str[-4:]}" if len(key_str) >= 4 else "(未配置)"
+            s = self.engine.settings
+            masked_key = f"****{s.api_key[-4:]}" if len(s.api_key) >= 4 else "(未配置)"
             print("\n⚙️ ====== [TianCode 配置信息] ======")
             print(f"  API Key  : {masked_key}")
-            print(f"  Base URL : {self.engine.settings.base_url}")
-            print(f"  Model    : {self.engine.settings.model}")
+            print(f"  Base URL : {s.base_url}")
+            print(f"  Model    : {s.model}")
+            print(f"  预算阈值 : {getattr(s, 'max_history_messages', 12)} 条 / {getattr(s, 'max_context_chars', 40000):,} 字符")
+            print(f"  自愈开关 : {getattr(s, 'auto_heal', True)} | 超时: {getattr(s, 'timeout_seconds', 15)}s")
             print(f"  配置文件 : {get_default_config_path()}")
             print("====================================\n")
-            print("💡 快捷修改命令示例：")
-            print("   /config set key sk-xxxx")
-            print("   /config set url https://api.deepseek.com")
-            print("   /config set model deepseek-chat\n")
             return
 
         if subcmd == "set" and len(parts) >= 3:
-            prop = parts[1].lower()
-            val = parts[2]
-            if prop in ("key", "api_key"):
-                self.engine.settings.api_key = val
-                self.engine.settings.persist()
-                self.engine.reload_llm()
-                TerminalFormatter.print_success(f"已更新 API Key 并永久保存至 {get_default_config_path()}")
-            elif prop in ("url", "base_url"):
-                self.engine.settings.base_url = val
-                self.engine.settings.persist()
-                self.engine.reload_llm()
-                TerminalFormatter.print_success(f"已更新 Base URL 为: {val}")
-            elif prop in ("model", "model_name"):
-                self.engine.settings.model = val
-                self.engine.settings.persist()
-                self.engine.reload_llm()
-                TerminalFormatter.print_success(f"已更新 Model 为: {val}")
-            else:
-                TerminalFormatter.print_warning(f"未知属性 '{prop}'。支持: key, url, model")
+            self._apply_config_set(parts[1].lower(), parts[2])
         else:
-            TerminalFormatter.print_info("用法: /config show 或 /config set <key|url|model> <值>")
+            TerminalFormatter.print_info("用法: /config show 或 /config set <key|url|model|max_chars|max_msgs|timeout|auto_heal> <值>")
 
     def _handle_map(self) -> None:
         from tiancode.core.repo_map import generate_repo_map
@@ -207,26 +235,8 @@ class SlashCommandHandler:
         else:
             TerminalFormatter.print_warning(f"未能找到或恢复会话 [{target_id}]，请先运行 /sessions 查看可用列表。")
 
-    def _handle_compact(self) -> None:
-        if not hasattr(self.engine, "graph") or not self.engine.graph:
-            TerminalFormatter.print_info("当前引擎尚未初始化执行图，无需压缩。")
-            return
-
-        session_id = getattr(self.engine, "active_session_id", "tiancode_repl")
-        config = {"configurable": {"thread_id": session_id}}
-
-        try:
-            state = self.engine.graph.get_state(config)
-            messages = state.values.get("messages", []) if state and hasattr(state, "values") and state.values else []
-        except Exception:
-            messages = []
-
-        if not messages:
-            TerminalFormatter.print_info("当前上下文无历史交互消息，无需压缩。")
-            return
-
-        from tiancode.core.compactor import ContextCompactor
-
+    def _get_active_context_state(self) -> tuple[Optional[dict], list, int, int]:
+        """Read active thread state messages and validated budget limits."""
         settings = getattr(self.engine, "settings", None)
         max_msgs = getattr(settings, "max_history_messages", 12)
         if not isinstance(max_msgs, int):
@@ -235,11 +245,29 @@ class SlashCommandHandler:
         if not isinstance(max_chars, int):
             max_chars = 40000
 
-        compactor = ContextCompactor(
-            max_retained_messages=max_msgs,
-            max_context_chars=max_chars,
-        )
+        if not hasattr(self.engine, "graph") or not self.engine.graph:
+            return None, [], max_msgs, max_chars
 
+        session_id = getattr(self.engine, "active_session_id", "tiancode_repl")
+        config = {"configurable": {"thread_id": session_id}}
+        try:
+            state = self.engine.graph.get_state(config)
+            messages = state.values.get("messages", []) if state and hasattr(state, "values") and state.values else []
+        except Exception:
+            messages = []
+        return config, list(messages), max_msgs, max_chars
+
+    def _handle_compact(self) -> None:
+        config, messages, max_msgs, max_chars = self._get_active_context_state()
+        if config is None:
+            TerminalFormatter.print_info("当前引擎尚未初始化执行图，无需压缩。")
+            return
+        if not messages:
+            TerminalFormatter.print_info("当前上下文无历史交互消息，无需压缩。")
+            return
+
+        from tiancode.core.compactor import ContextCompactor
+        compactor = ContextCompactor(max_retained_messages=max_msgs, max_context_chars=max_chars)
         result = compactor.compact_with_stats(messages)
         if result.compacted_chars < result.original_chars or len(result.messages) < len(messages):
             self.engine.graph.update_state(config, {"messages": result.messages})
@@ -249,6 +277,20 @@ class SlashCommandHandler:
             )
         else:
             TerminalFormatter.print_info("当前上下文未超出预算阈值，无需压缩。")
+
+    def _handle_context(self) -> None:
+        _, messages, max_msgs, max_chars = self._get_active_context_state()
+        from tiancode.core.doctor import analyze_context_usage, format_context_report
+        stats = analyze_context_usage(messages, max_retained_messages=max_msgs, max_context_chars=max_chars)
+        print(format_context_report(stats))
+
+    def _handle_doctor(self) -> None:
+        from tiancode.core.doctor import format_diagnostics_report, run_environment_diagnostics
+        settings = getattr(self.engine, "settings", None)
+        work_dir = getattr(settings, "work_dir", ".")
+        sess_dir = getattr(getattr(self.engine, "session_store", None), "storage_dir", None)
+        checks = run_environment_diagnostics(work_dir, settings, sessions_dir=sess_dir)
+        print(format_diagnostics_report(checks))
 
     def _handle_cost(self) -> None:
         tracker = getattr(self.engine, "usage_tracker", None)
@@ -305,6 +347,8 @@ class SlashCommandHandler:
   /sessions - 查看磁盘持久化的历史会话列表
   /switch   - 快速切换恢复至指定历史会话 (/switch <session_id>)
   /compact  - 立即执行上下文智能压缩与 Token 预算折叠，释放上下文窗口
+  /context  - 可视化查看当前上下文窗口占用与角色字符占比体检
+  /doctor   - 一键执行环境配置、目录权限、Git 与 pytest 健康自检
   /cost     - 查看当前会话 Token 消耗、缓存命中率与预估费用账单 (别名 /usage)
   /diff    - 查看当前工作区代码变更补丁对比
   /undo    - 一键回滚并撤销当前所有未提交改动 (安全无损快照回滚)

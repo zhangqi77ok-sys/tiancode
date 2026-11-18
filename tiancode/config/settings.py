@@ -87,19 +87,39 @@ class Settings:
 
         resolved_work_dir = work_dir or Path(os.environ.get("TIANCODE_WORK_DIR", ".")).resolve()
 
+        raw_timeout = user_cfg.get("timeout_seconds")
+        timeout_seconds = raw_timeout if type(raw_timeout) is int and raw_timeout > 0 else 15
+
+        raw_max_hist = user_cfg.get("max_history_messages")
+        max_history = raw_max_hist if type(raw_max_hist) is int and raw_max_hist > 1 else 12
+
+        raw_max_chars = user_cfg.get("max_context_chars")
+        max_chars = raw_max_chars if type(raw_max_chars) is int and raw_max_chars >= 500 else 40000
+
+        raw_auto_heal = user_cfg.get("auto_heal")
+        auto_heal = raw_auto_heal if isinstance(raw_auto_heal, bool) else True
+
         return cls(
             api_key=resolved_key,
             base_url=resolved_base_url,
             model=resolved_model,
+            timeout_seconds=timeout_seconds,
+            max_history_messages=max_history,
+            max_context_chars=max_chars,
+            auto_heal=auto_heal,
             work_dir=resolved_work_dir,
         )
 
     def persist(self, config_path: Optional[Path] = None) -> None:
-        """Persist current core settings to user config file."""
+        """Persist current core settings and runtime tuning options to user config file."""
         data = {
             "api_key": self.api_key,
             "base_url": self.base_url,
             "model": self.model,
+            "timeout_seconds": self.timeout_seconds,
+            "max_history_messages": self.max_history_messages,
+            "max_context_chars": self.max_context_chars,
+            "auto_heal": self.auto_heal,
         }
         save_user_config(data, config_path=config_path)
 
