@@ -33,7 +33,7 @@ tiancode/
 │   ├── compactor.py         # 智能上下文压缩与结构化摘要折叠
 │   ├── doctor.py            # 环境体检 (/doctor) 与上下文占用剖析 (/context)
 │   ├── search.py            # 跨平台沙箱 grep_search 与分页 read_file
-│   ├── repo_map.py          # AST 代码拓扑全景生成 (含行号范围与安全剪枝)
+│   ├── repo_map.py          # Python AST 与 TypeScript/JS 多语言代码拓扑全景生成
 │   ├── planner.py           # Planner-Worker 任务看板状态管理
 │   ├── subagent.py          # 只读沙箱子智能体执行器
 │   ├── usage_meter.py       # Token 计量器与阶梯缓存计费
@@ -47,6 +47,7 @@ tiancode/
 │   ├── execution.py         # 跨平台子进程与危险命令防线沙箱
 │   ├── memory_ops.py        # 跨会话联想回忆 recall_memory、固化事实与切工作区
 │   ├── mcp_ops.py           # 外部 MCP 工具 StructuredTool 适配与工作区热重载生命周期
+│   ├── web_ops.py           # SSRF 防护的只读公网文档抓取 web_fetch 工具
 │   ├── plan_ops.py          # 任务计划看板工具
 │   └── subagent_ops.py      # 子智能体调研委托工具
 ├── skills/                  # 扩展技能加载层 (.tiancode/skills/<name>/SKILL.md)
@@ -94,7 +95,7 @@ tiancode/
 ```bash
 pip install -e ".[dev]"
 ```
-安装后将注册 `tiancode` 与 `tc` 全局 CLI 命令。
+安装后将注册 `tiancode` 与 `tc` 全局 CLI 命令（亦支持 `python -m tiancode` 启动）。
 
 ### 2. 配置 API Key
 支持任意 OpenAI 协议兼容模型（默认适配 DeepSeek）：
@@ -133,7 +134,7 @@ export TIANCODE_MODEL="deepseek-chat"
 - `/context` & `/compact`：分析当前消息字符占用或立即执行上下文折叠压缩
 - `/cost`（`/usage`）：查看推理轮次、缓存命中率与预估费用
 - `/map` / `/plan` / `/skills`：查看 Repo Map 代码拓扑、Planner-Worker 看板及已加载技能
-- `/sessions` / `/switch <id>` / `/clear` / `/status` / `/help`：会话列表、热切换、清空与状态查看
+- `/sessions` / `/switch <id>` / `/clear` / `/status` / `/help` / `/exit`：会话列表、热切换、清空、状态与退出
 - `/diff` / `/undo` / `/commit [msg]` / `/eval [problem_id]`：代码补丁对比、无损回滚、提交与基准评测
 
 ---
