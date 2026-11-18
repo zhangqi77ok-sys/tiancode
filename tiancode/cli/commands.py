@@ -25,6 +25,7 @@ class SlashCommandHandler:
             "/switch": self._handle_switch,
             "/compact": lambda _: self._handle_compact(),
             "/context": lambda _: self._handle_context(),
+            "/mode": self._handle_mode,
             "/doctor": lambda _: self._handle_doctor(),
             "/cost": lambda _: self._handle_cost(),
             "/usage": lambda _: self._handle_cost(),
@@ -133,6 +134,8 @@ class SlashCommandHandler:
                 return
             setattr(s, attr, num)
             s.persist()
+            if attr == "timeout_seconds":
+                self.engine.reload_llm()
             TerminalFormatter.print_success(f"已更新 {attr} = {num} 并持久化保存。")
             return
 
@@ -143,6 +146,7 @@ class SlashCommandHandler:
                 return
             s.auto_heal = low in ("true", "1", "on", "yes")
             s.persist()
+            self.engine.reload_llm()
             TerminalFormatter.print_success(f"已更新 auto_heal = {s.auto_heal} 并持久化保存。")
             return
 
@@ -161,6 +165,9 @@ class SlashCommandHandler:
             print(f"  Model    : {s.model}")
             print(f"  预算阈值 : {getattr(s, 'max_history_messages', 12)} 条 / {getattr(s, 'max_context_chars', 40000):,} 字符")
             print(f"  自愈开关 : {getattr(s, 'auto_heal', True)} | 超时: {getattr(s, 'timeout_seconds', 15)}s")
+            guard = getattr(self.engine, "permission_guard", None)
+            if guard is not None:
+                print(f"  权限模式 : {guard.mode.value}")
             print(f"  配置文件 : {get_default_config_path()}")
             print("====================================\n")
             return
@@ -284,6 +291,24 @@ class SlashCommandHandler:
         stats = analyze_context_usage(messages, max_retained_messages=max_msgs, max_context_chars=max_chars)
         print(format_context_report(stats))
 
+    def _handle_mode(self, arg: str = "") -> None:
+        """View or switch runtime HITL permission mode (ask / auto / read_only)."""
+        guard = getattr(self.engine, "permission_guard", None)
+        if guard is None or not hasattr(self.engine, "set_permission_mode"):
+            TerminalFormatter.print_warning("当前引擎实例不支持动态切换权限模式。")
+            return
+
+        target = arg.strip()
+        if not target:
+            print(f"\n🔐 当前权限模式: {guard.mode.value} (可选: ask | auto | read_only)\n")
+            return
+
+        try:
+            new_mode = self.engine.set_permission_mode(target)
+            TerminalFormatter.print_success(f"权限模式已切换为: {new_mode.value}")
+        except ValueError as exc:
+            TerminalFormatter.print_warning(str(exc))
+
     def _handle_doctor(self) -> None:
         from tiancode.core.doctor import format_diagnostics_report, run_environment_diagnostics
         settings = getattr(self.engine, "settings", None)
@@ -348,6 +373,7 @@ class SlashCommandHandler:
   /switch   - 快速切换恢复至指定历史会话 (/switch <session_id>)
   /compact  - 立即执行上下文智能压缩与 Token 预算折叠，释放上下文窗口
   /context  - 可视化查看当前上下文窗口占用与角色字符占比体检
+  /mode     - 查看或切换安全权限模式 (/mode [ask|auto|read_only])
   /doctor   - 一键执行环境配置、目录权限、Git 与 pytest 健康自检
   /cost     - 查看当前会话 Token 消耗、缓存命中率与预估费用账单 (别名 /usage)
   /diff    - 查看当前工作区代码变更补丁对比

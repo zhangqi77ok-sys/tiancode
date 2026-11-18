@@ -5,13 +5,14 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from tiancode import __version__
 from tiancode.cli.formatter import TerminalFormatter
 from tiancode.cli.repl import start_repl
 from tiancode.config.settings import Settings, prompt_setup_wizard
 from tiancode.core.engine import TianCodeEngine
+from tiancode.core.permissions import PermissionDecision, PermissionMode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,12 +76,63 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="指定上下文最大字符预算阈值（超出将触发智能折叠压缩）",
     )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--yes", "-y",
+        dest="auto_yes",
+        action="store_true",
+        help="免确认自动批准所有文件变更与终端命令执行",
+    )
+    mode_group.add_argument(
+        "--read-only",
+        dest="read_only",
+        action="store_true",
+        help="只读安全模式，禁止所有写入、修改、删除与命令执行",
+    )
     parser.add_argument(
         "--version", "-v",
         action="version",
         version=f"%(prog)s {__version__}",
     )
     return parser
+
+
+def _resolve_permission_mode(args: argparse.Namespace) -> PermissionMode:
+    """Resolve initial PermissionMode from mutually exclusive CLI flags."""
+    if getattr(args, "read_only", False):
+        return PermissionMode.READ_ONLY
+    if getattr(args, "auto_yes", False):
+        return PermissionMode.AUTO
+    return PermissionMode.ASK
+
+
+def _format_tool_preview(args_dict: Dict[str, Any]) -> str:
+    """Format concise single-line preview of tool arguments for interactive approval."""
+    if not isinstance(args_dict, dict) or not args_dict:
+        return "{}"
+    parts = []
+    for k, v in args_dict.items():
+        text = str(v).replace("\n", "\\n")
+        if len(text) > 80:
+            text = text[:77] + "..."
+        parts.append(f"{k}={text}")
+    return ", ".join(parts)
+
+
+def _terminal_approval_prompt(tool_name: str, args_dict: Dict[str, Any]) -> PermissionDecision:
+    """Prompt human operator on terminal stdin before mutating/executing tools (fail-closed)."""
+    preview = _format_tool_preview(args_dict)
+    print(f"\n⚠️  [权限确认] 智能体请求执行 '{tool_name}' ({preview})")
+    try:
+        answer = input(f"   允许执行吗? [y] 仅本次允许 / [a] 本会话始终允许 {tool_name} / [n] 拒绝 (默认 n): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return PermissionDecision.DENY
+
+    if answer in ("y", "yes"):
+        return PermissionDecision.ALLOW_ONCE
+    if answer in ("a", "always"):
+        return PermissionDecision.ALLOW_SESSION
+    return PermissionDecision.DENY
 
 
 def _resolve_resumed_session(engine: TianCodeEngine, args: argparse.Namespace) -> Optional[str]:
@@ -139,8 +191,13 @@ def main() -> None:
         settings = prompt_setup_wizard(settings)
 
     engine = TianCodeEngine(settings=settings)
+    perm_mode = _resolve_permission_mode(args)
+    if hasattr(engine, "set_permission_mode"):
+        engine.set_permission_mode(perm_mode, prompt_fn=_terminal_approval_prompt)
 
     if args.task and args.task[0] == "eval":
+        if perm_mode is not PermissionMode.READ_ONLY:
+            engine.set_permission_mode(PermissionMode.AUTO)
         from tiancode.eval.runner import BenchmarkRunner
         pids = args.task[1:] if len(args.task) > 1 else None
         TerminalFormatter.print_info("⚡ 正在启动 TianCode 自动化基准评测 (SWE-bench 体系)...")
