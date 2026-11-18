@@ -2,12 +2,22 @@
 
 import ast
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Set, Tuple, Union
 
 DEFAULT_MAX_REPO_FILES = 120
 DEFAULT_MAX_REPO_CHARS = 16_000
 _EXTRA_IGNORED_DIRS: Set[str] = {"env", "tiancode.egg-info"}
+_JS_TS_EXTS: Tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_TS_DECL_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
+    ("class", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)")),
+    ("interface", re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)")),
+    ("type", re.compile(r"^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=")),
+    ("enum", re.compile(r"^\s*(?:export\s+)?enum\s+([A-Za-z_$][\w$]*)")),
+    ("function", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)")),
+    ("function", re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>")),
+)
 
 
 def _format_line_range(node: ast.AST) -> str:
@@ -72,6 +82,28 @@ def extract_file_symbols(code: str) -> List[Dict[str, Any]]:
     return symbols
 
 
+def extract_ts_symbols(code: str) -> List[Dict[str, Any]]:
+    """Extract top-level classes, interfaces, types, enums, and functions from TS/JS code."""
+    symbols: List[Dict[str, Any]] = []
+    for lineno, line in enumerate(code.splitlines(), start=1):
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(("//", "/*", "*")):
+            continue
+        for kind, pattern in _TS_DECL_PATTERNS:
+            m = pattern.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if kind == "function" and m.lastindex and m.lastindex >= 2:
+                params = " ".join(m.group(2).split())[:40]
+                name = f"{name}({params})"
+            elif kind == "function":
+                name = f"{name}(...)"
+            symbols.append({"type": kind, "name": name, "line_range": f"L{lineno}", "methods": []})
+            break
+    return symbols
+
+
 def _filter_safe_dirs(root: str, dirs: List[str], resolved_dir: Path, ignored: Set[str]) -> List[str]:
     """Prune ignored directories and symlinks pointing outside work_dir."""
     safe: List[str] = []
@@ -86,32 +118,39 @@ def _filter_safe_dirs(root: str, dirs: List[str], resolved_dir: Path, ignored: S
     return safe
 
 
-def _render_file_block(py_file: str, real_file: Path) -> List[str]:
-    """Read a Python file and format its AST symbol block with jumpable line ranges."""
+def _render_file_block(src_file: str, real_file: Path) -> List[str]:
+    """Read a source file and format its AST/regex symbol block with jumpable line ranges."""
+    is_py = src_file.endswith(".py")
     try:
         content = real_file.read_text(encoding="utf-8", errors="replace")
-        symbols = extract_file_symbols(content)
+        symbols = extract_file_symbols(content) if is_py else extract_ts_symbols(content)
     except Exception:
         symbols = []
 
-    block = [f"  📄 {py_file}"]
+    block = [f"  📄 {src_file}"]
     for sym in symbols:
         lr = f" [{sym['line_range']}]" if sym.get("line_range") else ""
-        if sym["type"] == "class":
-            block.append(f"    class {sym['name']}:{lr}")
+        stype = sym["type"]
+        if stype == "class":
+            suffix = ":" if is_py else ""
+            block.append(f"    class {sym['name']}{suffix}{lr}")
             details = sym.get("method_details") or [{"sig": m, "line_range": ""} for m in sym["methods"]]
             for md in details:
                 mlr = f" [{md['line_range']}]" if md.get("line_range") else ""
                 block.append(f"      def {md['sig']}{mlr}")
-        elif sym["type"] == "function":
-            block.append(f"    def {sym['name']}{lr}")
-        elif sym["type"] == "error":
+        elif stype == "function":
+            prefix = "def" if is_py else "fn"
+            block.append(f"    {prefix} {sym['name']}{lr}")
+        elif stype in ("interface", "type", "enum"):
+            block.append(f"    {stype} {sym['name']}{lr}")
+        elif stype == "error":
             block.append(f"    ⚠️ {sym['name']}")
     return block
 
 
-def _iter_valid_py_files(resolved_dir: Path, max_depth: int, ignored: Set[str]) -> Iterator[Tuple[str, str, Path]]:
-    """Yield (folder_header, filename, resolved_path) for workspace-contained Python files."""
+def _iter_valid_source_files(resolved_dir: Path, max_depth: int, ignored: Set[str]) -> Iterator[Tuple[str, str, Path]]:
+    """Yield (folder_header, filename, resolved_path) for workspace-contained Python/TS/JS files."""
+    supported = (".py",) + _JS_TS_EXTS
     for root, dirs, files in os.walk(resolved_dir):
         dirs[:] = _filter_safe_dirs(root, dirs, resolved_dir, ignored)
         rel_root = Path(root).relative_to(resolved_dir)
@@ -120,11 +159,11 @@ def _iter_valid_py_files(resolved_dir: Path, max_depth: int, ignored: Set[str]) 
             continue
 
         folder_header = f"\n📁 {rel_root}" if str(rel_root) != "." else "\n📁 根目录 /"
-        for py_file in sorted(f for f in files if f.endswith(".py")):
+        for src_file in sorted(f for f in files if f.endswith(supported) and not f.endswith(".d.ts")):
             try:
-                real_file = Path(root, py_file).resolve()
+                real_file = Path(root, src_file).resolve()
                 if real_file.is_relative_to(resolved_dir) and real_file.is_file():
-                    yield folder_header, py_file, real_file
+                    yield folder_header, src_file, real_file
             except OSError:
                 continue
 
@@ -159,12 +198,12 @@ def generate_repo_map(
     last_folder = ""
     truncated_reason = ""
 
-    for folder_header, py_file, real_file in _iter_valid_py_files(resolved_dir, max_depth, ignored):
+    for folder_header, src_file, real_file in _iter_valid_source_files(resolved_dir, max_depth, ignored):
         if rendered_files >= max_files:
             truncated_reason = f"已达文件数上限 {max_files}"
             break
 
-        block = _render_file_block(py_file, real_file)
+        block = _render_file_block(src_file, real_file)
         pending = ([folder_header] if folder_header != last_folder else []) + block
         pending_chars = sum(len(x) + 1 for x in pending)
         if char_count + pending_chars + 100 > max_chars:
@@ -181,7 +220,7 @@ def generate_repo_map(
         rendered_files += 1
 
     if not rendered_files:
-        return "💡 当前项目未检测到有效的 Python 代码文件。"
+        return "💡 当前项目未检测到有效的源代码文件 (.py / .ts / .js)。"
     if truncated_reason:
         lines.append(f"\n⚠️ [全景图输出已截断 ({truncated_reason}，共展示 {rendered_files} 个文件)；请使用 grep_search 或 list_files 按子目录精准定位]")
     lines.append("\n======================================================\n")
