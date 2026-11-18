@@ -2,6 +2,8 @@
 
 import builtins
 import sys
+import time
+import uuid
 from typing import Callable, List, Optional, Tuple, Union
 
 from prompt_toolkit import PromptSession
@@ -22,25 +24,17 @@ from tiancode.core.permissions import ApprovalResponse, PermissionDecision, Perm
 from rich.text import Text
 
 SLASH_COMMAND_HINTS: Tuple[Tuple[str, str], ...] = (
-    ("/mode", "切换安全权限模式 (ask / auto / read_only)"),
-    ("/config", "查看或热更新配置 (/config show, /config set ...)"),
-    ("/doctor", "一键体检环境配置、Git 与 pytest"),
-    ("/context", "查看上下文窗口字符占比"),
-    ("/compact", "智能折叠上下文历史，释放 Token 预算"),
-    ("/cost", "查看当前会话 Token 消耗与费用账单"),
-    ("/usage", "Token 账单快捷别名 (/cost)"),
-    ("/map", "生成项目 AST 代码拓扑全景图"),
-    ("/plan", "查看任务计划执行看板"),
-    ("/skills", "查看已加载扩展技能"),
-    ("/sessions", "列出磁盘持久化的历史会话"),
-    ("/switch", "切换并恢复指定会话 (/switch <id>)"),
-    ("/diff", "查看当前未提交代码变更补丁"),
-    ("/undo", "无损回滚本轮修改"),
-    ("/commit", "自动生成 Conventional Commit 并提交"),
-    ("/eval", "运行本地自动化基准评测"),
-    ("/clear", "清空记忆、快照与任务状态"),
-    ("/status", "查看修改文件与消耗状态"),
-    ("/help", "显示斜杠命令帮助卡片"),
+    ("/mode", "切换安全权限模式 (ask / auto / read_only)"), ("/cd", "切换当前工作区项目目录 (/cd <path>)"),
+    ("/memory", "查看或清空跨会话认知记忆"), ("/remember", "固化一条长期事实/规范进语义记忆"),
+    ("/config", "查看或热更新配置"), ("/doctor", "一键体检环境配置、Git 与 pytest"),
+    ("/context", "查看上下文窗口字符占比"), ("/compact", "智能折叠上下文历史释放 Token 预算"),
+    ("/cost", "查看当前会话 Token 消耗与费用账单"), ("/usage", "Token 账单快捷别名 (/cost)"),
+    ("/map", "生成项目 AST 代码拓扑全景图"), ("/plan", "查看任务计划执行看板"),
+    ("/skills", "查看已加载扩展技能"), ("/sessions", "列出磁盘持久化的历史会话"),
+    ("/switch", "切换并恢复指定会话 (/switch <id>)"), ("/diff", "查看当前未提交代码变更补丁"),
+    ("/undo", "无损回滚本轮修改"), ("/commit", "自动生成 Conventional Commit 并提交"),
+    ("/eval", "运行本地自动化基准评测"), ("/clear", "清空记忆、快照与任务状态"),
+    ("/status", "查看修改文件与消耗状态"), ("/help", "显示斜杠命令帮助卡片"),
 )
 
 _APPROVAL_BUTTONS: Tuple[Tuple[str, str, str], ...] = (
@@ -107,10 +101,7 @@ class _ApprovalBarController:
                 return _handle_mouse
 
             fragments.append((style, label, _make_handler(idx, action)))
-        fragments.append((
-            "#64748b",
-            "\n  🖱 支持鼠标直接点击按钮 · ◀/▶ 或 Tab 切换 · Enter 确认 · e 输入纠正指令",
-        ))
+        fragments.append(("#64748b", "\n  🖱 支持鼠标直接点击按钮 · ◀/▶ 或 Tab 切换 · Enter 确认 · e 输入纠正指令"))
         return FormattedText(fragments)
 
 
@@ -249,21 +240,34 @@ def can_use_interactive_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty() and getattr(builtins.input, "__module__", "") == "builtins"
 
 
-def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> None:
-    """Launch the interactive terminal REPL with smart fallback for test runners."""
-    engine.active_session_id = session_id
+def _print_memory_wakeup_hint(engine: TianCodeEngine) -> None:
+    """Display concise hint if previous active workspace exists outside current work_dir."""
+    store = getattr(engine, "memory_store", None)
+    workspaces = getattr(store, "workspaces", None)
+    if not isinstance(workspaces, dict) or not workspaces:
+        return
+    curr = str(engine.settings.work_dir.resolve()) if hasattr(engine.settings, "work_dir") else ""
+    recent = sorted(workspaces.values(), key=lambda w: getattr(w, "last_active_at", ""), reverse=True)
+    others = [w for w in recent if getattr(w, "path", "") != curr]
+    if others:
+        w = others[0]
+        TerminalFormatter.print_info(f"🧠 记忆已唤醒: 最近活跃项目 [{w.name}] ({w.path}) · 可直接聊起或 /cd 切换")
+
+
+def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None:
+    """Launch interactive REPL with isolated session ID so prior history is never overwritten."""
+    resolved_id = session_id or f"repl_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    engine.active_session_id = resolved_id
     model, mode, auto_heal, timeout = _extract_engine_meta(engine)
     TerminalFormatter.print_banner(
         work_dir=str(engine.settings.work_dir), model=model or "deepseek-chat",
         permission_mode=mode, auto_heal=auto_heal, timeout_seconds=timeout,
     )
+    _print_memory_wakeup_hint(engine)
     cmd_handler = SlashCommandHandler(engine)
     repl_kb = KeyBindings()
     repl_kb.add("s-tab")(lambda event: (_cycle_engine_permission_mode(engine), event.app.invalidate()))
-    ptk_session = (
-        PromptSession(completer=_SlashCommandCompleter(), style=_PTK_STYLE, key_bindings=repl_kb, complete_while_typing=True, mouse_support=True)
-        if can_use_interactive_tty() else None
-    )
+    ptk_session = PromptSession(completer=_SlashCommandCompleter(), style=_PTK_STYLE, key_bindings=repl_kb, complete_while_typing=True, mouse_support=True) if can_use_interactive_tty() else None
 
     while True:
         try:
@@ -285,10 +289,7 @@ def start_repl(engine: TianCodeEngine, session_id: str = "tiancode_repl") -> Non
             continue
 
         try:
-            current_thread = getattr(engine, "active_session_id", session_id)
-            TerminalFormatter.render_task_stream(
-                engine.stream_task(user_input, thread_id=current_thread),
-                use_spinner=True,
-            )
+            current_thread = getattr(engine, "active_session_id", resolved_id)
+            TerminalFormatter.render_task_stream(engine.stream_task(user_input, thread_id=current_thread), use_spinner=True)
         except Exception as exc:
             TerminalFormatter.print_warning(f"任务执行异常: {str(exc)}")

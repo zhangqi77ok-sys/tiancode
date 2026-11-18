@@ -31,6 +31,7 @@ class TianCodeEngine:
         permission_prompt_fn: Optional[ApprovalPromptFn] = None,
     ) -> None:
         self.settings = settings
+        self._custom_snapshot_store = snapshot_store is not None
         initial_mode = (
             PermissionMode.from_value(permission_mode)
             if permission_mode is not None
@@ -39,19 +40,17 @@ class TianCodeEngine:
         self.permission_guard = PermissionGuard(mode=initial_mode, prompt_fn=permission_prompt_fn)
 
         # Adaptive store selection: Use GitSnapshotStore if inside git repo, else fallback to InMemorySnapshotStore
-        if snapshot_store is not None:
-            self.snapshot_store = snapshot_store
-        else:
-            git_store = GitSnapshotStore(work_dir=settings.work_dir)
-            self.snapshot_store = git_store if git_store.is_git_repo() else InMemorySnapshotStore(work_dir=settings.work_dir)
+        self.snapshot_store = snapshot_store if snapshot_store is not None else self._select_snapshot_store(settings.work_dir)
 
-        # 2. Session Store, Usage Tracker & Subagent Runner
+        # 2. Session Store, Cognitive Memory, Usage Tracker & Subagent Runner
+        from tiancode.core.cognitive_memory import CognitiveMemoryStore
         from tiancode.core.planner import TaskPlanner
         from tiancode.core.session_store import SessionStore
         from tiancode.core.subagent import SubagentRunner
         from tiancode.core.usage_meter import TokenUsageTracker
 
         self.session_store = SessionStore()
+        self.memory_store = CognitiveMemoryStore()
         self.usage_tracker = TokenUsageTracker()
         self.active_session_id: str = "tiancode_repl"
 
@@ -74,6 +73,26 @@ class TianCodeEngine:
         # Track config file modification time for JIT dynamic sync
         self._last_config_mtime: float = 0.0
         self._init_config_mtime()
+
+    def _select_snapshot_store(self, work_dir: Path) -> SnapshotStore:
+        git_store = GitSnapshotStore(work_dir=work_dir)
+        return git_store if git_store.is_git_repo() else InMemorySnapshotStore(work_dir=work_dir)
+
+    def switch_workspace(self, target_dir: Union[Path, str]) -> Path:
+        """Validate and atomically re-anchor sandbox, snapshot store, subagent, skills, and tools."""
+        target_path = Path(target_dir).expanduser().resolve()
+        if not target_path.exists() or not target_path.is_dir():
+            raise ValueError(f"目标工作区目录不存在或不是有效目录: {target_dir}")
+
+        self.settings.work_dir = target_path
+        if not getattr(self, "_custom_snapshot_store", False):
+            self.snapshot_store = self._select_snapshot_store(target_path)
+        self.subagent_runner.work_dir = target_path
+        self.skill_loader.workspace_dir = target_path
+        self.reload_llm()
+        if hasattr(self, "memory_store"):
+            self.memory_store.touch_workspace(target_path, session_id=self.active_session_id)
+        return target_path
 
     def _get_config_path(self, config_path: Optional[Path] = None) -> Path:
         from tiancode.config.settings import get_default_config_path
@@ -167,11 +186,21 @@ class TianCodeEngine:
                 max_context_chars=max_chars,
             )
             skills_catalog = self.skill_loader.format_prompt_catalog()
+            memory_context = (
+                self.memory_store.format_priming_context(self.settings.work_dir, max_chars=1200)
+                if hasattr(self, "memory_store")
+                else ""
+            )
             plan_context = ""
             if self.planner.active_plan and not self.planner.active_plan.is_finished:
                 plan_context = "\n" + self.planner.format_worker_prompt_context(self.planner.active_plan)
 
-            full_prompt = TIANCODE_SYSTEM_PROMPT + (f"\n{skills_catalog}" if skills_catalog else "") + plan_context
+            full_prompt = (
+                TIANCODE_SYSTEM_PROMPT
+                + (f"\n{skills_catalog}" if skills_catalog else "")
+                + (f"\n{memory_context}" if memory_context else "")
+                + plan_context
+            )
             sys_msg = SystemMessage(content=full_prompt)
             response = self.llm_with_tools.invoke([sys_msg] + trimmed)
             if hasattr(self, "usage_tracker") and getattr(response, "usage_metadata", None):
@@ -184,7 +213,7 @@ class TianCodeEngine:
         self.tool_dispatcher = SafeToolDispatcher(self.tools, permission_guard=self.permission_guard)
         builder = StateGraph(MessagesState)
         builder.add_node("brain", brain_node)
-        builder.add_node("tools", self.tool_dispatcher)
+        builder.add_node("tools", lambda s: self.tool_dispatcher(s))
 
         builder.add_edge(START, "brain")
         builder.add_conditional_edges("brain", tools_condition)
@@ -219,6 +248,19 @@ class TianCodeEngine:
                 estimated_cost=estimated_cost,
                 usage=usage_dict,
             )
+            if all_messages and hasattr(self, "memory_store"):
+                modified = (
+                    list(self.snapshot_store.get_all_snapshots().keys())
+                    if hasattr(self.snapshot_store, "get_all_snapshots")
+                    else []
+                )
+                self.memory_store.consolidate_session(
+                    session_id=thread_id,
+                    work_dir=self.settings.work_dir,
+                    messages=all_messages,
+                    plan=self.planner.active_plan,
+                    modified_files=modified,
+                )
         except Exception as exc:
             import logging
             logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
