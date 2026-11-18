@@ -136,20 +136,8 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         from tiancode.core.repo_map import generate_repo_map
         return generate_repo_map(work_dir)
 
-    @tool
-    def read_file(filename: str) -> str:
-        """读取文件源码内容。"""
-        try:
-            target = _resolve(filename)
-        except PermissionError as err:
-            return f"❌ {str(err)}"
-
-        if not target.exists():
-            parent = target.parent if target.parent.exists() else work_dir
-            nearby = [f for f in os.listdir(parent) if f.endswith(".py")]
-            return f"❌ 文件 '{filename}' 不存在！在同目录下发现的文件有：{nearby}。请核实文件名！"
-        with open(target, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
+    from tiancode.core.search import create_search_tools
+    search_tools = create_search_tools(work_dir, IGNORED_DIR_NAMES)
 
     @tool
     def write_file(filename: str, content: str) -> str:
@@ -244,4 +232,4 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return "⏪ 已完成工作区安全回滚：\n" + "\n".join(f"  • {item}" for item in reverted)
         return "ℹ️ 当前没有可回滚的修改。"
 
-    return [list_files, get_repo_map, read_file, write_file, edit_file, rollback_turn]
+    return [list_files, get_repo_map, *search_tools, write_file, edit_file, rollback_turn]

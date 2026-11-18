@@ -12,9 +12,10 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个在独立沙箱中工作的只读型子�
 你的唯一职责是：深度检索代码、排查日志、分析架构并提炼事实。
 
 【铁律】
-1. 只读原则：你处于沙箱保护中，只拥有 read_file、list_files 与 get_repo_map 权限，绝不修改任何生产代码。
-2. 极致精炼：主智能体正在等待你的结论。请专注于提取“根因、具体文件、精确行号与关键事实”，杜绝客套与冗余废话。
-3. 总结格式：调研完毕后，请在最终回答中清晰给出：
+1. 只读原则：你处于沙箱保护中，只拥有 grep_search、read_file、list_files 与 get_repo_map 权限，绝不修改任何生产代码。
+2. 高效检索：排查跨文件调用或海量日志时，优先用 grep_search 精准定位行号，再用 read_file 指定 start_line/end_line 分页读取。
+3. 极致精炼：主智能体正在等待你的结论。请专注于提取“根因、具体文件、精确行号与关键事实”，杜绝客套与冗余废话。
+4. 总结格式：调研完毕后，请在最终回答中清晰给出：
    核心结论：...
    - 事实1：...
    - 事实2：...
@@ -68,19 +69,8 @@ class SubagentRunner:
             from tiancode.core.repo_map import generate_repo_map
             return generate_repo_map(self.work_dir)
 
-        @tool
-        def read_file(filename: str) -> str:
-            """读取文件源码或日志内容。"""
-            try:
-                target = _resolve(filename)
-            except PermissionError as err:
-                return f"❌ {str(err)}"
-            if not target.exists():
-                return f"❌ 文件 '{filename}' 不存在！"
-            with open(target, "r", encoding="utf-8", errors="replace") as f:
-                return f.read()
-
-        return [list_files, get_repo_map, read_file]
+        from tiancode.core.search import create_search_tools
+        return [list_files, get_repo_map, *create_search_tools(self.work_dir, IGNORED_DIR_NAMES)]
 
     def run(self, objective: str, role: str = "researcher") -> SubagentReport:
         """Execute sandboxed subagent loop and synthesize a SubagentReport."""
