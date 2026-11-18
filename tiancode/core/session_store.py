@@ -212,6 +212,37 @@ class SessionStore:
         sessions = self.list_sessions()
         return sessions[0].session_id if sessions else None
 
+    def search_history(self, query: str, *, max_sessions: int = 12, max_hits: int = 5) -> List[Dict[str, str]]:
+        """Scan persisted session transcripts using CJK bigrams & ASCII terms for associative recall."""
+        from tiancode.core.cognitive_memory import tokenize_search_terms
+
+        terms = tokenize_search_terms(query)
+        if not terms:
+            return []
+        scored: List[tuple[int, Dict[str, str]]] = []
+        for meta in self.list_sessions()[:max_sessions]:
+            sess = self.load(meta.session_id)
+            if not sess:
+                continue
+            for raw_msg in reversed(sess.messages):
+                data = raw_msg.get("data", {}) if isinstance(raw_msg.get("data"), dict) else raw_msg
+                content = str(data.get("content", "")).strip()
+                if not content:
+                    continue
+                low = f"{meta.work_dir} {content}".lower()
+                hit_count = sum(1 for t in terms if t in low)
+                if hit_count > 0:
+                    scored.append((hit_count, {
+                        "session_id": meta.session_id,
+                        "work_dir": meta.work_dir,
+                        "project": Path(meta.work_dir).name or meta.work_dir,
+                        "updated_at": meta.updated_at,
+                        "snippet": content[:200].replace("\n", " "),
+                    }))
+                    break
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item for _, item in scored[:max_hits]]
+
     def delete(self, session_id: str) -> bool:
         """Remove a session file from disk."""
         try:
