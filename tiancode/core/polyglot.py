@@ -1,62 +1,91 @@
 """Polyglot project tech stack and test runner auto-detection."""
 
+from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from typing import Optional
 
 
-def detect_project_test_command(work_dir: Path) -> Optional[str]:
-    """Inspect directory markers and return the standard test command for the project.
+@dataclass(frozen=True)
+class ProjectProfile:
+    """Detected project language stack, package/build manager, and test command."""
 
-    Priority:
-    1. Java Maven: pom.xml -> mvn test
-    2. Java/Kotlin Gradle: build.gradle / build.gradle.kts -> gradlew test
-    3. Node / Frontend: package.json -> pnpm/yarn/npm test
-    4. Golang: go.mod -> go test ./...
-    5. Rust: Cargo.toml -> cargo test
-    6. Python: pyproject.toml, pytest.ini, setup.py, tests/ -> pytest
-    7. C/C++: CMakeLists.txt, Makefile -> ctest / make test
-    """
+    language: str
+    package_manager: str
+    test_command: Optional[str]
+
+
+def _has_real_node_test_script(pkg_json: Path) -> bool:
+    """Return True if package.json defines a non-stub scripts.test entry."""
+    try:
+        data = json.loads(pkg_json.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return False
+    scripts = data.get("scripts")
+    if not isinstance(scripts, dict):
+        return False
+    test_script = scripts.get("test")
+    if not isinstance(test_script, str) or not test_script.strip():
+        return False
+    return "no test specified" not in test_script.lower()
+
+
+def _detect_node_profile(work_dir: Path) -> ProjectProfile:
+    """Detect JS/TS package manager and test command if test script exists."""
+    has_test = _has_real_node_test_script(work_dir / "package.json")
+    if (work_dir / "bun.lockb").is_file() or (work_dir / "bun.lock").is_file():
+        mgr, cmd = "bun", "bun test"
+    elif (work_dir / "pnpm-lock.yaml").is_file():
+        mgr, cmd = "pnpm", "pnpm test"
+    elif (work_dir / "yarn.lock").is_file():
+        mgr, cmd = "yarn", "yarn test"
+    else:
+        mgr, cmd = "npm", "npm test"
+    return ProjectProfile(
+        language="JavaScript/TypeScript",
+        package_manager=mgr,
+        test_command=cmd if has_test else None,
+    )
+
+
+def detect_project_profile(work_dir: Path) -> ProjectProfile:
+    """Inspect workspace markers and return detected ProjectProfile."""
     if not work_dir.exists():
-        return None
+        return ProjectProfile("Unknown", "none", None)
 
-    # 1. Java Maven
     if (work_dir / "pom.xml").is_file():
-        return "mvn test"
+        mvnw = work_dir / ("mvnw.cmd" if os.name == "nt" else "mvnw")
+        cmd = f"{mvnw.name} test" if mvnw.is_file() else "mvn test"
+        return ProjectProfile("Java", "mvnw" if mvnw.is_file() else "maven", cmd)
 
-    # 2. Java / Android Gradle
     if (work_dir / "build.gradle").is_file() or (work_dir / "build.gradle.kts").is_file():
         gradlew = work_dir / ("gradlew.bat" if os.name == "nt" else "gradlew")
-        if gradlew.exists():
-            return f"{gradlew.name} test"
-        return "gradle test"
+        cmd = f"{gradlew.name} test" if gradlew.exists() else "gradle test"
+        return ProjectProfile("Java/Kotlin", "gradlew" if gradlew.exists() else "gradle", cmd)
 
-    # 3. Node.js / Frontend
     if (work_dir / "package.json").is_file():
-        if (work_dir / "pnpm-lock.yaml").is_file():
-            return "pnpm test"
-        if (work_dir / "yarn.lock").is_file():
-            return "yarn test"
-        return "npm test"
+        return _detect_node_profile(work_dir)
 
-    # 4. Golang
     if (work_dir / "go.mod").is_file():
-        return "go test ./..."
+        return ProjectProfile("Go", "go", "go test ./...")
 
-    # 5. Rust
     if (work_dir / "Cargo.toml").is_file():
-        return "cargo test"
+        return ProjectProfile("Rust", "cargo", "cargo test")
 
-    # 6. Python
-    if any((work_dir / marker).exists() for marker in ("pytest.ini", "pyproject.toml", "setup.py", "tests")):
-        return "pytest"
-    if any(work_dir.glob("*.py")):
-        return "pytest"
+    py_markers = ("pytest.ini", "pyproject.toml", "setup.py", "tests")
+    if any((work_dir / m).exists() for m in py_markers) or any(work_dir.glob("*.py")):
+        mgr = "uv" if (work_dir / "uv.lock").is_file() else ("poetry" if (work_dir / "poetry.lock").is_file() else "pip/pytest")
+        return ProjectProfile("Python", mgr, "pytest")
 
-    # 7. C/C++
     if (work_dir / "CMakeLists.txt").is_file():
-        return "ctest"
+        return ProjectProfile("C/C++", "cmake", "ctest")
     if (work_dir / "Makefile").is_file():
-        return "make test"
+        return ProjectProfile("C/C++", "make", "make test")
 
-    return None
+    return ProjectProfile("Unknown", "none", None)
+
+
+def detect_project_test_command(work_dir: Path) -> Optional[str]:
+    """Return the standard automated test command for the detected project stack."""
+    return detect_project_profile(work_dir).test_command
