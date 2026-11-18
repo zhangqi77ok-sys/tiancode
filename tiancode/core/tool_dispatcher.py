@@ -6,6 +6,8 @@ from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 
+from tiancode.core.permissions import PermissionGuard
+
 READ_ONLY_TOOLS: FrozenSet[str] = frozenset({
     "grep_search",
     "read_file",
@@ -58,10 +60,12 @@ class SafeToolDispatcher:
         *,
         max_loop_repeats: int = DEFAULT_MAX_LOOP_REPEATS,
         max_workers: int = DEFAULT_MAX_WORKERS,
+        permission_guard: Optional[PermissionGuard] = None,
     ) -> None:
         self._tool_map: Dict[str, BaseTool] = {t.name: t for t in tools}
         self._loop_detector = DoomLoopDetector(max_repeats=max_loop_repeats)
         self._max_workers = max(1, max_workers)
+        self._permission_guard = permission_guard
 
     def reset_loop_guard(self) -> None:
         """Reset underlying Doom-Loop detection counters."""
@@ -85,17 +89,27 @@ class SafeToolDispatcher:
         )
         return ToolMessage(content=content, tool_call_id=call_id, name=name)
 
+    @staticmethod
+    def _build_permission_denied_msg(tc: Dict[str, Any], reason: str) -> ToolMessage:
+        name = str(tc.get("name", "unknown"))
+        call_id = str(tc.get("id", ""))
+        return ToolMessage(content=reason, tool_call_id=call_id, name=name)
+
+    @staticmethod
+    def _parse_args(raw_args: Any) -> Any:
+        if raw_args is None:
+            return {}
+        if isinstance(raw_args, str):
+            try:
+                return json.loads(raw_args)
+            except Exception:
+                return raw_args
+        return raw_args
+
     def _execute_single(self, tc: Dict[str, Any]) -> ToolMessage:
         name = str(tc.get("name", "unknown"))
         call_id = str(tc.get("id", ""))
-        args = tc.get("args")
-        if args is None:
-            args = {}
-        elif isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except Exception:
-                pass
+        args = self._parse_args(tc.get("args"))
 
         tool_obj = self._tool_map.get(name)
         if tool_obj is None:
@@ -120,14 +134,19 @@ class SafeToolDispatcher:
         results_by_idx: Dict[int, ToolMessage] = {}
         allowed: List[Tuple[int, Dict[str, Any]]] = []
 
-        # Pre-check consecutive repetition sequentially on coordinator thread (race-free)
+        # Pre-check loop breaker and permissions sequentially on coordinator thread (race-free)
         for idx, tc in enumerate(tool_calls):
             name = str(tc.get("name", "unknown"))
-            args = tc.get("args", {})
+            args = self._parse_args(tc.get("args"))
             if self._loop_detector.should_block(name, args):
                 results_by_idx[idx] = self._build_loop_breaker_msg(tc)
-            else:
-                allowed.append((idx, tc))
+                continue
+            if self._permission_guard is not None:
+                check_res = self._permission_guard.check(name, args)
+                if not check_res.allowed:
+                    results_by_idx[idx] = self._build_permission_denied_msg(tc, check_res.reason)
+                    continue
+            allowed.append((idx, tc))
 
         if allowed:
             is_pure_read_only = len(allowed) > 1 and all(

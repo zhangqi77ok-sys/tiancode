@@ -1,7 +1,7 @@
 """Core LangGraph-powered orchestration engine for TianCode."""
 
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional, Union
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -11,6 +11,7 @@ from langgraph.prebuilt import tools_condition
 from tiancode.config.settings import Settings
 from tiancode.core.git_store import GitSnapshotStore
 from tiancode.core.history import InMemorySnapshotStore
+from tiancode.core.permissions import ApprovalPromptFn, PermissionGuard, PermissionMode
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
 from tiancode.core.tool_dispatcher import SafeToolDispatcher
@@ -26,8 +27,16 @@ class TianCodeEngine:
         self,
         settings: Settings,
         snapshot_store: Optional[SnapshotStore] = None,
+        permission_mode: Optional[Union[PermissionMode, str]] = None,
+        permission_prompt_fn: Optional[ApprovalPromptFn] = None,
     ) -> None:
         self.settings = settings
+        initial_mode = (
+            PermissionMode.from_value(permission_mode)
+            if permission_mode is not None
+            else (PermissionMode.ASK if permission_prompt_fn is not None else PermissionMode.AUTO)
+        )
+        self.permission_guard = PermissionGuard(mode=initial_mode, prompt_fn=permission_prompt_fn)
 
         # Adaptive store selection: Use GitSnapshotStore if inside git repo, else fallback to InMemorySnapshotStore
         if snapshot_store is not None:
@@ -172,7 +181,7 @@ class TianCodeEngine:
                 )
             return {"messages": [response]}
 
-        self.tool_dispatcher = SafeToolDispatcher(self.tools)
+        self.tool_dispatcher = SafeToolDispatcher(self.tools, permission_guard=self.permission_guard)
         builder = StateGraph(MessagesState)
         builder.add_node("brain", brain_node)
         builder.add_node("tools", self.tool_dispatcher)
@@ -299,15 +308,25 @@ class TianCodeEngine:
                 TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
                 return False
         self.active_session_id = session_id
+        self.permission_guard.clear_session_approvals()
         if hasattr(self, "tool_dispatcher"):
             self.tool_dispatcher.reset_loop_guard()
         return True
+
+    def set_permission_mode(
+        self,
+        mode: Union[PermissionMode, str],
+        prompt_fn: Optional[ApprovalPromptFn] = None,
+    ) -> PermissionMode:
+        """Dynamically switch execution permission mode (ask / auto / read_only)."""
+        return self.permission_guard.set_mode(mode, prompt_fn=prompt_fn)
 
     def reset_session(self) -> None:
         """Clear conversation memory, recorded file snapshots, active plan, and usage metrics."""
         self.memory.storage.clear()
         self.snapshot_store.clear()
         self.planner.active_plan = None
+        self.permission_guard.clear_session_approvals()
         if hasattr(self, "usage_tracker"):
             self.usage_tracker.reset()
         if hasattr(self, "tool_dispatcher"):
