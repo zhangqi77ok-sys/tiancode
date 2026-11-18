@@ -62,9 +62,11 @@ class TianCodeEngine:
             model_name=settings.model,
         )
 
-        # 3. Dynamic Skills Extension
+        # 3. Dynamic Skills & Project Rules Extension
+        from tiancode.core.project_rules import ProjectRulesLoader
         from tiancode.skills.loader import SkillLoader
         self.skill_loader = SkillLoader(workspace_dir=settings.work_dir)
+        self.rules_loader = ProjectRulesLoader()
 
         # 4. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
@@ -188,6 +190,11 @@ class TianCodeEngine:
                 max_context_chars=max_chars,
             )
             skills_catalog = self.skill_loader.format_prompt_catalog()
+            rules_context = (
+                self.rules_loader.format_prompt_rules(self.settings.work_dir)
+                if hasattr(self, "rules_loader")
+                else ""
+            )
             memory_context = (
                 self.memory_store.format_priming_context(self.settings.work_dir, max_chars=1200)
                 if hasattr(self, "memory_store")
@@ -199,6 +206,7 @@ class TianCodeEngine:
 
             full_prompt = (
                 TIANCODE_SYSTEM_PROMPT
+                + (f"\n{rules_context}" if rules_context else "")
                 + (f"\n{skills_catalog}" if skills_catalog else "")
                 + (f"\n{memory_context}" if memory_context else "")
                 + plan_context
