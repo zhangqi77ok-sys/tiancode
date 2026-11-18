@@ -71,6 +71,7 @@ class TianCodeEngine:
 
         # 4. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
+        self.mcp_manager = None
         self.reload_llm()
 
         # Track config file modification time for JIT dynamic sync
@@ -111,18 +112,19 @@ class TianCodeEngine:
 
     def _register_tools(self) -> None:
         """Rebuild all engine tool closures from current settings."""
+        from tiancode.tools.mcp_ops import sync_engine_mcp
         from tiancode.tools.memory_ops import create_memory_tools
         from tiancode.tools.plan_ops import create_plan_tools
         from tiancode.tools.subagent_ops import create_subagent_tools
 
-        self.tools = []
-        self.tools.extend(
-            create_file_tools(self.snapshot_store, self.settings.work_dir, auto_heal=self.settings.auto_heal)
-        )
-        self.tools.extend(create_execution_tools(self.settings.work_dir, self.settings.timeout_seconds))
-        self.tools.extend(create_plan_tools(self.planner))
-        self.tools.extend(create_subagent_tools(self.subagent_runner))
-        self.tools.extend(create_memory_tools(self))
+        self.tools = [
+            *create_file_tools(self.snapshot_store, self.settings.work_dir, auto_heal=self.settings.auto_heal),
+            *create_execution_tools(self.settings.work_dir, self.settings.timeout_seconds),
+            *create_plan_tools(self.planner),
+            *create_subagent_tools(self.subagent_runner),
+            *create_memory_tools(self),
+            *sync_engine_mcp(self),
+        ]
 
     def sync_config_if_changed(self, config_path: Optional[Path] = None) -> bool:
         """Inspect config file on disk; if modified, hot-reload settings and LLM immediately."""
@@ -185,22 +187,10 @@ class TianCodeEngine:
             max_chars = getattr(self.settings, "max_context_chars", 40000)
             if not isinstance(max_chars, int):
                 max_chars = 40000
-            trimmed = prune_messages(
-                state["messages"],
-                max_retained=self.settings.max_history_messages,
-                max_context_chars=max_chars,
-            )
+            trimmed = prune_messages(state["messages"], max_retained=self.settings.max_history_messages, max_context_chars=max_chars)
             skills_catalog = self.skill_loader.format_prompt_catalog()
-            rules_context = (
-                self.rules_loader.format_prompt_rules(self.settings.work_dir)
-                if hasattr(self, "rules_loader")
-                else ""
-            )
-            memory_context = (
-                self.memory_store.format_priming_context(self.settings.work_dir, max_chars=1200)
-                if hasattr(self, "memory_store")
-                else ""
-            )
+            rules_context = self.rules_loader.format_prompt_rules(self.settings.work_dir) if hasattr(self, "rules_loader") else ""
+            memory_context = self.memory_store.format_priming_context(self.settings.work_dir, max_chars=1200) if hasattr(self, "memory_store") else ""
             plan_context = ""
             if self.planner.active_plan and not self.planner.active_plan.is_finished:
                 plan_context = "\n" + self.planner.format_worker_prompt_context(self.planner.active_plan)
@@ -215,10 +205,7 @@ class TianCodeEngine:
             sys_msg = SystemMessage(content=full_prompt)
             response = self.llm_with_tools.invoke([sys_msg] + trimmed)
             if hasattr(self, "usage_tracker") and getattr(response, "usage_metadata", None):
-                self.usage_tracker.record_turn(
-                    model=self.settings.model,
-                    usage_metadata=response.usage_metadata,
-                )
+                self.usage_tracker.record_turn(model=self.settings.model, usage_metadata=response.usage_metadata)
             return {"messages": [response]}
 
         self.tool_dispatcher = SafeToolDispatcher(self.tools, permission_guard=self.permission_guard)
@@ -284,6 +271,11 @@ class TianCodeEngine:
             self.usage_tracker.reset()
         if hasattr(self, "tool_dispatcher"):
             self.tool_dispatcher.reset_loop_guard()
+
+    def close(self) -> None:
+        """Release external transports and managed child processes."""
+        from tiancode.tools.mcp_ops import close_engine_mcp
+        close_engine_mcp(self)
 
     def generate_commit_message(self, task_description: str, diff_text: str) -> str:
         """Use LLM to generate a conventional commit message based on task and diff."""
