@@ -134,7 +134,14 @@ class TianCodeEngine:
 
     def _build_graph(self):
         def brain_node(state: MessagesState) -> Dict[str, Any]:
-            trimmed = prune_messages(state["messages"], max_retained=self.settings.max_history_messages)
+            max_chars = getattr(self.settings, "max_context_chars", 40000)
+            if not isinstance(max_chars, int):
+                max_chars = 40000
+            trimmed = prune_messages(
+                state["messages"],
+                max_retained=self.settings.max_history_messages,
+                max_context_chars=max_chars,
+            )
             skills_catalog = self.skill_loader.format_prompt_catalog()
             plan_context = ""
             if self.planner.active_plan and not self.planner.active_plan.is_finished:
@@ -161,75 +168,91 @@ class TianCodeEngine:
 
         return builder.compile(checkpointer=self.memory)
 
+    def _persist_session_state(self, thread_id: str, config: Dict[str, Any]) -> None:
+        """Persist graph messages, active plan, snapshots, and usage metrics safely."""
+        try:
+            state = self.graph.get_state(config)
+            all_messages = state.values.get("messages", [])
+            exported_snapshots = (
+                self.snapshot_store.export_snapshots()
+                if hasattr(self.snapshot_store, "export_snapshots")
+                else []
+            )
+            if hasattr(self, "usage_tracker"):
+                tokens, cost = self.usage_tracker.get_session_stats()
+                total_tokens = tokens.total_tokens
+                estimated_cost = cost.total_cost
+                usage_dict = self.usage_tracker.to_dict()
+            else:
+                total_tokens, estimated_cost, usage_dict = 0, 0.0, None
+            self.session_store.save(
+                session_id=thread_id,
+                work_dir=str(self.settings.work_dir),
+                messages=all_messages,
+                plan=self.planner.active_plan,
+                snapshots=exported_snapshots,
+                total_tokens=total_tokens,
+                estimated_cost=estimated_cost,
+                usage=usage_dict,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
+
+    def _iter_message_events(self, chunk: Any, meta: Any, seen_tools: set) -> Generator[Dict[str, Any], None, None]:
+        """Translate a LangGraph stream tuple into structured token/tool events."""
+        node = meta.get("langgraph_node") if isinstance(meta, dict) else None
+        if node == "brain":
+            if getattr(chunk, "content", None):
+                yield {"type": "token", "content": chunk.content}
+            tool_chunks = getattr(chunk, "tool_call_chunks", None)
+            if tool_chunks:
+                for tc in tool_chunks:
+                    name = tc.get("name")
+                    call_id = tc.get("id") or tc.get("index")
+                    if name and call_id not in seen_tools:
+                        seen_tools.add(call_id)
+                        yield {"type": "tool_start", "name": name, "args": tc.get("args", "")}
+            elif getattr(chunk, "tool_calls", None):
+                for tc in chunk.tool_calls:
+                    call_id = tc.get("id") or tc.get("name")
+                    if call_id not in seen_tools:
+                        seen_tools.add(call_id)
+                        yield {"type": "tool_start", "name": tc.get("name"), "args": tc.get("args", {})}
+        elif node == "tools":
+            yield {"type": "tool_end", "name": getattr(chunk, "name", "tool"), "content": getattr(chunk, "content", "")}
+
     def stream_task(
         self, prompt: str, thread_id: str = "tiancode_default"
     ) -> Generator[Dict[str, Any], None, None]:
-        """Stream real-time tokens and tool lifecycle events from the underlying graph."""
+        """Stream real-time tokens, tool lifecycle events, and turn usage telemetry."""
         if self.sync_config_if_changed():
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")
 
         config = {"configurable": {"thread_id": thread_id}}
-        seen_tools = set()
+        seen_tools: set = set()
+        before_tokens = self.usage_tracker.get_session_stats()[0].total_tokens if hasattr(self, "usage_tracker") else 0
 
         try:
-            for item in self.graph.stream(
-                {"messages": [HumanMessage(content=prompt)]},
-                config=config,
-                stream_mode="messages",
-            ):
+            for item in self.graph.stream({"messages": [HumanMessage(content=prompt)]}, config=config, stream_mode="messages"):
                 if isinstance(item, tuple) and len(item) == 2:
-                    chunk, meta = item
-                    node = meta.get("langgraph_node") if isinstance(meta, dict) else None
-
-                    if node == "brain":
-                        if getattr(chunk, "content", None):
-                            yield {"type": "token", "content": chunk.content}
-
-                        if getattr(chunk, "tool_call_chunks", None):
-                            for tc in chunk.tool_call_chunks:
-                                name = tc.get("name")
-                                call_id = tc.get("id") or tc.get("index")
-                                if name and call_id not in seen_tools:
-                                    seen_tools.add(call_id)
-                                    yield {"type": "tool_start", "name": name, "args": tc.get("args", "")}
-                        elif getattr(chunk, "tool_calls", None):
-                            for tc in chunk.tool_calls:
-                                call_id = tc.get("id") or tc.get("name")
-                                if call_id not in seen_tools:
-                                    seen_tools.add(call_id)
-                                    yield {"type": "tool_start", "name": tc.get("name"), "args": tc.get("args", {})}
-
-                    elif node == "tools":
-                        name = getattr(chunk, "name", "tool")
-                        content = getattr(chunk, "content", "")
-                        yield {"type": "tool_end", "name": name, "content": content}
-
+                    yield from self._iter_message_events(item[0], item[1], seen_tools)
                 elif isinstance(item, dict):
                     yield item
-        finally:
-            try:
-                state = self.graph.get_state(config)
-                all_messages = state.values.get("messages", [])
-                exported_snapshots = (
-                    self.snapshot_store.export_snapshots()
-                    if hasattr(self.snapshot_store, "export_snapshots")
-                    else []
-                )
+
+            if hasattr(self, "usage_tracker"):
                 tokens, cost = self.usage_tracker.get_session_stats()
-                self.session_store.save(
-                    session_id=thread_id,
-                    work_dir=str(self.settings.work_dir),
-                    messages=all_messages,
-                    plan=self.planner.active_plan,
-                    snapshots=exported_snapshots,
-                    total_tokens=tokens.total_tokens,
-                    estimated_cost=cost.total_cost,
-                    usage=self.usage_tracker.to_dict(),
-                )
-            except Exception as exc:
-                import logging
-                logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
+                turn_tokens = max(0, tokens.total_tokens - before_tokens)
+                if turn_tokens > 0:
+                    yield {
+                        "type": "usage_summary",
+                        "turn_tokens": turn_tokens,
+                        "session_tokens": tokens.total_tokens,
+                        "session_cost": cost.total_cost,
+                    }
+        finally:
+            self._persist_session_state(thread_id, config)
 
     def resume_session(self, session_id: str) -> bool:
         """Resume a saved session from disk and restore messages, TaskPlan, and file snapshots."""
