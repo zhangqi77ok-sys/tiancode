@@ -23,6 +23,8 @@ tiancode/
 │   ├── stream_events.py     # 流式事件转换与会话状态快照恢复助手
 │   ├── project_rules.py     # AGENTS.md / TIANCODE.md 分层加载与 /init 生成器
 │   ├── context_mentions.py  # @file 模糊路径匹配与安全沙箱源码片段直注
+│   ├── mcp_transports.py    # 同步 MCP stdio 子进程与 Streamable HTTP/SSE 传输层
+│   ├── mcp_client.py        # 全局/工作区 mcp.json 分层解析与 MCP 服务生命周期管理
 │   ├── llm_adapter.py       # 推理模型 reasoning_content 与 <think> 流式适配器
 │   ├── cognitive_memory.py  # 跨会话三层大脑记忆仓库、时间衰减与联想召回
 │   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only + 人工纠正)
@@ -44,6 +46,7 @@ tiancode/
 │   ├── file_ops.py          # 原子写入、单点替换/replace_all 编辑与可逆删除
 │   ├── execution.py         # 跨平台子进程与危险命令防线沙箱
 │   ├── memory_ops.py        # 跨会话联想回忆 recall_memory、固化事实与切工作区
+│   ├── mcp_ops.py           # 外部 MCP 工具 StructuredTool 适配与工作区热重载生命周期
 │   ├── plan_ops.py          # 任务计划看板工具
 │   └── subagent_ops.py      # 子智能体调研委托工具
 ├── skills/                  # 扩展技能加载层 (.tiancode/skills/<name>/SKILL.md)
@@ -78,6 +81,9 @@ tiancode/
 6. **`@file` 模糊引用与项目规约自动加载 (`AGENTS.md` / `TIANCODE.md`)**：
    - 输入 `@` 实时模糊弹出当前工作区文件列表，支持 `@path#L10-50` 精确行号直注并拦截越界与 `.env`/私钥等敏感文件；
    - 自动按全局 → 工作区顺序挂载 `AGENTS.md`/`TIANCODE.md`，支持 `/init [--force]` 扫描技术栈生成专属规范与 `/rules` 查看。
+7. **标准 MCP (Model Context Protocol) 客户端集成**：
+   - 分层加载 `~/.tiancode/mcp.json` 与工作区 `.tiancode/mcp.json`，同时支持 `stdio`（自动剥离敏感 LLM API Key 环境变量）与 Streamable `HTTP/SSE`；
+   - 将外部工具标准化挂载为 `mcp__<server>__<tool>` `StructuredTool`，统一受 HITL `PermissionGuard` 门禁保护，切工作区自动回收旧子进程，配套 `/mcp [reload|tools]` 管理。
 
 ---
 
@@ -119,6 +125,7 @@ export TIANCODE_MODEL="deepseek-chat"
 ### REPL 交互式斜杠指令
 - `/mode [ask|auto|read_only]`：查看或动态切换当前运行时安全权限模式
 - `/init [--force]` 与 `/rules`：自动探测技术栈/模块生成 `TIANCODE.md`，或查看当前已挂载规约清单
+- `/mcp [reload|tools]`：查看外部 MCP 服务状态、已挂载工具明细，或在修改 `mcp.json` 后重连服务
 - `/cd <目录>`：手动切换当前会话工作区沙箱并重锚 Git/文件工具
 - `/memory [clear]` 与 `/remember [project:]<事实>`：查看、清空跨会话认知记忆档案或固化长期知识
 - `/config show` 与 `/config set <prop> <val>`：查看或修改持久化配置并即时生效（支持 `key`、`url`、`model`、`max_chars`、`max_msgs`、`timeout`、`auto_heal`）
