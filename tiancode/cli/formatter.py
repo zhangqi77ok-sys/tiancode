@@ -1,9 +1,7 @@
-"""Terminal UI formatting, Rich streaming thinking/Markdown renderer, and live tool spinners."""
+"""Terminal UI formatting, Rich streaming thinking/Markdown renderer."""
 
-import sys
-import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, TextIO
+from typing import Any, Dict, Iterable, List, Optional
 
 from rich import box
 from rich.live import Live
@@ -16,6 +14,7 @@ from tiancode.cli.theme import (
     BORDER_MUTED, BRAND_COLOR, SUCCESS_COLOR, TEXT_MUTED, TEXT_PRIMARY, TEXT_SUBTLE, WARNING_COLOR,
     build_banner_panel, build_diff_panel, build_plan_panel, get_console, render_markdown,
 )
+from tiancode.cli.widgets import LiveToolSpinner
 from tiancode.domain.models import FileDiff
 
 MAX_VISIBLE_THINK_LINES = 6
@@ -245,75 +244,3 @@ class _StreamRenderState:
         if self.spinner:
             self.spinner.stop()
             self.spinner = None
-
-
-class LiveToolSpinner:
-    """Animated Braille spinner with class-level pause lock to prevent approval dialog collisions."""
-
-    SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    _active_lock = threading.Lock()
-    _active_instance: Optional["LiveToolSpinner"] = None
-
-    def __init__(self, tool_name: str, args: str = "", stream: Optional[TextIO] = None) -> None:
-        self.tool_name = tool_name
-        self.args = str(args)[:60].replace("\n", " ") if args else ""
-        self.stream = stream or sys.stdout
-        self.is_running = False
-        self._thread: Optional[threading.Thread] = None
-        self._start_time: float = 0.0
-
-    @classmethod
-    def pause_active(cls) -> bool:
-        """Immediately halt and clear any active spinner before interactive stdin prompts."""
-        with cls._active_lock:
-            inst = cls._active_instance
-        if inst is not None and inst.is_running:
-            inst.stop(clear_line_only=True)
-            return True
-        return False
-
-    def start(self) -> None:
-        if self.is_running:
-            return
-        self.is_running = True
-        self._start_time = time.time()
-        with self._active_lock:
-            LiveToolSpinner._active_instance = self
-        self._thread = threading.Thread(target=self._spin_loop, daemon=True)
-        self._thread.start()
-
-    def _spin_loop(self) -> None:
-        idx = 0
-        arg_disp = f" \033[2m({self.args})\033[0m" if self.args else ""
-        while self.is_running:
-            elapsed = time.time() - self._start_time
-            frame = self.SPINNER_FRAMES[idx % len(self.SPINNER_FRAMES)]
-            msg = f"\r\033[K  \033[38;2;56;189;248m{frame}\033[0m ▸ \033[1m{self.tool_name}\033[0m{arg_disp} \033[2m· {elapsed:.1f}s\033[0m"
-            try:
-                self.stream.write(msg)
-                self.stream.flush()
-            except Exception:
-                pass
-            idx += 1
-            time.sleep(0.08)
-
-    def stop(self, status_text: str = "", *, clear_line_only: bool = False) -> None:
-        if not self.is_running:
-            return
-        self.is_running = False
-        with self._active_lock:
-            if LiveToolSpinner._active_instance is self:
-                LiveToolSpinner._active_instance = None
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=0.3)
-
-        try:
-            if clear_line_only:
-                self.stream.write("\r\033[K")
-            else:
-                elapsed = time.time() - self._start_time
-                final_msg = status_text or f"  ✓ {self.tool_name} · {elapsed:.1f}s"
-                self.stream.write(f"\r\033[K\033[38;2;16;185;129m{final_msg}\033[0m\n")
-            self.stream.flush()
-        except Exception:
-            pass
