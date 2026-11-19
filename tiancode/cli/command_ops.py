@@ -230,29 +230,27 @@ def handle_rules(engine: "TianCodeEngine") -> None:
     print_table("📜 已自动加载工程规范清单", headers, rows)
 
 
-def _print_mcp_errors(manager) -> None:
-    for err in manager.get_config_errors():
+def _print_mcp_errors(mcp) -> None:
+    for err in mcp.config_errors():
         TerminalFormatter.print_warning(err)
 
 
 def handle_mcp(engine: "TianCodeEngine", arg: str = "") -> None:
     """Display MCP server statuses, mounted tools, or force-reload mcp.json connections."""
-    from tiancode.tools.mcp_ops import reload_engine_mcp
+    from tiancode.tools.mcp_ops import get_engine_mcp, reload_engine_mcp
 
+    mcp = get_engine_mcp(engine)
     sub = arg.strip().lower()
     if sub == "reload":
         statuses = reload_engine_mcp(engine)
-        _print_mcp_errors(engine.mcp_manager)
+        mcp = get_engine_mcp(engine)
+        _print_mcp_errors(mcp)
         TerminalFormatter.print_success(f"已完成 MCP 配置重载与工具重绑定（共 {len(statuses)} 个服务配置）。")
         if not statuses:
             return
-    manager = getattr(engine, "mcp_manager", None)
-    if manager is None:
-        reload_engine_mcp(engine)
-        manager = engine.mcp_manager
-    _print_mcp_errors(manager)
+    _print_mcp_errors(mcp)
     if sub == "tools":
-        tools = manager.list_tools()
+        tools = mcp.list_tools()
         if not tools:
             TerminalFormatter.print_info("当前未挂载任何外部 MCP 工具，可在 .tiancode/mcp.json 配置后运行 /mcp reload。")
             return
@@ -263,7 +261,7 @@ def handle_mcp(engine: "TianCodeEngine", arg: str = "") -> None:
         ]
         print_table("🔌 已挂载外部 MCP 工具列表", headers, [(t.full_name, t.server_name, t.description) for t in tools])
         return
-    statuses = manager.get_server_statuses()
+    statuses = mcp.statuses()
     if not statuses:
         TerminalFormatter.print_info("未配置外部 MCP 服务；请在 ~/.tiancode/mcp.json 或工作区 .tiancode/mcp.json 中添加 mcpServers 后运行 /mcp reload。")
         return
