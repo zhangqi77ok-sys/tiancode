@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from tiancode.core.mcp_auth import expand_env_vars, expand_mapping
 from tiancode.core.mcp_transports import (
     _DEFAULT_TIMEOUT_SECONDS,
     HttpMcpTransport,
@@ -45,6 +46,7 @@ class McpServerConfig:
     cwd: str = ""
     url: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
+    auth: Dict[str, Any] = field(default_factory=dict)
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
     disabled: bool = False
     source: str = ""
@@ -71,6 +73,7 @@ class McpServerStatus:
     enabled: bool = True
     connected: bool = False
     tool_count: int = 0
+    protocol_version: str = ""
     error: str = ""
 
 
@@ -108,26 +111,31 @@ def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerC
             continue
         t_raw = entry.get("timeoutSeconds", entry.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS))
         timeout_s = max(1, int(t_raw)) if str(t_raw).isdigit() else _DEFAULT_TIMEOUT_SECONDS
-        url = str(entry.get("url") or "").strip()
-        cmd = str(entry.get("command") or "").strip()
+        url = expand_env_vars(str(entry.get("url") or "")).strip()
+        cmd = expand_env_vars(str(entry.get("command") or "")).strip()
         disabled = bool(entry.get("disabled", False))
+        # Cursor/VS Code style "type": "http"|"sse"|"stdio" — url 仍优先判定传输
+        type_hint = str(entry.get("type") or entry.get("transport") or "").strip().lower()
         if not url and not cmd and not disabled:
             errors.append(f"MCP 服务 '{name}' 缺少 command 或 url ({path})")
             continue
-        raw_cwd = str(entry.get("cwd") or "").strip()
+        raw_cwd = expand_env_vars(str(entry.get("cwd") or "")).strip()
         resolved_cwd = ""
         if raw_cwd:
             p = Path(raw_cwd).expanduser()
             resolved_cwd = str((p if p.is_absolute() else (base_dir / p)).resolve())
+        auth_raw = entry.get("auth") if isinstance(entry.get("auth"), dict) else {}
+        transport = "http" if url or type_hint in ("http", "sse", "streamable-http", "streamable_http") else "stdio"
         configs[str(name)] = McpServerConfig(
             name=str(name),
-            transport="http" if url else "stdio",
+            transport=transport,
             command=cmd,
-            args=[str(a) for a in (entry.get("args") or [])],
-            env={str(k): str(v) for k, v in (entry.get("env") or {}).items()},
+            args=[expand_env_vars(str(a)) for a in (entry.get("args") or [])],
+            env=expand_mapping({str(k): str(v) for k, v in (entry.get("env") or {}).items()}),
             cwd=resolved_cwd,
             url=url,
-            headers={str(k): str(v) for k, v in (entry.get("headers") or {}).items()},
+            headers=expand_mapping({str(k): str(v) for k, v in (entry.get("headers") or {}).items()}),
+            auth=dict(auth_raw),
             timeout_seconds=timeout_s,
             disabled=disabled,
             source=source,
@@ -192,9 +200,20 @@ class McpManager:
             self._statuses[name] = McpServerStatus(name=name, transport=cfg.transport, source=cfg.source, enabled=False)
             return
         transport = (
-            HttpMcpTransport(cfg.url, headers=cfg.headers, timeout_seconds=cfg.timeout_seconds)
+            HttpMcpTransport(
+                cfg.url,
+                headers=cfg.headers,
+                timeout_seconds=cfg.timeout_seconds,
+                auth=cfg.auth,
+            )
             if cfg.transport == "http"
-            else StdioMcpTransport(cfg.command, args=cfg.args, env=cfg.env, timeout_seconds=cfg.timeout_seconds, cwd=cfg.cwd or str(self.work_dir))
+            else StdioMcpTransport(
+                cfg.command,
+                args=cfg.args,
+                env=cfg.env,
+                timeout_seconds=cfg.timeout_seconds,
+                cwd=cfg.cwd or str(self.work_dir),
+            )
         )
         try:
             transport.connect()
@@ -222,8 +241,15 @@ class McpManager:
                 input_schema=schema,
             )
             count += 1
+        negotiated = getattr(transport, "protocol_version", "") or ""
         self._statuses[name] = McpServerStatus(
-            name=name, transport=cfg.transport, source=cfg.source, enabled=True, connected=True, tool_count=count
+            name=name,
+            transport=cfg.transport,
+            source=cfg.source,
+            enabled=True,
+            connected=True,
+            tool_count=count,
+            protocol_version=negotiated,
         )
 
     def list_tools(self) -> List[McpToolSpec]:

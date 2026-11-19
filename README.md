@@ -26,6 +26,7 @@ tiancode/
 │   ├── mcp_transports.py    # 同步 MCP stdio 子进程与 Streamable HTTP/SSE 传输层
 │   ├── mcp_client.py        # 全局/工作区 mcp.json 分层解析与 MCP 服务生命周期管理
 │   ├── mcp_service.py       # MCP 统一门面（Engine/CLI/REPL 唯一入口）
+│   ├── mcp_auth.py          # Bearer / client_credentials 与 401 元数据提示
 │   ├── llm_adapter.py       # 推理模型 reasoning_content 与 <think> 流式适配器
 │   ├── cognitive_memory.py  # 跨会话三层大脑记忆仓库、时间衰减与联想召回
 │   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only + 人工纠正)
@@ -86,7 +87,36 @@ tiancode/
 7. **标准 MCP (Model Context Protocol) 客户端集成**：
    - 分层加载 `~/.tiancode/mcp.json` 与工作区 `.tiancode/mcp.json`，同时支持 `stdio`（自动剥离敏感 LLM API Key 环境变量）与 Streamable `HTTP/SSE`；
    - **统一入口 `McpService`**（`engine.mcp`）：Engine / CLI / REPL 只经此门面做 reload、状态、工具绑定与关闭；底层 `McpManager` + transport 不对外散落；
+   - 远程互操作：协议版本协商（`2025-06-18` / `2025-03-26` / `2024-11-05`）、`MCP-Protocol-Version` 头、Session DELETE、旧版 HTTP+SSE endpoint 回退、`tools/list` 分页；
+   - 鉴权：`auth.bearer` / `auth.client_credentials`（含 `resource` 指示），支持 `${ENV}` 展开；401 时解析 `WWW-Authenticate` 并提示 Protected Resource Metadata；
    - 将外部工具标准化挂载为 `mcp__<server>__<tool>` `StructuredTool`，统一受 HITL `PermissionGuard` 门禁保护，切工作区自动回收旧子进程，配套 `/mcp [reload|tools]` 管理。
+
+远程 HTTP MCP 配置示例：
+```json
+{
+  "mcpServers": {
+    "vendor": {
+      "type": "http",
+      "url": "https://mcp.vendor.com/mcp",
+      "auth": {
+        "type": "bearer",
+        "token": "${VENDOR_MCP_TOKEN}"
+      }
+    },
+    "platform": {
+      "url": "https://mcp.platform.com/v1",
+      "auth": {
+        "type": "client_credentials",
+        "tokenUrl": "https://auth.platform.com/oauth/token",
+        "clientId": "${PLATFORM_CLIENT_ID}",
+        "clientSecret": "${PLATFORM_CLIENT_SECRET}",
+        "scopes": ["mcp"],
+        "resource": "https://mcp.platform.com/v1"
+      }
+    }
+  }
+}
+```
 
 ---
 
