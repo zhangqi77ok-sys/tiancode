@@ -269,11 +269,19 @@ def handle_mcp(engine: "TianCodeEngine", arg: str = "") -> None:
         ("服务名", {"style": f"bold {BRAND_COLOR}", "no_wrap": True}),
         ("传输", {"style": TEXT_SUBTLE, "no_wrap": True}),
         ("状态", {"no_wrap": True}),
+        ("协议", {"style": TEXT_SUBTLE, "no_wrap": True}),
         ("工具数", {"justify": "right"}),
         ("详情 / 来源", {"style": TEXT_MUTED}),
     ]
     rows = [
-        (s.name, s.transport, "停用" if not s.enabled else ("在线" if s.connected else "离线"), str(s.tool_count), s.error or s.source)
+        (
+            s.name,
+            s.transport,
+            "停用" if not s.enabled else ("在线" if s.connected else "离线"),
+            getattr(s, "protocol_version", "") or "-",
+            str(s.tool_count),
+            s.error or s.source,
+        )
         for s in statuses
     ]
     print_table("🔌 外部 MCP 服务状态", headers, rows)
