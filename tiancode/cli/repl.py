@@ -148,17 +148,12 @@ def _print_startup_hints(engine: TianCodeEngine) -> None:
         if others:
             TerminalFormatter.print_info(f"🧠 记忆已唤醒: 最近活跃项目 [{others[0].name}] ({others[0].path}) · 可直接聊起或 /cd 切换")
 
-    mcp_mgr = getattr(engine, "mcp_manager", None)
-    if mcp_mgr is not None:
-        errs = mcp_mgr.get_config_errors() if hasattr(mcp_mgr, "get_config_errors") else []
-        for err in (errs if isinstance(errs, list) else []):
+    mcp = getattr(engine, "mcp", None)
+    if mcp is not None:
+        for err in mcp.config_errors():
             TerminalFormatter.print_warning(str(err))
-        statuses = mcp_mgr.get_server_statuses() if hasattr(mcp_mgr, "get_server_statuses") else []
-        if isinstance(statuses, list) and statuses:
-            summary = ", ".join(
-                f"{s.name}:{'在线' if s.connected else ('停用' if not s.enabled else '离线')}({s.tool_count})"
-                for s in statuses
-            )
+        summary = mcp.status_summary()
+        if summary:
             TerminalFormatter.print_info(f"🔌 MCP 服务: {summary} (/mcp 查看详情)")
 
 

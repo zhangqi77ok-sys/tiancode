@@ -71,7 +71,9 @@ class TianCodeEngine:
 
         # 4. Assemble LangGraph Workflow
         self.memory = InMemorySaver()
-        self.mcp_manager = None
+        from tiancode.core.mcp_service import McpService
+        self.mcp = McpService(work_dir=settings.work_dir)
+        self.mcp_manager = self.mcp.manager  # 兼容旧访问；新代码优先用 self.mcp
         self.reload_llm()
 
         # Track config file modification time for JIT dynamic sync
@@ -112,7 +114,6 @@ class TianCodeEngine:
 
     def _register_tools(self) -> None:
         """Rebuild all engine tool closures from current settings."""
-        from tiancode.tools.mcp_ops import sync_engine_mcp
         from tiancode.tools.memory_ops import create_memory_tools
         from tiancode.tools.plan_ops import create_plan_tools
         from tiancode.tools.subagent_ops import create_subagent_tools
@@ -125,8 +126,9 @@ class TianCodeEngine:
             *create_subagent_tools(self.subagent_runner),
             *create_memory_tools(self),
             *create_web_tools(),
-            *sync_engine_mcp(self),
+            *self.mcp.as_langchain_tools(self.settings.work_dir),
         ]
+        self.mcp_manager = self.mcp.manager
 
     def sync_config_if_changed(self, config_path: Optional[Path] = None) -> bool:
         """Inspect config file on disk; if modified, hot-reload settings and LLM immediately."""
@@ -281,8 +283,7 @@ class TianCodeEngine:
 
     def close(self) -> None:
         """Release external transports and managed child processes."""
-        from tiancode.tools.mcp_ops import close_engine_mcp
-        close_engine_mcp(self)
+        self.mcp.close()
 
     def generate_commit_message(self, task_description: str, diff_text: str) -> str:
         """Use LLM to generate a conventional commit message based on task and diff."""

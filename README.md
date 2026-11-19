@@ -25,6 +25,7 @@ tiancode/
 │   ├── context_mentions.py  # @file 模糊路径匹配与安全沙箱源码片段直注
 │   ├── mcp_transports.py    # 同步 MCP stdio 子进程与 Streamable HTTP/SSE 传输层
 │   ├── mcp_client.py        # 全局/工作区 mcp.json 分层解析与 MCP 服务生命周期管理
+│   ├── mcp_service.py       # MCP 统一门面（Engine/CLI/REPL 唯一入口）
 │   ├── llm_adapter.py       # 推理模型 reasoning_content 与 <think> 流式适配器
 │   ├── cognitive_memory.py  # 跨会话三层大脑记忆仓库、时间衰减与联想召回
 │   ├── permissions.py       # HITL 权限守卫 (ask / auto / read_only + 人工纠正)
@@ -46,7 +47,7 @@ tiancode/
 │   ├── file_ops.py          # 原子写入、单点替换/replace_all 编辑与可逆删除
 │   ├── execution.py         # 跨平台子进程与危险命令防线沙箱
 │   ├── memory_ops.py        # 跨会话联想回忆 recall_memory、固化事实与切工作区
-│   ├── mcp_ops.py           # 外部 MCP 工具 StructuredTool 适配与工作区热重载生命周期
+│   ├── mcp_ops.py           # MCP → LangChain StructuredTool 适配（经 McpService 调度）
 │   ├── web_ops.py           # SSRF 防护的只读公网文档抓取 web_fetch 工具
 │   ├── plan_ops.py          # 任务计划看板工具
 │   └── subagent_ops.py      # 子智能体调研委托工具
@@ -84,6 +85,7 @@ tiancode/
    - 自动按全局 → 工作区顺序挂载 `AGENTS.md`/`TIANCODE.md`，支持 `/init [--force]` 扫描技术栈生成专属规范与 `/rules` 查看。
 7. **标准 MCP (Model Context Protocol) 客户端集成**：
    - 分层加载 `~/.tiancode/mcp.json` 与工作区 `.tiancode/mcp.json`，同时支持 `stdio`（自动剥离敏感 LLM API Key 环境变量）与 Streamable `HTTP/SSE`；
+   - **统一入口 `McpService`**（`engine.mcp`）：Engine / CLI / REPL 只经此门面做 reload、状态、工具绑定与关闭；底层 `McpManager` + transport 不对外散落；
    - 将外部工具标准化挂载为 `mcp__<server>__<tool>` `StructuredTool`，统一受 HITL `PermissionGuard` 门禁保护，切工作区自动回收旧子进程，配套 `/mcp [reload|tools]` 管理。
 
 ---
