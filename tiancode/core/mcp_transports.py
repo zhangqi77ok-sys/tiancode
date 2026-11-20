@@ -299,7 +299,10 @@ class HttpMcpTransport:
         self.timeout_seconds = max(1, int(timeout_seconds))
         self._auth_cfg = dict(auth or {}) if auth else {}
         self._owns_client = http_client is None
-        self._client = http_client or httpx.Client(timeout=self.timeout_seconds)
+        try:
+            self._client = http_client or httpx.Client(timeout=self.timeout_seconds)
+        except Exception:
+            self._client = httpx.Client(timeout=self.timeout_seconds, trust_env=False)
         self._auth_provider = auth_provider
         self._owns_auth_provider = False
         self.session_id: Optional[str] = None

@@ -19,6 +19,10 @@ from tiancode.core.mcp_transports import (
     HttpMcpTransport,
     StdioMcpTransport,
 )
+from tiancode.core.mcp_discovery import (
+    discover_tianshell_mcp,
+    resolve_tianshell_runtime_path,
+)
 
 __all__ = [
     "HttpMcpTransport",
@@ -27,8 +31,10 @@ __all__ = [
     "McpServerStatus",
     "McpToolSpec",
     "StdioMcpTransport",
+    "discover_tianshell_mcp",
     "get_default_global_mcp_path",
     "load_mcp_configs",
+    "resolve_tianshell_runtime_path",
 ]
 
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
@@ -152,6 +158,9 @@ def load_mcp_configs(
     merged, errors = _load_single_mcp_file(g_path, f"global:{g_path}")
     ws_configs, ws_errors = _load_single_mcp_file(w_path, f"workspace:{w_path}")
     merged.update(ws_configs)
+    auto_shell = discover_tianshell_mcp(merged)
+    if auto_shell is not None:
+        merged["tianshell"] = auto_shell
     return merged, errors + ws_errors
 
 
