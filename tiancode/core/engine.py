@@ -141,7 +141,9 @@ class TianCodeEngine:
     def sync_config_if_changed(self, config_path: Optional[Path] = None) -> bool:
         """Inspect config file on disk; if modified, hot-reload settings and LLM immediately."""
         cfg_file = self._get_config_path(config_path)
-        if not cfg_file.exists():
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if cfg_file.is_symlink() or is_shared_hardlink(cfg_file) or not cfg_file.exists():
             return False
 
         try:

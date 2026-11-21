@@ -26,9 +26,11 @@ def get_default_config_path() -> Path:
 
 
 def load_user_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Read configuration from a regular file. A symlink is not followed."""
+    """Read configuration from a regular file. A symlink or hard link is not opened."""
+    from tiancode.core.path_safety import is_shared_hardlink
+
     path = config_path or get_default_config_path()
-    if path.is_symlink() or not path.exists():
+    if path.is_symlink() or is_shared_hardlink(path) or not path.exists():
         return {}
     try:
         with open(path, "r", encoding="utf-8-sig") as handle:
