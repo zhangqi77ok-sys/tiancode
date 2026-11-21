@@ -71,7 +71,7 @@ class ProjectRulesLoader:
         resolved_root = root_dir.resolve()
         for rel in candidates:
             candidate = root_dir / rel
-            if is_shared_hardlink(candidate):
+            if candidate.is_symlink() or is_shared_hardlink(candidate):
                 continue
             try:
                 resolved = candidate.resolve()
