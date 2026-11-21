@@ -20,6 +20,7 @@ from tiancode.cli.command_ops import (
     show_cost_panel,
 )
 from tiancode.cli.formatter import TerminalFormatter
+from tiancode.core.diff import is_secret_diff_notice
 from tiancode.cli.theme import BORDER_MUTED, BRAND_COLOR, SUCCESS_COLOR, TEXT_MUTED, TEXT_PRIMARY, TEXT_SUBTLE, get_console
 
 if TYPE_CHECKING:
@@ -114,9 +115,13 @@ class SlashCommandHandler:
             pass
 
     def _handle_commit(self, custom_msg: str = "") -> None:
-        non_empty = [d for d in self.engine.snapshot_store.compute_diffs() if not d.is_empty]
-        if not non_empty:
-            TerminalFormatter.print_info("当前工作区干净，无待提交的修改。")
+        visible = [d for d in self.engine.snapshot_store.compute_diffs() if not d.is_empty]
+        publishable = [d for d in visible if not is_secret_diff_notice(d)]
+        if not publishable:
+            if visible:
+                TerminalFormatter.print_info("只有密钥或 Git 内部文件变更，未读取内容，也未提交。")
+            else:
+                TerminalFormatter.print_info("当前工作区干净，无待提交的修改。")
             return
         if not hasattr(self.engine.snapshot_store, "commit"):
             TerminalFormatter.print_warning("当前目录非 Git 仓库，无法执行 Git 提交。")
@@ -124,7 +129,9 @@ class SlashCommandHandler:
         commit_msg = custom_msg.strip()
         if not commit_msg:
             TerminalFormatter.print_info("正在分析代码差异生成 Conventional Commit 消息...")
-            commit_msg = self.engine.generate_commit_message("提交代码修改", "\n".join(d.diff_text for d in non_empty))
+            commit_msg = self.engine.generate_commit_message(
+                "提交代码修改", "\n".join(d.diff_text for d in publishable)
+            )
         commit_hash = self.engine.snapshot_store.commit(commit_msg)
         if commit_hash:
             TerminalFormatter.print_success(f"Git 提交成功！[{commit_hash}] {commit_msg}")

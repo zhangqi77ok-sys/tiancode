@@ -2,11 +2,14 @@
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from tiancode.core.diff import credential_file_diff
 from tiancode.core.path_safety import (
     WorkspacePathError,
+    is_credential_path,
     is_shared_hardlink,
     read_workspace_text,
     restore_snapshot_entry,
@@ -20,6 +23,35 @@ from tiancode.domain.models import (
     normalize_link_target,
     snapshot_from_dict,
 )
+
+
+def _header_paths(first_line: str) -> Tuple[str, str]:
+    """Return the a/ and b/ paths from one `diff --git` header."""
+    tokens = first_line.split()
+    if len(tokens) < 2:
+        token = tokens[-1] if tokens else ""
+        return "", token.replace("b/", "")
+    return tokens[0].replace("a/", "", 1), tokens[-1].replace("b/", "")
+
+
+def _cached_rename_pairs(payload: str) -> List[Tuple[str, str]]:
+    """Parse `git diff --cached -M --name-status -z` rename records."""
+    parts = payload.split("\0")
+    pairs: List[Tuple[str, str]] = []
+    index = 0
+    while index < len(parts):
+        status = parts[index]
+        if not status:
+            index += 1
+            continue
+        if status[0] in {"R", "C"}:
+            if index + 2 >= len(parts):
+                break
+            pairs.append((parts[index + 1], parts[index + 2]))
+            index += 3
+            continue
+        index += 2
+    return pairs
 
 
 class GitSnapshotStore(SnapshotStore):
@@ -198,6 +230,9 @@ class GitSnapshotStore(SnapshotStore):
 
             diffs: List[FileDiff] = []
             for rel_name, snap in self._memory_snapshots.items():
+                if is_credential_path(rel_name):
+                    diffs.append(credential_file_diff(rel_name))
+                    continue
                 try:
                     current_text = read_workspace_text(workspace_directory_entry(self.work_dir, rel_name))
                 except WorkspacePathError:
@@ -208,6 +243,7 @@ class GitSnapshotStore(SnapshotStore):
             return diffs
 
         diffs: List[FileDiff] = []
+        blocked = self._credential_rename_paths()
         res = self._run_git(["diff", "HEAD"])
         if res.returncode != 0:
             res = self._run_git(["diff"])
@@ -220,7 +256,10 @@ class GitSnapshotStore(SnapshotStore):
                     continue
                 lines = block.splitlines()
                 first_line = lines[0]
-                target_fname = first_line.split()[-1].replace("b/", "")
+                source_name, target_fname = _header_paths(first_line)
+                if self._hides_body(source_name, target_fname, blocked):
+                    diffs.append(credential_file_diff(target_fname or source_name))
+                    continue
                 diff_text = "diff --git " + block
                 adds = sum(1 for l in lines if l.startswith("+") and not l.startswith("+++"))
                 dels = sum(1 for l in lines if l.startswith("-") and not l.startswith("---"))
@@ -237,16 +276,66 @@ class GitSnapshotStore(SnapshotStore):
         status_res = self._run_git(["status", "--porcelain"])
         for line in status_res.stdout.splitlines():
             if line.startswith("??"):
-                untracked = self._diff_for_untracked(line[3:].strip())
+                untracked = self._diff_for_untracked(line[3:].strip(), blocked)
                 if untracked is not None:
                     diffs.append(untracked)
 
         return diffs
 
-    def _diff_for_untracked(self, filename: str) -> Optional[FileDiff]:
+    def _hides_body(self, source_name: str, target_name: str, blocked: Set[str]) -> bool:
+        """True when either rename end, or the path itself, must not be inlined."""
+        names = [name for name in (source_name, target_name) if name]
+        return any(is_credential_path(name) or name in blocked for name in names)
+
+    def _credential_rename_paths(self) -> Set[str]:
+        """Both ends of a rename when either name is a credential path.
+
+        The lookup uses a temporary index, so the real index and worktree stay as they are.
+        """
+        if not self.is_git_repo():
+            return set()
+        handle = tempfile.NamedTemporaryFile(prefix="tiancode-index-", delete=False)
+        handle.close()
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = handle.name
+        base = ["git", "-C", str(self.work_dir)]
+        try:
+            read_tree = subprocess.run(
+                [*base, "read-tree", "HEAD"],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if read_tree.returncode != 0:
+                return set()
+            added = subprocess.run([*base, "add", "-A"], env=env, capture_output=True, text=True, check=False)
+            if added.returncode != 0:
+                return set()
+            listed = subprocess.run(
+                [*base, "diff", "--cached", "--find-renames", "--name-status", "-z", "HEAD"],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            os.unlink(handle.name)
+        blocked: Set[str] = set()
+        if listed.returncode != 0:
+            return blocked
+        for old, new in _cached_rename_pairs(listed.stdout):
+            if is_credential_path(old) or is_credential_path(new):
+                blocked.add(old)
+                blocked.add(new)
+        return blocked
+
+    def _diff_for_untracked(self, filename: str, blocked: Optional[Set[str]] = None) -> Optional[FileDiff]:
         """Read one untracked file. A symlink is named, and its target is not."""
         if not filename:
             return None
+        if is_credential_path(filename) or filename in (blocked or set()):
+            return credential_file_diff(filename)
         try:
             entry = workspace_directory_entry(self.work_dir, filename)
         except WorkspacePathError:
@@ -281,12 +370,31 @@ class GitSnapshotStore(SnapshotStore):
             is_empty=False,
         )
 
+    def _unstage_credential_files(self) -> None:
+        """Drop credential paths, and a whole rename when either end is one.
+
+        Resetting only the new name of a rename leaves the old path deleted in the index.
+        Both ends go back to HEAD together. The worktree is not moved.
+        """
+        listed = self._run_git(["diff", "--cached", "--find-renames", "--name-status", "-z"])
+        if listed.returncode == 0 and listed.stdout:
+            for old, new in _cached_rename_pairs(listed.stdout):
+                if is_credential_path(old) or is_credential_path(new):
+                    self._run_git(["reset", "-q", "--", old, new])
+        names = self._run_git(["diff", "--cached", "--name-only", "-z"])
+        if names.returncode != 0 or not names.stdout:
+            return
+        for name in names.stdout.split("\0"):
+            if name and is_credential_path(name):
+                self._run_git(["reset", "-q", "--", name])
+
     def commit(self, message: str) -> Optional[str]:
         """Stage all changes and create a Git commit, returning the short commit hash."""
         if not self.is_git_repo():
             return None
 
         self._run_git(["add", "-A"])
+        self._unstage_credential_files()
         commit_res = self._run_git(["commit", "-m", message])
         if commit_res.returncode != 0:
             return None
