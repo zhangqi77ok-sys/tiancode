@@ -72,11 +72,14 @@ class BenchmarkRunner:
                 dest.write_text(content, encoding="utf-8")
 
             # 2. Initialize Git repo in sandbox for clean tracking
-            subprocess.run(["git", "init"], cwd=str(sandbox_path), capture_output=True, check=False)
-            subprocess.run(["git", "config", "user.name", "TianCode Eval"], cwd=str(sandbox_path), capture_output=True, check=False)
-            subprocess.run(["git", "config", "user.email", "eval@tiancode.dev"], cwd=str(sandbox_path), capture_output=True, check=False)
-            subprocess.run(["git", "add", "-A"], cwd=str(sandbox_path), capture_output=True, check=False)
-            subprocess.run(["git", "commit", "-m", "starter code"], cwd=str(sandbox_path), capture_output=True, check=False)
+            from tiancode.core.git_store import git_workspace_env
+
+            git_env = git_workspace_env()
+            subprocess.run(["git", "init"], cwd=str(sandbox_path), env=git_env, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "TianCode Eval"], cwd=str(sandbox_path), env=git_env, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "eval@tiancode.dev"], cwd=str(sandbox_path), env=git_env, capture_output=True, check=False)
+            subprocess.run(["git", "add", "-A"], cwd=str(sandbox_path), env=git_env, capture_output=True, check=False)
+            subprocess.run(["git", "commit", "-m", "starter code"], cwd=str(sandbox_path), env=git_env, capture_output=True, check=False)
 
             # 3. Autonomous Execution: solve_fn or TianCodeEngine
             if solve_fn is not None:
@@ -114,6 +117,7 @@ class BenchmarkRunner:
             diff_proc = subprocess.run(
                 ["git", "diff", "HEAD"],
                 cwd=str(sandbox_path),
+                env=git_env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

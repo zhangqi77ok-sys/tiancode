@@ -57,9 +57,12 @@ def _check_git_repo(work_dir: Path) -> DiagnosticCheck:
     if not shutil.which("git"):
         return DiagnosticCheck("Git 工具链", "WARN", "系统未安装 Git，将退回纯内存快照模式")
     try:
+        from tiancode.core.git_store import git_workspace_env
+
         res = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             cwd=str(work_dir),
+            env=git_workspace_env(),
             capture_output=True,
             text=True,
             timeout=3,

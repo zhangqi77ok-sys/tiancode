@@ -25,6 +25,29 @@ from tiancode.domain.models import (
 )
 
 
+# These variables retarget every git command at another repository or index.
+# Config slots such as GIT_CONFIG_KEY_<n> are not in this list.
+_GIT_LOCATION_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+)
+
+
+def git_workspace_env() -> Dict[str, str]:
+    """Return an environment whose git commands stay in the requested work tree."""
+    env = os.environ.copy()
+    for name in _GIT_LOCATION_VARS:
+        env.pop(name, None)
+    return env
+
+
 def _strip_diff_side(token: str, prefix: str) -> str:
     """Drop one leading a/ or b/ prefix. Later path segments stay intact."""
     text = token.strip()
@@ -76,6 +99,7 @@ class GitSnapshotStore(SnapshotStore):
         return subprocess.run(
             ["git"] + args,
             cwd=str(self.work_dir),
+            env=git_workspace_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -321,7 +345,7 @@ class GitSnapshotStore(SnapshotStore):
             return set()
         handle = tempfile.NamedTemporaryFile(prefix="tiancode-index-", delete=False)
         handle.close()
-        env = os.environ.copy()
+        env = git_workspace_env()
         env["GIT_INDEX_FILE"] = handle.name
         base = ["git", "-C", str(self.work_dir)]
         try:
