@@ -1,6 +1,7 @@
 """Core LangGraph-powered orchestration engine for TianCode."""
 
 import logging
+import signal
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Union
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -12,6 +13,7 @@ from tiancode.config.settings import Settings
 from tiancode.core.git_store import GitSnapshotStore
 from tiancode.core.history import InMemorySnapshotStore
 from tiancode.core.llm_adapter import ReasonerChatOpenAI, ThinkTagStreamSplitter
+from tiancode.core.llm_interrupt import abort_blocking_llm_reads
 from tiancode.core.permissions import ApprovalPromptFn, PermissionGuard, PermissionMode
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
@@ -249,6 +251,19 @@ class TianCodeEngine:
 
         from langgraph.errors import GraphRecursionError
 
+        previous_sigint = signal.getsignal(signal.SIGINT)
+
+        def _on_sigint(signum: int, frame: Any) -> None:
+            abort_blocking_llm_reads(self.llm)
+            raise KeyboardInterrupt
+
+        sigint_installed = False
+        try:
+            signal.signal(signal.SIGINT, _on_sigint)
+            sigint_installed = True
+        except ValueError:
+            sigint_installed = False
+
         try:
             try:
                 for item in self.graph.stream({"messages": [HumanMessage(content=prompt)]}, config=config, stream_mode="messages"):
@@ -267,6 +282,8 @@ class TianCodeEngine:
                 if turn_tokens > 0:
                     yield {"type": "usage_summary", "turn_tokens": turn_tokens, "session_tokens": tokens.total_tokens, "session_cost": cost.total_cost}
         finally:
+            if sigint_installed:
+                signal.signal(signal.SIGINT, previous_sigint)
             try:
                 repair_pending_tool_calls(self, config)
             except Exception as exc:
