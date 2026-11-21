@@ -8,6 +8,18 @@ import yaml
 from tiancode.skills.models import Skill
 
 
+def _path_keeping_final_component(raw: Path) -> Path:
+    """Absolute path that does not resolve the last component."""
+    raw = raw.expanduser()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    try:
+        parent = raw.parent.resolve()
+    except OSError:
+        parent = raw.parent.absolute()
+    return parent / raw.name
+
+
 class SkillLoader:
     """Discovers, parses, and formats pluggable skills from workspace and global directories."""
 
@@ -17,15 +29,15 @@ class SkillLoader:
         global_skills_dir: Optional[Path] = None,
     ) -> None:
         self.workspace_dir = (workspace_dir or Path(".")).resolve()
-        self.global_skills_dir = (
+        self.global_skills_dir = _path_keeping_final_component(
             global_skills_dir or (Path.home() / ".tiancode" / "skills")
-        ).resolve()
+        )
 
     def parse_skill_file(self, skill_file: Path, is_global: bool = False) -> Optional[Skill]:
-        """Parse a SKILL.md file, extracting YAML frontmatter and markdown body."""
+        """Parse a SKILL.md file. A symlink or hard link is not opened."""
         from tiancode.core.path_safety import is_shared_hardlink
 
-        if is_shared_hardlink(skill_file) or not skill_file.is_file():
+        if skill_file.is_symlink() or is_shared_hardlink(skill_file) or not skill_file.is_file():
             return None
 
         try:
@@ -54,24 +66,40 @@ class SkillLoader:
         return Skill(
             name=name,
             description=description,
-            file_path=skill_file.resolve(),
+            file_path=skill_file,
             is_global=is_global,
             raw_content=content,
         )
 
-    def _scan_directory(self, base_dir: Path, is_global: bool) -> List[Skill]:
-        """Scan subdirectories of base_dir for SKILL.md files."""
+    def _scan_directory(
+        self,
+        base_dir: Path,
+        is_global: bool,
+        *,
+        contain_root: Optional[Path] = None,
+    ) -> List[Skill]:
+        """Scan one skills directory. Do not follow a symlink or leave contain_root."""
+        if base_dir.is_symlink():
+            return []
+        if contain_root is not None:
+            try:
+                if not base_dir.resolve().is_relative_to(contain_root):
+                    return []
+            except OSError:
+                return []
         if not base_dir.exists() or not base_dir.is_dir():
             return []
 
         skills: List[Skill] = []
         for child in base_dir.iterdir():
-            if child.is_dir():
-                skill_path = child / "SKILL.md"
-                if skill_path.is_file():
-                    skill = self.parse_skill_file(skill_path, is_global=is_global)
-                    if skill:
-                        skills.append(skill)
+            if child.is_symlink() or not child.is_dir():
+                continue
+            skill_path = child / "SKILL.md"
+            if skill_path.is_symlink() or not skill_path.is_file():
+                continue
+            skill = self.parse_skill_file(skill_path, is_global=is_global)
+            if skill:
+                skills.append(skill)
         return skills
 
     def load_all_skills(self) -> List[Skill]:
@@ -84,7 +112,7 @@ class SkillLoader:
 
         # 2. Workspace skills (.tiancode/skills)
         ws_skills_dir = self.workspace_dir / ".tiancode" / "skills"
-        for s in self._scan_directory(ws_skills_dir, is_global=False):
+        for s in self._scan_directory(ws_skills_dir, is_global=False, contain_root=self.workspace_dir):
             skills_map[s.name] = s
 
         return sorted(skills_map.values(), key=lambda x: x.name)
