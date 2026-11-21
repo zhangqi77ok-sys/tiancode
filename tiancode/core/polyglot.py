@@ -20,7 +20,7 @@ def _has_real_node_test_script(pkg_json: Path) -> bool:
     """Return True if package.json defines a non-stub scripts.test entry."""
     from tiancode.core.path_safety import is_shared_hardlink
 
-    if is_shared_hardlink(pkg_json):
+    if pkg_json.is_symlink() or is_shared_hardlink(pkg_json):
         return False
     try:
         data = json.loads(pkg_json.read_text(encoding="utf-8", errors="replace"))
@@ -68,7 +68,8 @@ def detect_project_profile(work_dir: Path) -> ProjectProfile:
         cmd = f"{gradlew.name} test" if gradlew.exists() else "gradle test"
         return ProjectProfile("Java/Kotlin", "gradlew" if gradlew.exists() else "gradle", cmd)
 
-    if (work_dir / "package.json").is_file():
+    package_json = work_dir / "package.json"
+    if not package_json.is_symlink() and package_json.is_file():
         return _detect_node_profile(work_dir)
 
     if (work_dir / "go.mod").is_file():
