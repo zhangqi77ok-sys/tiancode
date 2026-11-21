@@ -238,6 +238,10 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return summary
         if target.is_dir():
             return f"❌ '{filename}' 是目录而非文件，已拒绝写入。"
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if is_shared_hardlink(target):
+            return f"❌ 文件 '{filename}' 是硬链接，未读取或修改其内容。"
 
         is_new = not target.exists()
         original = "" if is_new else target.read_text(encoding="utf-8", errors="replace")
@@ -257,6 +261,10 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return f"❌ 文件 '{filename}' 不存在，请先确认路径！"
         if target.is_dir():
             return f"❌ '{filename}' 是目录而非文件，已拒绝修改。"
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if is_shared_hardlink(target):
+            return f"❌ 文件 '{filename}' 是硬链接，未读取或修改其内容。"
         src = target.read_text(encoding="utf-8", errors="replace")
 
         match_lines = _find_match_lines(src, old_code)
@@ -293,6 +301,10 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return f"❌ 文件 '{filename}' 不存在，无法删除！"
         if target.is_dir():
             return f"❌ '{filename}' 是目录而非文件，为防止误删已拦截！"
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if is_shared_hardlink(target):
+            return f"❌ 文件 '{filename}' 是硬链接，未读取或修改其内容。"
 
         original = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
         store.record_snapshot(str(target), original, is_new=False)

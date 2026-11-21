@@ -6,7 +6,12 @@ from pathlib import Path
 import tempfile
 from typing import List, Optional, Sequence, Set, Tuple, Union
 
-from tiancode.core.path_safety import WorkspacePathError, restore_workspace_text, workspace_directory_entry
+from tiancode.core.path_safety import (
+    WorkspacePathError,
+    is_shared_hardlink,
+    restore_workspace_text,
+    workspace_directory_entry,
+)
 from tiancode.core.polyglot import detect_project_profile
 
 DEFAULT_MAX_RULES_CHARS = 6000
@@ -66,6 +71,8 @@ class ProjectRulesLoader:
         resolved_root = root_dir.resolve()
         for rel in candidates:
             candidate = root_dir / rel
+            if is_shared_hardlink(candidate):
+                continue
             try:
                 resolved = candidate.resolve()
                 # Block symlinks escaping the declared root directory

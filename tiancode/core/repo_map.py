@@ -161,7 +161,12 @@ def _iter_valid_source_files(resolved_dir: Path, max_depth: int, ignored: Set[st
         folder_header = f"\n📁 {rel_root}" if str(rel_root) != "." else "\n📁 根目录 /"
         for src_file in sorted(f for f in files if f.endswith(supported) and not f.endswith(".d.ts")):
             try:
-                real_file = Path(root, src_file).resolve()
+                from tiancode.core.path_safety import is_shared_hardlink
+
+                entry = Path(root, src_file)
+                if is_shared_hardlink(entry):
+                    continue
+                real_file = entry.resolve()
                 if real_file.is_relative_to(resolved_dir) and real_file.is_file():
                     yield folder_header, src_file, real_file
             except OSError:

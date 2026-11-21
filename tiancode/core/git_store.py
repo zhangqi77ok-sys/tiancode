@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from tiancode.core.path_safety import (
     WorkspacePathError,
+    is_shared_hardlink,
     read_workspace_text,
     restore_snapshot_entry,
     workspace_directory_entry,
@@ -254,6 +255,14 @@ class GitSnapshotStore(SnapshotStore):
             return FileDiff(
                 filename=filename,
                 diff_text=f"+++ b/{filename} (符号链接，未读取目标)\n",
+                additions=0,
+                deletions=0,
+                is_empty=False,
+            )
+        if is_shared_hardlink(entry):
+            return FileDiff(
+                filename=filename,
+                diff_text=f"+++ b/{filename} (硬链接，未读取内容)\n",
                 additions=0,
                 deletions=0,
                 is_empty=False,

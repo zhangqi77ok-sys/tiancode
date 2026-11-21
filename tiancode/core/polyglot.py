@@ -18,6 +18,10 @@ class ProjectProfile:
 
 def _has_real_node_test_script(pkg_json: Path) -> bool:
     """Return True if package.json defines a non-stub scripts.test entry."""
+    from tiancode.core.path_safety import is_shared_hardlink
+
+    if is_shared_hardlink(pkg_json):
+        return False
     try:
         data = json.loads(pkg_json.read_text(encoding="utf-8", errors="replace"))
     except Exception:

@@ -55,6 +55,10 @@ def _match_glob(rel_posix: str, filename: str, file_glob: str) -> bool:
 
 def _is_safe_file(full_p: Path, resolved_root: Path, file_glob: str) -> bool:
     """Verify physical containment, regular file status, size budget, and glob match."""
+    from tiancode.core.path_safety import is_shared_hardlink
+
+    if is_shared_hardlink(full_p):
+        return False
     try:
         real_p = full_p.resolve()
         if not real_p.is_relative_to(resolved_root) or not real_p.is_file():
@@ -200,11 +204,15 @@ def read_file_paginated(
     """Read a workspace text file safely with line numbers and strict slice caps."""
     from tiancode.tools.file_ops import resolve_safe_path
 
+    from tiancode.core.path_safety import is_shared_hardlink
+
     try:
         target = resolve_safe_path(filename, work_dir)
     except PermissionError as err:
         return f"❌ {str(err)}"
 
+    if is_shared_hardlink(target):
+        return f"❌ 文件 '{filename}' 是硬链接，未读取其内容。"
     if not target.exists():
         parent = target.parent if target.parent.is_dir() else work_dir
         nearby = [f for f in os.listdir(parent) if f.endswith(".py")] if parent.is_dir() else []

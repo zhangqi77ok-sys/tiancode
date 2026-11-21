@@ -126,10 +126,24 @@ def restore_snapshot_entry(
     return "已还原原内容"
 
 
+def is_shared_hardlink(path: Path) -> bool:
+    """True when this name is a regular file with another directory entry.
+
+    The other name may sit outside the workspace. Callers must not open the file.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+
+
 def read_workspace_text(entry: Path) -> str:
-    """Read a regular file. Refuse a symlink instead of returning the other file."""
+    """Read a regular file. Refuse a symlink or hard link instead of returning the other file."""
     if entry.is_symlink():
         raise WorkspacePathError(f"回滚读取已跳过符号链接: {entry.name}")
+    if is_shared_hardlink(entry):
+        raise WorkspacePathError(f"回滚读取已跳过硬链接: {entry.name}")
     if not entry.exists():
         return ""
     if not entry.is_file():

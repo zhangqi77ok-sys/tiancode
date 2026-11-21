@@ -23,7 +23,9 @@ class SkillLoader:
 
     def parse_skill_file(self, skill_file: Path, is_global: bool = False) -> Optional[Skill]:
         """Parse a SKILL.md file, extracting YAML frontmatter and markdown body."""
-        if not skill_file.is_file():
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if is_shared_hardlink(skill_file) or not skill_file.is_file():
             return None
 
         try:
