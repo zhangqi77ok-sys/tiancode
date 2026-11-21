@@ -151,6 +151,9 @@ class TerminalFormatter:
                 if isinstance(event, dict):
                     cls._dispatch_stream_event(state, event)
         finally:
+            closer = getattr(events, "close", None)
+            if closer is not None:
+                closer()
             state.stop_spinner()
             state.flush_thinking()
             state.flush_markdown()
