@@ -79,6 +79,53 @@ def remove_workspace_file(entry: Path) -> bool:
     return False
 
 
+def restore_workspace_symlink(entry: Path, link_text: str) -> None:
+    """Put a symlink back at `entry`. Do not create, open, or delete its target.
+
+    The link is created under a sibling name and renamed into place. A failed
+    undo leaves the current directory entry and does not keep that sibling.
+    """
+    if not isinstance(link_text, str) or link_text == "" or "\x00" in link_text:
+        raise WorkspacePathError(f"符号链接目标无效: {entry.name}")
+    if entry.exists() and not entry.is_symlink() and not entry.is_file():
+        raise WorkspacePathError(f"不能在目录上还原符号链接: {entry.name}")
+    temp = entry.with_name(f".{entry.name}.tiancode-restore-link")
+    if temp.is_symlink() or temp.exists():
+        raise WorkspacePathError(f"还原符号链接的临时名字已被占用: {temp.name}")
+    try:
+        os.symlink(link_text, temp)
+        os.replace(temp, entry)
+    except OSError as exc:
+        if temp.is_symlink():
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+        raise WorkspacePathError(f"还原符号链接失败: {entry.name}") from exc
+
+
+def restore_snapshot_entry(
+    entry: Path,
+    *,
+    link_target: str | None,
+    original_content: str,
+    is_created_new: bool,
+) -> str:
+    """Restore one snapshot onto a workspace name.
+
+    A recorded symlink is recreated from its raw link text. The target is not opened.
+    """
+    if link_target:
+        restore_workspace_symlink(entry, link_target)
+        return "已还原符号链接"
+    if is_created_new:
+        if remove_workspace_file(entry):
+            return "已删除新建文件"
+        return "新建文件已不存在"
+    restore_workspace_text(entry, original_content)
+    return "已还原原内容"
+
+
 def read_workspace_text(entry: Path) -> str:
     """Read a regular file. Refuse a symlink instead of returning the other file."""
     if entry.is_symlink():

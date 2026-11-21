@@ -7,7 +7,13 @@ from tiancode.domain.models import FileSnapshot, FileDiff
 class SnapshotStore(Protocol):
     """Protocol for managing file modification snapshots, checkpoints, and rollbacks."""
 
-    def record_snapshot(self, filename: str, content: str, is_new: bool = False) -> None:
+    def record_snapshot(
+        self,
+        filename: str,
+        content: str,
+        is_new: bool = False,
+        link_target: Optional[str] = None,
+    ) -> None:
         """Record original state before a file is touched."""
         ...
 

@@ -8,12 +8,17 @@ from typing import Any, Dict, List, Optional
 from tiancode.core.path_safety import (
     WorkspacePathError,
     read_workspace_text,
-    remove_workspace_file,
-    restore_workspace_text,
+    restore_snapshot_entry,
     workspace_directory_entry,
 )
 from tiancode.domain.interfaces import SnapshotStore
-from tiancode.domain.models import FileDiff, FileSnapshot
+from tiancode.domain.models import (
+    FileDiff,
+    FileSnapshot,
+    export_snapshot,
+    normalize_link_target,
+    snapshot_from_dict,
+)
 
 
 class GitSnapshotStore(SnapshotStore):
@@ -51,22 +56,30 @@ class GitSnapshotStore(SnapshotStore):
         res = self._run_git(["rev-parse", "--is-inside-work-tree"])
         return res.returncode == 0 and res.stdout.strip() == "true"
 
-    def record_snapshot(self, filename: str, content: str, is_new: bool = False) -> None:
+    def record_snapshot(
+        self,
+        filename: str,
+        content: str,
+        is_new: bool = False,
+        link_target: Optional[str] = None,
+    ) -> None:
         """Record file snapshot in memory and track as touched in current session."""
         _, rel_name = self._normalize_path(filename)
         self._touched_files.add(rel_name)
         if rel_name not in self._memory_snapshots:
+            recorded_link = normalize_link_target(link_target)
             self._memory_snapshots[rel_name] = FileSnapshot(
                 filename=rel_name,
-                original_content=content,
-                is_created_new=is_new,
+                original_content="" if recorded_link else content,
+                is_created_new=False if recorded_link else is_new,
+                link_target=recorded_link,
             )
 
     def create_checkpoint(self, tag: str = "") -> str:
         """Snapshot current state and return unique checkpoint ID."""
         ckpt_id = f"ckpt_{len(self._checkpoints) + 1}_{tag}" if tag else f"ckpt_{len(self._checkpoints) + 1}"
         self._checkpoints[ckpt_id] = {
-            k: FileSnapshot(v.filename, v.original_content, v.is_created_new)
+            k: FileSnapshot(v.filename, v.original_content, v.is_created_new, v.link_target)
             for k, v in self._memory_snapshots.items()
         }
         return ckpt_id
@@ -113,10 +126,12 @@ class GitSnapshotStore(SnapshotStore):
         self._touched_files.discard(rel_name)
 
         if snap:
-            if snap.is_created_new:
-                remove_workspace_file(entry)
-            else:
-                restore_workspace_text(entry, snap.original_content)
+            restore_snapshot_entry(
+                entry,
+                link_target=snap.link_target,
+                original_content=snap.original_content,
+                is_created_new=snap.is_created_new,
+            )
 
         return snap is not None or entry.exists()
 
@@ -135,12 +150,13 @@ class GitSnapshotStore(SnapshotStore):
             except WorkspacePathError:
                 reverted.append(f"{rel_name} (已拒绝越界回滚)")
                 continue
-            if snap.is_created_new:
-                if remove_workspace_file(entry):
-                    reverted.append(f"{rel_name} (删除新增)")
-            else:
-                restore_workspace_text(entry, snap.original_content)
-                reverted.append(f"{rel_name} (快照还原)")
+            label = restore_snapshot_entry(
+                entry,
+                link_target=snap.link_target,
+                original_content=snap.original_content,
+                is_created_new=snap.is_created_new,
+            )
+            reverted.append(f"{rel_name} ({label})")
 
         if reverted:
             reverted.append("提示：由终端命令间接修改或新建的文件不在快照追踪中，请手动核对。")
@@ -157,27 +173,22 @@ class GitSnapshotStore(SnapshotStore):
 
     def export_snapshots(self) -> List[Dict[str, Any]]:
         """Export all recorded snapshots for persistent storage."""
-        return [
-            {
-                "filename": snap.filename,
-                "original_content": snap.original_content,
-                "is_created_new": snap.is_created_new,
-            }
-            for snap in self._memory_snapshots.values()
-        ]
+        return [export_snapshot(snap) for snap in self._memory_snapshots.values()]
 
     def import_snapshots(self, snapshots_data: List[Dict[str, Any]]) -> None:
         """Import snapshots from persistent storage to restore rollback state."""
         for item in snapshots_data or []:
-            fname = item.get("filename", "")
-            if fname:
-                _, rel_name = self._normalize_path(fname)
-                self._touched_files.add(rel_name)
-                self._memory_snapshots[rel_name] = FileSnapshot(
-                    filename=rel_name,
-                    original_content=item.get("original_content", ""),
-                    is_created_new=item.get("is_created_new", False),
-                )
+            snap = snapshot_from_dict(item) if isinstance(item, dict) else None
+            if snap is None:
+                continue
+            _, rel_name = self._normalize_path(snap.filename)
+            self._touched_files.add(rel_name)
+            self._memory_snapshots[rel_name] = FileSnapshot(
+                filename=rel_name,
+                original_content=snap.original_content,
+                is_created_new=snap.is_created_new,
+                link_target=snap.link_target,
+            )
 
     def compute_diffs(self) -> List[FileDiff]:
         """Compute unified diffs for all modified and untracked files."""

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class StepStatus(str, Enum):
@@ -127,11 +127,54 @@ class ExecutionResult:
 
 @dataclass
 class FileSnapshot:
-    """Snapshot of a file's state before modification."""
+    """Snapshot of a file's state before modification.
+
+    link_target is the raw symlink text, not the bytes of the other file.
+    None means this snapshot is a regular file.
+    """
 
     filename: str
     original_content: str
     is_created_new: bool = False
+    link_target: Optional[str] = None
+
+
+def normalize_link_target(link_target: Optional[str]) -> Optional[str]:
+    """Keep a non-empty symlink string. Anything else is a regular-file snapshot."""
+    if isinstance(link_target, str) and link_target != "" and "\x00" not in link_target:
+        return link_target
+    return None
+
+
+def export_snapshot(snap: FileSnapshot) -> Dict[str, Any]:
+    """Persist a snapshot. Old files stay readable when link_target is absent."""
+    payload: Dict[str, Any] = {
+        "filename": snap.filename,
+        "original_content": "" if snap.link_target else snap.original_content,
+        "is_created_new": False if snap.link_target else snap.is_created_new,
+    }
+    if snap.link_target:
+        payload["link_target"] = snap.link_target
+    return payload
+
+
+def snapshot_from_dict(item: Dict[str, Any]) -> Optional[FileSnapshot]:
+    """Load a snapshot. A missing link_target keeps the old regular-file meaning."""
+    filename = item.get("filename", "")
+    if not isinstance(filename, str) or not filename:
+        return None
+    link_target = normalize_link_target(item.get("link_target"))
+    content = item.get("original_content", "")
+    if not isinstance(content, str):
+        content = ""
+    if link_target is not None:
+        content = ""
+    return FileSnapshot(
+        filename=filename,
+        original_content=content,
+        is_created_new=False if link_target is not None else bool(item.get("is_created_new", False)),
+        link_target=link_target,
+    )
 
 
 @dataclass

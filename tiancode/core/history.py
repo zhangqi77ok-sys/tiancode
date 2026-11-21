@@ -7,12 +7,11 @@ from typing import Any, Dict, List, Optional
 from tiancode.core.path_safety import (
     WorkspacePathError,
     read_workspace_text,
-    remove_workspace_file,
-    restore_workspace_text,
+    restore_snapshot_entry,
     workspace_directory_entry,
 )
 from tiancode.domain.interfaces import SnapshotStore
-from tiancode.domain.models import FileDiff, FileSnapshot
+from tiancode.domain.models import FileDiff, FileSnapshot, export_snapshot, normalize_link_target, snapshot_from_dict
 
 
 class InMemorySnapshotStore(SnapshotStore):
@@ -22,14 +21,22 @@ class InMemorySnapshotStore(SnapshotStore):
         self.work_dir = work_dir or Path(".").resolve()
         self._snapshots: Dict[str, FileSnapshot] = {}
 
-    def record_snapshot(self, filename: str, content: str, is_new: bool = False) -> None:
+    def record_snapshot(
+        self,
+        filename: str,
+        content: str,
+        is_new: bool = False,
+        link_target: Optional[str] = None,
+    ) -> None:
         """Save initial snapshot if not already recorded."""
         norm_name = str(Path(filename))
         if norm_name not in self._snapshots:
+            recorded_link = normalize_link_target(link_target)
             self._snapshots[norm_name] = FileSnapshot(
                 filename=norm_name,
-                original_content=content,
-                is_created_new=is_new,
+                original_content="" if recorded_link else content,
+                is_created_new=False if recorded_link else is_new,
+                link_target=recorded_link,
             )
 
     def get_snapshot(self, filename: str) -> Optional[FileSnapshot]:
@@ -49,12 +56,13 @@ class InMemorySnapshotStore(SnapshotStore):
             except WorkspacePathError:
                 reverted.append(f"{filename} (已拒绝越界回滚)")
                 continue
-            if snap.is_created_new:
-                if remove_workspace_file(entry):
-                    reverted.append(f"{filename} (已删除新建文件)")
-            else:
-                restore_workspace_text(entry, snap.original_content)
-                reverted.append(f"{filename} (已还原原内容)")
+            label = restore_snapshot_entry(
+                entry,
+                link_target=snap.link_target,
+                original_content=snap.original_content,
+                is_created_new=snap.is_created_new,
+            )
+            reverted.append(f"{filename} ({label})")
         self._snapshots.clear()
         return reverted
 
@@ -64,26 +72,21 @@ class InMemorySnapshotStore(SnapshotStore):
 
     def export_snapshots(self) -> List[Dict[str, Any]]:
         """Export all recorded snapshots for persistent storage."""
-        return [
-            {
-                "filename": snap.filename,
-                "original_content": snap.original_content,
-                "is_created_new": snap.is_created_new,
-            }
-            for snap in self._snapshots.values()
-        ]
+        return [export_snapshot(snap) for snap in self._snapshots.values()]
 
     def import_snapshots(self, snapshots_data: List[Dict[str, Any]]) -> None:
         """Import snapshots from persistent storage to restore rollback state."""
         for item in snapshots_data or []:
-            fname = item.get("filename", "")
-            if fname:
-                norm_name = str(Path(fname))
-                self._snapshots[norm_name] = FileSnapshot(
-                    filename=norm_name,
-                    original_content=item.get("original_content", ""),
-                    is_created_new=item.get("is_created_new", False),
-                )
+            snap = snapshot_from_dict(item) if isinstance(item, dict) else None
+            if snap is None:
+                continue
+            norm_name = str(Path(snap.filename))
+            self._snapshots[norm_name] = FileSnapshot(
+                filename=norm_name,
+                original_content=snap.original_content,
+                is_created_new=snap.is_created_new,
+                link_target=snap.link_target,
+            )
 
     def compute_diffs(self) -> List[FileDiff]:
         """Generate unified diffs between original snapshots and current disk states."""
