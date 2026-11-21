@@ -109,6 +109,27 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
     def _resolve(filename: str) -> Path:
         return resolve_safe_path(filename, work_dir)
 
+    def _mutation_entry(filename: str) -> tuple[Optional[Path], str]:
+        """Return the workspace directory entry. Do not follow a final symlink."""
+        from tiancode.core.path_safety import WorkspacePathError, workspace_directory_entry
+
+        try:
+            return workspace_directory_entry(work_dir, filename), ""
+        except WorkspacePathError:
+            return None, (
+                f"❌ 安全拦截：路径 '{filename}' 越界，位于工作区 '{work_dir}' 外部，禁止访问！"
+            )
+
+    def _symlink_text(entry: Path) -> Optional[str]:
+        """Read the link text only. Do not open the target."""
+        try:
+            text = os.readlink(entry)
+        except OSError:
+            return None
+        if not text or "\x00" in text:
+            return None
+        return text
+
     @tool
     def list_files(directory: str = ".") -> str:
         """列出指定目录下的代码和配置文件。不了解项目结构时优先调用。"""
@@ -187,11 +208,36 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
 
     @tool
     def write_file(filename: str, content: str) -> str:
-        """全量新建或覆盖写入文件（自动渲染 Visual Diff 与安全快照）。"""
-        try:
-            target = _resolve(filename)
-        except PermissionError as err:
-            return f"❌ {str(err)}"
+        """全量新建或覆盖写入文件。符号链接只替换这个名字，不读取目标；/undo 还原链接。"""
+        target, error = _mutation_entry(filename)
+        if target is None:
+            return error
+        if target.is_symlink():
+            from tiancode.core.path_safety import WorkspacePathError, restore_workspace_text
+            from tiancode.core.syntax_guard import SyntaxGuard
+
+            link_text = _symlink_text(target)
+            if link_text is None:
+                return f"❌ 文件 '{filename}' 是符号链接，但无法记录链接本身，已拒绝写入，未读取其目标。"
+            check_res = SyntaxGuard().validate(filename, content)
+            if not check_res.is_valid:
+                return check_res.error_message or "❌ 语法校验失败，已阻断写入！"
+            try:
+                restore_workspace_text(target, content)
+            except (OSError, UnicodeError, WorkspacePathError) as exc:
+                return f"❌ 写入已中止，符号链接保持不变 ({type(exc).__name__}: {exc})"
+            store.record_snapshot(str(target), "", is_new=False, link_target=link_text)
+            summary = (
+                f"✅ 文件 '{filename}' 写入成功，已用普通文件替换符号链接，未读取或修改链接目标。"
+                "/undo 会把该名字还原成原来的符号链接。"
+            )
+            if auto_heal:
+                test_res = _run_post_edit_verification(work_dir)
+                if test_res:
+                    summary += f"，{test_res}"
+            return summary
+        if target.is_dir():
+            return f"❌ '{filename}' 是目录而非文件，已拒绝写入。"
 
         is_new = not target.exists()
         original = "" if is_new else target.read_text(encoding="utf-8", errors="replace")
@@ -202,13 +248,15 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         """局部修改文件：将原代码中唯一的 old_code 精准替换为 new_code；若存在多处匹配需补充上下文或显式传 replace_all=True。"""
         if not old_code:
             return "❌ 替换失败：old_code 不能为空字符串！若需新建或全量覆盖文件，请调用 write_file。"
-        try:
-            target = _resolve(filename)
-        except PermissionError as err:
-            return f"❌ {str(err)}"
-
+        target, error = _mutation_entry(filename)
+        if target is None:
+            return error
+        if target.is_symlink():
+            return f"❌ 文件 '{filename}' 是符号链接，未读取或修改其目标。"
         if not target.exists():
             return f"❌ 文件 '{filename}' 不存在，请先确认路径！"
+        if target.is_dir():
+            return f"❌ '{filename}' 是目录而非文件，已拒绝修改。"
         src = target.read_text(encoding="utf-8", errors="replace")
 
         match_lines = _find_match_lines(src, old_code)
@@ -225,13 +273,23 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
 
     @tool
     def delete_file(filename: str) -> str:
-        """安全删除文件：删除前自动捕获全文快照，支持随时通过 /undo 或 rollback_turn 无损恢复。"""
-        try:
-            target = _resolve(filename)
-        except PermissionError as err:
-            return f"❌ {str(err)}"
+        """删除这个名字。普通文件 /undo 还原原文；符号链接 /undo 还原链接，不碰目标。"""
+        from tiancode.core.path_safety import remove_workspace_file
 
-        if not target.exists() and not target.is_symlink():
+        target, error = _mutation_entry(filename)
+        if target is None:
+            return error
+        if target.is_symlink():
+            link_text = _symlink_text(target)
+            if link_text is None:
+                return f"❌ 文件 '{filename}' 是符号链接，但无法记录链接本身，已拒绝删除，未读取其目标。"
+            store.record_snapshot(str(target), "", is_new=False, link_target=link_text)
+            remove_workspace_file(target)
+            return (
+                f"✅ 已删除符号链接 '{filename}'，未读取或删除其目标。"
+                "/undo 会把该名字还原成原来的符号链接。"
+            )
+        if not target.exists():
             return f"❌ 文件 '{filename}' 不存在，无法删除！"
         if target.is_dir():
             return f"❌ '{filename}' 是目录而非文件，为防止误删已拦截！"
