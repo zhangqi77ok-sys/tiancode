@@ -42,6 +42,13 @@ SENSITIVE_ENV_KEYS = {
     "GIT_TOKEN",
 }
 
+# Names the fixed list misses, such as AWS_ACCESS_KEY_ID and GH_TOKEN.
+# Match a secret word as its own env-name token so PATH and LESSKEY stay.
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PWD)($|_)",
+    re.IGNORECASE,
+)
+
 
 def is_dangerous_command(command: str | List[str]) -> bool:
     """Check if command matches high-risk destructive signatures."""
@@ -52,12 +59,14 @@ def is_dangerous_command(command: str | List[str]) -> bool:
     return False
 
 
+def _is_sensitive_env_name(name: str) -> bool:
+    """Return whether a subprocess should not inherit this environment variable."""
+    return name in SENSITIVE_ENV_KEYS or _SENSITIVE_ENV_NAME.search(name) is not None
+
+
 def get_sanitized_env() -> Dict[str, str]:
-    """Scrub sensitive credentials, API tokens, and secrets from subprocess environment."""
-    env = os.environ.copy()
-    for key in SENSITIVE_ENV_KEYS:
-        env.pop(key, None)
-    return env
+    """Scrub credentials and token-like variables from the subprocess environment."""
+    return {key: value for key, value in os.environ.items() if not _is_sensitive_env_name(key)}
 
 
 def truncate_output(output: str, max_length: int = 8000) -> str:
