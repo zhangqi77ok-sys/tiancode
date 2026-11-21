@@ -25,13 +25,21 @@ from tiancode.domain.models import (
 )
 
 
+def _strip_diff_side(token: str, prefix: str) -> str:
+    """Drop one leading a/ or b/ prefix. Later path segments stay intact."""
+    text = token.strip()
+    if text.startswith(prefix):
+        return text[len(prefix):]
+    return text
+
+
 def _header_paths(first_line: str) -> Tuple[str, str]:
     """Return the a/ and b/ paths from one `diff --git` header."""
     tokens = first_line.split()
     if len(tokens) < 2:
         token = tokens[-1] if tokens else ""
-        return "", token.replace("b/", "")
-    return tokens[0].replace("a/", "", 1), tokens[-1].replace("b/", "")
+        return "", _strip_diff_side(token, "b/")
+    return _strip_diff_side(tokens[0], "a/"), _strip_diff_side(tokens[-1], "b/")
 
 
 def _cached_rename_pairs(payload: str) -> List[Tuple[str, str]]:
@@ -244,34 +252,16 @@ class GitSnapshotStore(SnapshotStore):
 
         diffs: List[FileDiff] = []
         blocked = self._credential_rename_paths()
-        res = self._run_git(["diff", "HEAD"])
-        if res.returncode != 0:
-            res = self._run_git(["diff"])
-
-        raw_diff = res.stdout
-        if raw_diff.strip():
-            file_blocks = raw_diff.split("diff --git ")
-            for block in file_blocks:
-                if not block.strip():
-                    continue
-                lines = block.splitlines()
-                first_line = lines[0]
-                source_name, target_fname = _header_paths(first_line)
-                if self._hides_body(source_name, target_fname, blocked):
-                    diffs.append(credential_file_diff(target_fname or source_name))
-                    continue
-                diff_text = "diff --git " + block
-                adds = sum(1 for l in lines if l.startswith("+") and not l.startswith("+++"))
-                dels = sum(1 for l in lines if l.startswith("-") and not l.startswith("---"))
-                diffs.append(
-                    FileDiff(
-                        filename=target_fname,
-                        diff_text=diff_text,
-                        additions=adds,
-                        deletions=dels,
-                        is_empty=False,
-                    )
-                )
+        changed = self._changed_paths()
+        secret = [path for path in changed if is_credential_path(path) or path in blocked]
+        safe = [path for path in changed if path not in set(secret)]
+        for path in secret:
+            diffs.append(credential_file_diff(path))
+        if safe:
+            res = self._run_git(["diff", "HEAD", "--", *safe])
+            if res.returncode != 0:
+                res = self._run_git(["diff", "--", *safe])
+            diffs.extend(self._diffs_from_text(res.stdout, safe, blocked))
 
         status_res = self._run_git(["status", "--porcelain"])
         for line in status_res.stdout.splitlines():
@@ -280,6 +270,41 @@ class GitSnapshotStore(SnapshotStore):
                 if untracked is not None:
                     diffs.append(untracked)
 
+        return diffs
+
+    def _changed_paths(self) -> List[str]:
+        """Tracked paths changed since HEAD, using NUL records so quotes are not parsed."""
+        res = self._run_git(["diff", "--name-only", "-z", "HEAD"])
+        if res.returncode != 0:
+            res = self._run_git(["diff", "--name-only", "-z"])
+        if res.returncode != 0 or not res.stdout:
+            return []
+        return [part for part in res.stdout.split("\0") if part]
+
+    def _diffs_from_text(self, raw_diff: str, paths: List[str], blocked: Set[str]) -> List[FileDiff]:
+        """Turn one unified diff into file records. Names come from the NUL list when they line up."""
+        if not raw_diff.strip():
+            return []
+        blocks = [block for block in raw_diff.split("diff --git ") if block.strip()]
+        diffs: List[FileDiff] = []
+        for index, block in enumerate(blocks):
+            lines = block.splitlines()
+            source_name, target_fname = _header_paths(lines[0])
+            filename = paths[index] if index < len(paths) else (target_fname or source_name)
+            if self._hides_body(source_name, target_fname, blocked) or is_credential_path(filename) or filename in blocked:
+                diffs.append(credential_file_diff(filename))
+                continue
+            adds = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+            dels = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+            diffs.append(
+                FileDiff(
+                    filename=filename,
+                    diff_text="diff --git " + block,
+                    additions=adds,
+                    deletions=dels,
+                    is_empty=False,
+                )
+            )
         return diffs
 
     def _hides_body(self, source_name: str, target_name: str, blocked: Set[str]) -> bool:
