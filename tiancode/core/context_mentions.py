@@ -187,6 +187,11 @@ def resolve_file_mentions(
             if looks_like_path:
                 warnings.append(f"未找到引用的文件: @{path_str}")
             continue
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if is_shared_hardlink(candidate):
+            warnings.append(f"已跳过硬链接，未读取内容: @{path_str}")
+            continue
         rel_posix = candidate.relative_to(root).as_posix()
         if _is_sensitive_or_git_file(rel_posix):
             warnings.append(f"安全拦截敏感凭证或 Git 内部文件引用: @{rel_posix}")

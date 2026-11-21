@@ -62,10 +62,14 @@ def test_write_does_not_modify_the_other_hardlink(tmp_path: Path) -> None:
     os.link(outside, alias)
     tools = _tools(work)
 
+    before = os.lstat(alias)
     result = tools["write_file"].invoke({"filename": "alias.txt", "content": "NEW-LINE\n"})
 
-    assert "写入成功" in result
-    assert alias.read_text(encoding="utf-8") == "NEW-LINE\n"
+    assert "是硬链接，未读取或修改其内容" in result
+    assert "CANARY-OUTSIDE" not in result
+    after = os.lstat(alias)
+    assert after.st_ino == before.st_ino
+    assert after.st_nlink == 2
     assert outside.read_text(encoding="utf-8") == "CANARY-OUTSIDE\n"
 
 
