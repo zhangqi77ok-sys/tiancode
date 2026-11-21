@@ -1,5 +1,7 @@
 """Core LangGraph-powered orchestration engine for TianCode."""
 
+import logging
+import signal
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Union
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -11,10 +13,16 @@ from tiancode.config.settings import Settings
 from tiancode.core.git_store import GitSnapshotStore
 from tiancode.core.history import InMemorySnapshotStore
 from tiancode.core.llm_adapter import ReasonerChatOpenAI, ThinkTagStreamSplitter
+from tiancode.core.llm_interrupt import abort_blocking_llm_reads
 from tiancode.core.permissions import ApprovalPromptFn, PermissionGuard, PermissionMode
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
-from tiancode.core.stream_events import iter_message_events, persist_engine_session, resume_engine_session
+from tiancode.core.stream_events import (
+    iter_message_events,
+    persist_engine_session,
+    repair_pending_tool_calls,
+    resume_engine_session,
+)
 from tiancode.core.tool_dispatcher import SafeToolDispatcher
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.tools.execution import create_execution_tools
@@ -236,11 +244,25 @@ class TianCodeEngine:
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")
 
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+        repair_pending_tool_calls(self, config)
         seen_tools: set = set()
         splitter = ThinkTagStreamSplitter()
         before_tokens = self.usage_tracker.get_session_stats()[0].total_tokens if hasattr(self, "usage_tracker") else 0
 
         from langgraph.errors import GraphRecursionError
+
+        previous_sigint = signal.getsignal(signal.SIGINT)
+
+        def _on_sigint(signum: int, frame: Any) -> None:
+            abort_blocking_llm_reads(self.llm)
+            raise KeyboardInterrupt
+
+        sigint_installed = False
+        try:
+            signal.signal(signal.SIGINT, _on_sigint)
+            sigint_installed = True
+        except ValueError:
+            sigint_installed = False
 
         try:
             try:
@@ -260,6 +282,12 @@ class TianCodeEngine:
                 if turn_tokens > 0:
                     yield {"type": "usage_summary", "turn_tokens": turn_tokens, "session_tokens": tokens.total_tokens, "session_cost": cost.total_cost}
         finally:
+            if sigint_installed:
+                signal.signal(signal.SIGINT, previous_sigint)
+            try:
+                repair_pending_tool_calls(self, config)
+            except Exception as exc:
+                logging.getLogger("tiancode.engine").warning(f"中断工具调用补全失败 [{thread_id}]: {exc}")
             self._persist_session_state(thread_id, config)
 
     def resume_session(self, session_id: str) -> bool:

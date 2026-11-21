@@ -1,7 +1,7 @@
 """Stream event adapter and session state persistence/resume helpers for TianCodeEngine."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Generator, List
+from typing import TYPE_CHECKING, Any, Dict, Generator, List, Optional
 
 from tiancode.core.llm_adapter import ThinkTagStreamSplitter
 
@@ -56,7 +56,7 @@ def persist_engine_session(engine: "TianCodeEngine", thread_id: str, config: Dic
     """Persist graph messages, active plan, snapshots, usage metrics, and episode memory."""
     try:
         state = engine.graph.get_state(config)
-        all_messages = state.values.get("messages", [])
+        all_messages = close_pending_tool_calls(list(state.values.get("messages") or []))
         exported_snapshots = (
             engine.snapshot_store.export_snapshots()
             if hasattr(engine.snapshot_store, "export_snapshots")
@@ -103,6 +103,85 @@ def _warn_resume_cancelled(exc: Exception) -> None:
     TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
 
 
+INTERRUPTED_TOOL_NOTE = (
+    "工具调用未完成：本轮生成被取消或在结果返回前中断，该工具没有执行成功。"
+    "不要假设它已经生效；需要的话请重新调用。"
+)
+
+
+def _tool_call_identity(tool_call: Any) -> Optional[tuple]:
+    """Return (id, name) for a tool call that can be paired with a tool result."""
+    if isinstance(tool_call, dict):
+        tool_call_id = tool_call.get("id")
+        tool_name = tool_call.get("name") or "tool"
+    else:
+        tool_call_id = getattr(tool_call, "id", None)
+        tool_name = getattr(tool_call, "name", None) or "tool"
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return None
+    return tool_call_id, str(tool_name)
+
+
+def close_pending_tool_calls(messages: List[Any]) -> List[Any]:
+    """Append a result for every tool call that never received one.
+
+    Providers reject a later user message while an assistant tool call is open.
+    Cancelling a turn after the call is checkpointed leaves exactly that shape.
+    Existing results are kept; only the missing ids are filled, in call order,
+    before the next non-tool message.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    closed: List[Any] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        closed.append(message)
+        index += 1
+        tool_calls = getattr(message, "tool_calls", None) if isinstance(message, AIMessage) else None
+        if not tool_calls:
+            continue
+        expected = []
+        for tool_call in tool_calls:
+            identity = _tool_call_identity(tool_call)
+            if identity is not None and identity[0] not in {item[0] for item in expected}:
+                expected.append(identity)
+        answered = set()
+        while index < len(messages) and isinstance(messages[index], ToolMessage):
+            closed.append(messages[index])
+            answered.add(messages[index].tool_call_id)
+            index += 1
+        for tool_call_id, tool_name in expected:
+            if tool_call_id in answered:
+                continue
+            closed.append(
+                ToolMessage(
+                    content=INTERRUPTED_TOOL_NOTE,
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                )
+            )
+            answered.add(tool_call_id)
+    return closed
+
+
+def repair_pending_tool_calls(engine: "TianCodeEngine", config: Dict[str, Any]) -> bool:
+    """Close unanswered tool calls already visible on this thread.
+
+    A cancelled brain step can still be a pending task. ``as_node='brain'``
+    commits that step together with the synthetic tool results and clears the
+    task, so the next user message is not appended after an open tool call.
+    """
+    state = engine.graph.get_state(config)
+    values = getattr(state, "values", None) or {}
+    messages = list(values.get("messages") or [])
+    repaired = close_pending_tool_calls(messages)
+    if len(repaired) == len(messages):
+        return False
+    engine.graph.update_state(config, {"messages": repaired}, as_node="brain")
+    return True
+
+
 def _checkpoint_messages(graph: Any, config: Dict[str, Any]) -> List[Any]:
     """Return messages already stored on a graph thread, or an empty list."""
     state = graph.get_state(config)
@@ -139,7 +218,9 @@ def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
     from langchain_core.messages import messages_from_dict
 
     try:
-        rehydrated_msgs = messages_from_dict(persisted.messages) if persisted.messages else []
+        rehydrated_msgs = close_pending_tool_calls(
+            messages_from_dict(persisted.messages) if persisted.messages else []
+        )
         plan_obj = engine.session_store.rehydrate_plan(persisted.plan) if persisted.plan else None
     except Exception as exc:
         _warn_resume_cancelled(exc)
