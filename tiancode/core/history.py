@@ -4,8 +4,10 @@ import difflib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tiancode.core.diff import credential_file_diff
 from tiancode.core.path_safety import (
     WorkspacePathError,
+    is_credential_path,
     read_workspace_text,
     restore_snapshot_entry,
     workspace_directory_entry,
@@ -92,6 +94,9 @@ class InMemorySnapshotStore(SnapshotStore):
         """Generate unified diffs between original snapshots and current disk states."""
         diffs: List[FileDiff] = []
         for filename, snap in self._snapshots.items():
+            if is_credential_path(filename):
+                diffs.append(credential_file_diff(filename))
+                continue
             current_content = ""
             try:
                 current_content = read_workspace_text(workspace_directory_entry(self.work_dir, filename))

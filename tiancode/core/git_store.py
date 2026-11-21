@@ -5,8 +5,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tiancode.core.diff import credential_file_diff
 from tiancode.core.path_safety import (
     WorkspacePathError,
+    is_credential_path,
     is_shared_hardlink,
     read_workspace_text,
     restore_snapshot_entry,
@@ -198,6 +200,9 @@ class GitSnapshotStore(SnapshotStore):
 
             diffs: List[FileDiff] = []
             for rel_name, snap in self._memory_snapshots.items():
+                if is_credential_path(rel_name):
+                    diffs.append(credential_file_diff(rel_name))
+                    continue
                 try:
                     current_text = read_workspace_text(workspace_directory_entry(self.work_dir, rel_name))
                 except WorkspacePathError:
@@ -221,6 +226,9 @@ class GitSnapshotStore(SnapshotStore):
                 lines = block.splitlines()
                 first_line = lines[0]
                 target_fname = first_line.split()[-1].replace("b/", "")
+                if is_credential_path(target_fname):
+                    diffs.append(credential_file_diff(target_fname))
+                    continue
                 diff_text = "diff --git " + block
                 adds = sum(1 for l in lines if l.startswith("+") and not l.startswith("+++"))
                 dels = sum(1 for l in lines if l.startswith("-") and not l.startswith("---"))
@@ -267,6 +275,8 @@ class GitSnapshotStore(SnapshotStore):
                 deletions=0,
                 is_empty=False,
             )
+        if is_credential_path(filename):
+            return credential_file_diff(filename)
         if not entry.is_file():
             return None
         try:
@@ -281,12 +291,22 @@ class GitSnapshotStore(SnapshotStore):
             is_empty=False,
         )
 
+    def _unstage_credential_files(self) -> None:
+        """Drop credential paths from the index without changing the worktree."""
+        listed = self._run_git(["diff", "--cached", "--name-only", "-z"])
+        if listed.returncode != 0 or not listed.stdout:
+            return
+        for name in listed.stdout.split("\0"):
+            if name and is_credential_path(name):
+                self._run_git(["reset", "-q", "--", name])
+
     def commit(self, message: str) -> Optional[str]:
         """Stage all changes and create a Git commit, returning the short commit hash."""
         if not self.is_git_repo():
             return None
 
         self._run_git(["add", "-A"])
+        self._unstage_credential_files()
         commit_res = self._run_git(["commit", "-m", message])
         if commit_res.returncode != 0:
             return None
