@@ -15,6 +15,11 @@ def credential_file_diff(filename: str) -> FileDiff:
     )
 
 
+def is_secret_diff_notice(diff: FileDiff) -> bool:
+    """True when this diff only names a credential path and has no file bytes."""
+    return diff.diff_text == credential_file_diff(diff.filename).diff_text
+
+
 def compute_text_diff(filename: str, old_text: str, new_text: str) -> FileDiff:
     """Compute unified diff between old_text and new_text with additions/deletions stats."""
     if old_text == new_text:
