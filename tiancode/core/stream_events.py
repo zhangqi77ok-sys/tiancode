@@ -203,13 +203,27 @@ def _replace_checkpoint_messages(graph: Any, config: Dict[str, Any], messages: L
     graph.update_state(config, {"messages": [*removals, *messages]})
 
 
+def _same_workspace(saved: str, current: Any) -> bool:
+    """True when the saved session directory is the engine directory now in use."""
+    from pathlib import Path
+
+    text = str(saved or "").strip()
+    if not text:
+        return False
+    try:
+        return Path(text).expanduser().resolve() == Path(current).expanduser().resolve()
+    except OSError:
+        return False
+
+
 def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
     """Replace graph, plan, undo snapshots, and usage with one persisted session.
 
     Validation runs before any live field is written. A missing or corrupt
     session returns False and leaves the engine unchanged. Snapshot import
     replaces the previous undo set so a switched session cannot roll back
-    files that belong to the session we just left.
+    files that belong to the session we just left. Snapshots saved for another
+    directory are left out, so undo cannot write them into the current tree.
     """
     persisted = engine.session_store.load(session_id)
     if not persisted:
@@ -235,6 +249,11 @@ def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
 
     engine.snapshot_store.clear()
     incoming_snapshots = persisted.snapshots or []
+    saved_work = getattr(getattr(persisted, "metadata", None), "work_dir", "")
+    current_work = getattr(getattr(engine, "settings", None), "work_dir", "")
+    foreign_snapshots = bool(incoming_snapshots) and not _same_workspace(saved_work, current_work)
+    if foreign_snapshots:
+        incoming_snapshots = []
     if incoming_snapshots and hasattr(engine.snapshot_store, "import_snapshots"):
         engine.snapshot_store.import_snapshots(incoming_snapshots)
 
@@ -249,4 +268,13 @@ def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
     engine.permission_guard.clear_session_approvals()
     if hasattr(engine, "tool_dispatcher"):
         engine.tool_dispatcher.reset_loop_guard()
+    if foreign_snapshots:
+        try:
+            from tiancode.cli.formatter import TerminalFormatter
+
+            TerminalFormatter.print_warning(
+                "该会话的撤销快照属于其他工作区，本次未载入，当前目录文件保持不变。"
+            )
+        except Exception:
+            pass
     return True
