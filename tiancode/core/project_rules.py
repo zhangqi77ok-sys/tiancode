@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 from typing import List, Optional, Sequence, Set, Tuple, Union
 
+from tiancode.core.path_safety import WorkspacePathError, restore_workspace_text, workspace_directory_entry
 from tiancode.core.polyglot import detect_project_profile
 
 DEFAULT_MAX_RULES_CHARS = 6000
@@ -185,18 +186,21 @@ def write_project_guide(
     filename: str = "TIANCODE.md",
     force: bool = False,
 ) -> Tuple[Path, bool]:
-    """Generate and atomically write TIANCODE.md unless it already exists without force=True."""
+    """Generate and atomically write TIANCODE.md unless it already exists without force=True.
+
+    The destination is a directory entry. A symlink or hard link is not opened.
+    """
     resolved = Path(work_dir).expanduser().resolve()
     if not resolved.is_dir():
         raise ValueError(f"目标工作区不存在: {work_dir}")
-    target = (resolved / filename).resolve()
-    if not target.is_relative_to(resolved):
-        raise PermissionError(f"禁止写入工作区外部路径: {filename}")
-    if target.exists() and not force:
+    try:
+        target = workspace_directory_entry(resolved, filename)
+    except WorkspacePathError as exc:
+        raise PermissionError(f"禁止写入工作区外部路径: {filename}") from exc
+    if (target.is_symlink() or target.exists()) and not force:
         return target, False
+    if not target.is_symlink() and target.is_dir():
+        raise PermissionError(f"禁止把工程规范写入目录: {filename}")
 
-    content = generate_project_guide(resolved)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, target)
+    restore_workspace_text(target, generate_project_guide(resolved))
     return target, True
