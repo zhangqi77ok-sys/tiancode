@@ -6,6 +6,7 @@ import atexit
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import weakref
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from tiancode.core.mcp_auth import expand_env_vars, expand_mapping
+from tiancode.core.path_safety import WorkspacePathError, workspace_directory_entry
 from tiancode.core.mcp_transports import (
     _DEFAULT_TIMEOUT_SECONDS,
     HttpMcpTransport,
@@ -83,14 +85,25 @@ class McpServerStatus:
     error: str = ""
 
 
+def _path_keeping_final_component(raw: Path) -> Path:
+    """Absolute path that does not resolve the last component."""
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    try:
+        parent = raw.parent.resolve()
+    except OSError:
+        parent = raw.parent.absolute()
+    return parent / raw.name
+
+
 def get_default_global_mcp_path() -> Path:
-    """Resolve the default global mcp.json path, isolated during pytest runs."""
+    """Return the global mcp.json path. The last component is not followed."""
     override = os.environ.get("TIANCODE_MCP_CONFIG", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        return _path_keeping_final_component(Path(override).expanduser())
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        return (Path(tempfile.gettempdir()) / "tiancode_pytest_global_mcp.json").resolve()
-    return (Path.home() / ".tiancode" / "mcp.json").resolve()
+        return Path(tempfile.gettempdir()) / "tiancode_pytest_global_mcp.json"
+    return Path.home() / ".tiancode" / "mcp.json"
 
 
 def _sanitize_segment(raw: str) -> str:
@@ -98,13 +111,30 @@ def _sanitize_segment(raw: str) -> str:
 
 
 def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerConfig], List[str]]:
-    """Read one mcp.json file and return parsed configs plus explicit error notes."""
-    if not path.is_file():
-        return {}, []
+    """Read one regular mcp.json. A symlink or hard link is not opened."""
+    label = path.name
+    if path.is_symlink():
+        return {}, [f"已拒绝读取 MCP 配置 {label}：它是符号链接，未读取目标。"]
     try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {}, [f"读取 MCP 配置失败 ({path}): {exc}"]
+        info = path.lstat()
+    except OSError:
+        return {}, []
+    if not stat.S_ISREG(info.st_mode):
+        return {}, []
+    if info.st_nlink > 1:
+        return {}, [f"已拒绝读取 MCP 配置 {label}：它是硬链接，未读取内容。"]
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        return {}, [f"读取 MCP 配置失败 ({label}): {type(exc).__name__}"]
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8-sig") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        return {}, [f"读取 MCP 配置失败 ({label}): {exc.msg}"]
+    except OSError as exc:
+        return {}, [f"读取 MCP 配置失败 ({label}): {type(exc).__name__}"]
     if not isinstance(payload, dict) or not isinstance(payload.get("mcpServers", {}), dict):
         return {}, [f"MCP 配置格式无效 ({path}): 缺少 mcpServers 对象"]
 
@@ -152,11 +182,18 @@ def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerC
 def load_mcp_configs(
     work_dir: Path | str, global_config_path: Optional[Path] = None
 ) -> Tuple[Dict[str, McpServerConfig], List[str]]:
-    """Load global and workspace mcp.json with workspace overriding global by name."""
-    g_path = (global_config_path or get_default_global_mcp_path()).resolve()
-    w_path = (Path(work_dir).resolve() / ".tiancode" / "mcp.json").resolve()
+    """Load global and workspace mcp.json. Do not follow a link to another file."""
+    g_path = _path_keeping_final_component(Path(global_config_path or get_default_global_mcp_path()))
     merged, errors = _load_single_mcp_file(g_path, f"global:{g_path}")
-    ws_configs, ws_errors = _load_single_mcp_file(w_path, f"workspace:{w_path}")
+    try:
+        w_path = workspace_directory_entry(Path(work_dir), ".tiancode/mcp.json")
+    except WorkspacePathError:
+        errors.append("安全拦截：工作区 MCP 配置路径越界，未读取。")
+        w_path = None
+    ws_configs: Dict[str, McpServerConfig] = {}
+    ws_errors: List[str] = []
+    if w_path is not None:
+        ws_configs, ws_errors = _load_single_mcp_file(w_path, f"workspace:{w_path}")
     merged.update(ws_configs)
     auto_shell = discover_tianshell_mcp(merged)
     if auto_shell is not None:
