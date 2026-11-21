@@ -18,6 +18,24 @@ from tiancode.domain.models import (
 )
 
 
+def _replace_private_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Write JSON as a private regular file. Do not follow a symlink at the temp name."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    if temporary.is_symlink() or temporary.exists():
+        temporary.unlink()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.replace(temporary, path)
+
+
 def get_default_sessions_dir() -> Path:
     """Return ~/.tiancode/sessions directory path."""
     env_override = os.environ.get("TIANCODE_SESSIONS_PATH")
@@ -127,12 +145,8 @@ class SessionStore:
             "usage": usage,
         }
 
-        # Atomic write: write to .tmp then replace
-        tmp_path = file_path.with_suffix(".json.tmp")
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-            os.replace(tmp_path, file_path)
+            _replace_private_json(file_path, payload)
         except OSError as exc:
             raise IOError(f"无法保存会话文件 [{file_path}]: {exc}") from exc
 
