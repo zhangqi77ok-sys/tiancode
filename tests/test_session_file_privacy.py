@@ -9,6 +9,11 @@ import os
 import stat
 from pathlib import Path
 
+import json
+
+import pytest
+
+from tiancode.core.doctor import _check_pytest_and_sessions
 from tiancode.core.session_store import SessionStore
 
 
@@ -79,3 +84,65 @@ def test_failed_save_removes_temp_and_leaves_outside_file(tmp_path: Path, monkey
     assert outside.read_text(encoding="utf-8") == "CANARY-OUTSIDE\n"
     assert not (sessions / "s3.json").exists()
     assert not (sessions / "s3.json.tmp").exists()
+
+
+def _planted(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "session_id": "planted",
+                    "work_dir": "CANARY-OUTSIDE",
+                    "updated_at": "2099-01-01T00:00:00+00:00",
+                    "task_title": "CANARY-OUTSIDE",
+                },
+                "messages": [{"data": {"content": "CANARY-BODY"}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_session_directory_symlink_is_not_followed(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    planted = outside / "planted.json"
+    _planted(planted)
+    link = tmp_path / "sessions"
+    link.symlink_to(outside, target_is_directory=True)
+    store = SessionStore(storage_dir=link)
+
+    with pytest.raises(IOError, match="符号链接"):
+        store.save("s1", str(tmp_path), [{"type": "human", "data": {"content": "KEEP-NOTE"}}])
+
+    assert store.list_sessions() == []
+    assert store.load("planted") is None
+    assert not (outside / "s1.json").exists()
+    assert "CANARY-OUTSIDE" in planted.read_text(encoding="utf-8")
+    assert "KEEP-NOTE" not in planted.read_text(encoding="utf-8")
+    report = _check_pytest_and_sessions(link)
+    assert "符号链接" in report.detail
+    assert report.status == "WARN"
+
+
+def test_linked_session_file_is_not_opened(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    secret = tmp_path / "secret.json"
+    _planted(secret)
+    (sessions / "sec.json").symlink_to(secret)
+    hard = sessions / "hard.json"
+    os.link(secret, hard)
+    store = SessionStore(storage_dir=sessions)
+
+    listed = store.list_sessions()
+    assert listed == []
+    assert store.load("sec") is None
+    assert store.load("hard") is None
+    with pytest.raises(IOError, match="链接"):
+        store.save("sec", str(tmp_path), [{"type": "human", "data": {"content": "KEEP-NOTE"}}])
+
+    assert secret.read_text(encoding="utf-8").count("CANARY-BODY") == 1
+    assert "KEEP-NOTE" not in secret.read_text(encoding="utf-8")
+    assert (sessions / "sec.json").is_symlink()
+    assert hard.is_file() and not hard.is_symlink()
