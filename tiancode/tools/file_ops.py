@@ -161,26 +161,22 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         is_new: bool,
         action_label: str,
     ) -> str:
-        """Validate syntax, record snapshot, guard hardlinks, atomically rewrite, and run self-heal."""
+        """Validate syntax, record snapshot, replace the file in place, and run self-heal."""
+        from tiancode.core.path_safety import WorkspacePathError, restore_workspace_text
         from tiancode.core.syntax_guard import SyntaxGuard
         check_res = SyntaxGuard().validate(filename, modified)
         if not check_res.is_valid:
             return check_res.error_message or "❌ 语法校验失败，已阻断写入！"
 
-        target.parent.mkdir(parents=True, exist_ok=True)
         from tiancode.core.diff import compute_text_diff
         diff = compute_text_diff(filename, original, modified)
         _print_visual_diff(diff)
 
         store.record_snapshot(str(target), original, is_new=is_new)
-        if target.exists() and not target.is_symlink():
-            try:
-                if target.stat().st_nlink > 1:
-                    target.unlink()
-            except Exception:
-                pass
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(modified)
+        try:
+            restore_workspace_text(target, modified)
+        except (OSError, UnicodeError, WorkspacePathError) as exc:
+            return f"❌ 写入已中止，原文件保持不变 ({type(exc).__name__}: {exc})"
 
         summary = f"✅ 文件 '{filename}' {action_label} (+{diff.additions} / -{diff.deletions})"
         if auto_heal:
