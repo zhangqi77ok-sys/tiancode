@@ -1,0 +1,81 @@
+"""Put snapshot bytes back on a workspace directory entry, not through a link.
+
+Undo remembers a path and later writes the original text there. Opening that
+path follows a symlink or a hard link, and a saved absolute path can sit
+outside the work directory. Both stores restore through this helper so the
+write stays on the workspace name.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+
+class WorkspacePathError(PermissionError):
+    """The snapshot path is not a directory entry inside the work directory."""
+
+
+def workspace_directory_entry(work_dir: Path, filename: str) -> Path:
+    """Return the workspace path for `filename` without following a final symlink."""
+    root = work_dir.resolve()
+    raw = Path(filename)
+    if not str(raw).strip():
+        raise WorkspacePathError("回滚路径为空")
+    candidate = raw if raw.is_absolute() else root / raw
+    name = candidate.name
+    if name in ("", ".", ".."):
+        raise WorkspacePathError(f"回滚路径越界: {filename}")
+    parent = candidate.parent.resolve()
+    try:
+        parent.relative_to(root)
+    except ValueError as exc:
+        raise WorkspacePathError(f"回滚路径越界: {filename}") from exc
+    return parent / name
+
+
+def restore_workspace_text(entry: Path, content: str) -> None:
+    """Replace `entry` with a regular file. A symlink or hard link is not followed."""
+    parent = entry.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    temporary = parent / f".{entry.name}.tiancode-restore"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_symlink():
+            raise WorkspacePathError(f"回滚临时文件是符号链接: {temporary.name}")
+        temporary.unlink()
+    fd = os.open(temporary, flags, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.replace(temporary, entry)
+
+
+def remove_workspace_file(entry: Path) -> bool:
+    """Remove a file or symlink at `entry`. Do not remove a directory or follow a link."""
+    if entry.is_symlink() or (entry.is_file() and not entry.is_symlink()):
+        entry.unlink()
+        return True
+    return False
+
+
+def read_workspace_text(entry: Path) -> str:
+    """Read a regular file. Refuse a symlink instead of returning the other file."""
+    if entry.is_symlink():
+        raise WorkspacePathError(f"回滚读取已跳过符号链接: {entry.name}")
+    if not entry.exists():
+        return ""
+    if not entry.is_file():
+        return ""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(entry, flags)
+    except OSError as exc:
+        raise WorkspacePathError(f"回滚读取失败: {entry.name}") from exc
+    with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
+        return handle.read()
