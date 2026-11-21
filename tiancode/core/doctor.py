@@ -81,11 +81,17 @@ def _check_pytest_and_sessions(sessions_dir: Optional[Path]) -> DiagnosticCheck:
             has_pytest = False
 
     sess_ok = True
+    session_problem = ""
     if sessions_dir is not None:
-        try:
-            sessions_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
+        if sessions_dir.is_symlink():
             sess_ok = False
+            session_problem = f"会话目录是符号链接，未使用其目标: {sessions_dir}"
+        else:
+            try:
+                sessions_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                sess_ok = False
+                session_problem = f"会话目录不可写: {sessions_dir}"
 
     if has_pytest and sess_ok:
         return DiagnosticCheck("测试与持久化组件", "OK", "pytest 就绪且会话目录可写")
@@ -93,7 +99,7 @@ def _check_pytest_and_sessions(sessions_dir: Optional[Path]) -> DiagnosticCheck:
     if not has_pytest:
         missing.append("未检测到 pytest（自愈测试不可用）")
     if not sess_ok:
-        missing.append(f"会话目录不可写: {sessions_dir}")
+        missing.append(session_problem or f"会话目录不可写: {sessions_dir}")
     return DiagnosticCheck("测试与持久化组件", "WARN", "；".join(missing))
 
 

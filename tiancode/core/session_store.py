@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from langchain_core.messages import BaseMessage, message_to_dict
+from tiancode.core.path_safety import is_shared_hardlink
 from tiancode.domain.models import (
     PersistedSession,
     PlanStep,
@@ -36,11 +37,23 @@ def _replace_private_json(path: Path, payload: Dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _logical_directory(path: Path) -> Path:
+    """Resolve the parent only, so the final directory name is not followed."""
+    raw = path.expanduser()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    try:
+        parent = raw.parent.resolve()
+    except OSError:
+        parent = raw.parent.absolute()
+    return parent / raw.name
+
+
 def get_default_sessions_dir() -> Path:
-    """Return ~/.tiancode/sessions directory path."""
+    """Return the sessions directory. A final symlink component is left as itself."""
     env_override = os.environ.get("TIANCODE_SESSIONS_PATH")
     if env_override:
-        return Path(env_override).resolve()
+        return _logical_directory(Path(env_override))
     return Path.home() / ".tiancode" / "sessions"
 
 
@@ -72,20 +85,41 @@ class SessionStore:
 
     def __init__(self, storage_dir: Optional[Path] = None, sessions_dir: Optional[Path] = None) -> None:
         chosen = sessions_dir or storage_dir or get_default_sessions_dir()
-        self.storage_dir = Path(chosen).resolve()
+        self.storage_dir = _logical_directory(Path(chosen))
         self.sessions_dir = self.storage_dir
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        if not self.storage_dir.is_symlink():
+            self.storage_dir.mkdir(parents=True, exist_ok=True)
+
+    def _contained_session_file(self, name: str) -> Path:
+        """Return a regular session file. A symlink directory or linked file is refused."""
+        if self.storage_dir.is_symlink():
+            raise PermissionError("会话目录是符号链接，未读取或写入其目标。")
+        candidate = self.storage_dir / name
+        if candidate.is_symlink() or is_shared_hardlink(candidate):
+            raise PermissionError("会话文件是链接，未读取或写入其目标。")
+        try:
+            resolved = candidate.resolve()
+            root = self.storage_dir.resolve()
+        except OSError as exc:
+            raise PermissionError("会话路径无法确认。") from exc
+        if not resolved.is_relative_to(root):
+            raise PermissionError(f"会话路径越界拦截: {name}")
+        return candidate
 
     def _file_path(self, session_id: str) -> Path:
-        safe_id = encode_session_id(session_id)
-        file_path = (self.storage_dir / f"{safe_id}.json").resolve()
-        if not file_path.is_relative_to(self.storage_dir):
-            raise PermissionError(f"会话路径越界拦截: {session_id}")
-        if not file_path.exists():
-            direct = (self.storage_dir / f"{session_id}.json").resolve()
-            if direct.is_relative_to(self.storage_dir) and direct.exists():
-                return direct
-        return file_path
+        safe = self._contained_session_file(f"{encode_session_id(session_id)}.json")
+        if safe.exists():
+            return safe
+        raw_name = f"{session_id}.json"
+        if raw_name == safe.name:
+            return safe
+        try:
+            direct = self._contained_session_file(raw_name)
+        except PermissionError:
+            return safe
+        if direct.exists():
+            return direct
+        return safe
 
     def save(
         self,
@@ -101,7 +135,10 @@ class SessionStore:
         """Serialize session state, atomic task plan, and file snapshots to disk atomically."""
         now_iso = datetime.now(timezone.utc).isoformat()
         safe_id = encode_session_id(session_id)
-        file_path = self._file_path(session_id)
+        try:
+            file_path = self._file_path(session_id)
+        except OSError as exc:
+            raise IOError(f"无法保存会话文件: {exc}") from exc
 
         created_at = now_iso
         if file_path.exists():
@@ -159,11 +196,13 @@ class SessionStore:
         except Exception:
             return None
 
-        if not file_path.exists():
+        if not file_path.exists() or file_path.is_symlink() or is_shared_hardlink(file_path):
             return None
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(file_path, flags)
+            with os.fdopen(fd, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             meta_data = data.get("metadata", {})
@@ -196,9 +235,15 @@ class SessionStore:
     def list_sessions(self) -> List[SessionMetadata]:
         """List all valid persisted sessions sorted by updated_at descending."""
         results: List[SessionMetadata] = []
+        if self.storage_dir.is_symlink() or not self.storage_dir.is_dir():
+            return results
         for p in self.storage_dir.glob("*.json"):
+            if p.is_symlink() or is_shared_hardlink(p):
+                continue
             try:
-                with open(p, "r", encoding="utf-8") as f:
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(p, flags)
+                with os.fdopen(fd, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 meta_data = data.get("metadata", {})
                 results.append(
