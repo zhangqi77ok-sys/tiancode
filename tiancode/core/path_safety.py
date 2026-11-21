@@ -9,6 +9,7 @@ write stays on the workspace name.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 
@@ -34,10 +35,22 @@ def workspace_directory_entry(work_dir: Path, filename: str) -> Path:
     return parent / name
 
 
+def _regular_file_mode(entry: Path) -> int | None:
+    """Permission bits of a regular file. A symlink is not followed and not copied."""
+    try:
+        info = os.lstat(entry)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return stat.S_IMODE(info.st_mode)
+
+
 def restore_workspace_text(entry: Path, content: str) -> None:
     """Replace `entry` with a regular file. A symlink or hard link is not followed."""
     parent = entry.parent
     parent.mkdir(parents=True, exist_ok=True)
+    kept_mode = _regular_file_mode(entry)
     temporary = parent / f".{entry.name}.tiancode-restore"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     if temporary.exists() or temporary.is_symlink():
@@ -46,6 +59,8 @@ def restore_workspace_text(entry: Path, content: str) -> None:
         temporary.unlink()
     fd = os.open(temporary, flags, 0o644)
     try:
+        if kept_mode is not None:
+            os.fchmod(fd, kept_mode)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
