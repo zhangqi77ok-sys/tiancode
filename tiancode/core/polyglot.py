@@ -16,6 +16,20 @@ class ProjectProfile:
     test_command: Optional[str]
 
 
+def _owned_marker(path: Path, *, directory: bool = False) -> bool:
+    """True when this path is a regular workspace entry, not a link to another file."""
+    from tiancode.core.path_safety import is_shared_hardlink
+
+    if path.is_symlink() or is_shared_hardlink(path):
+        return False
+    return path.is_dir() if directory else path.is_file()
+
+
+def _has_regular_python_file(work_dir: Path) -> bool:
+    """True when the workspace root has a regular Python file of its own."""
+    return any(_owned_marker(path) for path in work_dir.glob("*.py"))
+
+
 def _has_real_node_test_script(pkg_json: Path) -> bool:
     """Return True if package.json defines a non-stub scripts.test entry."""
     from tiancode.core.path_safety import is_shared_hardlink
@@ -58,34 +72,38 @@ def detect_project_profile(work_dir: Path) -> ProjectProfile:
     if not work_dir.exists():
         return ProjectProfile("Unknown", "none", None)
 
-    if (work_dir / "pom.xml").is_file():
+    if _owned_marker(work_dir / "pom.xml"):
         mvnw = work_dir / ("mvnw.cmd" if os.name == "nt" else "mvnw")
-        cmd = f"{mvnw.name} test" if mvnw.is_file() else "mvn test"
-        return ProjectProfile("Java", "mvnw" if mvnw.is_file() else "maven", cmd)
+        uses_wrapper = _owned_marker(mvnw)
+        cmd = f"{mvnw.name} test" if uses_wrapper else "mvn test"
+        return ProjectProfile("Java", "mvnw" if uses_wrapper else "maven", cmd)
 
-    if (work_dir / "build.gradle").is_file() or (work_dir / "build.gradle.kts").is_file():
+    if _owned_marker(work_dir / "build.gradle") or _owned_marker(work_dir / "build.gradle.kts"):
         gradlew = work_dir / ("gradlew.bat" if os.name == "nt" else "gradlew")
-        cmd = f"{gradlew.name} test" if gradlew.exists() else "gradle test"
-        return ProjectProfile("Java/Kotlin", "gradlew" if gradlew.exists() else "gradle", cmd)
+        uses_wrapper = _owned_marker(gradlew)
+        cmd = f"{gradlew.name} test" if uses_wrapper else "gradle test"
+        return ProjectProfile("Java/Kotlin", "gradlew" if uses_wrapper else "gradle", cmd)
 
     package_json = work_dir / "package.json"
     if not package_json.is_symlink() and package_json.is_file():
         return _detect_node_profile(work_dir)
 
-    if (work_dir / "go.mod").is_file():
+    if _owned_marker(work_dir / "go.mod"):
         return ProjectProfile("Go", "go", "go test ./...")
 
-    if (work_dir / "Cargo.toml").is_file():
+    if _owned_marker(work_dir / "Cargo.toml"):
         return ProjectProfile("Rust", "cargo", "cargo test")
 
-    py_markers = ("pytest.ini", "pyproject.toml", "setup.py", "tests")
-    if any((work_dir / m).exists() for m in py_markers) or any(work_dir.glob("*.py")):
+    py_markers = ("pytest.ini", "pyproject.toml", "setup.py")
+    has_python = any(_owned_marker(work_dir / name) for name in py_markers)
+    has_python = has_python or _owned_marker(work_dir / "tests", directory=True) or _has_regular_python_file(work_dir)
+    if has_python:
         mgr = "uv" if (work_dir / "uv.lock").is_file() else ("poetry" if (work_dir / "poetry.lock").is_file() else "pip/pytest")
         return ProjectProfile("Python", mgr, "pytest")
 
-    if (work_dir / "CMakeLists.txt").is_file():
+    if _owned_marker(work_dir / "CMakeLists.txt"):
         return ProjectProfile("C/C++", "cmake", "ctest")
-    if (work_dir / "Makefile").is_file():
+    if _owned_marker(work_dir / "Makefile"):
         return ProjectProfile("C/C++", "make", "make test")
 
     return ProjectProfile("Unknown", "none", None)
