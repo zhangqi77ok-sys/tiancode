@@ -157,6 +157,58 @@ def test_resume_replaces_transcript_and_undo_set(tmp_path: Path, monkeypatch: py
         engine.close()
 
 
+@pytest.mark.parametrize("git_backed", [False, True])
+def test_resume_from_another_workspace_does_not_write_its_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_backed: bool
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+    origin = (tmp_path / "origin").resolve()
+    current = (tmp_path / "current").resolve()
+    origin.mkdir()
+    current.mkdir()
+    (origin / "notes.txt").write_text("LIVE-ORIGIN\n", encoding="utf-8")
+    (current / "notes.txt").write_text("LIVE-CURRENT\n", encoding="utf-8")
+
+    engine = _make_engine(current, tmp_path / "config.json", git_backed=git_backed)
+    try:
+        engine.session_store.save(
+            session_id="from-origin",
+            work_dir=str(origin),
+            messages=[HumanMessage(content="from origin")],
+            plan=None,
+            snapshots=[{
+                "filename": "notes.txt",
+                "original_content": "SNAP-ORIGIN\n",
+                "is_created_new": False,
+            }],
+        )
+        engine.session_store.save(
+            session_id="from-current",
+            work_dir=str(current),
+            messages=[HumanMessage(content="from current")],
+            plan=None,
+            snapshots=[{
+                "filename": "notes.txt",
+                "original_content": "SNAP-CURRENT\n",
+                "is_created_new": False,
+            }],
+        )
+
+        assert engine.resume_session("from-origin") is True
+        assert _contents(engine, "from-origin") == ["from origin"]
+        engine.snapshot_store.rollback()
+        assert (current / "notes.txt").read_text(encoding="utf-8") == "LIVE-CURRENT\n"
+        assert (origin / "notes.txt").read_text(encoding="utf-8") == "LIVE-ORIGIN\n"
+
+        assert engine.resume_session("from-current") is True
+        assert _contents(engine, "from-current") == ["from current"]
+        engine.snapshot_store.rollback()
+        assert (current / "notes.txt").read_text(encoding="utf-8") == "SNAP-CURRENT\n"
+        assert (origin / "notes.txt").read_text(encoding="utf-8") == "LIVE-ORIGIN\n"
+    finally:
+        engine.close()
+
+
 def test_failed_resume_keeps_live_plan_snapshots_and_transcript(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _isolate(monkeypatch, tmp_path)
     work = (tmp_path / "work").resolve()
