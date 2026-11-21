@@ -48,6 +48,8 @@ _SENSITIVE_ENV_NAME = re.compile(
     r"(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PWD)($|_)",
     re.IGNORECASE,
 )
+# Git injects config as GIT_CONFIG_KEY_<n>=core.quotePath. The slot name is not a secret.
+_GIT_CONFIG_KEY_SLOT = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 
 
 def is_dangerous_command(command: str | List[str]) -> bool:
@@ -61,6 +63,8 @@ def is_dangerous_command(command: str | List[str]) -> bool:
 
 def _is_sensitive_env_name(name: str) -> bool:
     """Return whether a subprocess should not inherit this environment variable."""
+    if _GIT_CONFIG_KEY_SLOT.fullmatch(name):
+        return False
     return name in SENSITIVE_ENV_KEYS or _SENSITIVE_ENV_NAME.search(name) is not None
 
 
