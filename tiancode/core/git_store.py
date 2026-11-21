@@ -225,22 +225,41 @@ class GitSnapshotStore(SnapshotStore):
         status_res = self._run_git(["status", "--porcelain"])
         for line in status_res.stdout.splitlines():
             if line.startswith("??"):
-                untracked_fname = line[3:].strip()
-                untracked_path = self.work_dir / untracked_fname
-                if untracked_path.is_file():
-                    content = open(untracked_path, "r", encoding="utf-8", errors="replace").read()
-                    line_count = len(content.splitlines())
-                    diffs.append(
-                        FileDiff(
-                            filename=untracked_fname,
-                            diff_text=f"+++ b/{untracked_fname} (新文件)\n" + content,
-                            additions=line_count,
-                            deletions=0,
-                            is_empty=False,
-                        )
-                    )
+                untracked = self._diff_for_untracked(line[3:].strip())
+                if untracked is not None:
+                    diffs.append(untracked)
 
         return diffs
+
+    def _diff_for_untracked(self, filename: str) -> Optional[FileDiff]:
+        """Read one untracked file. A symlink is named, and its target is not."""
+        if not filename:
+            return None
+        try:
+            entry = workspace_directory_entry(self.work_dir, filename)
+        except WorkspacePathError:
+            return None
+        if entry.is_symlink():
+            return FileDiff(
+                filename=filename,
+                diff_text=f"+++ b/{filename} (符号链接，未读取目标)\n",
+                additions=0,
+                deletions=0,
+                is_empty=False,
+            )
+        if not entry.is_file():
+            return None
+        try:
+            content = read_workspace_text(entry)
+        except WorkspacePathError:
+            return None
+        return FileDiff(
+            filename=filename,
+            diff_text=f"+++ b/{filename} (新文件)\n" + content,
+            additions=len(content.splitlines()),
+            deletions=0,
+            is_empty=False,
+        )
 
     def commit(self, message: str) -> Optional[str]:
         """Stage all changes and create a Git commit, returning the short commit hash."""
