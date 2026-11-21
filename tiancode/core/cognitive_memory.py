@@ -23,13 +23,48 @@ _STACK_MARKERS: Tuple[Tuple[str, str], ...] = (
 )
 
 
+def _memory_file_path(path: Path) -> Path:
+    """Return a memory file path without following the final symlink."""
+    raw = path.expanduser()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    try:
+        parent = raw.parent.resolve()
+    except OSError:
+        parent = raw.parent.absolute()
+    return parent / raw.name
+
+
 def get_default_memory_path() -> Path:
-    """Resolve brain memory path with strict pytest sandbox isolation."""
+    """Resolve brain memory path with strict pytest sandbox isolation.
+
+    The last path component is not resolved, so a symlink is not followed.
+    """
     if env_override := os.environ.get("TIANCODE_MEMORY_PATH"):
-        return Path(env_override).resolve()
+        return _memory_file_path(Path(env_override))
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        return (Path(tempfile.gettempdir()) / f"tiancode_pytest_{os.getpid()}_brain_memory.json").resolve()
-    return (Path.home() / ".tiancode" / "brain_memory.json").resolve()
+        filename = f"tiancode_pytest_{os.getpid()}_brain_memory.json"
+        return _memory_file_path(Path(tempfile.gettempdir()) / filename)
+    return Path.home() / ".tiancode" / "brain_memory.json"
+
+
+def _replace_private_memory(path: Path, payload: Dict[str, Any]) -> None:
+    """Write memory as a private regular file. Do not follow a symlink or hard link."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    if temporary.is_symlink() or temporary.exists():
+        temporary.unlink()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.replace(temporary, path)
 
 
 def _now_iso() -> str:
@@ -98,7 +133,7 @@ class CognitiveMemoryStore:
     """Thread-safe atomic JSON store for cross-session Workspace, Episodic, and Semantic memories."""
 
     def __init__(self, memory_path: Optional[Path] = None) -> None:
-        self.memory_path = (memory_path or get_default_memory_path()).resolve()
+        self.memory_path = _memory_file_path(memory_path) if memory_path is not None else get_default_memory_path()
         self._lock = threading.Lock()
         self.workspaces: Dict[str, WorkspaceEntity] = {}
         self.episodes: List[EpisodeRecord] = []
@@ -106,10 +141,11 @@ class CognitiveMemoryStore:
         self._load()
 
     def _load(self) -> None:
-        if not self.memory_path.exists():
+        path = self.memory_path
+        if path.is_symlink() or not path.is_file():
             return
         try:
-            data = json.loads(self.memory_path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return
         for k, v in (data.get("workspaces") or {}).items():
@@ -129,15 +165,12 @@ class CognitiveMemoryStore:
                 pass
 
     def _save(self) -> None:
-        self.memory_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "workspaces": {k: asdict(v) for k, v in self.workspaces.items()},
             "episodes": [asdict(e) for e in self.episodes[-MAX_EPISODES:]],
             "facts": [{**asdict(f), "scope": f.scope.value} for f in self.facts[-MAX_FACTS:]],
         }
-        tmp = self.memory_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self.memory_path)
+        _replace_private_memory(self.memory_path, payload)
 
     def touch_workspace(self, work_dir: Union[Path, str], session_id: Optional[str] = None) -> WorkspaceEntity:
         """Register or refresh a workspace entity with tech-stack tags and linked sessions."""
