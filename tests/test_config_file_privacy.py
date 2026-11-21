@@ -48,6 +48,47 @@ def test_config_symlink_is_not_followed(tmp_path: Path, monkeypatch) -> None:
     assert not (tmp_path / "config.json.tmp").exists()
 
 
+def test_hardlinked_config_is_not_loaded(tmp_path: Path, monkeypatch) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"api_key":"CANARY-KEY","model":"leak-model"}\n', encoding="utf-8")
+    linked = tmp_path / "config.json"
+    os.link(outside, linked)
+    before = outside.read_text(encoding="utf-8")
+    inode = os.lstat(outside).st_ino
+    for name in ("TIANCODE_API_KEY", "DEEPSEEK_API_KEY", "TIANCODE_MODEL", "DEEPSEEK_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+
+    from tiancode.config.settings import Settings
+    from tiancode.core.engine import TianCodeEngine
+
+    assert load_user_config(linked) == {}
+    settings = Settings.load(config_path=linked)
+    assert settings.api_key == ""
+    assert settings.model == "deepseek-chat"
+
+    engine = object.__new__(TianCodeEngine)
+    engine.settings = Settings(api_key="KEEP-KEY", model="keep-model")
+    engine._last_config_mtime = 0.0
+    engine.reload_called = False
+
+    def _reload() -> None:
+        engine.reload_called = True
+
+    engine.reload_llm = _reload
+    assert engine.sync_config_if_changed(linked) is False
+    assert engine.settings.api_key == "KEEP-KEY"
+    assert engine.reload_called is False
+    assert outside.read_text(encoding="utf-8") == before
+    assert os.lstat(linked).st_ino == inode
+    assert os.lstat(linked).st_nlink > 1
+
+    regular = tmp_path / "regular.json"
+    regular.write_text('{"api_key":"KEEP-KEY","model":"keep-model"}\n', encoding="utf-8")
+    loaded = Settings.load(config_path=regular)
+    assert loaded.api_key == "KEEP-KEY"
+    assert loaded.model == "keep-model"
+
+
 def test_failed_save_keeps_existing_config(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "config.json"
     path.write_text('{"api_key":"KEEP-KEY"}\n', encoding="utf-8")
