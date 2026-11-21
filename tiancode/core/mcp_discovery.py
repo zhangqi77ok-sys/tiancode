@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -16,28 +17,49 @@ __all__ = [
 _DEFAULT_TIANSHELL_TIMEOUT = 5
 
 
+def _runtime_file(path: Path) -> Path:
+    """Absolute runtime.json path. The final name is not resolved."""
+    raw = path.expanduser()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    try:
+        parent = raw.parent.resolve()
+    except OSError:
+        parent = raw.parent.absolute()
+    return parent / raw.name
+
+
+def _is_present_runtime(path: Path) -> bool:
+    """True for a regular file or a symlink. Does not follow the final name."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or stat.S_ISREG(info.st_mode)
+
+
 def resolve_tianshell_runtime_path() -> Optional[Path]:
-    """Resolve the path to TianShell's runtime.json discovery file."""
+    """Return the runtime.json path. A final symlink stays visible to the caller."""
     override = os.environ.get("TIANSHELL_RUNTIME_PATH", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        return _runtime_file(Path(override))
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
     home = os.environ.get("TIANSHELL_HOME", "").strip()
     if home:
-        return (Path(home).expanduser() / "runtime.json").resolve()
+        return _runtime_file(Path(home) / "runtime.json")
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", "").strip()
         if appdata:
-            return (Path(appdata) / "tianshell" / "runtime.json").resolve()
-        return (Path.home() / "AppData" / "Roaming" / "tianshell" / "runtime.json").resolve()
+            return _runtime_file(Path(appdata) / "tianshell" / "runtime.json")
+        return _runtime_file(Path.home() / "AppData" / "Roaming" / "tianshell" / "runtime.json")
     xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if xdg_config:
-        return (Path(xdg_config) / "tianshell" / "runtime.json").resolve()
-    cfg_path = Path.home() / ".config" / "tianshell" / "runtime.json"
-    if cfg_path.is_file():
-        return cfg_path.resolve()
-    return (Path.home() / ".tianshell" / "runtime.json").resolve()
+        return _runtime_file(Path(xdg_config) / "tianshell" / "runtime.json")
+    cfg_path = _runtime_file(Path.home() / ".config" / "tianshell" / "runtime.json")
+    if _is_present_runtime(cfg_path):
+        return cfg_path
+    return _runtime_file(Path.home() / ".tianshell" / "runtime.json")
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -73,10 +95,17 @@ def discover_tianshell_mcp(
     if configured_servers and "tianshell" in configured_servers:
         return None
     runtime_path = resolve_tianshell_runtime_path()
-    if not runtime_path or not runtime_path.is_file():
+    if runtime_path is None or runtime_path.is_symlink():
+        return None
+    from tiancode.core.path_safety import is_shared_hardlink
+
+    if is_shared_hardlink(runtime_path) or not runtime_path.is_file():
         return None
     try:
-        data = json.loads(runtime_path.read_text(encoding="utf-8-sig"))
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(runtime_path, flags)
+        with os.fdopen(fd, "r", encoding="utf-8-sig") as handle:
+            data = json.loads(handle.read())
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
