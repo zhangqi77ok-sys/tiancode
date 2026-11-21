@@ -1,7 +1,7 @@
 """Stream event adapter and session state persistence/resume helpers for TianCodeEngine."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Generator
+from typing import TYPE_CHECKING, Any, Dict, Generator, List
 
 from tiancode.core.llm_adapter import ThinkTagStreamSplitter
 
@@ -96,33 +96,73 @@ def persist_engine_session(engine: "TianCodeEngine", thread_id: str, config: Dic
         logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
 
 
+def _warn_resume_cancelled(exc: Exception) -> None:
+    """Tell the operator that resume aborted and live state was kept."""
+    from tiancode.cli.formatter import TerminalFormatter
+
+    TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
+
+
+def _checkpoint_messages(graph: Any, config: Dict[str, Any]) -> List[Any]:
+    """Return messages already stored on a graph thread, or an empty list."""
+    state = graph.get_state(config)
+    values = getattr(state, "values", None) or {}
+    return list(values.get("messages") or [])
+
+
+def _replace_checkpoint_messages(graph: Any, config: Dict[str, Any], messages: List[Any]) -> None:
+    """Install `messages` as the thread transcript.
+
+    MessagesState appends on update_state. Removing the current ids in the same
+    write is what makes /switch and a second resume replace history instead of
+    duplicating it.
+    """
+    from langchain_core.messages import RemoveMessage
+
+    existing = _checkpoint_messages(graph, config)
+    removals = [RemoveMessage(id=msg.id) for msg in existing if getattr(msg, "id", None)]
+    graph.update_state(config, {"messages": [*removals, *messages]})
+
+
 def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
-    """Resume a persisted session into graph state, planner, snapshots, and usage tracker."""
+    """Replace graph, plan, undo snapshots, and usage with one persisted session.
+
+    Validation runs before any live field is written. A missing or corrupt
+    session returns False and leaves the engine unchanged. Snapshot import
+    replaces the previous undo set so a switched session cannot roll back
+    files that belong to the session we just left.
+    """
     persisted = engine.session_store.load(session_id)
     if not persisted:
         return False
 
     from langchain_core.messages import messages_from_dict
 
-    if persisted.plan:
-        engine.planner.active_plan = engine.session_store.rehydrate_plan(persisted.plan)
-    if getattr(persisted, "snapshots", None) and hasattr(engine.snapshot_store, "import_snapshots"):
-        engine.snapshot_store.import_snapshots(persisted.snapshots)
+    try:
+        rehydrated_msgs = messages_from_dict(persisted.messages) if persisted.messages else []
+        plan_obj = engine.session_store.rehydrate_plan(persisted.plan) if persisted.plan else None
+    except Exception as exc:
+        _warn_resume_cancelled(exc)
+        return False
+
+    config = {"configurable": {"thread_id": session_id}}
+    try:
+        _replace_checkpoint_messages(engine.graph, config, rehydrated_msgs)
+    except Exception as exc:
+        _warn_resume_cancelled(exc)
+        return False
+
+    engine.snapshot_store.clear()
+    incoming_snapshots = persisted.snapshots or []
+    if incoming_snapshots and hasattr(engine.snapshot_store, "import_snapshots"):
+        engine.snapshot_store.import_snapshots(incoming_snapshots)
+
+    engine.planner.active_plan = plan_obj
     if hasattr(engine, "usage_tracker"):
-        if getattr(persisted, "usage", None):
+        if persisted.usage:
             engine.usage_tracker.load_from_dict(persisted.usage)
         else:
             engine.usage_tracker.reset()
-
-    if persisted.messages:
-        rehydrated_msgs = messages_from_dict(persisted.messages)
-        config = {"configurable": {"thread_id": session_id}}
-        try:
-            engine.graph.update_state(config, {"messages": rehydrated_msgs})
-        except Exception as exc:
-            from tiancode.cli.formatter import TerminalFormatter
-            TerminalFormatter.print_warning(f"会话状态恢复失败: {exc}，取消切换以防覆盖历史！")
-            return False
 
     engine.active_session_id = session_id
     engine.permission_guard.clear_session_approvals()
