@@ -1,10 +1,16 @@
 """Snapshot store and file rollback manager for TianCode."""
 
 import difflib
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tiancode.core.path_safety import (
+    WorkspacePathError,
+    read_workspace_text,
+    remove_workspace_file,
+    restore_workspace_text,
+    workspace_directory_entry,
+)
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.domain.models import FileDiff, FileSnapshot
 
@@ -15,11 +21,6 @@ class InMemorySnapshotStore(SnapshotStore):
     def __init__(self, work_dir: Optional[Path] = None) -> None:
         self.work_dir = work_dir or Path(".").resolve()
         self._snapshots: Dict[str, FileSnapshot] = {}
-
-    def _resolve(self, filename: str) -> Path:
-        """Resolve path against current work_dir."""
-        p = Path(filename)
-        return p if p.is_absolute() else (self.work_dir / p)
 
     def record_snapshot(self, filename: str, content: str, is_new: bool = False) -> None:
         """Save initial snapshot if not already recorded."""
@@ -43,15 +44,16 @@ class InMemorySnapshotStore(SnapshotStore):
         """Revert all files to snapshot state."""
         reverted: List[str] = []
         for filename, snap in self._snapshots.items():
-            target_path = self._resolve(filename)
+            try:
+                entry = workspace_directory_entry(self.work_dir, filename)
+            except WorkspacePathError:
+                reverted.append(f"{filename} (已拒绝越界回滚)")
+                continue
             if snap.is_created_new:
-                if target_path.exists():
-                    target_path.unlink()
+                if remove_workspace_file(entry):
                     reverted.append(f"{filename} (已删除新建文件)")
             else:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(target_path, "w", encoding="utf-8") as f:
-                    f.write(snap.original_content)
+                restore_workspace_text(entry, snap.original_content)
                 reverted.append(f"{filename} (已还原原内容)")
         self._snapshots.clear()
         return reverted
@@ -87,11 +89,11 @@ class InMemorySnapshotStore(SnapshotStore):
         """Generate unified diffs between original snapshots and current disk states."""
         diffs: List[FileDiff] = []
         for filename, snap in self._snapshots.items():
-            target_path = self._resolve(filename)
             current_content = ""
-            if target_path.exists():
-                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                    current_content = f.read()
+            try:
+                current_content = read_workspace_text(workspace_directory_entry(self.work_dir, filename))
+            except WorkspacePathError:
+                current_content = ""
 
             diff_lines = list(
                 difflib.unified_diff(

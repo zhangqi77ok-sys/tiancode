@@ -5,6 +5,13 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tiancode.core.path_safety import (
+    WorkspacePathError,
+    read_workspace_text,
+    remove_workspace_file,
+    restore_workspace_text,
+    workspace_directory_entry,
+)
 from tiancode.domain.interfaces import SnapshotStore
 from tiancode.domain.models import FileDiff, FileSnapshot
 
@@ -95,18 +102,23 @@ class GitSnapshotStore(SnapshotStore):
 
     def rollback_file(self, filename: str) -> bool:
         """Revert a single touched file to its original state."""
-        target_path, rel_name = self._normalize_path(filename)
+        _, rel_name = self._normalize_path(filename)
+
+        try:
+            entry = workspace_directory_entry(self.work_dir, rel_name)
+        except WorkspacePathError:
+            return False
 
         snap = self._memory_snapshots.pop(rel_name, None)
         self._touched_files.discard(rel_name)
 
         if snap:
             if snap.is_created_new:
-                target_path.unlink(missing_ok=True)
+                remove_workspace_file(entry)
             else:
-                target_path.write_text(snap.original_content, encoding="utf-8")
+                restore_workspace_text(entry, snap.original_content)
 
-        return snap is not None or target_path.exists()
+        return snap is not None or entry.exists()
 
     def rollback(self, checkpoint_id: Optional[str] = None) -> List[str]:
         """Revert uncommitted modifications safely to baseline or specified checkpoint."""
@@ -118,13 +130,16 @@ class GitSnapshotStore(SnapshotStore):
         )
 
         for rel_name, snap in list(snapshots_to_restore.items()):
-            target_path = self.work_dir / rel_name
+            try:
+                entry = workspace_directory_entry(self.work_dir, rel_name)
+            except WorkspacePathError:
+                reverted.append(f"{rel_name} (已拒绝越界回滚)")
+                continue
             if snap.is_created_new:
-                if target_path.is_file():
-                    target_path.unlink(missing_ok=True)
+                if remove_workspace_file(entry):
                     reverted.append(f"{rel_name} (删除新增)")
             else:
-                target_path.write_text(snap.original_content, encoding="utf-8")
+                restore_workspace_text(entry, snap.original_content)
                 reverted.append(f"{rel_name} (快照还原)")
 
         if reverted:
@@ -171,8 +186,10 @@ class GitSnapshotStore(SnapshotStore):
 
             diffs: List[FileDiff] = []
             for rel_name, snap in self._memory_snapshots.items():
-                target_path = self.work_dir / rel_name
-                current_text = target_path.read_text(encoding="utf-8", errors="replace") if target_path.exists() else ""
+                try:
+                    current_text = read_workspace_text(workspace_directory_entry(self.work_dir, rel_name))
+                except WorkspacePathError:
+                    current_text = ""
                 d = compute_text_diff(rel_name, snap.original_content, current_text)
                 if not d.is_empty:
                     diffs.append(d)
