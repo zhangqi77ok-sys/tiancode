@@ -145,6 +145,29 @@ def test_temp_symlink_and_hardlinks_do_not_change_canaries(tmp_path: Path) -> No
         os.umask(previous)
 
 
+def test_hardlinked_memory_is_not_loaded_into_the_prompt(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text(_canary_fact("CANARY-OUTSIDE"), encoding="utf-8")
+    memory = tmp_path / "brain_memory.json"
+    os.link(outside, memory)
+    before = outside.read_text(encoding="utf-8")
+    inode = os.lstat(outside).st_ino
+
+    store = CognitiveMemoryStore(memory_path=memory)
+    prompt = store.format_priming_context(tmp_path)
+
+    assert store.facts == []
+    assert "CANARY-OUTSIDE" not in prompt
+    assert outside.read_text(encoding="utf-8") == before
+    assert os.lstat(memory).st_ino == inode
+    assert os.lstat(memory).st_nlink > 1
+
+    regular = tmp_path / "regular.json"
+    regular.write_text(_canary_fact("KEEP-INSIDE"), encoding="utf-8")
+    loaded = CognitiveMemoryStore(memory_path=regular)
+    assert loaded.format_priming_context(tmp_path).count("KEEP-INSIDE") == 1
+
+
 def test_failed_save_keeps_memory_and_outside_canary(tmp_path: Path, monkeypatch) -> None:
     original = '{"workspaces": {}, "episodes": [], "facts": []}\n'
     path = tmp_path / "brain_memory.json"

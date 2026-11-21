@@ -142,7 +142,9 @@ class CognitiveMemoryStore:
 
     def _load(self) -> None:
         path = self.memory_path
-        if path.is_symlink() or not path.is_file():
+        from tiancode.core.path_safety import is_shared_hardlink
+
+        if path.is_symlink() or is_shared_hardlink(path) or not path.is_file():
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
