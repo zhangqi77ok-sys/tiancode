@@ -8,31 +8,59 @@ from typing import Any, Dict, Optional
 
 
 def get_default_config_path() -> Path:
-    """Return ~/.tiancode/config.json path or TIANCODE_CONFIG_PATH override."""
+    """Return ~/.tiancode/config.json path or TIANCODE_CONFIG_PATH override.
+
+    The last path component is not resolved, so a symlink is not followed.
+    """
     env_override = os.environ.get("TIANCODE_CONFIG_PATH")
-    if env_override:
-        return Path(env_override).resolve()
-    return Path.home() / ".tiancode" / "config.json"
+    if not env_override:
+        return Path.home() / ".tiancode" / "config.json"
+    raw = Path(env_override).expanduser()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    try:
+        parent = raw.parent.resolve()
+    except OSError:
+        parent = raw.parent.absolute()
+    return parent / raw.name
 
 
 def load_user_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Read configuration from persistent file."""
+    """Read configuration from a regular file. A symlink is not followed."""
     path = config_path or get_default_config_path()
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8-sig") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    if path.is_symlink() or not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            loaded = json.load(handle)
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _replace_private_config(path: Path, data: Dict[str, Any]) -> None:
+    """Write config as a private regular file. Do not follow a symlink."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    if temporary.is_symlink() or temporary.exists():
+        temporary.unlink()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.replace(temporary, path)
 
 
 def save_user_config(data: Dict[str, Any], config_path: Optional[Path] = None) -> None:
-    """Save configuration dictionary into persistent file."""
+    """Save configuration into a private regular file."""
     path = config_path or get_default_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    _replace_private_config(path, data)
 
 
 @dataclass
