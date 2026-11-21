@@ -5,6 +5,7 @@ The canary is local fake text. The test does not use a credential or the network
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -209,3 +210,45 @@ def test_memory_diff_does_not_replay_a_secret_snapshot(tmp_path: Path) -> None:
     assert "KEEP-INSIDE" in blob
     assert "CANARY-OUTSIDE" not in blob
     assert "未读取内容" in blob
+
+
+def _without_git_config_env(monkeypatch) -> None:
+    for key in list(os.environ):
+        if key.startswith("GIT_CONFIG_"):
+            monkeypatch.delenv(key, raising=False)
+
+
+def test_quoted_unicode_secret_diff_hides_the_body(tmp_path: Path, monkeypatch) -> None:
+    _without_git_config_env(monkeypatch)
+    work = tmp_path / "repo"
+    work.mkdir()
+    _init_repo(work)
+    _git(work, "config", "core.quotePath", "true")
+    secret = work / "文档" / ".env"
+    secret.parent.mkdir()
+    secret.write_text("OLD\n", encoding="utf-8")
+    notes = work / "sub" / "b" / "notes.txt"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("OLD\n", encoding="utf-8")
+    (work / "keep.txt").write_text("OLD\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "seed")
+    secret.write_text("CANARY-OUTSIDE\n", encoding="utf-8")
+    notes.write_text("KEEP-B\n", encoding="utf-8")
+    (work / "keep.txt").write_text("KEEP-INSIDE\n", encoding="utf-8")
+    store = GitSnapshotStore(work)
+
+    diffs = store.compute_diffs()
+    blob = "\n".join(item.diff_text for item in diffs)
+    by_name = {item.filename: item.diff_text for item in diffs}
+    commit = store.commit("keep normal edits")
+
+    assert "CANARY-OUTSIDE" not in blob
+    assert "未读取内容" in by_name["文档/.env"]
+    assert by_name["sub/b/notes.txt"].count("KEEP-B") == 1
+    assert "KEEP-INSIDE" in by_name["keep.txt"]
+    assert commit
+    tracked = _git(work, "ls-tree", "-r", "-z", "--name-only", "HEAD").stdout.split("\0")
+    assert "文档/.env" in tracked
+    assert "CANARY-OUTSIDE" not in _git(work, "show", "HEAD:文档/.env").stdout
+    assert secret.read_text(encoding="utf-8") == "CANARY-OUTSIDE\n"
