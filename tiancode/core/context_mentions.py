@@ -15,8 +15,6 @@ _IGNORED_MENTION_DIRS = frozenset({
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
     "__pycache__", ".pytest_cache", "target", "dist", "build", ".idea", ".vscode",
 })
-_SENSITIVE_NAMES = frozenset({".env", "id_rsa", "id_ed25519"})
-_SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
 _MENTION_RE = re.compile(r"(?:^|(?<=[\s(\[\"'，、。：；（]))@([^\s@\"'<>]+)")
 _LINE_RANGE_RE = re.compile(r"^(.+?)#L(\d+)(?:-(\d+))?$")
 
@@ -112,11 +110,9 @@ def _parse_mention_token(raw_token: str) -> Tuple[str, Optional[int], Optional[i
 
 
 def _is_sensitive_or_git_file(rel_posix: str) -> bool:
-    parts = rel_posix.lower().split("/")
-    if ".git" in parts:
-        return True
-    name = parts[-1]
-    return name in _SENSITIVE_NAMES or name.startswith(".env.") or name.endswith(_SENSITIVE_SUFFIXES)
+    from tiancode.core.path_safety import is_credential_path
+
+    return is_credential_path(rel_posix)
 
 
 def _extract_snippet(resolved_file: Path, start_line: Optional[int], end_line: Optional[int]) -> Tuple[int, int, str]:
@@ -171,6 +167,9 @@ def resolve_file_mentions(
     for match in _MENTION_RE.finditer(text):
         path_str, req_start, req_end, has_range = _parse_mention_token(match.group(1))
         if not path_str:
+            continue
+        if _is_sensitive_or_git_file(path_str):
+            warnings.append(f"安全拦截敏感凭证或 Git 内部文件引用: @{path_str}")
             continue
         looks_like_path = has_range or any(ch in path_str for ch in ("/", "\\", "."))
         try:

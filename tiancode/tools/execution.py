@@ -200,10 +200,12 @@ def create_execution_tools(work_dir: Path, timeout: int = 30) -> List[BaseTool]:
         except PermissionError as err:
             return f"❌ {str(err)}"
 
-        from tiancode.core.path_safety import is_shared_hardlink
+        from tiancode.core.path_safety import is_shared_hardlink, names_credential_file
 
         if is_shared_hardlink(resolved):
             return f"❌ 文件 '{filename}' 是硬链接，未读取或运行其内容。"
+        if names_credential_file(filename, resolved, work_dir):
+            return f"❌ 文件 '{filename}' 已跳过：疑似密钥或 Git 内部文件，未读取或运行其内容。"
         if not resolved.exists():
             return f"❌ 运行失败：文件 '{filename}' 不存在！"
 

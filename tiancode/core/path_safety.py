@@ -126,6 +126,39 @@ def restore_snapshot_entry(
     return "已还原原内容"
 
 
+_CREDENTIAL_NAMES = frozenset({".env", "id_rsa", "id_ed25519"})
+_CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+
+
+def is_credential_path(path: Path | str) -> bool:
+    """True when this path text names a credential or a Git internal file.
+
+    Only the path text is inspected. The file is not opened and links are not followed.
+    """
+    raw = path.as_posix() if isinstance(path, Path) else str(path).replace("\\", "/")
+    parts = [part for part in raw.split("/") if part not in ("", ".")]
+    while parts and parts[0] == "..":
+        parts.pop(0)
+    if not parts:
+        return False
+    lowered = [part.lower() for part in parts]
+    if ".git" in lowered:
+        return True
+    name = lowered[-1]
+    return name in _CREDENTIAL_NAMES or name.startswith(".env.") or name.endswith(_CREDENTIAL_SUFFIXES)
+
+
+def names_credential_file(filename: str, entry: Path, work_dir: Path) -> bool:
+    """True when the requested name or the workspace entry names a credential file."""
+    if is_credential_path(filename):
+        return True
+    try:
+        relative = entry.resolve().relative_to(work_dir.resolve())
+    except (OSError, ValueError):
+        relative = Path(entry.name)
+    return is_credential_path(relative)
+
+
 def is_shared_hardlink(path: Path) -> bool:
     """True when this name is a regular file with another directory entry.
 
