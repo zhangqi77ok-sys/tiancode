@@ -55,7 +55,11 @@ def iter_message_events(
 def persist_engine_session(engine: "TianCodeEngine", thread_id: str, config: Dict[str, Any]) -> None:
     """Persist graph messages, active plan, snapshots, usage metrics, and episode memory."""
     try:
-        state = engine.graph.get_state(config)
+        graph = getattr(engine, "graph", None)
+        get_state = getattr(graph, "get_state", None)
+        if not callable(get_state):
+            return
+        state = get_state(config)
         all_messages = close_pending_tool_calls(list(state.values.get("messages") or []))
         exported_snapshots = (
             engine.snapshot_store.export_snapshots()
@@ -172,7 +176,11 @@ def repair_pending_tool_calls(engine: "TianCodeEngine", config: Dict[str, Any]) 
     commits that step together with the synthetic tool results and clears the
     task, so the next user message is not appended after an open tool call.
     """
-    state = engine.graph.get_state(config)
+    graph = getattr(engine, "graph", None)
+    get_state = getattr(graph, "get_state", None)
+    if not callable(get_state):
+        return False
+    state = get_state(config)
     values = getattr(state, "values", None) or {}
     messages = list(values.get("messages") or [])
     repaired = close_pending_tool_calls(messages)

@@ -155,6 +155,21 @@ def _print_startup_hints(engine: TianCodeEngine) -> None:
         summary = mcp.status_summary()
         if summary:
             TerminalFormatter.print_info(f"🔌 MCP 服务: {summary} (/mcp 查看详情)")
+    else:
+        mgr = getattr(engine, "mcp_manager", None)
+        if mgr is not None:
+            err_fn = getattr(mgr, "get_config_errors", None) or getattr(mgr, "config_errors", None)
+            if callable(err_fn):
+                for err in err_fn():
+                    TerminalFormatter.print_warning(str(err))
+            st_fn = getattr(mgr, "get_server_statuses", None) or getattr(mgr, "statuses", None)
+            if callable(st_fn):
+                statuses = st_fn()
+                if statuses:
+                    connected = [s for s in statuses if getattr(s, "connected", False)]
+                    parts = [f"{s.name}({getattr(s, 'tool_count', 0)} tools)" for s in connected]
+                    if parts:
+                        TerminalFormatter.print_info(f"🔌 MCP 服务: {', '.join(parts)} (/mcp 查看详情)")
 
 
 def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None:

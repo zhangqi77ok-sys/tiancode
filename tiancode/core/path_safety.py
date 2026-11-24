@@ -58,14 +58,26 @@ def restore_workspace_text(entry: Path, content: str) -> None:
             raise WorkspacePathError(f"回滚临时文件是符号链接: {temporary.name}")
         temporary.unlink()
     fd = os.open(temporary, flags, 0o644)
+    fd_closed = False
     try:
-        if kept_mode is not None:
+        if kept_mode is not None and hasattr(os, "fchmod"):
             os.fchmod(fd, kept_mode)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd_closed = True
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        if kept_mode is not None and not hasattr(os, "fchmod"):
+            try:
+                os.chmod(temporary, kept_mode)
+            except OSError:
+                pass
     except Exception:
+        if not fd_closed:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         temporary.unlink(missing_ok=True)
         raise
     os.replace(temporary, entry)
