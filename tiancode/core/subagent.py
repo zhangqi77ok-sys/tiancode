@@ -9,7 +9,7 @@ from tiancode.core.tool_dispatcher import SafeToolDispatcher
 from tiancode.domain.models import SubagentReport
 from tiancode.tools.file_ops import IGNORED_DIR_NAMES, resolve_safe_path
 
-MAX_SUBAGENT_STEPS = 4
+MAX_SUBAGENT_STEPS = 8
 
 SUBAGENT_SYSTEM_PROMPT = """你是一个在独立沙箱中工作的只读型子智能体（TianCode Subagent: {role}）。
 你的唯一职责是：深度检索代码、排查日志、分析架构并提炼事实。
@@ -62,6 +62,9 @@ class SubagentRunner:
             matched = []
             for root, dirs, files in os.walk(target):
                 dirs[:] = [d for d in dirs if d.lower() not in IGNORED_DIR_NAMES and not d.startswith(".")]
+                if len(Path(root).relative_to(target).parts) > 4:
+                    dirs.clear()
+                    continue
                 for f in files:
                     if f.endswith(exts):
                         full_p = Path(root, f)
@@ -73,13 +76,20 @@ class SubagentRunner:
                             continue
                         rel = full_p.relative_to(target)
                         matched.append(str(rel))
-            return f"当前项目文件：{matched}" if matched else "目录为空或未发现代码文件。"
+                        if len(matched) >= 120:
+                            break
+                if len(matched) >= 120:
+                    break
+            if not matched:
+                return "目录为空或未发现代码文件。"
+            trunc_note = " (已显示前 120 个文件)" if len(matched) >= 120 else ""
+            return f"当前项目文件{trunc_note}：{matched}"
 
         @tool
-        def get_repo_map() -> str:
-            """获取当前工程的代码拓扑全景图。"""
+        def get_repo_map(directory: str = ".") -> str:
+            """获取当前工程或指定子目录的代码拓扑全景图。"""
             from tiancode.core.repo_map import generate_repo_map
-            return generate_repo_map(self.work_dir)
+            return generate_repo_map(self.work_dir, directory=directory)
 
         from tiancode.core.search import create_search_tools
         return [list_files, get_repo_map, *create_search_tools(self.work_dir, IGNORED_DIR_NAMES)]

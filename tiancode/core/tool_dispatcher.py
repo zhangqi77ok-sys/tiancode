@@ -1,8 +1,9 @@
 """Safe tool dispatcher with parallel read-only execution and Doom-Loop circuit breaking."""
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import json
-from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Tuple
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 
@@ -21,12 +22,13 @@ DEFAULT_MAX_LOOP_REPEATS = 3
 
 
 class DoomLoopDetector:
-    """Detects and breaks consecutive identical tool call loops to protect token budget."""
+    """Detects consecutive and alternating ping-pong tool call loops to protect token budget."""
 
     def __init__(self, max_repeats: int = DEFAULT_MAX_LOOP_REPEATS) -> None:
         self.max_repeats = max(2, max_repeats)
         self._last_signature: Optional[str] = None
         self._repeat_count: int = 0
+        self._history: Deque[str] = deque(maxlen=8)
 
     @staticmethod
     def _build_signature(name: str, args: Any) -> str:
@@ -36,20 +38,35 @@ class DoomLoopDetector:
             args_canon = str(args)
         return f"{name}|{args_canon}"
 
+    def _is_ping_pong_loop(self) -> bool:
+        """Detect A -> B -> A -> B -> A alternating cycle across recent calls."""
+        if len(self._history) < 5:
+            return False
+        a, b, c, d, e = (
+            self._history[-5],
+            self._history[-4],
+            self._history[-3],
+            self._history[-2],
+            self._history[-1],
+        )
+        return a == c == e and b == d and a != b
+
     def should_block(self, name: str, args: Any) -> bool:
-        """Record call signature and return True if consecutive repetition hits threshold."""
+        """Record call signature and return True if consecutive or ping-pong loop hits threshold."""
         sig = self._build_signature(name, args)
+        self._history.append(sig)
         if sig == self._last_signature:
             self._repeat_count += 1
         else:
             self._last_signature = sig
             self._repeat_count = 1
-        return self._repeat_count >= self.max_repeats
+        return self._repeat_count >= self.max_repeats or self._is_ping_pong_loop()
 
     def reset(self) -> None:
         """Clear loop tracking state on session reset or switch."""
         self._last_signature = None
         self._repeat_count = 0
+        self._history.clear()
 
 
 class SafeToolDispatcher:

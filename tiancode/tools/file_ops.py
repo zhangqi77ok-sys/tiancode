@@ -1,5 +1,6 @@
 """File operations tools with visual diff rendering, snapshot rollback, and post-edit self-healing."""
 
+import difflib
 import os
 import subprocess
 import sys
@@ -57,6 +58,76 @@ def _find_match_lines(src: str, needle: str) -> List[int]:
     return lines
 
 
+def _try_relaxed_replace(src: str, old_code: str, new_code: str) -> Optional[str]:
+    """Match ignoring trailing spaces and CRLF/LF differences when exactly one window matches."""
+    src_lines = src.splitlines(keepends=True)
+    old_norm = [ln.rstrip() for ln in old_code.replace("\r\n", "\n").splitlines()]
+    if not old_norm or len(old_norm) > len(src_lines):
+        return None
+
+    hits: List[int] = []
+    win = len(old_norm)
+    for start in range(len(src_lines) - win + 1):
+        if [src_lines[start + k].rstrip() for k in range(win)] == old_norm:
+            hits.append(start)
+            if len(hits) > 1:
+                return None
+
+    if len(hits) != 1:
+        return None
+
+    idx = hits[0]
+    eol = "\r\n" if "\r\n" in src else "\n"
+    new_norm = new_code.replace("\r\n", "\n")
+    if src_lines[idx + win - 1].endswith(("\n", "\r")) and not new_norm.endswith("\n"):
+        new_norm += "\n"
+    replacement = new_norm.replace("\n", eol)
+    return "".join(src_lines[:idx]) + replacement + "".join(src_lines[idx + win :])
+
+
+def _format_closest_snippets(src: str, old_code: str, filename: str) -> str:
+    """Return top-2 closest matching line ranges instead of dumping the entire file."""
+    src_lines = src.splitlines()
+    if len(src_lines) <= 40:
+        numbered = "\n".join(f"{i:4d} | {line}" for i, line in enumerate(src_lines, start=1))
+        return f"❌ 替换失败：'{filename}' 中未找到完全匹配的旧代码。文件较短，当前源码如下：\n{numbered}"
+
+    old_lines = old_code.splitlines()
+    win = max(1, min(len(old_lines), len(src_lines)))
+    scored: List[tuple[float, int]] = []
+    step = 1 if len(src_lines) <= 400 else max(1, win // 3)
+    for start in range(0, len(src_lines) - win + 1, step):
+        candidate = "\n".join(src_lines[start : start + win])
+        ratio = difflib.SequenceMatcher(None, old_code, candidate).quick_ratio()
+        if ratio >= 0.45:
+            scored.append((ratio, start))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if not scored:
+        return (
+            f"❌ 替换失败：'{filename}' (共 {len(src_lines)} 行) 中未找到完全匹配的旧代码。"
+            "请先用 grep_search 或 read_file 核实目标行号与准确文本。"
+        )
+
+    blocks: List[str] = []
+    used_starts: List[int] = []
+    for ratio, start in scored:
+        if any(abs(start - u) < win for u in used_starts):
+            continue
+        used_starts.append(start)
+        ctx_start = max(0, start - 1)
+        ctx_end = min(len(src_lines), start + win + 1)
+        snippet = "\n".join(f"{i + 1:4d} | {src_lines[i]}" for i in range(ctx_start, ctx_end))
+        blocks.append(f"候选位置 L{ctx_start + 1}-L{ctx_end} (相似度 {ratio:.0%})：\n{snippet}")
+        if len(blocks) >= 2:
+            break
+
+    return (
+        f"❌ 替换失败：'{filename}' 中未找到完全匹配的旧代码。最接近的片段如下（请复制纯正文，勿带行号）：\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
 def _print_visual_diff(diff) -> None:
     """Safely print visual diff via TerminalFormatter without tight coupling."""
     try:
@@ -66,7 +137,20 @@ def _print_visual_diff(diff) -> None:
         pass
 
 
-def _run_post_edit_verification(work_dir: Path) -> Optional[str]:
+def _resolve_targeted_test_cmd(work_dir: Path, base_cmd: str, filename: Optional[str]) -> str:
+    """Narrow pytest command to matching module test file when available for faster feedback."""
+    if not filename or "pytest" not in base_cmd:
+        return base_cmd
+    edited = Path(filename)
+    if edited.name.startswith("test_") and edited.suffix == ".py" and (work_dir / edited).is_file():
+        return f"pytest {edited.as_posix()} -q"
+    candidate = work_dir / "tests" / f"test_{edited.stem}.py"
+    if candidate.is_file():
+        return f"pytest tests/test_{edited.stem}.py -q"
+    return base_cmd
+
+
+def _run_post_edit_verification(work_dir: Path, filename: Optional[str] = None) -> Optional[str]:
     """Helper to detect and run project test suite for self-healing verification with safety and env scrubbing."""
     from tiancode.core.polyglot import detect_project_test_command
     from tiancode.tools.execution import get_sanitized_env, is_dangerous_command
@@ -74,6 +158,7 @@ def _run_post_edit_verification(work_dir: Path) -> Optional[str]:
     cmd = detect_project_test_command(work_dir)
     if not cmd:
         return None
+    cmd = _resolve_targeted_test_cmd(work_dir, cmd, filename)
 
     if is_dangerous_command(cmd):
         return "自动化测试安全拦截：检测到高危测试命令，已阻止执行。"
@@ -165,10 +250,10 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         return f"当前项目文件{trunc_note}：{matched}"
 
     @tool
-    def get_repo_map() -> str:
-        """获取当前工程的代码拓扑全景图（包含全部模块的类、函数与方法签名）。在定位跨模块调用或不熟悉大型项目结构时优先调用此工具。"""
+    def get_repo_map(directory: str = ".") -> str:
+        """获取当前工程或指定子目录的代码拓扑全景图（包含模块类、函数与方法签名）。定位跨模块调用或不熟悉项目结构时优先调用。"""
         from tiancode.core.repo_map import generate_repo_map
-        return generate_repo_map(work_dir)
+        return generate_repo_map(work_dir, directory=directory)
 
     from tiancode.core.search import create_search_tools
     search_tools = create_search_tools(work_dir, IGNORED_DIR_NAMES)
@@ -201,7 +286,7 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
 
         summary = f"✅ 文件 '{filename}' {action_label} (+{diff.additions} / -{diff.deletions})"
         if auto_heal:
-            test_res = _run_post_edit_verification(work_dir)
+            test_res = _run_post_edit_verification(work_dir, filename)
             if test_res:
                 summary += f"，{test_res}"
         return summary
@@ -273,7 +358,11 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
 
         match_lines = _find_match_lines(src, old_code)
         if not match_lines:
-            return f"❌ 替换失败：文件中未找到完全匹配的旧代码！当前源码如下，请对照后再修改：\n{src}"
+            if not replace_all:
+                relaxed = _try_relaxed_replace(src, old_code, new_code)
+                if relaxed is not None:
+                    return _persist_change(target, src, relaxed, filename=filename, is_new=False, action_label="局部替换成功")
+            return _format_closest_snippets(src, old_code, filename)
         if len(match_lines) > 1 and not replace_all:
             return (
                 f"❌ 替换拦截：old_code 在 '{filename}' 中匹配到 {len(match_lines)} 处（位于第 {match_lines} 行），"

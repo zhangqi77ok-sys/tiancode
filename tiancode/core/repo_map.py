@@ -10,6 +10,7 @@ DEFAULT_MAX_REPO_FILES = 120
 DEFAULT_MAX_REPO_CHARS = 16_000
 _EXTRA_IGNORED_DIRS: Set[str] = {"env", "tiancode.egg-info"}
 _JS_TS_EXTS: Tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_POLYGLOT_EXTS: Tuple[str, ...] = (".java", ".go", ".rs")
 _TS_DECL_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("class", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)")),
     ("interface", re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)")),
@@ -18,6 +19,26 @@ _TS_DECL_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("function", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)")),
     ("function", re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>")),
 )
+_POLYGLOT_DECL_PATTERNS: Dict[str, Tuple[Tuple[str, re.Pattern[str]], ...]] = {
+    ".go": (
+        ("interface", re.compile(r"^\s*type\s+([A-Za-z_]\w*)\s+interface\b")),
+        ("type", re.compile(r"^\s*type\s+([A-Za-z_]\w*)\s+struct\b")),
+        ("function", re.compile(r"^\s*func\s+(?:\([^)]+\)\s*)?([A-Za-z_]\w*)\s*\(([^)]*)")),
+    ),
+    ".java": (
+        ("interface", re.compile(r"^\s*(?:public\s+|protected\s+|private\s+)?interface\s+([A-Za-z_]\w*)")),
+        ("enum", re.compile(r"^\s*(?:public\s+|protected\s+|private\s+)?enum\s+([A-Za-z_]\w*)")),
+        ("class", re.compile(r"^\s*(?:public\s+|protected\s+|private\s+)?(?:abstract\s+|final\s+)?(?:class|record)\s+([A-Za-z_]\w*)")),
+        ("function", re.compile(r"^\s*(?:public|protected|private)\s+(?:static\s+)?(?:[\w<>\[\], ?]+)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)")),
+    ),
+    ".rs": (
+        ("interface", re.compile(r"^\s*(?:pub(?:\([^)]+\))?\s+)?trait\s+([A-Za-z_]\w*)")),
+        ("enum", re.compile(r"^\s*(?:pub(?:\([^)]+\))?\s+)?enum\s+([A-Za-z_]\w*)")),
+        ("type", re.compile(r"^\s*(?:pub(?:\([^)]+\))?\s+)?struct\s+([A-Za-z_]\w*)")),
+        ("class", re.compile(r"^\s*impl(?:<[^>]+>)?\s+([A-Za-z_][\w:<> ]*)")),
+        ("function", re.compile(r"^\s*(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\(([^)]*)")),
+    ),
+}
 
 
 def _format_line_range(node: ast.AST) -> str:
@@ -82,18 +103,21 @@ def extract_file_symbols(code: str) -> List[Dict[str, Any]]:
     return symbols
 
 
-def extract_ts_symbols(code: str) -> List[Dict[str, Any]]:
-    """Extract top-level classes, interfaces, types, enums, and functions from TS/JS code."""
+def _extract_regex_symbols(
+    code: str,
+    patterns: Tuple[Tuple[str, re.Pattern[str]], ...],
+) -> List[Dict[str, Any]]:
+    """Extract top-level declarations using uniform line-by-line regex rules."""
     symbols: List[Dict[str, Any]] = []
     for lineno, line in enumerate(code.splitlines(), start=1):
         stripped = line.lstrip()
         if not stripped or stripped.startswith(("//", "/*", "*")):
             continue
-        for kind, pattern in _TS_DECL_PATTERNS:
+        for kind, pattern in patterns:
             m = pattern.match(line)
             if not m:
                 continue
-            name = m.group(1)
+            name = m.group(1).strip()
             if kind == "function" and m.lastindex and m.lastindex >= 2:
                 params = " ".join(m.group(2).split())[:40]
                 name = f"{name}({params})"
@@ -102,6 +126,11 @@ def extract_ts_symbols(code: str) -> List[Dict[str, Any]]:
             symbols.append({"type": kind, "name": name, "line_range": f"L{lineno}", "methods": []})
             break
     return symbols
+
+
+def extract_ts_symbols(code: str) -> List[Dict[str, Any]]:
+    """Extract top-level classes, interfaces, types, enums, and functions from TS/JS code."""
+    return _extract_regex_symbols(code, _TS_DECL_PATTERNS)
 
 
 def _filter_safe_dirs(root: str, dirs: List[str], resolved_dir: Path, ignored: Set[str]) -> List[str]:
@@ -121,9 +150,15 @@ def _filter_safe_dirs(root: str, dirs: List[str], resolved_dir: Path, ignored: S
 def _render_file_block(src_file: str, real_file: Path) -> List[str]:
     """Read a source file and format its AST/regex symbol block with jumpable line ranges."""
     is_py = src_file.endswith(".py")
+    ext = Path(src_file).suffix.lower()
     try:
         content = real_file.read_text(encoding="utf-8", errors="replace")
-        symbols = extract_file_symbols(content) if is_py else extract_ts_symbols(content)
+        if is_py:
+            symbols = extract_file_symbols(content)
+        elif ext in _POLYGLOT_DECL_PATTERNS:
+            symbols = _extract_regex_symbols(content, _POLYGLOT_DECL_PATTERNS[ext])
+        else:
+            symbols = extract_ts_symbols(content)
     except Exception:
         symbols = []
 
@@ -148,16 +183,22 @@ def _render_file_block(src_file: str, real_file: Path) -> List[str]:
     return block
 
 
-def _iter_valid_source_files(resolved_dir: Path, max_depth: int, ignored: Set[str]) -> Iterator[Tuple[str, str, Path]]:
-    """Yield (folder_header, filename, resolved_path) for workspace-contained Python/TS/JS files."""
-    supported = (".py",) + _JS_TS_EXTS
-    for root, dirs, files in os.walk(resolved_dir):
-        dirs[:] = _filter_safe_dirs(root, dirs, resolved_dir, ignored)
-        rel_root = Path(root).relative_to(resolved_dir)
-        if len(rel_root.parts) > max_depth:
+def _iter_valid_source_files(
+    scan_dir: Path,
+    resolved_root: Path,
+    max_depth: int,
+    ignored: Set[str],
+) -> Iterator[Tuple[str, str, Path]]:
+    """Yield (folder_header, filename, resolved_path) for workspace-contained source files."""
+    supported = (".py",) + _JS_TS_EXTS + _POLYGLOT_EXTS
+    for root, dirs, files in os.walk(scan_dir):
+        dirs[:] = _filter_safe_dirs(root, dirs, resolved_root, ignored)
+        rel_scan = Path(root).relative_to(scan_dir)
+        if len(rel_scan.parts) > max_depth:
             dirs.clear()
             continue
 
+        rel_root = Path(root).relative_to(resolved_root)
         folder_header = f"\n📁 {rel_root}" if str(rel_root) != "." else "\n📁 根目录 /"
         for src_file in sorted(f for f in files if f.endswith(supported) and not f.endswith(".d.ts")):
             try:
@@ -167,7 +208,7 @@ def _iter_valid_source_files(resolved_dir: Path, max_depth: int, ignored: Set[st
                 if is_shared_hardlink(entry):
                     continue
                 real_file = entry.resolve()
-                if real_file.is_relative_to(resolved_dir) and real_file.is_file():
+                if real_file.is_relative_to(resolved_root) and real_file.is_file():
                     yield folder_header, src_file, real_file
             except OSError:
                 continue
@@ -189,13 +230,21 @@ def generate_repo_map(
     work_dir: Path,
     max_depth: int = 4,
     *,
+    directory: str = ".",
     max_files: int = DEFAULT_MAX_REPO_FILES,
     max_chars: int = DEFAULT_MAX_REPO_CHARS,
 ) -> str:
-    """Scan work_dir and format a bounded AST code topology map with line numbers."""
-    from tiancode.tools.file_ops import IGNORED_DIR_NAMES
+    """Scan work_dir (or scoped subdirectory) and format a bounded AST/regex code topology map."""
+    from tiancode.tools.file_ops import IGNORED_DIR_NAMES, resolve_safe_path
 
     resolved_dir = work_dir.resolve()
+    try:
+        scan_dir = resolve_safe_path(directory, work_dir)
+    except PermissionError as err:
+        return f"❌ {str(err)}"
+    if not scan_dir.exists() or not scan_dir.is_dir():
+        return f"❌ 目录 '{directory}' 不存在或不是有效目录！"
+
     ignored = {d.lower() for d in IGNORED_DIR_NAMES} | _EXTRA_IGNORED_DIRS
     lines = ["🗺️ ====== [TianCode 项目代码全景图 (Repo Map)] ======"]
     char_count = len(lines[0]) + 1
@@ -203,7 +252,7 @@ def generate_repo_map(
     last_folder = ""
     truncated_reason = ""
 
-    for folder_header, src_file, real_file in _iter_valid_source_files(resolved_dir, max_depth, ignored):
+    for folder_header, src_file, real_file in _iter_valid_source_files(scan_dir, resolved_dir, max_depth, ignored):
         if rendered_files >= max_files:
             truncated_reason = f"已达文件数上限 {max_files}"
             break
@@ -225,7 +274,7 @@ def generate_repo_map(
         rendered_files += 1
 
     if not rendered_files:
-        return "💡 当前项目未检测到有效的源代码文件 (.py / .ts / .js)。"
+        return "💡 当前项目未检测到有效的源代码文件 (.py / .ts / .js / .java / .go / .rs)。"
     if truncated_reason:
         lines.append(f"\n⚠️ [全景图输出已截断 ({truncated_reason}，共展示 {rendered_files} 个文件)；请使用 grep_search 或 list_files 按子目录精准定位]")
     lines.append("\n======================================================\n")

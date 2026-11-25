@@ -87,6 +87,8 @@ class TianCodeEngine:
         # Track config file modification time for JIT dynamic sync
         self._last_config_mtime: float = 0.0
         self._init_config_mtime()
+        # Per-task immutable system prompt snapshot to preserve provider KV Prompt Cache
+        self._task_system_prompt: Optional[str] = None
 
     def _select_snapshot_store(self, work_dir: Path) -> SnapshotStore:
         git_store = GitSnapshotStore(work_dir=work_dir)
@@ -103,6 +105,7 @@ class TianCodeEngine:
             self.snapshot_store = self._select_snapshot_store(target_path)
         self.subagent_runner.work_dir = target_path
         self.skill_loader.workspace_dir = target_path
+        self._task_system_prompt = None
         self.reload_llm()
         if hasattr(self, "memory_store"):
             self.memory_store.touch_workspace(target_path, session_id=self.active_session_id)
@@ -196,28 +199,34 @@ class TianCodeEngine:
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         self.graph = self._build_graph()
 
+    def _build_static_system_prompt(self) -> str:
+        """Build the task-scoped static SystemMessage prefix (rules, skills, priming memory)."""
+        skills_catalog = self.skill_loader.format_prompt_catalog()
+        rules_context = self.rules_loader.format_prompt_rules(self.settings.work_dir) if hasattr(self, "rules_loader") else ""
+        memory_context = self.memory_store.format_priming_context(self.settings.work_dir, max_chars=1200) if hasattr(self, "memory_store") else ""
+        return (
+            TIANCODE_SYSTEM_PROMPT
+            + (f"\n{rules_context}" if rules_context else "")
+            + (f"\n{skills_catalog}" if skills_catalog else "")
+            + (f"\n{memory_context}" if memory_context else "")
+        )
+
     def _build_graph(self):
         def brain_node(state: MessagesState) -> Dict[str, Any]:
             max_chars = getattr(self.settings, "max_context_chars", 40000)
             if not isinstance(max_chars, int):
                 max_chars = 40000
             trimmed = prune_messages(state["messages"], max_retained=self.settings.max_history_messages, max_context_chars=max_chars)
-            skills_catalog = self.skill_loader.format_prompt_catalog()
-            rules_context = self.rules_loader.format_prompt_rules(self.settings.work_dir) if hasattr(self, "rules_loader") else ""
-            memory_context = self.memory_store.format_priming_context(self.settings.work_dir, max_chars=1200) if hasattr(self, "memory_store") else ""
-            plan_context = ""
-            if self.planner.active_plan and not self.planner.active_plan.is_finished:
-                plan_context = "\n" + self.planner.format_worker_prompt_context(self.planner.active_plan)
+            static_prompt = getattr(self, "_task_system_prompt", None) or self._build_static_system_prompt()
+            sys_msg = SystemMessage(content=static_prompt)
 
-            full_prompt = (
-                TIANCODE_SYSTEM_PROMPT
-                + (f"\n{rules_context}" if rules_context else "")
-                + (f"\n{skills_catalog}" if skills_catalog else "")
-                + (f"\n{memory_context}" if memory_context else "")
-                + plan_context
-            )
-            sys_msg = SystemMessage(content=full_prompt)
-            response = self.llm_with_tools.invoke([sys_msg] + trimmed)
+            invoke_messages: List[Any] = [sys_msg, *trimmed]
+            # Keep dynamic plan state at the tail so the SystemMessage prefix stays cache-stable across tool loops
+            if self.planner.active_plan and not self.planner.active_plan.is_finished:
+                plan_context = self.planner.format_worker_prompt_context(self.planner.active_plan)
+                invoke_messages.append(HumanMessage(content=f"[当前任务计划状态]\n{plan_context}"))
+
+            response = self.llm_with_tools.invoke(invoke_messages)
             if hasattr(self, "usage_tracker") and getattr(response, "usage_metadata", None):
                 self.usage_tracker.record_turn(model=self.settings.model, usage_metadata=response.usage_metadata)
             return {"messages": [response]}
@@ -247,6 +256,8 @@ class TianCodeEngine:
 
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
         repair_pending_tool_calls(self, config)
+        # Snapshot static prompt once per task to eliminate per-step disk scans and preserve KV cache
+        self._task_system_prompt = self._build_static_system_prompt()
         seen_tools: set = set()
         splitter = ThinkTagStreamSplitter()
         before_tokens = self.usage_tracker.get_session_stats()[0].total_tokens if hasattr(self, "usage_tracker") else 0

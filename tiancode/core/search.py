@@ -3,6 +3,9 @@
 import fnmatch
 import os
 import re
+import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional, Set
@@ -127,6 +130,81 @@ def _scan_file_lines(file_path: Path, resolved_root: Path, regex: re.Pattern, *,
     return hits
 
 
+def _is_rg_path_safe(fpath_str: str, resolved_root: Path, cache: dict[str, bool]) -> bool:
+    """Verify and cache that a ripgrep-matched path is contained and neither a hardlink nor credential."""
+    cached = cache.get(fpath_str)
+    if cached is not None:
+        return cached
+    from tiancode.core.path_safety import is_credential_path, is_shared_hardlink
+
+    p = resolved_root / fpath_str
+    try:
+        real_p = p.resolve()
+        safe = (
+            not is_shared_hardlink(p)
+            and real_p.is_relative_to(resolved_root)
+            and not is_credential_path(p.relative_to(resolved_root))
+            and not is_credential_path(real_p.relative_to(resolved_root))
+        )
+    except (OSError, ValueError):
+        safe = False
+    cache[fpath_str] = safe
+    return safe
+
+
+def _try_ripgrep_search(
+    target: Path,
+    resolved_root: Path,
+    options: GrepOptions,
+) -> Optional[List[str]]:
+    """Fast-path search via system ripgrep while enforcing credential, hardlink, and containment guards."""
+    rg_bin = shutil.which("rg")
+    if not rg_bin or not target.is_dir():
+        return None
+
+    rel_target = target.resolve().relative_to(resolved_root).as_posix() or "."
+    cmd = [rg_bin, "--no-heading", "--line-number", "--color=never", "--no-ignore", "--max-filesize=2M"]
+    if not options.is_regex:
+        cmd.append("--fixed-strings")
+    if not options.case_sensitive:
+        cmd.append("--ignore-case")
+    if options.file_glob and options.file_glob != "*":
+        cmd.extend(["--glob", options.file_glob])
+    for d in sorted(options.ignored_dirs):
+        cmd.extend(["--glob", f"!{d}/**"])
+    cmd.extend(["--glob", "!.*/*", "-e", options.pattern, rel_target])
+
+    try:
+        creationflags = 0x08000000 if sys.platform == "win32" else 0
+        proc = subprocess.run(
+            cmd, cwd=str(resolved_root), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5, creationflags=creationflags,
+        )
+    except Exception:
+        return None
+
+    if proc.returncode not in (0, 1):
+        return None
+
+    hits: List[str] = []
+    checked_safe: dict[str, bool] = {}
+    for raw_line in proc.stdout.splitlines():
+        parts = raw_line.split(":", 2)
+        if len(parts) < 3 or not parts[1].isdigit():
+            continue
+        fpath_str, lineno_str, text = parts[0], parts[1], parts[2]
+        if not _is_rg_path_safe(fpath_str, resolved_root, checked_safe):
+            continue
+        rel_posix = (resolved_root / fpath_str).resolve().relative_to(resolved_root).as_posix()
+        clean = text.rstrip("\r\n")
+        if len(clean) > MAX_LINE_SNIPPET_CHARS:
+            clean = clean[:MAX_LINE_SNIPPET_CHARS] + "... [已截断]"
+        hits.append(f"{rel_posix}:{lineno_str}: {clean}")
+        if len(hits) >= options.max_results:
+            break
+    return hits
+
+
 def search_workspace(work_dir: Path, options: GrepOptions, ignored_dirs: Set[str]) -> str:
     """Execute sandboxed content search across workspace text files."""
     if not options.pattern:
@@ -155,11 +233,13 @@ def search_workspace(work_dir: Path, options: GrepOptions, ignored_dirs: Set[str
         max_results=max(1, min(options.max_results, 200)),
         ignored_dirs=options.ignored_dirs or ignored_dirs,
     )
-    matches: List[str] = []
-    for fpath in _iter_safe_files(target, resolved_root, scoped_opts):
-        matches.extend(_scan_file_lines(fpath, resolved_root, regex, remaining=scoped_opts.max_results - len(matches)))
-        if len(matches) >= scoped_opts.max_results:
-            break
+    matches = _try_ripgrep_search(target, resolved_root, scoped_opts)
+    if matches is None:
+        matches = []
+        for fpath in _iter_safe_files(target, resolved_root, scoped_opts):
+            matches.extend(_scan_file_lines(fpath, resolved_root, regex, remaining=scoped_opts.max_results - len(matches)))
+            if len(matches) >= scoped_opts.max_results:
+                break
 
     if not matches:
         return f"🔍 未在 '{options.directory}' (过滤: {options.file_glob}) 中找到匹配 '{options.pattern}' 的内容。"
