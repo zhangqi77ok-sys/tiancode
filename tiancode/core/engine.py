@@ -250,6 +250,7 @@ class TianCodeEngine:
 
     def stream_task(self, prompt: str, thread_id: str = "tiancode_default") -> Generator[Dict[str, Any], None, None]:
         """Stream real-time thinking, tokens, tool lifecycle events, and turn usage telemetry."""
+        self.active_session_id = thread_id
         if self.sync_config_if_changed():
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")

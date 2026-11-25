@@ -32,7 +32,8 @@ def create_memory_tools(engine: "TianCodeEngine") -> List[BaseTool]:
         lines = [f"🧠 【联想记忆召回: '{query}' (命中 {len(hits)} 条)】"]
         for i, h in enumerate(hits, start=1):
             ws_tag = f" | 目录: {h.workspace_path}" if h.workspace_path else ""
-            lines.append(f"{i}. [{h.source_type}] ({h.context_label}{ws_tag})\n   {h.snippet}")
+            tier = "生效规范" if h.source_type == "fact" else "历史留痕·仅供参考"
+            lines.append(f"{i}. [{tier} / {h.source_type}] ({h.context_label}{ws_tag})\n   {h.snippet}")
         return "\n".join(lines)
 
     @tool
@@ -49,7 +50,7 @@ def create_memory_tools(engine: "TianCodeEngine") -> List[BaseTool]:
                 workspace_path=str(engine.settings.work_dir),
                 source_session_id=getattr(engine, "active_session_id", ""),
             )
-            return f"🧠 已记住长期认知 [{saved.scope.value}/{saved.key}]: {saved.content}"
+            return f"🧠 已记住并持久化生效 [{saved.scope.value}/{saved.key}]: {saved.content}（无需再调用 recall_memory 核对）"
         except Exception as exc:
             return f"❌ 写入记忆失败: {exc}"
 

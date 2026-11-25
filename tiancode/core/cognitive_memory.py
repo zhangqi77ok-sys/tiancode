@@ -160,6 +160,19 @@ def _jaccard_overlap(tokens_a: Sequence[str], tokens_b: Sequence[str]) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def _smart_clip(text: str, limit: int) -> str:
+    """Clip text cleanly near punctuation or word boundaries to avoid mid-word cuts."""
+    clean = text.replace("\n", " ").strip()
+    if len(clean) <= limit:
+        return clean
+    window = clean[:limit]
+    for sep in ("。", "；", "！", "？", ". ", "; ", " "):
+        pos = window.rfind(sep)
+        if pos >= int(limit * 0.6):
+            return window[: pos + (0 if sep == " " else 1)].rstrip()
+    return window.rstrip()
+
+
 class CognitiveMemoryStore:
     """Thread-safe atomic JSON store for cross-session Workspace, Episodic, and Semantic memories."""
 
@@ -320,8 +333,8 @@ class CognitiveMemoryStore:
         human_texts = [txt for role, txt in parsed if role == "human" and txt]
         ai_texts = [txt for role, txt in parsed if role == "ai" and txt]
 
-        intent = (human_texts[-1] if human_texts else (getattr(plan, "task_title", "") or "常规工作会话"))[:180].replace("\n", " ")
-        tail_ai = (ai_texts[-1][:220].replace("\n", " ") if ai_texts else "")
+        intent = _smart_clip(human_texts[-1] if human_texts else (getattr(plan, "task_title", "") or "常规工作会话"), 180)
+        tail_ai = _smart_clip(ai_texts[-1], 220) if ai_texts else ""
         files = list(dict.fromkeys(modified_files or []))
         pitfalls = _extract_pitfalls(messages)
         summary = " | ".join(p for p in (f"涉及文件: {', '.join(files[:8])}" if files else "", tail_ai) if p) or "已完成对话交互"
@@ -354,6 +367,15 @@ class CognitiveMemoryStore:
                 seen_snippets.add(f.content)
         return expanded
 
+    def _has_invalidated_fact_overlap(self, text: str, inactive_tokens: Sequence[Set[str]]) -> bool:
+        """Detect when historical dialogue snippets reference a superseded or forgotten fact."""
+        if not inactive_tokens:
+            return False
+        snippet_tokens = set(tokenize_search_terms(text))
+        if not snippet_tokens:
+            return False
+        return any(len(ft & snippet_tokens) / len(ft) >= 0.65 for ft in inactive_tokens if ft)
+
     def recall(self, query: str, *, current_work_dir: Optional[Union[Path, str]] = None, session_store: Any = None, top_k: int = 6) -> List[RecallHit]:
         """Associatively rank active facts, episodes (with 1-hop entity expansion & workspace affinity), and history."""
         q_tokens = tokenize_search_terms(query)
@@ -363,6 +385,7 @@ class CognitiveMemoryStore:
         seen_snippets: Set[str] = set()
 
         with self._lock:
+            inactive_tokens = [set(tokenize_search_terms(f.content)) for f in self.facts if not f.is_active]
             for idx, f in enumerate(self.facts):
                 if not f.is_active:
                     continue
@@ -380,7 +403,10 @@ class CognitiveMemoryStore:
                     affinity = 1.35 if (norm_curr and ep.workspace_path == norm_curr) else 1.0
                     pitfall_note = f" | 教训: {ep.pitfalls[0]}" if ep.pitfalls else ""
                     snippet = f"意图: {ep.intent} | 结论: {ep.summary}{pitfall_note}"
-                    hits.append(RecallHit("episode", round(sc * affinity, 4), f"{ep.project_name} [{ep.session_id}]", snippet, ep.updated_at, ep.session_id, ep.workspace_path))
+                    stale_factor = 0.4 if self._has_invalidated_fact_overlap(snippet, inactive_tokens) else 1.0
+                    if stale_factor < 1.0:
+                        snippet = f"[含已废止旧规则] {snippet}"
+                    hits.append(RecallHit("episode", round(sc * affinity * stale_factor, 4), f"{ep.project_name} [{ep.session_id}]", snippet, ep.updated_at, ep.session_id, ep.workspace_path))
                     direct_entities.extend(ep.entities)
             hits.extend(self._expand_entity_hops(list(dict.fromkeys(direct_entities)), seen_snippets, norm_curr))
             if hits:
@@ -391,7 +417,11 @@ class CognitiveMemoryStore:
                 sc = _score_match(q_tokens, f"{item['project']} {item['snippet']}", item["updated_at"], 0.65)
                 if sc > 0:
                     affinity = 1.25 if (norm_curr and _norm_path(item["work_dir"]) == norm_curr) else 1.0
-                    hits.append(RecallHit("session_message", round(sc * affinity, 4), f"{item['project']} [{item['session_id']}]", item["snippet"], item["updated_at"], item["session_id"], item["work_dir"]))
+                    snippet = item["snippet"]
+                    stale_factor = 0.4 if self._has_invalidated_fact_overlap(snippet, inactive_tokens) else 1.0
+                    if stale_factor < 1.0:
+                        snippet = f"[含已废止旧规则] {snippet}"
+                    hits.append(RecallHit("session_message", round(sc * affinity * stale_factor, 4), f"{item['project']} [{item['session_id']}]", snippet, item["updated_at"], item["session_id"], item["work_dir"]))
 
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:max(1, top_k)]
