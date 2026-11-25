@@ -130,7 +130,7 @@ class TerminalFormatter:
     def _dispatch_stream_event(cls, state: "_StreamRenderState", event: Dict[str, Any]) -> None:
         """Route a single LangGraph stream event with single-Live mutual exclusion."""
         ev_type = event.get("type")
-        if ev_type == "thinking" and event.get("content"):
+        if ev_type == "thinking" and str(event.get("content", "")).strip():
             state.stop_spinner()
             state.flush_markdown()
             state.append_thinking(str(event["content"]))
@@ -282,11 +282,9 @@ class _StreamRenderState:
         if self.md_chunks:
             text = "".join(self.md_chunks)
             self.md_chunks.clear()
-            self.header_printed = False
             if text.strip():
                 self.console.print(Padding(render_markdown(text), (0, 2)))
             return
-        self.header_printed = False
 
     def stop_spinner(self) -> None:
         if self.spinner:
