@@ -73,13 +73,46 @@ def get_sanitized_env() -> Dict[str, str]:
     return {key: value for key, value in os.environ.items() if not _is_sensitive_env_name(key)}
 
 
+_ERROR_SIGNAL_MARKERS = (
+    "ERROR", "FAILED", "Traceback", "Exception", "AssertionError",
+    "SyntaxError", "error TS", "FATAL", "Caused by:",
+)
+
+
+def _decode_process_bytes(raw: bytes | str | None) -> str:
+    """Decode subprocess bytes cleanly, falling back from UTF-8 to Windows GBK/CP936."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    for enc in ("utf-8", "gb18030", "cp936") if sys.platform == "win32" else ("utf-8",):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def truncate_output(output: str, max_length: int = 8000) -> str:
-    """Keep head and tail of output when exceeding length."""
+    """Keep head, tail, and high-signal middle error lines when exceeding length."""
     if len(output) <= max_length:
         return output
-    head_len = max_length // 3
-    tail_len = max_length - head_len - 100
-    return f"{output[:head_len]}\n\n... [输出过长已截断，保留头部与尾部关键信息] ...\n\n{output[-tail_len:]}"
+    head_len = max_length // 4
+    tail_len = max_length // 2
+    middle = output[head_len : len(output) - tail_len]
+    signals: List[str] = []
+    for ln in middle.splitlines():
+        clean = ln.strip()
+        if clean and any(tok in clean for tok in _ERROR_SIGNAL_MARKERS):
+            signals.append(clean[:180])
+            if len(signals) >= 12:
+                break
+    mid_block = (
+        "\n\n... [输出过长已截断，抽取中段关键报错行] ...\n" + "\n".join(signals) + "\n...\n\n"
+        if signals
+        else "\n\n... [输出过长已截断，保留头部与尾部关键信息] ...\n\n"
+    )
+    return f"{output[:head_len]}{mid_block}{output[-tail_len:]}"
 
 
 def kill_process_tree(proc: subprocess.Popen) -> None:
@@ -121,30 +154,27 @@ def _run_managed_process(cmd: Any, work_dir: Path, *, use_shell: bool, timeout: 
             shell=use_shell,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=get_sanitized_env(),
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),
         )
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            raw_out, raw_err = proc.communicate(timeout=timeout)
             return ExecutionResult(
                 exit_code=proc.returncode if proc.returncode is not None else 0,
-                stdout=stdout or "",
-                stderr=stderr or "",
+                stdout=_decode_process_bytes(raw_out),
+                stderr=_decode_process_bytes(raw_err),
                 timed_out=False,
             )
         except subprocess.TimeoutExpired:
             kill_process_tree(proc)
             try:
-                stdout, _ = proc.communicate(timeout=2)
+                raw_out, _ = proc.communicate(timeout=2)
             except Exception:
-                stdout = ""
+                raw_out = b""
             return ExecutionResult(
                 exit_code=-1,
-                stdout=stdout or "",
+                stdout=_decode_process_bytes(raw_out),
                 stderr=f"执行超时（超过 {timeout} 秒被强制终止）",
                 timed_out=True,
             )

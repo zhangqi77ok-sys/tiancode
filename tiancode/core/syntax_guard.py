@@ -39,6 +39,8 @@ class SyntaxGuard:
             ".json": self._validate_json,
             ".toml": self._validate_toml,
             ".xml": self._validate_xml,
+            ".yaml": self._validate_yaml,
+            ".yml": self._validate_yaml,
         }
         validator = validators.get(ext)
         if validator is None:
@@ -143,6 +145,31 @@ class SyntaxGuard:
                 lineno=getattr(e, "lineno", 1) or 1,
                 colno=(getattr(e, "offset", 0) or 0) + 1,
                 msg=str(e),
+            )
+
+    def _validate_yaml(self, filename: Union[str, Path], content: str) -> SyntaxCheckResult:
+        """Validate YAML indentation (no leading tabs) and parse with PyYAML if installed."""
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.lstrip(" ")
+            if stripped.startswith("\t"):
+                col = len(line) - len(stripped) + 1
+                return self._build_error_result(
+                    filename, content, error_type="YAMLTabIndentError",
+                    lineno=idx, colno=col, msg="YAML 规范禁止使用 Tab(\\t) 作为缩进，请改为空格。",
+                )
+        try:
+            import yaml  # type: ignore[import-untyped]
+            list(yaml.safe_load_all(content))
+            return SyntaxCheckResult(is_valid=True)
+        except ImportError:
+            return SyntaxCheckResult(is_valid=True)
+        except Exception as e:
+            mark = getattr(e, "problem_mark", None)
+            lineno = (getattr(mark, "line", 0) or 0) + 1
+            colno = (getattr(mark, "column", 0) or 0) + 1
+            return self._build_error_result(
+                filename, content, error_type="YAMLParseError",
+                lineno=lineno, colno=colno, msg=getattr(e, "problem", None) or str(e),
             )
 
     def _format_snippet(self, content: str, error_line: int, error_col: int) -> str:

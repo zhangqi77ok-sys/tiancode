@@ -266,6 +266,8 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         filename: str,
         is_new: bool,
         action_label: str,
+        skip_verify: bool = False,
+        line_hint: str = "",
     ) -> str:
         """Validate syntax, record snapshot, replace the file in place, and run self-heal."""
         from tiancode.core.path_safety import WorkspacePathError, restore_workspace_text
@@ -284,16 +286,17 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
         except (OSError, UnicodeError, WorkspacePathError) as exc:
             return f"❌ 写入已中止，原文件保持不变 ({type(exc).__name__}: {exc})"
 
-        summary = f"✅ 文件 '{filename}' {action_label} (+{diff.additions} / -{diff.deletions})"
-        if auto_heal:
+        hint_part = f" {line_hint}" if line_hint else ""
+        summary = f"✅ 文件 '{filename}' {action_label} (+{diff.additions} / -{diff.deletions}){hint_part}"
+        if auto_heal and not skip_verify:
             test_res = _run_post_edit_verification(work_dir, filename)
             if test_res:
                 summary += f"，{test_res}"
         return summary
 
     @tool
-    def write_file(filename: str, content: str) -> str:
-        """全量新建或覆盖写入文件。符号链接只替换这个名字，不读取目标；/undo 还原链接。"""
+    def write_file(filename: str, content: str, skip_verify: bool = False) -> str:
+        """全量新建或覆盖写入文件；连续编辑多个关联文件时可传 skip_verify=True 跳过中间态单测。"""
         target, error = _mutation_entry(filename)
         if target is None:
             return error
@@ -332,11 +335,14 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
 
         is_new = not target.exists()
         original = "" if is_new else target.read_text(encoding="utf-8", errors="replace")
-        return _persist_change(target, original, content, filename=filename, is_new=is_new, action_label="写入成功")
+        return _persist_change(
+            target, original, content, filename=filename, is_new=is_new,
+            action_label="写入成功", skip_verify=skip_verify,
+        )
 
     @tool
-    def edit_file(filename: str, old_code: str, new_code: str, replace_all: bool = False) -> str:
-        """局部修改文件：将原代码中唯一的 old_code 精准替换为 new_code；若存在多处匹配需补充上下文或显式传 replace_all=True。"""
+    def edit_file(filename: str, old_code: str, new_code: str, replace_all: bool = False, skip_verify: bool = False) -> str:
+        """局部修改文件：精准替换 old_code 为 new_code；连续重构多文件中间态可传 skip_verify=True。"""
         if not old_code:
             return "❌ 替换失败：old_code 不能为空字符串！若需新建或全量覆盖文件，请调用 write_file。"
         target, error = _mutation_entry(filename)
@@ -361,7 +367,10 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             if not replace_all:
                 relaxed = _try_relaxed_replace(src, old_code, new_code)
                 if relaxed is not None:
-                    return _persist_change(target, src, relaxed, filename=filename, is_new=False, action_label="局部替换成功")
+                    return _persist_change(
+                        target, src, relaxed, filename=filename, is_new=False,
+                        action_label="局部替换成功", skip_verify=skip_verify,
+                    )
             return _format_closest_snippets(src, old_code, filename)
         if len(match_lines) > 1 and not replace_all:
             return (
@@ -370,7 +379,12 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             )
 
         modified = src.replace(old_code, new_code) if replace_all else src.replace(old_code, new_code, 1)
-        return _persist_change(target, src, modified, filename=filename, is_new=False, action_label="局部替换成功")
+        total_lines = len(modified.splitlines())
+        line_hint = f"(起于 L{match_lines[0]}，共 {total_lines} 行)" if len(match_lines) == 1 else f"(共替换 {len(match_lines)} 处，共 {total_lines} 行)"
+        return _persist_change(
+            target, src, modified, filename=filename, is_new=False,
+            action_label="局部替换成功", skip_verify=skip_verify, line_hint=line_hint,
+        )
 
     @tool
     def delete_file(filename: str) -> str:
