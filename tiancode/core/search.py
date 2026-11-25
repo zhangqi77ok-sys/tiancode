@@ -205,6 +205,19 @@ def _try_ripgrep_search(
     return hits
 
 
+def _run_search_pass(target: Path, resolved_root: Path, scoped_opts: GrepOptions, regex: re.Pattern) -> List[str]:
+    """Execute one search pass via ripgrep fast-path with pure-Python fallback."""
+    matches = _try_ripgrep_search(target, resolved_root, scoped_opts)
+    if matches is not None:
+        return matches
+    fallback: List[str] = []
+    for fpath in _iter_safe_files(target, resolved_root, scoped_opts):
+        fallback.extend(_scan_file_lines(fpath, resolved_root, regex, remaining=scoped_opts.max_results - len(fallback)))
+        if len(fallback) >= scoped_opts.max_results:
+            break
+    return fallback
+
+
 def search_workspace(work_dir: Path, options: GrepOptions, ignored_dirs: Set[str]) -> str:
     """Execute sandboxed content search across workspace text files."""
     if not options.pattern:
@@ -233,13 +246,22 @@ def search_workspace(work_dir: Path, options: GrepOptions, ignored_dirs: Set[str
         max_results=max(1, min(options.max_results, 200)),
         ignored_dirs=options.ignored_dirs or ignored_dirs,
     )
-    matches = _try_ripgrep_search(target, resolved_root, scoped_opts)
-    if matches is None:
-        matches = []
-        for fpath in _iter_safe_files(target, resolved_root, scoped_opts):
-            matches.extend(_scan_file_lines(fpath, resolved_root, regex, remaining=scoped_opts.max_results - len(matches)))
-            if len(matches) >= scoped_opts.max_results:
-                break
+    matches = _run_search_pass(target, resolved_root, scoped_opts, regex)
+    # Auto-retry as regex when literal search yields 0 hits and pattern clearly uses regex operators
+    if not matches and not scoped_opts.is_regex and any(tok in scoped_opts.pattern for tok in ("|", ".*", "\\b", "\\s", "\\d")):
+        try:
+            regex_opts = GrepOptions(
+                pattern=scoped_opts.pattern,
+                directory=scoped_opts.directory,
+                file_glob=scoped_opts.file_glob,
+                is_regex=True,
+                case_sensitive=scoped_opts.case_sensitive,
+                max_results=scoped_opts.max_results,
+                ignored_dirs=scoped_opts.ignored_dirs,
+            )
+            matches = _run_search_pass(target, resolved_root, regex_opts, _compile_pattern(regex_opts))
+        except re.error:
+            pass
 
     if not matches:
         return f"🔍 未在 '{options.directory}' (过滤: {options.file_glob}) 中找到匹配 '{options.pattern}' 的内容。"
