@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
@@ -129,6 +129,37 @@ def _msg_role_and_text(msg: Any) -> Tuple[str, str]:
     return "", ""
 
 
+_PITFALL_MARKERS = ("❌", "Error:", "Traceback", "Exit ", "异常", "rollback_turn")
+
+
+def _extract_pitfalls(messages: Sequence[Any], max_items: int = 2) -> List[str]:
+    """Distill concise pitfall lessons from tool errors and rollbacks without LLM calls."""
+    pitfalls: List[str] = []
+    seen: set[str] = set()
+    for msg in messages:
+        role, text = _msg_role_and_text(msg)
+        if role != "tool" or not text:
+            continue
+        if not any(m in text for m in _PITFALL_MARKERS):
+            continue
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        snippet = first_line[:120].replace("\n", " ")
+        if snippet and snippet not in seen:
+            seen.add(snippet)
+            pitfalls.append(snippet)
+            if len(pitfalls) >= max_items:
+                break
+    return pitfalls
+
+
+def _jaccard_overlap(tokens_a: Sequence[str], tokens_b: Sequence[str]) -> float:
+    """Compute token-set Jaccard similarity for lightweight Mem0-style conflict detection."""
+    if not tokens_a or not tokens_b:
+        return 0.0
+    sa, sb = set(tokens_a), set(tokens_b)
+    return len(sa & sb) / len(sa | sb)
+
+
 class CognitiveMemoryStore:
     """Thread-safe atomic JSON store for cross-session Workspace, Episodic, and Semantic memories."""
 
@@ -198,35 +229,86 @@ class CognitiveMemoryStore:
         self, content: str, *, scope: Union[MemoryScope, str] = MemoryScope.GLOBAL,
         key: str = "", workspace_path: str = "", source_session_id: str = "", importance: float = 0.8,
     ) -> SemanticFact:
-        """Store or evolve a semantic fact; matching scope+workspace+key overwrites in-place."""
+        """Store or evolve a semantic fact; matching keys update in-place, conflicting facts supersede gracefully."""
         clean = content.strip()
         if not clean:
             raise ValueError("记忆内容不能为空")
         scope_enum = scope if isinstance(scope, MemoryScope) else MemoryScope.from_value(scope)
         norm_ws = _norm_path(workspace_path) if (scope_enum is MemoryScope.PROJECT and workspace_path) else ""
         norm_key, now = key.strip().lower() or _hash_id(clean), _now_iso()
+        new_tokens = tokenize_search_terms(clean)
 
         with self._lock:
             for idx, f in enumerate(self.facts):
-                if f.scope is scope_enum and f.workspace_path == norm_ws and f.key == norm_key:
+                if f.is_active and f.scope is scope_enum and f.workspace_path == norm_ws and f.key == norm_key:
                     updated = SemanticFact(
                         f.fact_id, norm_key, clean, scope_enum, norm_ws,
-                        source_session_id or f.source_session_id, max(f.importance, importance), now, f.access_count + 1,
+                        source_session_id or f.source_session_id, max(f.importance, importance),
+                        now, f.access_count + 1, valid_from=f.valid_from or now,
                     )
                     self.facts[idx] = updated
                     self._save()
                     return updated
 
-            fact = SemanticFact(f"fact_{_hash_id(norm_ws + norm_key + now)[:10]}", norm_key, clean, scope_enum, norm_ws, source_session_id, importance, now, 1)
-            self.facts = sorted(self.facts + [fact], key=lambda x: (x.importance, x.updated_at), reverse=True)[:MAX_FACTS]
+            new_id = f"fact_{_hash_id(norm_ws + norm_key + now)[:10]}"
+            # Auto-supersede conflicting active facts in the same scope/workspace when no explicit key matched
+            if not key.strip():
+                for idx, f in enumerate(self.facts):
+                    if f.is_active and f.scope is scope_enum and f.workspace_path == norm_ws:
+                        if _jaccard_overlap(new_tokens, tokenize_search_terms(f.content)) >= 0.55:
+                            self.facts[idx] = SemanticFact(
+                                f.fact_id, f.key, f.content, f.scope, f.workspace_path,
+                                f.source_session_id, f.importance, f.updated_at, f.access_count,
+                                valid_from=f.valid_from, invalid_at=now, superseded_by=new_id,
+                            )
+
+            fact = SemanticFact(new_id, norm_key, clean, scope_enum, norm_ws, source_session_id, importance, now, 1, valid_from=now)
+            self.facts = sorted(self.facts + [fact], key=lambda x: (x.is_active, x.importance, x.updated_at), reverse=True)[:MAX_FACTS]
             self._save()
             return fact
 
-    def list_facts(self, scope: Optional[MemoryScope] = None, workspace_path: Optional[str] = None) -> List[SemanticFact]:
-        """List stored semantic facts optionally filtered by scope and workspace."""
+    def invalidate_fact(
+        self, query_or_key: str, *, scope: Optional[MemoryScope] = None, workspace_path: Optional[str] = None,
+    ) -> int:
+        """Bi-temporally invalidate matching active facts without erasing audit history."""
+        target = query_or_key.strip().lower()
+        if not target:
+            return 0
+        q_tokens = tokenize_search_terms(target)
+        norm_ws = _norm_path(workspace_path) if workspace_path else None
+        now, count = _now_iso(), 0
+        with self._lock:
+            for idx, f in enumerate(self.facts):
+                if not f.is_active:
+                    continue
+                if scope is not None and f.scope is not scope:
+                    continue
+                if norm_ws is not None and f.workspace_path and f.workspace_path != norm_ws:
+                    continue
+                matched = f.key == target or (q_tokens and _jaccard_overlap(q_tokens, tokenize_search_terms(f.content)) >= 0.5) or (target in f.content.lower())
+                if matched:
+                    self.facts[idx] = SemanticFact(
+                        f.fact_id, f.key, f.content, f.scope, f.workspace_path,
+                        f.source_session_id, f.importance, f.updated_at, f.access_count,
+                        valid_from=f.valid_from, invalid_at=now, superseded_by="user_invalidated",
+                    )
+                    count += 1
+            if count:
+                self._save()
+        return count
+
+    def list_facts(
+        self, scope: Optional[MemoryScope] = None, workspace_path: Optional[str] = None, *, include_inactive: bool = False,
+    ) -> List[SemanticFact]:
+        """List stored semantic facts optionally filtered by scope, workspace, and active status."""
         norm_ws = _norm_path(workspace_path) if workspace_path else None
         with self._lock:
-            return [f for f in self.facts if (scope is None or f.scope is scope) and (norm_ws is None or f.workspace_path == norm_ws)]
+            return [
+                f for f in self.facts
+                if (include_inactive or f.is_active)
+                and (scope is None or f.scope is scope)
+                and (norm_ws is None or f.workspace_path == norm_ws)
+            ]
 
     def consolidate_session(
         self, session_id: str, work_dir: Union[Path, str], messages: Sequence[Any],
@@ -241,33 +323,66 @@ class CognitiveMemoryStore:
         intent = (human_texts[-1] if human_texts else (getattr(plan, "task_title", "") or "常规工作会话"))[:180].replace("\n", " ")
         tail_ai = (ai_texts[-1][:220].replace("\n", " ") if ai_texts else "")
         files = list(dict.fromkeys(modified_files or []))
+        pitfalls = _extract_pitfalls(messages)
         summary = " | ".join(p for p in (f"涉及文件: {', '.join(files[:8])}" if files else "", tail_ai) if p) or "已完成对话交互"
         entities = list(dict.fromkeys(files + re.findall(r"\b[A-Za-z_][A-Za-z0-9_.-]{3,}\b", intent + " " + tail_ai)[:12]))
 
         now = _now_iso()
         with self._lock:
             created = next((e.created_at for e in self.episodes if e.session_id == session_id), now)
-            ep = EpisodeRecord(f"ep_{_hash_id(session_id)}", session_id, ws.path, ws.name, created, now, intent, summary, entities)
+            ep = EpisodeRecord(f"ep_{_hash_id(session_id)}", session_id, ws.path, ws.name, created, now, intent, summary, entities, pitfalls)
             self.episodes = sorted([e for e in self.episodes if e.session_id != session_id] + [ep], key=lambda e: e.updated_at, reverse=True)[:MAX_EPISODES]
             self._save()
             return ep
 
+    def _expand_entity_hops(
+        self, direct_entities: Sequence[str], seen_snippets: Set[str], norm_curr: str,
+    ) -> List[RecallHit]:
+        """Perform zero-DB 1-hop associative expansion across shared entities and files."""
+        if not direct_entities:
+            return []
+        ent_low = [e.lower() for e in direct_entities[:6] if len(e) >= 3]
+        expanded: List[RecallHit] = []
+        for f in self.facts:
+            if not f.is_active or f.content in seen_snippets:
+                continue
+            blob = f"{f.key} {f.content}".lower()
+            if any(e in blob for e in ent_low):
+                boost = 1.25 if (norm_curr and f.workspace_path == norm_curr) else 1.0
+                label = Path(f.workspace_path).name if f.workspace_path else "全局关联"
+                expanded.append(RecallHit("fact", round(0.55 * f.importance * boost, 4), label, f.content, f.updated_at, f.source_session_id, f.workspace_path))
+                seen_snippets.add(f.content)
+        return expanded
+
     def recall(self, query: str, *, current_work_dir: Optional[Union[Path, str]] = None, session_store: Any = None, top_k: int = 6) -> List[RecallHit]:
-        """Associatively rank matches across Semantic Facts, Episodes, and Session History."""
+        """Associatively rank active facts, episodes (with 1-hop entity expansion & workspace affinity), and history."""
         q_tokens = tokenize_search_terms(query)
+        norm_curr = _norm_path(current_work_dir) if current_work_dir else ""
         hits: List[RecallHit] = []
+        direct_entities: List[str] = []
+        seen_snippets: Set[str] = set()
+
         with self._lock:
             for idx, f in enumerate(self.facts):
+                if not f.is_active:
+                    continue
                 sc = _score_match(q_tokens, f"{f.key} {f.content} {f.workspace_path}", f.updated_at, f.importance)
                 if sc > 0:
+                    affinity = 1.35 if (norm_curr and f.workspace_path == norm_curr) else 1.0
                     label = Path(f.workspace_path).name if f.workspace_path else "全局记忆"
-                    hits.append(RecallHit("fact", sc, label, f.content, f.updated_at, f.source_session_id, f.workspace_path))
+                    hits.append(RecallHit("fact", round(sc * affinity, 4), label, f.content, f.updated_at, f.source_session_id, f.workspace_path))
+                    seen_snippets.add(f.content)
                     self.facts[idx].access_count += 1
             for ep in self.episodes:
-                blob = f"{ep.project_name} {ep.workspace_path} {ep.intent} {ep.summary} {' '.join(ep.entities)}"
+                blob = f"{ep.project_name} {ep.workspace_path} {ep.intent} {ep.summary} {' '.join(ep.entities)} {' '.join(ep.pitfalls)}"
                 sc = _score_match(q_tokens, blob, ep.updated_at, 0.85)
                 if sc > 0:
-                    hits.append(RecallHit("episode", sc, f"{ep.project_name} [{ep.session_id}]", f"意图: {ep.intent} | 结论: {ep.summary}", ep.updated_at, ep.session_id, ep.workspace_path))
+                    affinity = 1.35 if (norm_curr and ep.workspace_path == norm_curr) else 1.0
+                    pitfall_note = f" | 教训: {ep.pitfalls[0]}" if ep.pitfalls else ""
+                    snippet = f"意图: {ep.intent} | 结论: {ep.summary}{pitfall_note}"
+                    hits.append(RecallHit("episode", round(sc * affinity, 4), f"{ep.project_name} [{ep.session_id}]", snippet, ep.updated_at, ep.session_id, ep.workspace_path))
+                    direct_entities.extend(ep.entities)
+            hits.extend(self._expand_entity_hops(list(dict.fromkeys(direct_entities)), seen_snippets, norm_curr))
             if hits:
                 self._save()
 
@@ -275,7 +390,8 @@ class CognitiveMemoryStore:
             for item in session_store.search_history(query, max_hits=top_k):
                 sc = _score_match(q_tokens, f"{item['project']} {item['snippet']}", item["updated_at"], 0.65)
                 if sc > 0:
-                    hits.append(RecallHit("session_message", sc, f"{item['project']} [{item['session_id']}]", item["snippet"], item["updated_at"], item["session_id"], item["work_dir"]))
+                    affinity = 1.25 if (norm_curr and _norm_path(item["work_dir"]) == norm_curr) else 1.0
+                    hits.append(RecallHit("session_message", round(sc * affinity, 4), f"{item['project']} [{item['session_id']}]", item["snippet"], item["updated_at"], item["session_id"], item["work_dir"]))
 
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:max(1, top_k)]
@@ -286,7 +402,8 @@ class CognitiveMemoryStore:
         with self._lock:
             ws_list = sorted(self.workspaces.values(), key=lambda w: w.last_active_at, reverse=True)[:4]
             ep_list = self.episodes[:4]
-            fact_list = [f for f in self.facts if f.scope is MemoryScope.GLOBAL or f.workspace_path == norm_curr][:5]
+            fact_list = [f for f in self.facts if f.is_active and (f.scope is MemoryScope.GLOBAL or f.workspace_path == norm_curr)][:5]
+            curr_pitfalls = [p for ep in self.episodes if ep.workspace_path == norm_curr for p in ep.pitfalls][:1]
 
         if not ws_list and not ep_list and not fact_list:
             return ""
@@ -298,6 +415,8 @@ class CognitiveMemoryStore:
             lines.append(f"- 近期情景 [{ep.project_name} | {ep.session_id}]: {ep.intent[:60]} -> {ep.summary[:80]}")
         for f in fact_list:
             lines.append(f"- 长期认知 ({f.scope.value}): {f.content[:90]}")
+        for p in curr_pitfalls:
+            lines.append(f"- ⚠️ 历史避坑提示: {p[:100]}")
 
         footer = "提示: 谈起其它项目或过往对话时可调用 recall_memory 联想回忆，需访问其源码时调用 switch_workspace 切目录。"
         out: List[str] = []

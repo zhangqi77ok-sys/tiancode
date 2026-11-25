@@ -54,6 +54,17 @@ def create_memory_tools(engine: "TianCodeEngine") -> List[BaseTool]:
             return f"❌ 写入记忆失败: {exc}"
 
     @tool
+    def forget_fact(query_or_key: str) -> str:
+        """使已过时、错误或被用户纠正废弃的长期认知记忆失效，避免后续继续误导推理。"""
+        store = getattr(engine, "memory_store", None)
+        if store is None:
+            return "❌ 当前引擎未启用认知记忆模块。"
+        count = store.invalidate_fact(query_or_key, workspace_path=str(engine.settings.work_dir))
+        if count > 0:
+            return f"🧹 已使 {count} 条过时认知记忆失效，后续不再召回。"
+        return f"ℹ️ 未找到匹配 '{query_or_key}' 的活跃认知记忆。"
+
+    @tool
     def switch_workspace(target_dir: str) -> str:
         """切换当前会话的工作区目录并重锚安全沙箱与 Git 快照（受权限门禁保护）。用于跨项目查代码或接续上一工程。"""
         try:
@@ -62,4 +73,4 @@ def create_memory_tools(engine: "TianCodeEngine") -> List[BaseTool]:
         except Exception as exc:
             return f"❌ 切换工作区失败: {exc}"
 
-    return [recall_memory, memorize_fact, switch_workspace]
+    return [recall_memory, memorize_fact, forget_fact, switch_workspace]

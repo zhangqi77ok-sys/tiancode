@@ -34,7 +34,7 @@ class WorkspaceEntity:
 
 @dataclass
 class EpisodeRecord:
-    """Compressed episodic card summarizing a session's intent, artifacts, and outcome."""
+    """Compressed episodic card summarizing a session's intent, artifacts, pitfalls, and outcome."""
 
     episode_id: str
     session_id: str
@@ -45,11 +45,12 @@ class EpisodeRecord:
     intent: str
     summary: str
     entities: List[str] = field(default_factory=list)
+    pitfalls: List[str] = field(default_factory=list)
 
 
 @dataclass
 class SemanticFact:
-    """Evolving long-term fact, convention, or alias with conflict-free key replacement."""
+    """Evolving long-term fact with bi-temporal invalidation and conflict-free replacement."""
 
     fact_id: str
     key: str
@@ -60,6 +61,14 @@ class SemanticFact:
     importance: float = 0.8
     updated_at: str = ""
     access_count: int = 1
+    valid_from: str = ""
+    invalid_at: str = ""
+    superseded_by: str = ""
+
+    @property
+    def is_active(self) -> bool:
+        """Return True while this fact has not been invalidated or superseded."""
+        return not self.invalid_at
 
 
 @dataclass(frozen=True)
