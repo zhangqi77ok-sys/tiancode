@@ -20,6 +20,36 @@ from tiancode.domain.models import FileDiff
 MAX_VISIBLE_THINK_LINES = 6
 
 
+def _split_committed_markdown(buf: str) -> tuple[List[str], str]:
+    """Split completed Markdown blocks outside code fences so committed paragraphs print once."""
+    if "\n\n" not in buf and "\r\n\r\n" not in buf:
+        return [], buf
+    lines = buf.splitlines(keepends=True)
+    committed: List[str] = []
+    curr: List[str] = []
+    in_fence = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+        if not in_fence and not line.strip() and any(x.strip() for x in curr):
+            committed.append("".join(curr).rstrip("\r\n"))
+            curr.clear()
+            continue
+        curr.append(line)
+    return committed, "".join(curr)
+
+
+def _clip_live_tail(md_text: str, console_height: int) -> str:
+    """Keep active Live preview bounded inside viewport height to avoid Rich scrollback duplication."""
+    max_lines = max(8, console_height - 6)
+    lines = md_text.splitlines()
+    if len(lines) <= max_lines:
+        return md_text
+    kept = lines[-max_lines:]
+    return f"… *(已前略 {len(lines) - max_lines} 行，结束后完整呈现)*\n\n" + "\n".join(kept)
+
+
 def _build_thinking_panel(full_thought: str, elapsed: float) -> Panel:
     """Build compact 6-line scrolling preview card for active model reasoning."""
     raw_lines = [ln for ln in full_thought.strip().splitlines() if ln.strip()] or ["..."]
@@ -217,31 +247,46 @@ class _StreamRenderState:
         if char_count > 0:
             self.console.print(Text(f"  💭 已完成深度思考 (耗时 {elapsed:.1f}s · {char_count:,} 字)", style=TEXT_SUBTLE))
 
-    def append_token(self, chunk: str) -> None:
-        self._ensure_header()
-        self.md_chunks.append(chunk)
-        full_md = "".join(self.md_chunks)
-        if self.console.is_terminal:
-            if self.live is None:
-                self.live = Live(Padding(render_markdown(full_md), (0, 2)), console=self.console, refresh_per_second=12, vertical_overflow="visible")
-                self.live.start()
-            else:
-                self.live.update(Padding(render_markdown(full_md), (0, 2)))
-
-    def flush_markdown(self) -> None:
+    def _stop_md_live(self) -> None:
         if self.live is not None:
             try:
                 self.live.stop()
             finally:
                 self.live = None
-            self.md_chunks.clear()
-            self.header_printed = False
+
+    def append_token(self, chunk: str) -> None:
+        self._ensure_header()
+        self.md_chunks.append(chunk)
+        if not self.console.is_terminal:
             return
+        buf = "".join(self.md_chunks)
+        committed, tail = _split_committed_markdown(buf)
+        if committed:
+            self._stop_md_live()
+            for para in committed:
+                if para.strip():
+                    self.console.print(Padding(render_markdown(para), (0, 2)))
+            self.md_chunks = [tail] if tail else []
+        if not tail.strip():
+            self._stop_md_live()
+            return
+        preview = Padding(render_markdown(_clip_live_tail(tail, self.console.height)), (0, 2))
+        if self.live is None:
+            self.live = Live(preview, console=self.console, refresh_per_second=12, vertical_overflow="ellipsis", transient=True)
+            self.live.start()
+        else:
+            self.live.update(preview)
+
+    def flush_markdown(self) -> None:
+        self._stop_md_live()
         if self.md_chunks:
             text = "".join(self.md_chunks)
             self.md_chunks.clear()
             self.header_printed = False
-            self.console.print(Padding(render_markdown(text), (0, 2)))
+            if text.strip():
+                self.console.print(Padding(render_markdown(text), (0, 2)))
+            return
+        self.header_printed = False
 
     def stop_spinner(self) -> None:
         if self.spinner:

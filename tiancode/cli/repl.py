@@ -110,7 +110,7 @@ def _build_bottom_toolbar(engine: TianCodeEngine) -> FormattedText:
         ("bg:#78350f #fef3c7 bold", f" 🔐 模式:{mode} ", _on_mode_click),
         ("", " "),
         (heal_style, heal_label, _on_heal_click),
-        ("#94a3b8", "  |  🖱 点击切换 · Shift+Tab 切模式 · / 命令 @ 文件 · Shift+拖拽复制"),
+        ("#94a3b8", "  |  Shift+Tab 切模式 · / 命令 @ 文件 · 支持鼠标滚轮浏览与拖拽复制"),
     ])
 
 
@@ -188,7 +188,7 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
     ptk_session = (
         PromptSession(
             completer=CompositeInputCompleter(get_work_dir=lambda: engine.settings.work_dir),
-            style=PTK_STYLE, key_bindings=repl_kb, complete_while_typing=True, mouse_support=True,
+            style=PTK_STYLE, key_bindings=repl_kb, complete_while_typing=True, mouse_support=False,
         )
         if can_use_interactive_tty() else None
     )
