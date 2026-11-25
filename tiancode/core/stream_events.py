@@ -2,6 +2,7 @@
 
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Generator, List, Optional
+from langchain_core.messages import ToolMessage
 
 from tiancode.core.llm_adapter import ThinkTagStreamSplitter
 
@@ -46,7 +47,7 @@ def iter_message_events(
                 if call_id not in seen_tools:
                     seen_tools.add(call_id)
                     yield {"type": "tool_start", "name": tc.get("name"), "args": tc.get("args", {})}
-    elif node == "tools":
+    elif node == "tools" and isinstance(chunk, ToolMessage):
         for kind, piece in splitter.flush():
             yield {"type": kind, "content": piece}
         yield {"type": "tool_end", "name": getattr(chunk, "name", "tool"), "content": getattr(chunk, "content", "")}
