@@ -178,7 +178,7 @@ def _run_post_edit_verification(work_dir: Path, filename: Optional[str] = None) 
             creationflags=creationflags,
         )
         if res.returncode == 0:
-            return "单测验证通过 (100% 绿灯)"
+            return f"已自动运行 '{cmd}' 单测验证通过 (100% 绿灯，无需再重复运行)"
         else:
             err_msg = (res.stderr.strip() or res.stdout.strip())[-1000:]
             return f"自动化测试未通过 (Exit {res.returncode})：\n{err_msg}\n请根据上述报错自我修正；若修复陷入死胡同，可调用 'rollback_turn' 安全回滚。"

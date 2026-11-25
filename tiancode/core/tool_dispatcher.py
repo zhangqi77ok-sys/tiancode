@@ -167,6 +167,18 @@ class SafeToolDispatcher:
             allowed.append((idx, tc))
 
         if allowed:
+            # Batch optimization: defer post-edit test verification to the final mutating call in a batch
+            mutating_indices = [
+                i for i, (_, tc) in enumerate(allowed)
+                if str(tc.get("name", "")) in ("edit_file", "write_file")
+            ]
+            if len(mutating_indices) > 1:
+                for pos in mutating_indices[:-1]:
+                    idx, tc = allowed[pos]
+                    parsed = self._parse_args(tc.get("args"))
+                    if isinstance(parsed, dict) and "skip_verify" not in parsed:
+                        allowed[pos] = (idx, {**tc, "args": {**parsed, "skip_verify": True}})
+
             is_pure_read_only = len(allowed) > 1 and all(
                 str(tc.get("name", "")) in READ_ONLY_TOOLS for _, tc in allowed
             )

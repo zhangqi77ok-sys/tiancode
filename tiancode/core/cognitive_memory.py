@@ -298,7 +298,10 @@ class CognitiveMemoryStore:
                     continue
                 if norm_ws is not None and f.workspace_path and f.workspace_path != norm_ws:
                     continue
-                matched = f.key == target or (q_tokens and _jaccard_overlap(q_tokens, tokenize_search_terms(f.content)) >= 0.5) or (target in f.content.lower())
+                f_tokens = set(tokenize_search_terms(f.content))
+                q_set = set(q_tokens)
+                q_coverage = (len(q_set & f_tokens) / len(q_set)) if q_set else 0.0
+                matched = f.key == target or (target in f.content.lower()) or q_coverage >= 0.6
                 if matched:
                     self.facts[idx] = SemanticFact(
                         f.fact_id, f.key, f.content, f.scope, f.workspace_path,
@@ -409,14 +412,13 @@ class CognitiveMemoryStore:
                     hits.append(RecallHit("episode", round(sc * affinity * stale_factor, 4), f"{ep.project_name} [{ep.session_id}]", snippet, ep.updated_at, ep.session_id, ep.workspace_path))
                     direct_entities.extend(ep.entities)
             hits.extend(self._expand_entity_hops(list(dict.fromkeys(direct_entities)), seen_snippets, norm_curr))
-            if hits:
-                self._save()
 
         if session_store is not None and hasattr(session_store, "search_history"):
             for item in session_store.search_history(query, max_hits=top_k):
                 sc = _score_match(q_tokens, f"{item['project']} {item['snippet']}", item["updated_at"], 0.65)
                 if sc > 0:
-                    affinity = 1.25 if (norm_curr and _norm_path(item["work_dir"]) == norm_curr) else 1.0
+                    same_ws = norm_curr and _norm_path(item["work_dir"]) == norm_curr
+                    affinity = 1.25 if same_ws else (0.65 if norm_curr else 1.0)
                     snippet = item["snippet"]
                     stale_factor = 0.4 if self._has_invalidated_fact_overlap(snippet, inactive_tokens) else 1.0
                     if stale_factor < 1.0:
