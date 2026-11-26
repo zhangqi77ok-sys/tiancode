@@ -125,6 +125,7 @@ class TianCodeEngine:
 
     def _register_tools(self) -> None:
         """Rebuild all engine tool closures from current settings."""
+        from tiancode.tools.git_ops import create_git_tools
         from tiancode.tools.memory_ops import create_memory_tools
         from tiancode.tools.plan_ops import create_plan_tools
         from tiancode.tools.subagent_ops import create_subagent_tools
@@ -132,6 +133,7 @@ class TianCodeEngine:
 
         self.tools = [
             *create_file_tools(self.snapshot_store, self.settings.work_dir, auto_heal=self.settings.auto_heal),
+            *create_git_tools(self.settings.work_dir),
             *create_execution_tools(self.settings.work_dir, self.settings.timeout_seconds),
             *create_plan_tools(self.planner),
             *create_subagent_tools(self.subagent_runner),

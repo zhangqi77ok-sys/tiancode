@@ -70,6 +70,27 @@ class ContextCompactor:
                     return back_idx
         return start_idx
 
+    @staticmethod
+    def _extract_highlights(dropped_messages: List[BaseMessage]) -> List[str]:
+        """Extract up to 3 concise error lessons and AI synthesis conclusions from dropped history."""
+        errors: List[str] = []
+        last_ai_note = ""
+        for msg in dropped_messages:
+            if isinstance(msg, ToolMessage):
+                txt = str(getattr(msg, "content", "") or "")
+                if any(tok in txt for tok in ("❌", "Error:", "Traceback", "Exit Code:")):
+                    first_line = next((ln.strip() for ln in txt.splitlines() if ln.strip()), "")
+                    if first_line and first_line[:90] not in errors and len(errors) < 2:
+                        errors.append(first_line[:90])
+            elif isinstance(msg, AIMessage):
+                txt = str(getattr(msg, "content", "") or "").strip().replace("\n", " ")
+                if txt and not getattr(msg, "tool_calls", None):
+                    last_ai_note = txt[:100]
+        highlights = [f"避坑: {e}" for e in errors]
+        if last_ai_note:
+            highlights.append(f"前序结论: {last_ai_note}")
+        return highlights
+
     def generate_compaction_card(self, dropped_messages: List[BaseMessage]) -> SystemMessage:
         """Synthesize a dense, schema-safe Compaction Card summarizing folded history."""
         touched_files: Set[str] = set()
@@ -91,12 +112,15 @@ class ContextCompactor:
 
         total_tools = max(tool_call_count, tool_msg_count)
         files_str = ", ".join(sorted(touched_files)) if touched_files else "无直接文件写入"
+        highlights = self._extract_highlights(dropped_messages)
+        highlight_line = "\n• 保留记忆: " + " | ".join(highlights) if highlights else ""
 
         card_content = (
             f"📋 【上下文智能折叠摘要】\n"
             f"• 历史交互: 已折叠前期 {len(dropped_messages)} 条交互记录 (释放字符预算)\n"
             f"• 涉及文件: {files_str}\n"
-            f"• 历史动作: 执行了 {total_tools} 次工具调用\n"
+            f"• 历史动作: 执行了 {total_tools} 次工具调用"
+            f"{highlight_line}\n"
             f"• 注意事项: 请基于【初始目标】与当前工作区真实文件继续推进后续任务。"
         )
         return SystemMessage(content=card_content)

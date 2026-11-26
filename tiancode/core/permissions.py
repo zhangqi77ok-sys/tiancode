@@ -63,6 +63,8 @@ SAFE_READ_TOOLS = frozenset({
     "invoke_subagent",
     "recall_memory",
     "web_fetch",
+    "git_status",
+    "git_diff",
 })
 
 

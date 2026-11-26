@@ -15,6 +15,8 @@ READ_ONLY_TOOLS: FrozenSet[str] = frozenset({
     "list_files",
     "get_repo_map",
     "web_fetch",
+    "git_status",
+    "git_diff",
 })
 
 DEFAULT_MAX_WORKERS = 4
@@ -170,7 +172,7 @@ class SafeToolDispatcher:
             # Batch optimization: defer post-edit test verification to the final mutating call in a batch
             mutating_indices = [
                 i for i, (_, tc) in enumerate(allowed)
-                if str(tc.get("name", "")) in ("edit_file", "write_file")
+                if str(tc.get("name", "")) in ("edit_file", "multi_edit", "write_file")
             ]
             if len(mutating_indices) > 1:
                 for pos in mutating_indices[:-1]:

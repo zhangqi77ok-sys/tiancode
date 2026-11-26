@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from langchain_core.tools import BaseTool, tool
 from tiancode.domain.interfaces import SnapshotStore
 
@@ -340,50 +340,92 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             action_label="写入成功", skip_verify=skip_verify,
         )
 
-    @tool
-    def edit_file(filename: str, old_code: str, new_code: str, replace_all: bool = False, skip_verify: bool = False) -> str:
-        """局部修改文件：精准替换 old_code 为 new_code；连续重构多文件中间态可传 skip_verify=True。"""
-        if not old_code:
-            return "❌ 替换失败：old_code 不能为空字符串！若需新建或全量覆盖文件，请调用 write_file。"
+    def _prepare_regular_edit(filename: str) -> Tuple[Optional[Path], str, str]:
+        """Validate workspace containment and regular-file safety before editing."""
         target, error = _mutation_entry(filename)
         if target is None:
-            return error
+            return None, "", error
         if target.is_symlink():
-            return f"❌ 文件 '{filename}' 是符号链接，未读取或修改其目标。"
+            return None, "", f"❌ 文件 '{filename}' 是符号链接，未读取或修改其目标。"
         if not target.exists():
-            return f"❌ 文件 '{filename}' 不存在，请先确认路径！"
+            return None, "", f"❌ 文件 '{filename}' 不存在，请先确认路径！"
         if target.is_dir():
-            return f"❌ '{filename}' 是目录而非文件，已拒绝修改。"
+            return None, "", f"❌ '{filename}' 是目录而非文件，已拒绝修改。"
         from tiancode.core.path_safety import is_shared_hardlink, names_credential_file
 
         if is_shared_hardlink(target):
-            return f"❌ 文件 '{filename}' 是硬链接，未读取或修改其内容。"
+            return None, "", f"❌ 文件 '{filename}' 是硬链接，未读取或修改其内容。"
         if names_credential_file(filename, target, work_dir):
-            return f"❌ 文件 '{filename}' 已跳过：疑似密钥或 Git 内部文件，未读取或修改其内容。"
-        src = target.read_text(encoding="utf-8", errors="replace")
+            return None, "", f"❌ 文件 '{filename}' 已跳过：疑似密钥或 Git 内部文件，未读取或修改其内容。"
+        return target, target.read_text(encoding="utf-8", errors="replace"), ""
 
+    def _apply_patch_step(
+        src: str, old_code: str, new_code: str, *, filename: str, replace_all: bool = False,
+    ) -> Tuple[Optional[str], str, str]:
+        """Apply one exact or relaxed patch in memory; return (modified, line_hint, error_msg)."""
+        if not old_code:
+            return None, "", "❌ 替换失败：old_code 不能为空字符串！若需新建或全量覆盖文件，请调用 write_file。"
         match_lines = _find_match_lines(src, old_code)
         if not match_lines:
             if not replace_all:
                 relaxed = _try_relaxed_replace(src, old_code, new_code)
                 if relaxed is not None:
-                    return _persist_change(
-                        target, src, relaxed, filename=filename, is_new=False,
-                        action_label="局部替换成功", skip_verify=skip_verify,
-                    )
-            return _format_closest_snippets(src, old_code, filename)
+                    return relaxed, "", ""
+            return None, "", _format_closest_snippets(src, old_code, filename)
         if len(match_lines) > 1 and not replace_all:
-            return (
+            err = (
                 f"❌ 替换拦截：old_code 在 '{filename}' 中匹配到 {len(match_lines)} 处（位于第 {match_lines} 行），"
                 f"存在歧义风险！请补充更多上下文使其唯一，或显式传入 replace_all=True。"
             )
-
+            return None, "", err
         modified = src.replace(old_code, new_code) if replace_all else src.replace(old_code, new_code, 1)
         total_lines = len(modified.splitlines())
-        line_hint = f"(起于 L{match_lines[0]}，共 {total_lines} 行)" if len(match_lines) == 1 else f"(共替换 {len(match_lines)} 处，共 {total_lines} 行)"
+        hint = (
+            f"(起于 L{match_lines[0]}，共 {total_lines} 行)"
+            if len(match_lines) == 1
+            else f"(共替换 {len(match_lines)} 处，共 {total_lines} 行)"
+        )
+        return modified, hint, ""
+
+    @tool
+    def edit_file(filename: str, old_code: str, new_code: str, replace_all: bool = False, skip_verify: bool = False) -> str:
+        """局部修改文件：精准替换 old_code 为 new_code；连续重构多文件中间态可传 skip_verify=True。"""
+        target, src, err = _prepare_regular_edit(filename)
+        if target is None:
+            return err
+        modified, line_hint, patch_err = _apply_patch_step(src, old_code, new_code, filename=filename, replace_all=replace_all)
+        if modified is None:
+            return patch_err
         return _persist_change(
             target, src, modified, filename=filename, is_new=False,
             action_label="局部替换成功", skip_verify=skip_verify, line_hint=line_hint,
+        )
+
+    @tool
+    def multi_edit(filename: str, edits: List[Dict[str, str]], skip_verify: bool = False) -> str:
+        """单文件多段原子修改：一次传入多组 {'old_code': ..., 'new_code': ...}，全部匹配成功后再一次性落盘与验证。"""
+        if not edits:
+            return "❌ 批量修改失败：edits 列表不能为空。"
+        target, src, err = _prepare_regular_edit(filename)
+        if target is None:
+            return err
+
+        curr = src
+        for step_idx, item in enumerate(edits, start=1):
+            if not isinstance(item, dict) or "old_code" not in item or "new_code" not in item:
+                return f"❌ 批量修改中止：第 {step_idx} 项格式无效，需包含 old_code 与 new_code。"
+            next_text, _, patch_err = _apply_patch_step(
+                curr, str(item["old_code"]), str(item["new_code"]), filename=filename,
+            )
+            if next_text is None:
+                return f"❌ 批量修改已在第 {step_idx}/{len(edits)} 处中止，原文件未发生任何变更：\n{patch_err}"
+            curr = next_text
+
+        total_lines = len(curr.splitlines())
+        hint = f"(共 {len(edits)} 处连续生效，总 {total_lines} 行)"
+        return _persist_change(
+            target, src, curr, filename=filename, is_new=False,
+            action_label="批量局部替换成功", skip_verify=skip_verify, line_hint=hint,
         )
 
     @tool
@@ -428,4 +470,4 @@ def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = Tr
             return "⏪ 已完成工作区安全回滚：\n" + "\n".join(f"  • {item}" for item in reverted)
         return "ℹ️ 当前没有可回滚的修改。"
 
-    return [list_files, get_repo_map, *search_tools, write_file, edit_file, delete_file, rollback_turn]
+    return [list_files, get_repo_map, *search_tools, write_file, edit_file, multi_edit, delete_file, rollback_turn]
