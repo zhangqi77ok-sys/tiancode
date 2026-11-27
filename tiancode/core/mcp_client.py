@@ -540,6 +540,43 @@ def _corepack_action(args: List[str]) -> str:
     return ""
 
 
+# These programs run a file, hook, class, or alias from the working directory.
+# The shell tool never sees a workspace MCP launch, so the make/just/tox recipe
+# check does not apply. No flag both disables that execution and leaves a
+# useful launch: on JDK 21, `javac -proc:none` stops annotation processors, but
+# `javac -J-javaagent` still runs. The shell tool can still run these binaries.
+_REPO_EXEC_LAUNCHERS = {
+    "gmake": "工作区 MCP 不能用 gmake 启动，它会执行仓库里的 Makefile，已拒绝启动",
+    "bmake": "工作区 MCP 不能用 bmake 启动，它会执行仓库里的 Makefile，已拒绝启动",
+    "just": "工作区 MCP 不能用 just 启动，它会执行仓库里的 justfile，已拒绝启动",
+    "tox": "工作区 MCP 不能用 tox 启动，它会执行仓库里 tox 配置中的命令，已拒绝启动",
+    "nox": "工作区 MCP 不能用 nox 启动，它会执行仓库里的 noxfile.py，已拒绝启动",
+    "ant": "工作区 MCP 不能用 ant 启动，它会执行仓库里的 build.xml，已拒绝启动",
+    "gradle": "工作区 MCP 不能用 gradle 启动，它会执行仓库里的构建脚本，已拒绝启动",
+    "mvn": "工作区 MCP 不能用 mvn 启动，它会执行仓库里 pom 绑定的插件，已拒绝启动",
+    "mvndebug": "工作区 MCP 不能用 mvnDebug 启动，它会转去执行 mvn，从而运行仓库里的插件，已拒绝启动",
+    "cmake": "工作区 MCP 不能用 cmake 启动，它会执行仓库里的 CMake 脚本，已拒绝启动",
+    "ctest": "工作区 MCP 不能用 ctest 启动，它会执行仓库里的 CTest 脚本，已拒绝启动",
+    "cpack": "工作区 MCP 不能用 cpack 启动，它会执行仓库里的 CPack 配置，已拒绝启动",
+    "kotlinc": "工作区 MCP 不能用 kotlinc 启动，它会执行仓库里的 Kotlin 脚本，已拒绝启动",
+    "kotlinc-jvm": "工作区 MCP 不能用 kotlinc-jvm 启动，它会执行仓库里的 Kotlin 脚本，已拒绝启动",
+    "kotlin": "工作区 MCP 不能用 kotlin 启动，它会从当前目录加载并执行类，已拒绝启动",
+    "scalac": "工作区 MCP 不能用 scalac 启动，它会在编译时执行仓库里的宏，已拒绝启动",
+    "scala": "工作区 MCP 不能用 scala 启动，它会从当前目录加载并执行类，已拒绝启动",
+    "groovyc": "工作区 MCP 不能用 groovyc 启动，它会执行仓库里的编译配置脚本，已拒绝启动",
+    "groovy": "工作区 MCP 不能用 groovy 启动，它会执行仓库里的 Groovy 脚本，已拒绝启动",
+    "javac": "工作区 MCP 不能用 javac 启动，它会从当前目录加载并执行注解处理器，已拒绝启动",
+    "javadoc": "工作区 MCP 不能用 javadoc 启动，它会执行仓库里的 doclet，已拒绝启动",
+    "jshell": "工作区 MCP 不能用 jshell 启动，它会执行仓库里的启动脚本，已拒绝启动",
+    "jdb": "工作区 MCP 不能用 jdb 启动，它会从当前目录加载并执行类，已拒绝启动",
+    "ansible": "工作区 MCP 不能用 ansible 启动，它会执行仓库里 ansible.cfg 指定的模块，已拒绝启动",
+    "ansible-playbook": "工作区 MCP 不能用 ansible-playbook 启动，它会执行仓库里的 playbook，已拒绝启动",
+    "ansible-inventory": "工作区 MCP 不能用 ansible-inventory 启动，它会执行仓库里的 inventory 脚本，已拒绝启动",
+    "ansible-console": "工作区 MCP 不能用 ansible-console 启动，它会执行仓库里的模块，已拒绝启动",
+    "git": "工作区 MCP 不能用 git 启动，它会执行仓库里的别名和钩子，已拒绝启动",
+}
+
+
 def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
     """Refuse launchers that execute a workspace bin and cannot be pinned safely.
 
@@ -554,10 +591,19 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
     evaluates a gemspec. `uv run`, `uv sync`, `uv build`, `uv lock`, `uv export`,
     and `uv tree` build the project. pdm, hatch, pipenv, and rye run the
     scripts named in the project file. `hatchling build` runs the project's
-    build hook. `make` runs the Makefile. `uv tool install -e` and
-    `--with-requirements` build a local package; `uv tool run --with-editable`
-    does too, even with `--no-config --isolated`. `pnpm dlx`, `yarn dlx`, uvx,
-    pip, and `uv pip install` are isolated at spawn instead.
+    build hook. `make` runs the Makefile. `gmake` and `bmake` do too. `just`,
+    `tox`, and `nox` run the project file; the shell tool checks just and tox
+    recipes, but a workspace server does not. `ant`, `gradle`, and `mvn` run
+    the build. `cmake`, `ctest`, and `cpack` run CMake code. `kotlinc -script`,
+    `kotlin`, `scalac` macros, `scala`, `groovy`, and `groovyc --configscript`
+    run project code. `javac` loads processors from the working directory, and
+    `-J-javaagent` still runs when `-proc:none` is present. `javadoc` runs a
+    doclet, `jshell` runs a startup script, and `jdb` runs main. `ansible`,
+    `ansible-playbook`, `ansible-inventory`, and `ansible-console` run a repo
+    module or playbook. `git` runs a shell alias or a hook. `uv tool install
+    -e` and `--with-requirements` build a local package; `uv tool run
+    --with-editable` does too, even with `--no-config --isolated`. `pnpm dlx`,
+    `yarn dlx`, uvx, pip, and `uv pip install` are isolated at spawn instead.
     """
     if program == "bunx":
         return "工作区 MCP 不能用 bunx 启动，它会执行仓库里的可执行文件，已拒绝启动"
@@ -591,6 +637,8 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
         return "工作区 MCP 不能用 rye 启动，它会执行仓库里定义的脚本，已拒绝启动"
     if program == "make":
         return "工作区 MCP 不能用 make 启动，它会执行仓库里的 Makefile，已拒绝启动"
+    if program in _REPO_EXEC_LAUNCHERS:
+        return _REPO_EXEC_LAUNCHERS[program]
     if program == "uvx" and _flag_before_double_dash(args, frozenset({"--with-editable"})):
         return "工作区 MCP 不能用 uv 以可编辑方式加载仓库里的包，已拒绝启动"
     if program == "uv":
@@ -687,6 +735,9 @@ def _workspace_command_error(
     `yarn dlx`, uvx, pip, and `uv pip` are pinned the same way. `bunx`,
     `pnpm exec`, `yarn exec`, `pipx`, `cargo`, `rustup`, poetry, bundler,
     composer, gem, pdm, hatch, hatchling, pipenv, rye, and make do not start.
+    `gmake`, `bmake`, `just`, `tox`, `nox`, `ant`, `gradle`, `mvn`, `cmake`,
+    `ctest`, `cpack`, `git`, and the JVM and Ansible launchers that run a
+    project file, hook, or class do not start either.
     `uv run`, `uv sync`, `uv build`, `uv lock`, `uv export`, and `uv tree` do
     not start. `uv tool install -e` and `uv tool run --with-editable` do not
     start. `corepack use` and `corepack up` do not start: they run the package
