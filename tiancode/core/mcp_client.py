@@ -199,6 +199,11 @@ _SCRIPT_SUFFIXES = frozenset({
     ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".py", ".rb", ".php",
 })
 _PACKAGE_LAUNCHERS = frozenset({"npx", "npm", "pnpm", "yarn", "bunx", "uvx"})
+_PNPM_VALUE_FLAGS = frozenset({
+    "--dir", "--filter", "--prefix", "--cwd", "--config", "-C", "-F",
+})
+_YARN_VALUE_FLAGS = frozenset({"--cwd", "--cache-folder"})
+_BUN_VALUE_FLAGS = frozenset({"--cwd", "--config", "--backend"})
 # These write node_modules and run lifecycle scripts from the repo or the package.
 _DEPENDENCY_SUBCOMMANDS = frozenset({
     "install", "i", "ci", "add", "update", "upgrade", "uninstall", "remove",
@@ -400,6 +405,42 @@ def _package_installed(modules: Path, token: str) -> bool:
     return candidate.is_symlink() or candidate.exists()
 
 
+def _first_command_word(args: List[str], value_flags: frozenset) -> str:
+    """First argument that is not an option. A flag in `value_flags` consumes the next word."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return ""
+        if arg.startswith("-"):
+            name, eq, _value = arg.partition("=")
+            if name in value_flags and not eq and index + 1 < len(args):
+                index += 2
+                continue
+            index += 1
+            continue
+        return arg
+    return ""
+
+
+def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
+    """Refuse launchers that execute a workspace bin and cannot be pinned safely.
+
+    `bunx` and `bun x` run `node_modules/.bin` and there is no prefix that keeps
+    the tool's cwd in the repo. `pnpm exec` and `yarn exec` do the same.
+    `pnpm dlx`, `yarn dlx`, and uvx are isolated at spawn instead.
+    """
+    if program == "bunx":
+        return "工作区 MCP 不能用 bunx 启动，它会执行仓库里的可执行文件，已拒绝启动"
+    if program == "bun" and _first_command_word(args, _BUN_VALUE_FLAGS) in {"x", "bunx"}:
+        return "工作区 MCP 不能用 bunx 启动，它会执行仓库里的可执行文件，已拒绝启动"
+    if program == "pnpm" and _first_command_word(args, _PNPM_VALUE_FLAGS) == "exec":
+        return "工作区 MCP 不能用 pnpm exec 启动，它会执行仓库里的可执行文件，已拒绝启动"
+    if program == "yarn" and _first_command_word(args, _YARN_VALUE_FLAGS) == "exec":
+        return "工作区 MCP 不能用 yarn exec 启动，它会执行仓库里的可执行文件，已拒绝启动"
+    return None
+
+
 def _installed_package_error(program: str, args: List[str], base: Path) -> Optional[str]:
     """Refuse npx/uvx when the named package or bin already lives in the repo.
 
@@ -427,6 +468,24 @@ def _installed_package_error(program: str, args: List[str], base: Path) -> Optio
     return None
 
 
+def _unwrap_corepack(words: List[str]) -> List[str]:
+    """Treat `corepack pnpm` as pnpm. Corepack forwards those arguments."""
+    if not words or _program_name(words[0]) != "corepack":
+        return words
+    index = 1
+    while index < len(words):
+        arg = words[index]
+        if arg == "--":
+            return words
+        if arg.startswith("-"):
+            index += 1
+            continue
+        if arg in {"pnpm", "yarn", "npm", "npx"}:
+            return [arg, *words[index + 1 :]]
+        return words
+    return words
+
+
 def _workspace_command_error(
     command: str,
     args: List[str],
@@ -437,10 +496,12 @@ def _workspace_command_error(
 
     A shell, an interpreter (`node server.js`, `python -m`), a package script,
     a path argument, an install, or an already-installed local package does not
-    start. `npx -y @scope/pkg` may still start when that package is not in the
+    start.     `npx -y @scope/pkg` may still start when that package is not in the
     repo; the spawn then pins npm's prefix and cache outside the workspace so
-    the launch does not read or write this repo's node_modules. The same check
-    runs again immediately before the process is spawned.
+    the launch does not read or write this repo's node_modules. `pnpm dlx`,
+    `yarn dlx`, and uvx are pinned the same way. `bunx`, `pnpm exec`, and
+    `yarn exec` do not start. The same check runs again immediately before
+    the process is spawned.
     """
     if not command:
         return None
@@ -448,7 +509,7 @@ def _workspace_command_error(
 
     if is_dangerous_command(" ".join([command, *args])):
         return "工作区 MCP 的 command 含高危命令，已拒绝启动"
-    words = _unwrap_stdio_argv([command, *args])
+    words = _unwrap_corepack(_unwrap_stdio_argv([command, *args]))
     if not words or not words[0].strip():
         return "工作区 MCP 的 command 无效，已拒绝启动"
     program = _program_name(words[0])
@@ -471,6 +532,9 @@ def _workspace_command_error(
             return "工作区 MCP 不能运行 package 脚本，那会执行仓库里的文件，已拒绝启动"
         if _dependency_subcommand(rest):
             return "工作区 MCP 不能在仓库里安装或重建依赖，那会写入 node_modules 并执行安装脚本，已拒绝启动"
+    launcher_error = _unisolated_launcher_error(program, rest)
+    if launcher_error:
+        return launcher_error
     if program in _INTERPRETERS:
         error = _interpreter_error(program, rest, root, base)
         if error:

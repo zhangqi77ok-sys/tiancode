@@ -11,9 +11,11 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -31,11 +33,14 @@ _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26", "2024-11-0
 _DEFAULT_TIMEOUT_SECONDS = 30
 _MAX_HTTP_ATTEMPTS = 3
 # tools/call is not retried on 408, 500, 502, 503, or 504. A gateway can return
-# those after the tool has already run. A bare 429 is a rate limit before the
-# handler runs, so tools/call still retries it. A 429 that already carries a
-# JSON-RPC result or error is the answer for that request and is not sent
-# again. initialize and tools/list still retry 503. A session 404 reconnects,
-# but tools/call is not sent again; only read-only methods below are.
+# those after the tool has already run. tools/call retries 429 only when the
+# body is empty: that is the rate-limit signal from before a handler writes a
+# response. Plain text, HTML, or any other non-empty 429 is not sent again,
+# because it cannot be told apart from a gateway that already ran the tool.
+# A 429 that already carries a JSON-RPC result or error is that answer and is
+# returned as-is. initialize and tools/list still retry every 429. A session
+# 404 reconnects, but tools/call is not sent again; only read-only methods
+# below are.
 _RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 _TOOLS_CALL_NO_RETRY = frozenset({408, 500, 502, 503, 504})
 _SESSION_REPLAY_METHODS = frozenset({
@@ -114,6 +119,10 @@ def _extract_tool_text(result: Any) -> str:
     return f"❌ MCP 工具返回错误: {text}" if result.get("isError") and not text.startswith("❌") else text
 
 
+def _http_body_is_empty(resp: Any) -> bool:
+    return not (getattr(resp, "text", "") or "").strip()
+
+
 def _jsonrpc_reply(resp: Any) -> Optional[Dict[str, Any]]:
     """JSON-RPC result or error already present in an HTTP body, else None.
 
@@ -176,34 +185,303 @@ def _strip_npm_location_flags(args: List[str]) -> List[str]:
     return cleaned
 
 
-def isolate_workspace_npm(command: str, args: List[str]) -> Tuple[List[str], Optional[Path]]:
-    """Point npx/npm exec at an empty prefix outside the workspace.
+@dataclass
+class LauncherIsolation:
+    """Args and env pins for one workspace package launch.
 
-    npm reads `node_modules` and the project `.npmrc` from `--prefix`. A repo
-    can plant a package in the moment after the pre-exec check, or point
-    `script-shell` at a file in the repo. The returned directory must stay
-    alive until the child exits: npx runs the package out of that cache.
-    The caller's flags after `--` are left untouched. Returns the original
-    args and no directory when this command is not an npm package launch.
+    `directory` is a temp tree that must outlive the child. Prefixes and keys
+    are removed from the scrubbed environment, then `env` is applied, so a
+    project `.npmrc`, `.yarnrc.yml`, or `UV_INDEX_URL` cannot outrank the pin.
     """
+
+    args: List[str]
+    directory: Optional[Path] = None
+    env: Dict[str, str] = field(default_factory=dict)
+    drop_prefixes: Tuple[str, ...] = ()
+    drop_keys: Tuple[str, ...] = ()
+
+
+_PNPM_VALUE_FLAGS = frozenset({
+    "--dir", "--filter", "--prefix", "--cwd", "--config", "-C", "-F",
+})
+_YARN_VALUE_FLAGS = frozenset({"--cwd", "--cache-folder"})
+_UV_GLOBAL_VALUE_FLAGS = frozenset({
+    "--directory", "--project", "--config-file", "--cache-dir", "--python", "-p",
+})
+# These choose a registry, a file of pins, or a local wheelhouse. They are
+# removed so the launch uses the public index pinned below. `--from` and
+# `--with` stay: they choose the package, and a path-shaped value is already
+# refused before spawn.
+_UV_INDEX_FLAGS = frozenset({
+    "--index", "--default-index", "--index-url", "--extra-index-url", "--find-links",
+    "--index-strategy", "--config-file", "--env-file",
+    "--constraints", "--build-constraints", "--overrides",
+    "-i", "-f", "-c", "-b",
+})
+_UV_BOOL_FLAGS = frozenset({"--no-index", "--no-config", "--isolated"})
+_UV_DROP_KEYS = (
+    "UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS",
+    "UV_INDEX", "UV_CONSTRAINT", "UV_OVERRIDE", "UV_BUILD_CONSTRAINT",
+    "UV_CONFIG_FILE", "UV_CACHE_DIR",
+)
+_PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org"
+_PUBLIC_YARN_REGISTRY = "https://registry.yarnpkg.com"
+_PUBLIC_PYPI = "https://pypi.org/simple"
+
+
+_COREPACK_TOOLS = frozenset({"pnpm", "yarn", "npm", "npx"})
+
+
+def _peel_corepack(args: Sequence[str]) -> Optional[Tuple[List[str], str, List[str]]]:
+    """Split `corepack [flags] pnpm <rest>` into the flags, the tool, and the rest.
+
+    Corepack forwards the remaining arguments. A repo can name `corepack` so the
+    pnpm/yarn checks never see the real program. Unknown corepack subcommands
+    are left alone.
+    """
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return None
+        if arg.startswith("-"):
+            index += 1
+            continue
+        if arg in _COREPACK_TOOLS:
+            return list(args[:index]), arg, list(args[index + 1 :])
+        return None
+    return None
+
+
+def _program_name(command: str) -> str:
     program = Path(command).name.lower()
     if program.endswith(".exe"):
         program = program[:-4]
+    return program
+
+
+def _first_positional(args: Sequence[str], value_flags: frozenset) -> str:
+    """First word that is not an option. A flag in `value_flags` consumes the next word."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return ""
+        if arg.startswith("-"):
+            name, eq, _value = arg.partition("=")
+            if name in value_flags and not eq and index + 1 < len(args):
+                index += 2
+                continue
+            index += 1
+            continue
+        return arg
+    return ""
+
+
+def _strip_named_flags(
+    args: Sequence[str],
+    value_flags: frozenset,
+    bool_flags: frozenset = frozenset(),
+) -> List[str]:
+    """Drop flags in these sets, including `--flag=value`. Flags after `--` stay.
+
+    A boolean flag does not consume the next word. A value flag does, unless
+    the value is attached (`--flag=value` or `-iURL`).
+    """
+    cleaned: List[str] = []
+    index = 0
+    passthrough = False
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            passthrough = True
+            cleaned.append(arg)
+            index += 1
+            continue
+        if not passthrough:
+            name, eq, _value = arg.partition("=")
+            short = arg[:2] if len(arg) > 2 and arg[0] == "-" and not arg.startswith("--") else ""
+            if name in bool_flags:
+                index += 1
+                continue
+            if name in value_flags or short in value_flags:
+                index += 1
+                attached = bool(eq) or bool(short and short in value_flags)
+                if not attached and index < len(args) and args[index] != "--":
+                    index += 1
+                continue
+        cleaned.append(arg)
+        index += 1
+    return cleaned
+
+
+def _pnpm_location_flag(arg: str) -> bool:
+    name = arg.partition("=")[0]
+    return name in {"--dir", "-C", "--prefix", "--registry"} or name.startswith("--config")
+
+
+def _strip_pnpm_location_flags(args: Sequence[str]) -> List[str]:
+    cleaned: List[str] = []
+    index = 0
+    passthrough = False
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            passthrough = True
+            cleaned.append(arg)
+            index += 1
+            continue
+        if not passthrough and _pnpm_location_flag(arg):
+            _name, eq, _value = arg.partition("=")
+            index += 1
+            if not eq and not arg.startswith("--config.") and index < len(args) and args[index] != "--":
+                index += 1
+            continue
+        cleaned.append(arg)
+        index += 1
+    return cleaned
+
+
+def _empty_launch_dir(prefix: str) -> Path:
+    root = Path(tempfile.mkdtemp(prefix=prefix))
+    (root / "cache").mkdir()
+    return root
+
+
+def _isolate_pnpm_dlx(args: Sequence[str]) -> LauncherIsolation:
+    """Run `pnpm dlx` from an empty project so the repo `.npmrc` is not read.
+
+    `--dir` is what stops pnpm from inheriting the workspace registry, including
+    a scoped `@scope:registry`. `--config.registry` alone does not. The tool's
+    cwd stays the workspace; only pnpm's project directory moves.
+    """
+    root = _empty_launch_dir("tiancode-pnpm-")
+    (root / "store").mkdir()
+    flags = [
+        "--dir", str(root),
+        f"--config.registry={_PUBLIC_NPM_REGISTRY}",
+        f"--config.cache-dir={root / 'cache'}",
+        f"--config.store-dir={root / 'store'}",
+    ]
+    shell = _trusted_script_shell()
+    if shell:
+        flags.append(f"--config.script-shell={shell}")
+    return LauncherIsolation(
+        args=flags + _strip_pnpm_location_flags(args),
+        directory=root,
+        env={"npm_config_registry": _PUBLIC_NPM_REGISTRY, **(
+            {"npm_config_script_shell": shell} if shell else {}
+        )},
+        drop_prefixes=("npm_config_", "pnpm_config_"),
+    )
+
+
+def _isolate_yarn_dlx(args: Sequence[str]) -> LauncherIsolation:
+    """Keep `yarn dlx` off the repo's `.yarnrc.yml` and `yarnPath`.
+
+    Yarn looks for `YARN_RC_FILENAME` by name, starting at the tool cwd. A
+    random name matches nothing the repo planted, so `yarnPath` and
+    `npmScopes` are not loaded. `YARN_NPM_REGISTRY_SERVER` does not override a
+    scope entry; ignoring the rc file does.
+    """
+    root = _empty_launch_dir("tiancode-yarn-")
+    filename = f"tiancode-yarnrc-{uuid.uuid4().hex}.yml"
+    return LauncherIsolation(
+        args=list(args),
+        directory=root,
+        env={
+            "YARN_IGNORE_PATH": "1",
+            "YARN_RC_FILENAME": filename,
+            "YARN_ENABLE_SCRIPTS": "false",
+            "YARN_CACHE_FOLDER": str(root / "cache"),
+            "YARN_NPM_REGISTRY_SERVER": _PUBLIC_YARN_REGISTRY,
+        },
+        drop_prefixes=("yarn_",),
+    )
+
+
+def _uv_tool_run(program: str, args: Sequence[str]) -> bool:
+    if program == "uvx":
+        return True
+    if program != "uv":
+        return False
+    words: List[str] = []
+    index = 0
+    while index < len(args) and len(words) < 2:
+        arg = args[index]
+        if arg == "--":
+            break
+        if arg.startswith("-"):
+            name, eq, _value = arg.partition("=")
+            if name in _UV_GLOBAL_VALUE_FLAGS and not eq and index + 1 < len(args):
+                index += 2
+                continue
+            index += 1
+            continue
+        words.append(arg)
+        index += 1
+    return words[:2] in (["tool", "run"], ["tool", "uvx"])
+
+
+def _isolate_uv_tool(args: Sequence[str]) -> LauncherIsolation:
+    """Pin uvx / `uv tool run` at the public index and a private cache.
+
+    `--no-config` does not override `UV_INDEX_URL`, so the env pin is required.
+    `--isolated` ignores a tool that was already installed from another index.
+    """
+    root = _empty_launch_dir("tiancode-uvx-")
+    flags = ["--no-config", "--isolated", "--cache-dir", str(root / "cache")]
+    return LauncherIsolation(
+        args=flags + _strip_named_flags(
+            args,
+            _UV_INDEX_FLAGS | {"--cache-dir", "--directory", "--project"},
+            _UV_BOOL_FLAGS,
+        ),
+        directory=root,
+        env={
+            "UV_INDEX_URL": _PUBLIC_PYPI,
+            "UV_DEFAULT_INDEX": _PUBLIC_PYPI,
+            "UV_CACHE_DIR": str(root / "cache"),
+        },
+        drop_keys=_UV_DROP_KEYS,
+    )
+
+
+def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
+    """Point a workspace package launch away from the repo's config and bins.
+
+    npx and `npm exec` get an empty prefix. `pnpm dlx` gets an empty `--dir`.
+    `yarn dlx` and uvx are pinned with env and, for uv, index flags. `corepack
+    pnpm` and `corepack yarn` are the same launch, because corepack forwards
+    the rest of the arguments. `bunx`, `pnpm exec`, and `yarn exec` are refused
+    before this runs: they execute a workspace bin and have no prefix that
+    keeps the tool's cwd in the repo.
+    The caller's flags after `--` are left untouched. A command this function
+    does not isolate is returned unchanged, with no directory.
+    """
+    program = _program_name(command)
+    plain = list(args)
+    if program == "corepack":
+        peeled = _peel_corepack(plain)
+        if peeled is None:
+            return LauncherIsolation(args=plain)
+        prefix, tool, rest = peeled
+        isolated = isolate_workspace_npm(tool, rest)
+        isolated.args = prefix + [tool, *isolated.args]
+        return isolated
+    if program == "pnpm" and _first_positional(plain, _PNPM_VALUE_FLAGS) == "dlx":
+        return _isolate_pnpm_dlx(plain)
+    if program == "yarn" and _first_positional(plain, _YARN_VALUE_FLAGS) == "dlx":
+        return _isolate_yarn_dlx(plain)
+    if _uv_tool_run(program, plain):
+        return _isolate_uv_tool(plain)
     if program not in {"npx", "npm"}:
-        return list(args), None
-    if program == "npm":
-        positionals: List[str] = []
-        for arg in args:
-            if arg == "--":
-                break
-            if not arg.startswith("-"):
-                positionals.append(arg)
-        if not positionals or positionals[0] not in {"exec", "x"}:
-            return list(args), None
-    root = Path(tempfile.mkdtemp(prefix="tiancode-npx-"))
+        return LauncherIsolation(args=plain)
+    if program == "npm" and _first_positional(plain, frozenset()) not in {"exec", "x"}:
+        return LauncherIsolation(args=plain)
+    root = _empty_launch_dir("tiancode-npx-")
     (root / "user.npmrc").write_text("", encoding="utf-8")
     (root / "global.npmrc").write_text("", encoding="utf-8")
-    (root / "cache").mkdir()
     flags = [
         "--prefix", str(root),
         "--cache", str(root / "cache"),
@@ -213,7 +491,29 @@ def isolate_workspace_npm(command: str, args: List[str]) -> Tuple[List[str], Opt
     shell = _trusted_script_shell()
     if shell:
         flags.extend(["--script-shell", shell])
-    return flags + _strip_npm_location_flags(list(args)), root
+    return LauncherIsolation(args=flags + _strip_npm_location_flags(plain), directory=root)
+
+
+def _apply_launcher_env(env: Dict[str, str], isolated: LauncherIsolation) -> Dict[str, str]:
+    """Drop project package-manager config, then apply the pins.
+
+    Matching is case-insensitive. Pins are written after the drop, so a parent
+    `npm_config_registry` cannot survive by using a different spelling.
+    """
+    if not isolated.drop_prefixes and not isolated.drop_keys and not isolated.env:
+        return env
+    prefixes = tuple(item.lower() for item in isolated.drop_prefixes)
+    drops = {item.lower() for item in isolated.drop_keys}
+    cleaned: Dict[str, str] = {}
+    for key, value in env.items():
+        lowered = key.lower()
+        if any(lowered.startswith(prefix) for prefix in prefixes):
+            continue
+        if lowered in drops:
+            continue
+        cleaned[key] = value
+    cleaned.update(isolated.env)
+    return cleaned
 
 
 def _retry_wait_seconds(attempt: int, resp: Any) -> float:
@@ -308,6 +608,7 @@ class StdioMcpTransport:
         self._launch_guard = launch_guard
         self._executable_guard = executable_guard
         self._isolate_dir: Optional[Path] = None
+        self._launcher = LauncherIsolation(list(self.args))
         self._proc: Optional[subprocess.Popen[str]] = None
         self._lock = threading.Lock()
         self._pending: Dict[int, queue.Queue[Any]] = {}
@@ -327,7 +628,10 @@ class StdioMcpTransport:
             error = self._launch_guard()
             if error:
                 raise RuntimeError(error)
-            self.args, self._isolate_dir = isolate_workspace_npm(self.command, self.args)
+            isolated = isolate_workspace_npm(self.command, self.args)
+            self.args = isolated.args
+            self._isolate_dir = isolated.directory
+            self._launcher = isolated
         cmd_bin = shutil.which(self.command) or self.command
         if self._executable_guard is not None:
             error = self._executable_guard(cmd_bin)
@@ -345,7 +649,7 @@ class StdioMcpTransport:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            env=_build_scrubbed_env(self.env),
+            env=_apply_launcher_env(_build_scrubbed_env(self.env), self._launcher),
             cwd=self.cwd,
             creationflags=flags,
             start_new_session=(sys.platform != "win32"),
@@ -621,8 +925,10 @@ class HttpMcpTransport:
         method = str(payload.get("method") or "")
         if method == "tools/call" and status in _TOOLS_CALL_NO_RETRY:
             return False
-        if method == "tools/call" and status == 429 and _jsonrpc_reply(resp) is not None:
-            return False
+        if method == "tools/call" and status == 429:
+            # An empty body is the only 429 treated as "try again, nothing ran".
+            # Anything else may already be the tool's result.
+            return _http_body_is_empty(resp)
         return True
 
     def _exchange(self, payload: Dict[str, Any]) -> Any:

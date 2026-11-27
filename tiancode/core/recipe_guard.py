@@ -5,10 +5,14 @@ that runs while make reads the file, and the same idea for just and tox are
 checked with the shell rules. A symlink or hard link is not opened. A `-C`,
 `-f`, `--justfile`, or `-c` path that leaves the workspace is refused.
 
-The check is a bounded reader, not a full make implementation. Implicit suffix
-rules are not expanded. `$(shell)` inside a recursive variable is checked when
-that variable is expanded into a recipe that would run, and immediately when
-the assignment itself is `:=` or `!=`.
+The check is a bounded reader, not a full make implementation. It does expand
+`$(call)`, `$(foreach)`, and `$(eval)` far enough to see a recipe those
+functions write, and it applies a suffix rule when the prerequisite file is
+already in the working directory. `$(wildcard)`, secondary expansion, and a
+prerequisite that itself has to be built are not modeled. `$(shell)` inside a
+recursive variable is checked when that variable is expanded into a recipe
+that would run, and immediately when the assignment or `$(eval)` runs while
+the file is read.
 """
 
 from __future__ import annotations
@@ -45,7 +49,18 @@ class _MakeFile:
     patterns: List[tuple] = field(default_factory=list)
     includes: List[str] = field(default_factory=list)
     immediate_shells: List[str] = field(default_factory=list)
+    suffix_ops: List[List[str]] = field(default_factory=list)
     default_goal: str = ""
+
+
+# GNU make 4.3 built-in list. A makefile that never mentions `.SUFFIXES` still
+# applies these. `.SUFFIXES:` with no prerequisites clears the list.
+_DEFAULT_SUFFIXES = (
+    ".out", ".a", ".ln", ".o", ".c", ".cc", ".C", ".cpp", ".p", ".f", ".F",
+    ".m", ".r", ".y", ".l", ".ym", ".yl", ".s", ".S", ".mod", ".sym", ".def",
+    ".h", ".info", ".dvi", ".tex", ".texinfo", ".texi", ".txinfo", ".w",
+    ".ch", ".web", ".sh", ".elc", ".el",
+)
 
 
 def _owned_text(path: Path) -> Optional[str]:
@@ -109,72 +124,257 @@ def _strip_make_comment(line: str) -> str:
     return line
 
 
-def _expand_make(text: str, variables: Dict[str, str], depth: int = 0) -> str:
-    if depth > 6 or "$" not in text:
-        return text
-
-    def repl(match: re.Match[str]) -> str:
-        body = match.group(1) if match.group(1) is not None else match.group(2)
-        name = body.strip()
-        if name.split(None, 1)[0] in {"shell", "eval", "call", "if", "foreach", "wildcard", "origin"}:
-            return match.group(0)
-        if name in variables:
-            return _expand_make(variables[name], variables, depth + 1)
-        return match.group(0)
-
-    text = text.replace("$$", "\0")
-    text = re.sub(r"\$\(([^)]*)\)|\$\{([^}]*)\}", repl, text)
-    return text.replace("\0", "$")
-
-
-def _shell_bodies(text: str) -> List[str]:
-    bodies: List[str] = []
-    index = 0
-    while True:
-        start = text.find("$(", index)
-        if start < 0:
-            break
-        end = _matching_paren(text, start + 1)
-        if end < 0:
-            break
-        inner = text[start + 2 : end].strip()
-        if inner.startswith("shell"):
-            command = inner[5:].strip()
-            if command:
-                bodies.append(command)
-        index = end + 1
-    return bodies
-
-
-def _matching_paren(text: str, open_at: int) -> int:
+def _matching_closer(text: str, open_at: int, open_ch: str, close_ch: str) -> int:
     depth = 0
     for index in range(open_at, len(text)):
-        if text[index] == "(":
+        if text[index] == open_ch:
             depth += 1
-        elif text[index] == ")":
+        elif text[index] == close_ch:
             depth -= 1
             if depth == 0:
                 return index
     return -1
 
 
-def _eval_chunks(text: str) -> List[str]:
-    chunks: List[str] = []
+def _next_expansion(text: str, start: int) -> Optional[tuple]:
+    """`(inner, end_index, dollar_index)` for the next `$(...)` or `${...}`."""
+    index = start
+    while True:
+        dollar = text.find("$", index)
+        if dollar < 0 or dollar + 1 >= len(text):
+            return None
+        opener = text[dollar + 1]
+        if opener not in "({":
+            index = dollar + 1
+            continue
+        closer = ")" if opener == "(" else "}"
+        end = _matching_closer(text, dollar + 1, opener, closer)
+        if end < 0:
+            return None
+        return text[dollar + 2 : end], end, dollar
+
+
+def _split_func(inner: str) -> tuple:
+    parts = inner.strip().split(None, 1)
+    if not parts:
+        return "", ""
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _split_make_args(text: str) -> List[str]:
+    """Split make function arguments on commas that are not inside a nested call."""
+    args: List[str] = []
+    buf: List[str] = []
+    paren = 0
+    brace = 0
+    for char in text:
+        if char == "(":
+            paren += 1
+        elif char == ")":
+            paren = max(0, paren - 1)
+        elif char == "{":
+            brace += 1
+        elif char == "}":
+            brace = max(0, brace - 1)
+        elif char == "," and paren == 0 and brace == 0:
+            args.append("".join(buf))
+            buf = []
+            continue
+        buf.append(char)
+    args.append("".join(buf))
+    return args
+
+
+def _shell_bodies(text: str) -> List[str]:
+    """Every `$(shell ...)` / `${shell ...}`, including one nested inside another function."""
+    bodies: List[str] = []
     index = 0
     while True:
-        start = text.find("$(", index)
-        if start < 0:
+        found = _next_expansion(text, index)
+        if found is None:
             break
-        end = _matching_paren(text, start + 1)
-        if end < 0:
-            break
-        inner = text[start + 2 : end].strip()
-        if inner.startswith("eval"):
-            body = inner[4:].strip()
-            if body:
-                chunks.append(body)
+        inner, end, _dollar = found
+        name, rest = _split_func(inner)
+        if name == "shell":
+            command = rest.strip()
+            if command:
+                bodies.append(command)
+            bodies.extend(_shell_bodies(rest))
+        else:
+            bodies.extend(_shell_bodies(inner))
         index = end + 1
-    return chunks
+    return bodies
+
+
+def _expand_make(
+    text: str,
+    variables: Dict[str, str],
+    depth: int = 0,
+    *,
+    read: bool = False,
+    parsed: Optional["_MakeFile"] = None,
+    pending: Optional[List[str]] = None,
+) -> str:
+    """Expand variables, `call`, `foreach`, and `if`.
+
+    `read` is for text make expands while reading the file. `$(shell)` is
+    recorded and removed, and `$(eval)` is parsed as more makefile. A recipe
+    leaves `$(shell)` in the text so the danger check can see the command
+    without running it.
+    """
+    if depth > 12 or "$" not in text:
+        return text
+    text = text.replace("$$", "\0")
+    out: List[str] = []
+    index = 0
+    while True:
+        found = _next_expansion(text, index)
+        if found is None:
+            out.append(text[index:])
+            break
+        inner, end, dollar = found
+        out.append(text[index:dollar])
+        out.append(
+            _expand_function(
+                inner, variables, depth, read=read, parsed=parsed, pending=pending,
+            )
+        )
+        index = end + 1
+    return "".join(out).replace("\0", "$")
+
+
+def _expand_function(
+    inner: str,
+    variables: Dict[str, str],
+    depth: int,
+    *,
+    read: bool,
+    parsed: Optional["_MakeFile"],
+    pending: Optional[List[str]],
+) -> str:
+    name, rest = _split_func(inner)
+    if not name:
+        return ""
+    if name == "shell":
+        if read and parsed is not None:
+            command = rest.strip()
+            if command:
+                parsed.immediate_shells.append(command)
+            parsed.immediate_shells.extend(_shell_bodies(rest))
+            return ""
+        return "$(" + inner + ")"
+    if name == "eval" and read and pending is not None:
+        body = _expand_make(rest, variables, depth + 1, read=True, parsed=parsed, pending=pending)
+        pending.extend(_join_continuations(body))
+        return ""
+    if name == "call":
+        return _expand_call(rest, variables, depth, read=read, parsed=parsed, pending=pending)
+    if name == "foreach":
+        return _expand_foreach(rest, variables, depth, read=read, parsed=parsed, pending=pending)
+    if name == "if":
+        return _expand_if(rest, variables, depth, read=read, parsed=parsed, pending=pending)
+    if name == "strip":
+        expanded = _expand_make(rest, variables, depth + 1, read=read, parsed=parsed, pending=pending)
+        return " ".join(expanded.split())
+    if name == "value":
+        return variables.get(rest.strip(), "")
+    if name in {"origin", "wildcard", "eval", "file", "flavor", "error", "warning", "info"}:
+        if read:
+            return ""
+        return "$(" + inner + ")"
+    if name in variables:
+        return _expand_make(variables[name], variables, depth + 1, read=read, parsed=parsed, pending=pending)
+    if read:
+        return ""
+    return "$(" + inner + ")"
+
+
+def _expand_call(
+    rest: str,
+    variables: Dict[str, str],
+    depth: int,
+    *,
+    read: bool,
+    parsed: Optional["_MakeFile"],
+    pending: Optional[List[str]],
+) -> str:
+    parts = _split_make_args(rest)
+    if not parts or not parts[0].strip():
+        return ""
+    name = _expand_make(parts[0], variables, depth + 1, read=read, parsed=parsed, pending=pending).strip()
+    args = [
+        _expand_make(part, variables, depth + 1, read=read, parsed=parsed, pending=pending)
+        for part in parts[1:]
+    ]
+    template = variables.get(name)
+    if template is None:
+        return ""
+    local = dict(variables)
+    local["0"] = name
+    for index, arg in enumerate(args, start=1):
+        local[str(index)] = arg
+    return _expand_make(template, local, depth + 1, read=read, parsed=parsed, pending=pending)
+
+
+def _expand_foreach(
+    rest: str,
+    variables: Dict[str, str],
+    depth: int,
+    *,
+    read: bool,
+    parsed: Optional["_MakeFile"],
+    pending: Optional[List[str]],
+) -> str:
+    parts = _split_make_args(rest)
+    if len(parts) < 3:
+        return ""
+    var = parts[0].strip()
+    words = _expand_make(parts[1], variables, depth + 1, read=read, parsed=parsed, pending=pending).split()
+    chunks: List[str] = []
+    for word in words:
+        local = dict(variables)
+        local[var] = word
+        chunks.append(_expand_make(parts[2], local, depth + 1, read=read, parsed=parsed, pending=pending))
+    return " ".join(chunks)
+
+
+def _expand_if(
+    rest: str,
+    variables: Dict[str, str],
+    depth: int,
+    *,
+    read: bool,
+    parsed: Optional["_MakeFile"],
+    pending: Optional[List[str]],
+) -> str:
+    parts = _split_make_args(rest)
+    if not parts:
+        return ""
+    cond = _expand_make(parts[0], variables, depth + 1, read=read, parsed=parsed, pending=pending).strip()
+    branch = parts[1] if cond and len(parts) > 1 else (parts[2] if not cond and len(parts) > 2 else "")
+    return _expand_make(branch, variables, depth + 1, read=read, parsed=parsed, pending=pending)
+
+
+def _only_expansions(line: str) -> bool:
+    """True when the line is only make functions, the shape of a bare `$(eval ...)`."""
+    text = line.strip()
+    if not text.startswith("$"):
+        return False
+    index = 0
+    saw = False
+    while index < len(text):
+        if text[index].isspace():
+            index += 1
+            continue
+        found = _next_expansion(text, index)
+        if found is None:
+            return False
+        _inner, end, dollar = found
+        if dollar != index:
+            return False
+        saw = True
+        index = end + 1
+    return saw
 
 
 def _assignment(line: str) -> Optional[tuple]:
@@ -240,8 +440,6 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
         define_lines: List[str] = []
         define_op = "="
         for raw_line in current:
-            for chunk in _eval_chunks(raw_line):
-                pending.extend(_join_continuations(chunk))
             if in_define:
                 if raw_line.strip() == "endef":
                     parsed.variables[in_define] = "\n".join(define_lines)
@@ -259,6 +457,12 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
                 continue
             line = _strip_make_comment(raw_line).strip()
             if not line:
+                rule_targets = []
+                continue
+            # A bare `$(eval ...)` or `$(foreach ... $(eval ...))` runs while
+            # make reads the file. The generated lines are parsed next.
+            if _only_expansions(line):
+                _expand_make(line, parsed.variables, read=True, parsed=parsed, pending=pending)
                 rule_targets = []
                 continue
             if line.startswith("define ") and line.endswith("endef") is False:
@@ -290,11 +494,14 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
                 targets = target_text.split()
                 if specific is not None:
                     name, op, value = specific
-                    if op in {":=", "!="}:
+                    if op == "!=":
                         value = _expand_make(value, parsed.variables)
+                        parsed.immediate_shells.append(value.strip())
                         parsed.immediate_shells.extend(_shell_bodies(value))
-                        if op == "!=":
-                            parsed.immediate_shells.append(value)
+                    elif op == ":=":
+                        value = _expand_make(
+                            value, parsed.variables, read=True, parsed=parsed, pending=pending,
+                        )
                     for target in targets:
                         parsed.rules.setdefault(target, _Rule()).local[name] = value
                     rule_targets = []
@@ -304,6 +511,10 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
                 if ";" in rest:
                     prereq_text, _, inline = rest.partition(";")
                 prereqs = prereq_text.split()
+                if ".SUFFIXES" in targets:
+                    # Empty prerequisites clear the list, including the defaults.
+                    # A later `.SUFFIXES: .foo` adds to whatever remains.
+                    parsed.suffix_ops.append(prereqs)
                 for target in targets:
                     item = parsed.rules.setdefault(target, _Rule())
                     item.prereqs = prereqs
@@ -317,11 +528,14 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
                 continue
             if assigned is not None:
                 name, op, value = assigned
-                if op in {":=", "!="}:
-                    value = _expand_make(value, {**parsed.variables, name: value})
+                if op == "!=":
+                    value = _expand_make(value, parsed.variables)
+                    parsed.immediate_shells.append(value.strip())
                     parsed.immediate_shells.extend(_shell_bodies(value))
-                    if op == "!=":
-                        parsed.immediate_shells.append(value.strip())
+                elif op == ":=":
+                    value = _expand_make(
+                        value, parsed.variables, read=True, parsed=parsed, pending=pending,
+                    )
                 elif op == "+=":
                     value = (parsed.variables.get(name, "") + " " + value).strip()
                 elif op == "?=" and name in parsed.variables:
@@ -368,10 +582,64 @@ def _load_make(path: Path, root: Path, seen: set, parsed: _MakeFile) -> Optional
 
 def _pattern_rule(parsed: _MakeFile, target: str) -> Optional[_Rule]:
     for pattern, rule in parsed.patterns:
-        if "%" not in pattern:
+        if "%" not in pattern or not _has_recipe(rule):
             continue
         prefix, _, suffix = pattern.partition("%")
         if target.startswith(prefix) and target.endswith(suffix) and len(target) >= len(prefix) + len(suffix):
+            return rule
+    return None
+
+
+def _has_recipe(rule: Optional[_Rule]) -> bool:
+    return rule is not None and any(_recipe_text(line) for line in rule.recipes)
+
+
+def _active_suffixes(parsed: _MakeFile) -> List[str]:
+    if not parsed.suffix_ops:
+        return list(_DEFAULT_SUFFIXES)
+    suffixes = list(_DEFAULT_SUFFIXES)
+    for op in parsed.suffix_ops:
+        if not op:
+            suffixes = []
+            continue
+        for item in op:
+            if item not in suffixes:
+                suffixes.append(item)
+    return suffixes
+
+
+def _prereq_present(directory: Path, name: str) -> bool:
+    """True when make would find this prerequisite. The file is not opened."""
+    path = directory / name
+    return path.is_symlink() or path.exists()
+
+
+def _suffix_rule(parsed: _MakeFile, target: str, directory: Path) -> Optional[_Rule]:
+    """A suffix rule make would run because its prerequisite is already on disk.
+
+    A file that still has to be built is not chased. The longest target suffix
+    wins, then prerequisite suffixes follow the suffix list. This is the part
+    of GNU make's search that decides the cases covered by the tests.
+    """
+    suffixes = _active_suffixes(parsed)
+    matching = [suffix for suffix in suffixes if suffix and target.endswith(suffix) and target != suffix]
+    matching.sort(key=len, reverse=True)
+    for target_suffix in matching:
+        stem = target[: -len(target_suffix)]
+        if not stem:
+            continue
+        for source_suffix in suffixes:
+            rule = parsed.rules.get(source_suffix + target_suffix)
+            if not _has_recipe(rule):
+                continue
+            if _prereq_present(directory, stem + source_suffix):
+                return rule
+    for source_suffix in suffixes:
+        rule = parsed.rules.get(source_suffix)
+        # The key is the suffix itself (`.sh:`), so `.c.o` is not selected here.
+        if rule is None or not _has_recipe(rule):
+            continue
+        if _prereq_present(directory, target + source_suffix):
             return rule
     return None
 
@@ -394,7 +662,13 @@ def _dangerous_recipe(text: str) -> bool:
     return any(is_dangerous_command(body) for body in _shell_bodies(command))
 
 
-def _check_make_targets(parsed: _MakeFile, targets: Sequence[str], *, run_recipes: bool) -> Optional[str]:
+def _check_make_targets(
+    parsed: _MakeFile,
+    targets: Sequence[str],
+    *,
+    run_recipes: bool,
+    directory: Path,
+) -> Optional[str]:
     from tiancode.tools.execution import is_dangerous_command
 
     for body in parsed.immediate_shells:
@@ -411,17 +685,22 @@ def _check_make_targets(parsed: _MakeFile, targets: Sequence[str], *, run_recipe
         if target in seen:
             continue
         seen.add(target)
-        rule = parsed.rules.get(target) or _pattern_rule(parsed, target)
+        explicit = parsed.rules.get(target)
+        recipe_rule = explicit if _has_recipe(explicit) else _pattern_rule(parsed, target)
+        if recipe_rule is None:
+            recipe_rule = _suffix_rule(parsed, target, directory)
+        rule = explicit or recipe_rule
         if rule is None:
             continue
-        variables = {**parsed.variables, **rule.local}
-        for recipe in rule.recipes:
-            expanded = _expand_make(recipe, variables)
-            if _dangerous_recipe(expanded):
-                return f"Makefile 目标 {target} 的配方含高危命令，已拒绝执行"
-            for match in _MAKE_RECURSE.finditer(expanded):
-                pending.append(match.group(1))
-        pending.extend(rule.prereqs)
+        if recipe_rule is not None:
+            variables = {**parsed.variables, **rule.local, **recipe_rule.local}
+            for recipe in recipe_rule.recipes:
+                expanded = _expand_make(recipe, variables)
+                if _dangerous_recipe(expanded):
+                    return f"Makefile 目标 {target} 的配方含高危命令，已拒绝执行"
+                for match in _MAKE_RECURSE.finditer(expanded):
+                    pending.append(match.group(1))
+        pending.extend(item for item in rule.prereqs if "%" not in item)
     return None
 
 
@@ -546,7 +825,9 @@ def _make_block(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
         if reason:
             return reason
     targets = invoke.targets or ([parsed.default_goal] if parsed.default_goal else [])
-    return _check_make_targets(parsed, targets, run_recipes=not invoke.dry_run)
+    return _check_make_targets(
+        parsed, targets, run_recipes=not invoke.dry_run, directory=invoke.directory,
+    )
 
 
 @dataclass
