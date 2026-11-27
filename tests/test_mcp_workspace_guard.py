@@ -421,6 +421,10 @@ def test_workspace_refuses_launchers_that_run_repo_bins(tmp_path: Path) -> None:
     assert _workspace_command_error("cargo", ["install", "serde"], work, work) is not None
     assert _workspace_command_error("rustup", ["run", "stable", "cargo", "check"], work, work) is not None
     assert _workspace_command_error("go", ["run", "main.go"], work, work) is not None
+    assert _workspace_command_error("java", ["Evil"], work, work) is not None
+    assert _workspace_command_error("java", ["-version"], work, work) is not None
+    assert _workspace_command_error("make", ["all"], work, work) is not None
+    assert _workspace_command_error("env", ["make", "-C", "/tmp"], work, work) is not None
 
 
 def test_workspace_refuses_project_managers_and_shim_writes(tmp_path: Path) -> None:
@@ -438,7 +442,29 @@ def test_workspace_refuses_project_managers_and_shim_writes(tmp_path: Path) -> N
         ("uv", ["add", "cowsay"]),
         ("uv", ["remove", "cowsay"]),
         ("uv", ["build"]),
+        ("uv", ["lock"]),
+        ("uv", ["lock", "--no-build"]),
+        ("uv", ["export"]),
+        ("uv", ["tree"]),
+        ("uv", ["--directory", str(work), "lock"]),
         ("uv", ["--directory", str(work), "run", "hello"]),
+        ("uv", ["tool", "run", "--with-editable", "evilpkg", "ruff"]),
+        ("uv", ["tool", "run", "--with-editable=evilpkg", "ruff"]),
+        ("uv", ["tool", "uvx", "--with-editable", "evilpkg"]),
+        ("uvx", ["--with-editable", "evilpkg", "ruff"]),
+        ("uv", ["tool", "install", "-e", "evilpkg"]),
+        ("uv", ["tool", "install", "--editable=evilpkg"]),
+        ("uv", ["tool", "install", "--with-editable", "evilpkg", "pip"]),
+        ("uv", ["tool", "install", "--with-requirements", "req.txt", "pip"]),
+        ("uv", ["tool", "install", "--with-requirements=req.txt", "pip"]),
+        ("pdm", ["run", "evil"]),
+        ("pdm", ["info"]),
+        ("hatch", ["run", "evil"]),
+        ("hatchling", ["build"]),
+        ("pipenv", ["run", "evil"]),
+        ("pipenv", ["run", "--system", "evil"]),
+        ("rye", ["run", "evil"]),
+        ("make", ["all"]),
         ("uv", ["pip", "sync", "req.txt"]),
         ("uv", ["pip", "compile", "req.in"]),
         ("uv", ["pip", "install", "-e", "evilpkg"]),
@@ -452,8 +478,15 @@ def test_workspace_refuses_project_managers_and_shim_writes(tmp_path: Path) -> N
         assert reason is not None, (command, args)
     assert _workspace_command_error("uv", ["pip", "install", "cowsay"], work, work) is None
     assert _workspace_command_error("uv", ["tool", "run", "ruff"], work, work) is None
+    assert _workspace_command_error("uv", ["tool", "run", "--with-requirements", "req.txt", "ruff"], work, work) is None
+    assert _workspace_command_error("uv", ["tool", "install", "ruff"], work, work) is None
+    assert _workspace_command_error("uv", ["version"], work, work) is None
     assert _workspace_command_error("uvx", ["ruff"], work, work) is None
     assert _workspace_command_error("pip", ["install", "cowsay"], work, work) is None
+    # Flags after `--` belong to the launched program, not to uv.
+    assert _workspace_command_error(
+        "uv", ["tool", "run", "ruff", "--", "--with-editable", "evilpkg"], work, work
+    ) is None
 
     assert _workspace_command_error("corepack", ["enable", "--install-directory", "bin"], work, work) is not None
     assert _workspace_command_error("corepack", ["enable", "--install-directory=bin"], work, work) is not None
@@ -540,6 +573,37 @@ def test_workspace_package_launchers_are_pinned_outside_the_repo(tmp_path: Path)
         assert "127.0.0.1" not in " ".join(tool.args)
         assert tool.args[0] == "--no-config"
         assert "ruff" in tool.args
+
+        editable = isolate_workspace_npm(
+            "uv",
+            ["tool", "run", "--with-editable", "evilpkg", "--with-requirements", "req.txt", "ruff"],
+        )
+        directories.append(editable.directory)
+        joined = " ".join(editable.args)
+        assert "--with-editable" not in editable.args
+        assert "--with-requirements" not in editable.args
+        assert "evilpkg" not in editable.args
+        assert "req.txt" not in editable.args
+        assert "ruff" in editable.args
+        assert "127.0.0.1" not in joined
+
+        kept = isolate_workspace_npm("uvx", ["--with", "requests", "ruff"])
+        directories.append(kept.directory)
+        assert "--with" in kept.args
+        assert "requests" in kept.args
+        assert "ruff" in kept.args
+
+        attached = isolate_workspace_npm(
+            "uvx",
+            ["--with-editable=evilpkg", "--with-requirements=req.txt", "--from", "ruff", "ruff"],
+        )
+        directories.append(attached.directory)
+        assert "--with-editable=evilpkg" not in attached.args
+        assert not any(arg.startswith("--with-requirements") for arg in attached.args)
+        assert "evilpkg" not in attached.args
+        assert "req.txt" not in attached.args
+        assert "--from" in attached.args
+        assert "ruff" in attached.args
 
         via_corepack = isolate_workspace_npm("corepack", ["pnpm", "--dir", str(work), "dlx", "cowsay"])
         directories.append(via_corepack.directory)
@@ -858,4 +922,252 @@ def test_corepack_enable_writes_shims_the_guard_refuses(tmp_path: Path) -> None:
     assert wrote.returncode == 0
     assert (shims / "pnpm").is_symlink() or (shims / "pnpm").exists()
     assert not (work / "pnpm").exists()
+
+
+_DYNAMIC_BACKEND = """\
+from pathlib import Path
+
+def build_editable(wheel_directory, config_settings=None, metadata_directory=None):
+    Path("RAN").write_text("editable")
+    raise SystemExit("editable-ran")
+"""
+
+_DYNAMIC_PROJECT = """\
+[project]
+name = "evil"
+dynamic = ["version"]
+requires-python = ">=3.8"
+
+[build-system]
+requires = []
+build-backend = "backend"
+backend-path = ["."]
+"""
+
+
+def _uv_env() -> dict:
+    import sys
+
+    env = os.environ.copy()
+    env["UV_PYTHON_DOWNLOADS"] = "never"
+    env["UV_PYTHON"] = os.environ.get("UV_PYTHON") or sys.executable
+    return env
+
+
+def test_make_runs_the_makefile_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    make = shutil.which("make")
+    if make is None:
+        pytest.skip("make is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / "Makefile").write_text("all:\n\ttouch RAN\n", encoding="utf-8")
+    assert _workspace_command_error("make", ["all"], work, work) is not None
+    subprocess.run([make, "all"], cwd=work, check=True, timeout=10)
+    assert (work / "RAN").is_file()
+
+
+def test_java_runs_a_workspace_class_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    javac = shutil.which("javac")
+    java = shutil.which("java")
+    if javac is None or java is None:
+        pytest.skip("javac or java is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / "Evil.java").write_text(
+        "public class Evil { public static void main(String[] a) throws Exception {"
+        " new java.io.File(\"RAN\").createNewFile(); } }\n",
+        encoding="utf-8",
+    )
+    compiled = subprocess.run([javac, "Evil.java"], cwd=work, check=False, timeout=20, capture_output=True)
+    if compiled.returncode != 0:
+        pytest.skip("javac could not compile the probe")
+    assert _workspace_command_error("java", ["Evil"], work, work) is not None
+    subprocess.run([java, "Evil"], cwd=work, check=True, timeout=10)
+    assert (work / "RAN").is_file()
+
+
+def test_uv_dynamic_metadata_builds_even_with_no_build(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    env = _uv_env()
+    for subcommand in ("lock", "export", "tree"):
+        work = tmp_path / subcommand
+        work.mkdir()
+        (work / "backend.py").write_text(_DYNAMIC_BACKEND, encoding="utf-8")
+        (work / "pyproject.toml").write_text(_DYNAMIC_PROJECT, encoding="utf-8")
+        assert _workspace_command_error("uv", [subcommand, "--no-build"], work, work) is not None
+        subprocess.run(
+            [uv, subcommand, "--no-build", "--no-python-downloads"],
+            cwd=work,
+            env=env,
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+        assert (work / "RAN").read_text(encoding="utf-8") == "editable"
+
+
+def test_uv_tool_editable_and_requirements_build_until_isolated(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    from tiancode.core.mcp_transports import _apply_launcher_env, isolate_workspace_npm
+
+    env = _uv_env()
+
+    def project() -> Path:
+        work = tmp_path / "proj"
+        if work.exists():
+            shutil.rmtree(work)
+        pkg = work / "evilpkg"
+        pkg.mkdir(parents=True)
+        (pkg / "backend.py").write_text(_DYNAMIC_BACKEND, encoding="utf-8")
+        (pkg / "pyproject.toml").write_text(_DYNAMIC_PROJECT, encoding="utf-8")
+        (work / "req.txt").write_text("-e evilpkg\n", encoding="utf-8")
+        return work
+
+    def ran(work: Path) -> bool:
+        return (work / "evilpkg" / "RAN").is_file() or (work / "RAN").is_file()
+
+    work = project()
+    raw = [
+        "tool", "run", "--offline", "--no-config", "--isolated",
+        "--with-editable", "evilpkg", "--no-python-downloads", "ruff", "--version",
+    ]
+    assert _workspace_command_error("uv", raw, work, work) is not None
+    subprocess.run([uv, *raw], cwd=work, env=env, check=False, timeout=30, capture_output=True)
+    assert ran(work)
+
+    work = project()
+    requested = [
+        "tool", "run", "--offline", "--with-editable", "evilpkg",
+        "--with-requirements", "req.txt", "--no-python-downloads", "ruff", "--version",
+    ]
+    isolated = isolate_workspace_npm("uv", requested)
+    assert isolated.directory is not None
+    assert "--with-editable" not in isolated.args
+    assert "--with-requirements" not in isolated.args
+    assert "evilpkg" not in isolated.args
+    try:
+        subprocess.run(
+            [uv, *isolated.args],
+            cwd=work,
+            env=_apply_launcher_env(env, isolated),
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+    finally:
+        shutil.rmtree(isolated.directory, ignore_errors=True)
+    assert not ran(work)
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "filename", "text", "extra"),
+    [
+        (
+            "pdm",
+            ["run", "evil"],
+            "pyproject.toml",
+            "[project]\nname = \"x\"\nversion = \"0.1.0\"\nrequires-python = \">=3.8\"\n\n"
+            "[tool.pdm.scripts]\nevil = \"touch RAN\"\n",
+            {"PDM_CHECK_UPDATE": "0"},
+        ),
+        (
+            "hatch",
+            ["run", "evil"],
+            "pyproject.toml",
+            "[project]\nname = \"x\"\nversion = \"0.1.0\"\nrequires-python = \">=3.8\"\n\n"
+            "[tool.hatch.envs.default]\nskip-install = true\n\n"
+            "[tool.hatch.envs.default.scripts]\nevil = \"touch RAN\"\n",
+            {},
+        ),
+        (
+            "pipenv",
+            ["run", "--system", "evil"],
+            "Pipfile",
+            "[[source]]\nurl = \"https://pypi.org/simple\"\nverify_ssl = true\nname = \"pypi\"\n\n"
+            "[scripts]\nevil = \"touch RAN\"\n",
+            {"PIPENV_YES": "1"},
+        ),
+        (
+            "rye",
+            ["run", "evil"],
+            "pyproject.toml",
+            "[project]\nname = \"x\"\nversion = \"0.1.0\"\nrequires-python = \">=3.8\"\n\n"
+            "[tool.rye]\nmanaged = false\n\n[tool.rye.scripts]\nevil = \"touch RAN\"\n",
+            {},
+        ),
+    ],
+)
+def test_project_manager_runs_a_repo_script(
+    tmp_path: Path,
+    name: str,
+    args: list,
+    filename: str,
+    text: str,
+    extra: dict,
+) -> None:
+    import shutil
+    import subprocess
+
+    binary = shutil.which(name)
+    if binary is None:
+        pytest.skip(f"{name} is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / filename).write_text(text, encoding="utf-8")
+    assert _workspace_command_error(name, args, work, work) is not None
+    env = os.environ.copy()
+    env.update(extra)
+    subprocess.run(
+        [binary, *args],
+        cwd=work,
+        env=env,
+        check=False,
+        timeout=60,
+        capture_output=True,
+    )
+    assert (work / "RAN").is_file()
+
+
+def test_hatchling_build_runs_the_project_hook(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    hatchling = shutil.which("hatchling")
+    if hatchling is None:
+        pytest.skip("hatchling is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / "pyproject.toml").write_text(
+        "[project]\nname = \"x\"\nversion = \"0.1.0\"\n"
+        "[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n"
+        "[tool.hatch.build.hooks.custom]\n",
+        encoding="utf-8",
+    )
+    (work / "hatch_build.py").write_text(
+        "from pathlib import Path\n"
+        "from hatchling.builders.hooks.plugin.interface import BuildHookInterface\n"
+        "class CustomBuildHook(BuildHookInterface):\n"
+        "    def initialize(self, version, build_data):\n"
+        "        Path(self.root, \"RAN\").write_text(\"hook\")\n",
+        encoding="utf-8",
+    )
+    assert _workspace_command_error("hatchling", ["build"], work, work) is not None
+    subprocess.run([hatchling, "build"], cwd=work, check=False, timeout=30, capture_output=True)
+    assert (work / "RAN").read_text(encoding="utf-8") == "hook"
 

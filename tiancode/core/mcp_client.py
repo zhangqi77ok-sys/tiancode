@@ -24,6 +24,7 @@ from tiancode.core.mcp_transports import (
     _UV_PROJECT_COMMANDS,
     _corepack_forward_plan,
     _is_pip,
+    _uv_tool_run,
     _uv_words,
 )
 from tiancode.core.mcp_discovery import (
@@ -186,6 +187,9 @@ _WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
 _INTERPRETERS = frozenset({
     "node", "nodejs", "bun", "deno", "tsx", "ts-node",
     "python", "python3", "python2", "perl", "ruby", "php", "go",
+    # `java Evil` loads Evil.class from the working directory. The class name
+    # has no slash and no script suffix, so the path check does not see it.
+    "java",
 })
 _SCRIPT_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
 _SCRIPT_SHORTCUTS = frozenset({"test", "start", "stop", "restart"})
@@ -445,6 +449,16 @@ def _pip_local_artifact(token: str) -> bool:
     return lowered.endswith(_PIP_ARCHIVE_SUFFIXES)
 
 
+def _flag_before_double_dash(args: List[str], names: frozenset) -> bool:
+    """True when one of `names` appears before `--`, including `--flag=value`."""
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg.partition("=")[0] in names:
+            return True
+    return False
+
+
 def _editable_install(args: List[str]) -> bool:
     """True when `-e` / `--editable` would build a local project.
 
@@ -537,9 +551,13 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
     cannot all be cleared from the command line. Poetry runs the project
     environment. Bundler evaluates the Gemfile as Ruby, including under
     `BUNDLE_IGNORE_CONFIG`. Composer runs scripts and `vendor/bin`. `gem build`
-    evaluates a gemspec. `uv run`, `uv sync`, and `uv build` build the project.
-    `pnpm dlx`, `yarn dlx`, uvx, pip, and `uv pip install` are isolated at spawn
-    instead.
+    evaluates a gemspec. `uv run`, `uv sync`, `uv build`, `uv lock`, `uv export`,
+    and `uv tree` build the project. pdm, hatch, pipenv, and rye run the
+    scripts named in the project file. `hatchling build` runs the project's
+    build hook. `make` runs the Makefile. `uv tool install -e` and
+    `--with-requirements` build a local package; `uv tool run --with-editable`
+    does too, even with `--no-config --isolated`. `pnpm dlx`, `yarn dlx`, uvx,
+    pip, and `uv pip install` are isolated at spawn instead.
     """
     if program == "bunx":
         return "工作区 MCP 不能用 bunx 启动，它会执行仓库里的可执行文件，已拒绝启动"
@@ -561,12 +579,36 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
         return "工作区 MCP 不能用 composer 启动，它会执行仓库里的 composer 脚本和 vendor 程序，已拒绝启动"
     if program == "gem":
         return "工作区 MCP 不能用 gem 启动，它会把仓库里的 gemspec 当作代码执行，已拒绝启动"
+    if program == "pdm":
+        return "工作区 MCP 不能用 pdm 启动，它会执行仓库里定义的脚本，已拒绝启动"
+    if program == "hatch":
+        return "工作区 MCP 不能用 hatch 启动，它会执行仓库里的环境脚本，已拒绝启动"
+    if program == "hatchling":
+        return "工作区 MCP 不能用 hatchling 启动，它会执行仓库里的构建钩子，已拒绝启动"
+    if program == "pipenv":
+        return "工作区 MCP 不能用 pipenv 启动，它会执行仓库里 Pipfile 定义的脚本，已拒绝启动"
+    if program == "rye":
+        return "工作区 MCP 不能用 rye 启动，它会执行仓库里定义的脚本，已拒绝启动"
+    if program == "make":
+        return "工作区 MCP 不能用 make 启动，它会执行仓库里的 Makefile，已拒绝启动"
+    if program == "uvx" and _flag_before_double_dash(args, frozenset({"--with-editable"})):
+        return "工作区 MCP 不能用 uv 以可编辑方式加载仓库里的包，已拒绝启动"
     if program == "uv":
         words = _uv_words(args)
         if words and words[0] in _UV_PROJECT_COMMANDS:
             return "工作区 MCP 不能用 uv 的项目命令启动，它会构建仓库里的包并执行其中的代码，已拒绝启动"
         if len(words) >= 2 and words[0] == "pip" and words[1] in _UV_PIP_REFUSED:
             return "工作区 MCP 不能用 uv pip sync 或 uv pip compile 启动，它会按仓库里的依赖文件安装并执行代码，已拒绝启动"
+        if _uv_tool_run(program, args) and _flag_before_double_dash(args, frozenset({"--with-editable"})):
+            return "工作区 MCP 不能用 uv 以可编辑方式加载仓库里的包，已拒绝启动"
+        if (
+            words[:1] == ["tool"]
+            and not _uv_tool_run(program, args)
+            and _flag_before_double_dash(
+                args, frozenset({"-e", "--editable", "--with-editable", "--with-requirements"})
+            )
+        ):
+            return "工作区 MCP 不能用 uv tool 安装仓库里的本地包，已拒绝启动"
     return None
 
 
@@ -644,7 +686,9 @@ def _workspace_command_error(
     the launch does not read or write this repo's node_modules. `pnpm dlx`,
     `yarn dlx`, uvx, pip, and `uv pip` are pinned the same way. `bunx`,
     `pnpm exec`, `yarn exec`, `pipx`, `cargo`, `rustup`, poetry, bundler,
-    composer, and gem do not start. `uv run`, `uv sync`, and `uv build` do not
+    composer, gem, pdm, hatch, hatchling, pipenv, rye, and make do not start.
+    `uv run`, `uv sync`, `uv build`, `uv lock`, `uv export`, and `uv tree` do
+    not start. `uv tool install -e` and `uv tool run --with-editable` do not
     start. `corepack use` and `corepack up` do not start: they run the package
     manager's install in the repo. `corepack enable` does not start when
     `--install-directory` is inside the repo. The same check runs again
