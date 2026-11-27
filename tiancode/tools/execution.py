@@ -356,8 +356,8 @@ def _normalize_command(command: str) -> str:
     Literal assignments in the same command are substituted by the caller.
     Functions and `BASH_ENV` inherited from the parent are removed before the
     process starts. `export -f`, a login shell, and zsh without `-f` are
-    refused separately: they run code this function never sees. A program that
-    writes a command into a file and only then executes it is not run here.
+    refused separately: they run code this function never sees. A file this
+    command writes and then executes is refused separately too.
     """
     text = _expand_printf_literals(_decode_ansi_c_quotes(str(command)))
     text = text.replace("\x00", " ")
@@ -730,14 +730,48 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     assignments from the same command, and drop leading `env`/`nice` wrappers
     and absolute paths. A decoded payload is refused when it would be executed.
     Shell startup that would run code from outside this command is refused too.
+    `bash -c`, `eval`, and a shell heredoc are checked again as their own
+    command, so `bash -c 'sudo reboot'` does not hide behind the outer word.
+    A command substitution is refused when its body is dangerous, because the
+    shell runs that body. `eval "$(pyenv init -)"` stays allowed.
     """
+    if _depth > 6:
+        return False
     raw = " ".join(command) if isinstance(command, (list, tuple)) else str(command)
     if _command_hides_its_body(raw):
         return True
+    from tiancode.tools.command_scan import (
+        inline_scripts,
+        runs_written_file,
+        substitution_bodies,
+        unseen_execution,
+    )
+
+    if unseen_execution(raw) or runs_written_file(raw):
+        return True
     if _depth == 0 and _executed_decoder(raw):
         return True
+    for body in substitution_bodies(raw):
+        cleaned = body.strip()
+        if cleaned and cleaned != raw.strip() and is_dangerous_command(cleaned, _depth=_depth + 1):
+            return True
+    structural = [raw]
+    if _depth == 0:
+        prepared = _expand_literal_assignments(_expand_printf_literals(_decode_ansi_c_quotes(raw)))
+        if prepared not in structural:
+            structural.append(prepared)
+    seen_scripts = set()
+    for text in structural:
+        for script in inline_scripts(text):
+            cleaned = script.strip()
+            if not cleaned or cleaned == raw.strip() or cleaned in seen_scripts:
+                continue
+            seen_scripts.add(cleaned)
+            if is_dangerous_command(cleaned, _depth=_depth + 1):
+                return True
     patterns = (*DANGEROUS_PATTERNS, *_EXTRA_DANGEROUS_PATTERNS)
-    for text in _match_candidates(raw):
+    texts = _match_candidates(raw) if _depth == 0 else [raw]
+    for text in texts:
         for pattern in patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 return True
@@ -1004,6 +1038,11 @@ def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> Ex
     if is_dangerous_command(command):
         return _blocked_result("检测到高危系统破坏性命令，执行已被阻止！")
     reason = package_script_block_reason(command, work_dir)
+    if reason:
+        return _blocked_result(reason)
+    from tiancode.core.recipe_guard import recipe_block_reason
+
+    reason = recipe_block_reason(command, work_dir)
     if reason:
         return _blocked_result(reason)
     return _run_managed_process(command, work_dir, use_shell=True, timeout=timeout)

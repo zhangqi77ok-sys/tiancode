@@ -199,6 +199,11 @@ _SCRIPT_SUFFIXES = frozenset({
     ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".py", ".rb", ".php",
 })
 _PACKAGE_LAUNCHERS = frozenset({"npx", "npm", "pnpm", "yarn", "bunx", "uvx"})
+# These write node_modules and run lifecycle scripts from the repo or the package.
+_DEPENDENCY_SUBCOMMANDS = frozenset({
+    "install", "i", "ci", "add", "update", "upgrade", "uninstall", "remove",
+    "link", "unlink", "rebuild", "dedupe", "prune", "explore",
+})
 _PACKAGE_SPEC = re.compile(r"^@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._+-]+)?$")
 _SCOPED_INSTALL = re.compile(r"^(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(?:@.+)?$")
 _PLAIN_INSTALL = re.compile(r"^([A-Za-z0-9._-]+)(?:@.+)?$")
@@ -283,6 +288,16 @@ def _runner_script_name(binary: str, args: List[str]) -> Optional[str]:
     if binary != "bun" and positionals[0] in _SCRIPT_SHORTCUTS:
         return positionals[0]
     return None
+
+
+def _dependency_subcommand(args: List[str]) -> bool:
+    """True when npm/pnpm/yarn/bun would install, remove, or rebuild packages."""
+    for arg in args:
+        if arg == "--":
+            return False
+        if not arg.startswith("-"):
+            return arg in _DEPENDENCY_SUBCOMMANDS
+    return False
 
 
 def _named_package_script_error(root: Path, name: str) -> Optional[str]:
@@ -421,9 +436,11 @@ def _workspace_command_error(
     """Reject a workspace stdio command that would execute a repository file.
 
     A shell, an interpreter (`node server.js`, `python -m`), a package script,
-    a path argument, or an already-installed local package does not start.
-    `npx -y @scope/pkg` still starts when that package is not in the repo.
-    The same check runs again immediately before the process is spawned.
+    a path argument, an install, or an already-installed local package does not
+    start. `npx -y @scope/pkg` may still start when that package is not in the
+    repo; the spawn then pins npm's prefix and cache outside the workspace so
+    the launch does not read or write this repo's node_modules. The same check
+    runs again immediately before the process is spawned.
     """
     if not command:
         return None
@@ -452,6 +469,8 @@ def _workspace_command_error(
                 if script_error:
                     return script_error
             return "工作区 MCP 不能运行 package 脚本，那会执行仓库里的文件，已拒绝启动"
+        if _dependency_subcommand(rest):
+            return "工作区 MCP 不能在仓库里安装或重建依赖，那会写入 node_modules 并执行安装脚本，已拒绝启动"
     if program in _INTERPRETERS:
         error = _interpreter_error(program, rest, root, base)
         if error:

@@ -8,10 +8,12 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
-from typing import Any, Callable, Deque, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -29,9 +31,11 @@ _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26", "2024-11-0
 _DEFAULT_TIMEOUT_SECONDS = 30
 _MAX_HTTP_ATTEMPTS = 3
 # tools/call is not retried on 408, 500, 502, 503, or 504. A gateway can return
-# those after the tool has already run. 429 still retries. initialize and
-# tools/list still retry 503. A session 404 reconnects, but tools/call is not
-# sent again; only read-only methods below are.
+# those after the tool has already run. A bare 429 is a rate limit before the
+# handler runs, so tools/call still retries it. A 429 that already carries a
+# JSON-RPC result or error is the answer for that request and is not sent
+# again. initialize and tools/list still retry 503. A session 404 reconnects,
+# but tools/call is not sent again; only read-only methods below are.
 _RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 _TOOLS_CALL_NO_RETRY = frozenset({408, 500, 502, 503, 504})
 _SESSION_REPLAY_METHODS = frozenset({
@@ -108,6 +112,108 @@ def _extract_tool_text(result: Any) -> str:
     ]
     text = "\n".join(p for p in parts if p).strip() or json.dumps(result, ensure_ascii=False)
     return f"❌ MCP 工具返回错误: {text}" if result.get("isError") and not text.startswith("❌") else text
+
+
+def _jsonrpc_reply(resp: Any) -> Optional[Dict[str, Any]]:
+    """JSON-RPC result or error already present in an HTTP body, else None.
+
+    A rate-limit page or an empty 429 is not a JSON-RPC reply. A body that
+    contains `result` or `error` means this request was answered.
+    """
+    text = (getattr(resp, "text", "") or "").strip()
+    if not text or text[0] not in "{[":
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and ("result" in payload or "error" in payload):
+        return payload
+    return None
+
+
+_NPM_LOCATION_FLAGS = frozenset({
+    "--prefix", "--cache", "--userconfig", "--globalconfig", "--script-shell", "--npx-cache",
+})
+
+
+def _trusted_script_shell() -> Optional[str]:
+    """A shell outside the workspace. npm lifecycle scripts must not use a repo path."""
+    if os.name == "nt":
+        root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+        if root:
+            candidate = Path(root) / "System32" / "cmd.exe"
+            if candidate.is_file():
+                return str(candidate)
+        return None
+    for candidate in ("/bin/sh", "/usr/bin/sh"):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def _strip_npm_location_flags(args: List[str]) -> List[str]:
+    """Drop npm location flags. Flags after `--` belong to the package, not npm."""
+    cleaned: List[str] = []
+    index = 0
+    passthrough = False
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            passthrough = True
+            cleaned.append(arg)
+            index += 1
+            continue
+        if not passthrough:
+            name, eq, _value = arg.partition("=")
+            if name in _NPM_LOCATION_FLAGS:
+                index += 1
+                if not eq and index < len(args) and args[index] != "--":
+                    index += 1
+                continue
+        cleaned.append(arg)
+        index += 1
+    return cleaned
+
+
+def isolate_workspace_npm(command: str, args: List[str]) -> Tuple[List[str], Optional[Path]]:
+    """Point npx/npm exec at an empty prefix outside the workspace.
+
+    npm reads `node_modules` and the project `.npmrc` from `--prefix`. A repo
+    can plant a package in the moment after the pre-exec check, or point
+    `script-shell` at a file in the repo. The returned directory must stay
+    alive until the child exits: npx runs the package out of that cache.
+    The caller's flags after `--` are left untouched. Returns the original
+    args and no directory when this command is not an npm package launch.
+    """
+    program = Path(command).name.lower()
+    if program.endswith(".exe"):
+        program = program[:-4]
+    if program not in {"npx", "npm"}:
+        return list(args), None
+    if program == "npm":
+        positionals: List[str] = []
+        for arg in args:
+            if arg == "--":
+                break
+            if not arg.startswith("-"):
+                positionals.append(arg)
+        if not positionals or positionals[0] not in {"exec", "x"}:
+            return list(args), None
+    root = Path(tempfile.mkdtemp(prefix="tiancode-npx-"))
+    (root / "user.npmrc").write_text("", encoding="utf-8")
+    (root / "global.npmrc").write_text("", encoding="utf-8")
+    (root / "cache").mkdir()
+    flags = [
+        "--prefix", str(root),
+        "--cache", str(root / "cache"),
+        "--userconfig", str(root / "user.npmrc"),
+        "--globalconfig", str(root / "global.npmrc"),
+    ]
+    shell = _trusted_script_shell()
+    if shell:
+        flags.extend(["--script-shell", shell])
+    return flags + _strip_npm_location_flags(list(args)), root
 
 
 def _retry_wait_seconds(attempt: int, resp: Any) -> float:
@@ -201,6 +307,7 @@ class StdioMcpTransport:
         self.cwd = cwd
         self._launch_guard = launch_guard
         self._executable_guard = executable_guard
+        self._isolate_dir: Optional[Path] = None
         self._proc: Optional[subprocess.Popen[str]] = None
         self._lock = threading.Lock()
         self._pending: Dict[int, queue.Queue[Any]] = {}
@@ -220,6 +327,7 @@ class StdioMcpTransport:
             error = self._launch_guard()
             if error:
                 raise RuntimeError(error)
+            self.args, self._isolate_dir = isolate_workspace_npm(self.command, self.args)
         cmd_bin = shutil.which(self.command) or self.command
         if self._executable_guard is not None:
             error = self._executable_guard(cmd_bin)
@@ -332,8 +440,11 @@ class StdioMcpTransport:
     def close(self) -> None:
         """Terminate subprocess cleanly before closing stdout/stderr pipes."""
         proc, self._proc = self._proc, None
+        isolate_dir, self._isolate_dir = self._isolate_dir, None
         self._wake_pending()
         if not proc:
+            if isolate_dir is not None:
+                shutil.rmtree(isolate_dir, ignore_errors=True)
             return
         try:
             if proc.stdin:
@@ -352,6 +463,8 @@ class StdioMcpTransport:
                     stream.close()
             except OSError:
                 pass
+        if isolate_dir is not None:
+            shutil.rmtree(isolate_dir, ignore_errors=True)
 
 
 def _pending_waiter(pending: Dict[Any, Any], msg_id: Any) -> Any:
@@ -502,11 +615,13 @@ class HttpMcpTransport:
             raise RuntimeError(format_401_hint(status, www, self.url))
         raise RuntimeError(f"MCP HTTP 错误 ({status}): {body[:200]}")
 
-    def _should_retry_http(self, status: int, payload: Dict[str, Any], attempt: int) -> bool:
+    def _should_retry_http(self, status: int, payload: Dict[str, Any], attempt: int, resp: Any) -> bool:
         if attempt + 1 >= _MAX_HTTP_ATTEMPTS or status not in _RETRYABLE_HTTP_STATUS:
             return False
         method = str(payload.get("method") or "")
         if method == "tools/call" and status in _TOOLS_CALL_NO_RETRY:
+            return False
+        if method == "tools/call" and status == 429 and _jsonrpc_reply(resp) is not None:
             return False
         return True
 
@@ -521,7 +636,7 @@ class HttpMcpTransport:
                 timeout=self.timeout_seconds,
             )
             status = getattr(resp, "status_code", 200)
-            if not self._should_retry_http(status, payload, attempt):
+            if not self._should_retry_http(status, payload, attempt, resp):
                 return resp
             self._sleeper(_retry_wait_seconds(attempt, resp))
         return resp
@@ -552,6 +667,12 @@ class HttpMcpTransport:
     def _post_unlocked(self, payload: Dict[str, Any], *, expect_response: bool, allow_legacy_fallback: bool = False) -> Any:
         resp = self._exchange(payload)
         status = getattr(resp, "status_code", 200)
+        method = str(payload.get("method") or "")
+        if status == 429 and method == "tools/call":
+            reply = _jsonrpc_reply(resp)
+            if reply is not None:
+                self._capture_session(resp)
+                return reply
         # Session expired → open a new session. Replay only read-only methods.
         # tools/call is not sent again: the gateway may already have run it.
         if status == 404 and self.session_id and payload.get("method") != "initialize":
