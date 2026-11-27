@@ -158,7 +158,7 @@ def test_resume_replaces_transcript_and_undo_set(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.parametrize("git_backed", [False, True])
-def test_resume_from_another_workspace_does_not_write_its_snapshots(
+def test_resume_reanchors_workspace_without_touching_the_other_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_backed: bool
 ) -> None:
     _isolate(monkeypatch, tmp_path)
@@ -196,15 +196,17 @@ def test_resume_from_another_workspace_does_not_write_its_snapshots(
 
         assert engine.resume_session("from-origin") is True
         assert _contents(engine, "from-origin") == ["from origin"]
+        assert Path(engine.settings.work_dir).resolve() == origin
         engine.snapshot_store.rollback()
         assert (current / "notes.txt").read_text(encoding="utf-8") == "LIVE-CURRENT\n"
-        assert (origin / "notes.txt").read_text(encoding="utf-8") == "LIVE-ORIGIN\n"
+        assert (origin / "notes.txt").read_text(encoding="utf-8") == "SNAP-ORIGIN\n"
 
         assert engine.resume_session("from-current") is True
         assert _contents(engine, "from-current") == ["from current"]
+        assert Path(engine.settings.work_dir).resolve() == current
         engine.snapshot_store.rollback()
         assert (current / "notes.txt").read_text(encoding="utf-8") == "SNAP-CURRENT\n"
-        assert (origin / "notes.txt").read_text(encoding="utf-8") == "LIVE-ORIGIN\n"
+        assert (origin / "notes.txt").read_text(encoding="utf-8") == "SNAP-ORIGIN\n"
     finally:
         engine.close()
 
@@ -277,5 +279,35 @@ def test_failed_resume_keeps_live_plan_snapshots_and_transcript(tmp_path: Path, 
         file_a.write_text("dirty\n", encoding="utf-8")
         engine.snapshot_store.rollback()
         assert file_a.read_text(encoding="utf-8") == "snap-A\n"
+    finally:
+        engine.close()
+
+
+def test_resume_missing_workspace_stays_put_and_skips_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+    current = (tmp_path / "current").resolve()
+    current.mkdir()
+    notes = current / "notes.txt"
+    notes.write_text("LIVE-CURRENT\n", encoding="utf-8")
+    engine = _make_engine(current, tmp_path / "config.json", git_backed=False)
+    try:
+        engine.session_store.save(
+            session_id="gone",
+            work_dir=str(tmp_path / "deleted-project"),
+            messages=[HumanMessage(content="from gone")],
+            plan=None,
+            snapshots=[{
+                "filename": "notes.txt",
+                "original_content": "SHOULD-NOT-APPLY\n",
+                "is_created_new": False,
+            }],
+        )
+        assert engine.resume_session("gone") is True
+        assert Path(engine.settings.work_dir).resolve() == current
+        assert _contents(engine, "gone") == ["from gone"]
+        assert engine.snapshot_store.rollback() == []
+        assert notes.read_text(encoding="utf-8") == "LIVE-CURRENT\n"
     finally:
         engine.close()

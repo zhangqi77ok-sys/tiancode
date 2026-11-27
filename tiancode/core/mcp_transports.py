@@ -311,8 +311,13 @@ class HttpMcpTransport:
         self._next_id = 0
         self._legacy_sse = False
         self._post_endpoint = self.url
+        self._rpc_lock = threading.RLock()
 
     def connect(self) -> None:
+        with self._rpc_lock:
+            self._connect_unlocked()
+
+    def _connect_unlocked(self) -> None:
         self._ensure_auth_headers(force_refresh=False)
         try:
             init_result = self._request("initialize", _init_params(), allow_legacy_fallback=True)
@@ -424,6 +429,10 @@ class HttpMcpTransport:
         self._legacy_sse = True
 
     def _post(self, payload: Dict[str, Any], *, expect_response: bool, allow_legacy_fallback: bool = False) -> Any:
+        with self._rpc_lock:
+            return self._post_unlocked(payload, expect_response=expect_response, allow_legacy_fallback=allow_legacy_fallback)
+
+    def _post_unlocked(self, payload: Dict[str, Any], *, expect_response: bool, allow_legacy_fallback: bool = False) -> Any:
         resp = self._client.post(
             self._post_endpoint,
             json=payload,
@@ -487,6 +496,10 @@ class HttpMcpTransport:
         )
 
     def close(self) -> None:
+        with self._rpc_lock:
+            self._close_unlocked()
+
+    def _close_unlocked(self) -> None:
         if self.session_id and not self._legacy_sse:
             try:
                 headers = self._base_headers()

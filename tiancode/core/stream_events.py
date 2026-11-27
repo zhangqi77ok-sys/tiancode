@@ -53,13 +53,18 @@ def iter_message_events(
         yield {"type": "tool_end", "name": getattr(chunk, "name", "tool"), "content": getattr(chunk, "content", "")}
 
 
-def persist_engine_session(engine: "TianCodeEngine", thread_id: str, config: Dict[str, Any]) -> None:
-    """Persist graph messages, active plan, snapshots, usage metrics, and episode memory."""
+def persist_engine_session(engine: "TianCodeEngine", thread_id: str, config: Dict[str, Any]) -> Optional[str]:
+    """Persist graph messages, active plan, snapshots, usage metrics, and episode memory.
+
+    Returns None on success. A failure is logged and also stored on
+    ``engine.last_persist_error`` so the CLI can show it; the transcript is
+    not discarded just because the disk write failed.
+    """
     try:
         graph = getattr(engine, "graph", None)
         get_state = getattr(graph, "get_state", None)
         if not callable(get_state):
-            return
+            return None
         state = get_state(config)
         all_messages = close_pending_tool_calls(list(state.values.get("messages") or []))
         exported_snapshots = (
@@ -97,8 +102,19 @@ def persist_engine_session(engine: "TianCodeEngine", thread_id: str, config: Dic
                 plan=engine.planner.active_plan,
                 modified_files=modified,
             )
+        try:
+            engine.last_persist_error = None
+        except Exception:
+            pass
+        return None
     except Exception as exc:
-        logging.getLogger("tiancode.engine").warning(f"会话状态持久化失败 [{thread_id}]: {exc}")
+        message = f"会话状态持久化失败 [{thread_id}]: {exc}"
+        logging.getLogger("tiancode.engine").warning(message)
+        try:
+            engine.last_persist_error = message
+        except Exception:
+            pass
+        return message
 
 
 def _warn_resume_cancelled(exc: Exception) -> None:
@@ -128,22 +144,27 @@ def _tool_call_identity(tool_call: Any) -> Optional[tuple]:
 
 
 def close_pending_tool_calls(messages: List[Any]) -> List[Any]:
-    """Append a result for every tool call that never received one.
+    """Make a transcript acceptable to tool-calling providers.
 
-    Providers reject a later user message while an assistant tool call is open.
-    Cancelling a turn after the call is checkpointed leaves exactly that shape.
-    Existing results are kept; only the missing ids are filled, in call order,
-    before the next non-tool message.
+    Providers reject a later user or system message while an assistant tool
+    call is open, and they also reject a tool result whose call is missing.
+    Cancelling a turn, or folding a system summary between a call and its
+    result, leaves exactly those shapes. Existing results are kept; missing
+    ids are filled in call order; orphan results and duplicate ids are dropped.
+    A system message that landed inside a tool group is moved to after the
+    results so the pair stays contiguous.
     """
-    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
     closed: List[Any] = []
     index = 0
     while index < len(messages):
         message = messages[index]
-        closed.append(message)
         index += 1
         tool_calls = getattr(message, "tool_calls", None) if isinstance(message, AIMessage) else None
+        if isinstance(message, ToolMessage):
+            continue
+        closed.append(message)
         if not tool_calls:
             continue
         expected = []
@@ -151,22 +172,41 @@ def close_pending_tool_calls(messages: List[Any]) -> List[Any]:
             identity = _tool_call_identity(tool_call)
             if identity is not None and identity[0] not in {item[0] for item in expected}:
                 expected.append(identity)
-        answered = set()
-        while index < len(messages) and isinstance(messages[index], ToolMessage):
-            closed.append(messages[index])
-            answered.add(messages[index].tool_call_id)
-            index += 1
-        for tool_call_id, tool_name in expected:
-            if tool_call_id in answered:
+        expected_ids = {item[0] for item in expected}
+        found: Dict[str, ToolMessage] = {}
+        unmatched: List[ToolMessage] = []
+        deferred: List[Any] = []
+        while index < len(messages):
+            nxt = messages[index]
+            if isinstance(nxt, ToolMessage):
+                index += 1
+                tool_call_id = getattr(nxt, "tool_call_id", None)
+                if not expected_ids:
+                    unmatched.append(nxt)
+                elif isinstance(tool_call_id, str) and tool_call_id in expected_ids and tool_call_id not in found:
+                    found[tool_call_id] = nxt
                 continue
-            closed.append(
-                ToolMessage(
-                    content=INTERRUPTED_TOOL_NOTE,
-                    tool_call_id=tool_call_id,
-                    name=tool_name,
+            if isinstance(nxt, SystemMessage):
+                deferred.append(nxt)
+                index += 1
+                continue
+            break
+        if expected_ids:
+            for tool_call_id, tool_name in expected:
+                existing = found.get(tool_call_id)
+                if existing is not None:
+                    closed.append(existing)
+                    continue
+                closed.append(
+                    ToolMessage(
+                        content=INTERRUPTED_TOOL_NOTE,
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                    )
                 )
-            )
-            answered.add(tool_call_id)
+        else:
+            closed.extend(unmatched)
+        closed.extend(deferred)
     return closed
 
 
@@ -212,6 +252,13 @@ def _replace_checkpoint_messages(graph: Any, config: Dict[str, Any], messages: L
     graph.update_state(config, {"messages": [*removals, *messages]})
 
 
+def install_thread_messages(graph: Any, config: Dict[str, Any], messages: List[Any]) -> List[Any]:
+    """Replace the thread transcript with a tool-call-safe copy of `messages`."""
+    sealed = close_pending_tool_calls(list(messages))
+    _replace_checkpoint_messages(graph, config, sealed)
+    return sealed
+
+
 def _same_workspace(saved: str, current: Any) -> bool:
     """True when the saved session directory is the engine directory now in use."""
     from pathlib import Path
@@ -225,17 +272,33 @@ def _same_workspace(saved: str, current: Any) -> bool:
         return False
 
 
+def _warn_resume_workspace(message: str) -> None:
+    """Surface a non-fatal resume warning without hiding the restored transcript."""
+    try:
+        from tiancode.cli.formatter import TerminalFormatter
+
+        TerminalFormatter.print_warning(message)
+    except Exception:
+        pass
+
+
 def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
-    """Replace graph, plan, undo snapshots, and usage with one persisted session.
+    """Replace graph, plan, undo snapshots, usage, and workspace with one session.
 
     Validation runs before any live field is written. A missing or corrupt
-    session returns False and leaves the engine unchanged. Snapshot import
-    replaces the previous undo set so a switched session cannot roll back
-    files that belong to the session we just left. Snapshots saved for another
-    directory are left out, so undo cannot write them into the current tree.
+    session returns False and leaves the engine unchanged. When the saved
+    workspace still exists, the engine re-anchors there before the transcript
+    is installed, so later tool calls and undo snapshots hit that tree. A
+    missing workspace keeps the current directory and leaves foreign snapshots
+    unloaded. Snapshot import replaces the previous undo set.
     """
+    from pathlib import Path
+
     persisted = engine.session_store.load(session_id)
     if not persisted:
+        err = getattr(engine.session_store, "last_load_error", None)
+        if err is not None and getattr(err, "kind", "") != "not_found":
+            _warn_resume_cancelled(err)
         return False
 
     from langchain_core.messages import messages_from_dict
@@ -249,19 +312,39 @@ def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
         _warn_resume_cancelled(exc)
         return False
 
+    saved_work = str(getattr(getattr(persisted, "metadata", None), "work_dir", "") or "").strip()
+    previous_work = getattr(getattr(engine, "settings", None), "work_dir", "")
+    switched = False
+    workspace_note = ""
+    if saved_work and not _same_workspace(saved_work, previous_work):
+        target = Path(saved_work).expanduser()
+        try:
+            if target.is_dir():
+                engine.switch_workspace(target, discard_snapshots=False, session_id=session_id)
+                switched = True
+            else:
+                workspace_note = "该会话记录的工作区已不存在，仍停留在当前目录。"
+        except Exception as exc:
+            workspace_note = f"未能切回会话工作区 ({exc})，仍停留在当前目录。"
+
     config = {"configurable": {"thread_id": session_id}}
     try:
         _replace_checkpoint_messages(engine.graph, config, rehydrated_msgs)
     except Exception as exc:
+        if switched:
+            try:
+                engine.switch_workspace(previous_work, discard_snapshots=False)
+            except Exception:
+                workspace_note = "会话恢复失败，且工作区切回也失败，请检查当前目录。"
         _warn_resume_cancelled(exc)
         return False
 
     engine.snapshot_store.clear()
-    incoming_snapshots = persisted.snapshots or []
-    saved_work = getattr(getattr(persisted, "metadata", None), "work_dir", "")
+    incoming_snapshots = list(persisted.snapshots or [])
     current_work = getattr(getattr(engine, "settings", None), "work_dir", "")
-    foreign_snapshots = bool(incoming_snapshots) and not _same_workspace(saved_work, current_work)
-    if foreign_snapshots:
+    anchored = bool(saved_work) and _same_workspace(saved_work, current_work)
+    dropped_foreign = bool(incoming_snapshots) and not anchored
+    if dropped_foreign:
         incoming_snapshots = []
     if incoming_snapshots and hasattr(engine.snapshot_store, "import_snapshots"):
         engine.snapshot_store.import_snapshots(incoming_snapshots)
@@ -277,13 +360,25 @@ def resume_engine_session(engine: "TianCodeEngine", session_id: str) -> bool:
     engine.permission_guard.clear_session_approvals()
     if hasattr(engine, "tool_dispatcher"):
         engine.tool_dispatcher.reset_loop_guard()
-    if foreign_snapshots:
-        try:
-            from tiancode.cli.formatter import TerminalFormatter
-
-            TerminalFormatter.print_warning(
-                "该会话的撤销快照属于其他工作区，本次未载入，当前目录文件保持不变。"
-            )
-        except Exception:
-            pass
+    notes = []
+    if dropped_foreign:
+        notes.append("该会话的撤销快照属于其他工作区，本次未载入，当前目录文件保持不变。")
+    if workspace_note:
+        notes.append(workspace_note)
+    if notes:
+        _warn_resume_workspace(" ".join(notes))
     return True
+
+
+def report_persist_error(engine: Any) -> None:
+    """Print and clear a session-save failure recorded during the last turn."""
+    message = getattr(engine, "last_persist_error", None)
+    if not message:
+        return
+    try:
+        engine.last_persist_error = None
+    except Exception:
+        pass
+    from tiancode.cli.formatter import TerminalFormatter
+
+    TerminalFormatter.print_warning(str(message))

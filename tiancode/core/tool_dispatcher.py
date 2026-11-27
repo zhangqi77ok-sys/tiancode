@@ -40,29 +40,44 @@ class DoomLoopDetector:
             args_canon = str(args)
         return f"{name}|{args_canon}"
 
-    def _is_ping_pong_loop(self) -> bool:
-        """Detect A -> B -> A -> B -> A alternating cycle across recent calls."""
-        if len(self._history) < 5:
-            return False
-        a, b, c, d, e = (
-            self._history[-5],
-            self._history[-4],
-            self._history[-3],
-            self._history[-2],
-            self._history[-1],
-        )
-        return a == c == e and b == d and a != b
+    def _next_repeat_count(self, signature: str) -> int:
+        if signature == self._last_signature:
+            return self._repeat_count + 1
+        return 1
 
-    def should_block(self, name: str, args: Any) -> bool:
-        """Record call signature and return True if consecutive or ping-pong loop hits threshold."""
-        sig = self._build_signature(name, args)
-        self._history.append(sig)
-        if sig == self._last_signature:
+    @staticmethod
+    def _ping_pong(history: Sequence[str]) -> bool:
+        if len(history) < 5:
+            return False
+        first, second, third, fourth, fifth = history[-5:]
+        return first == third == fifth and second == fourth and first != second
+
+    def would_block(self, name: str, args: Any) -> bool:
+        """Return True if executing this call would trip the loop breaker.
+
+        Does not record the call. Permission denials must not advance the
+        counter, or a user who keeps saying no is reported as a doom loop.
+        """
+        signature = self._build_signature(name, args)
+        if self._next_repeat_count(signature) >= self.max_repeats:
+            return True
+        return self._ping_pong([*self._history, signature])
+
+    def record(self, name: str, args: Any) -> None:
+        """Remember a call that was actually dispatched."""
+        signature = self._build_signature(name, args)
+        self._history.append(signature)
+        if signature == self._last_signature:
             self._repeat_count += 1
         else:
-            self._last_signature = sig
+            self._last_signature = signature
             self._repeat_count = 1
-        return self._repeat_count >= self.max_repeats or self._is_ping_pong_loop()
+
+    def should_block(self, name: str, args: Any) -> bool:
+        """Record the call and return True when it hits the loop threshold."""
+        blocked = self.would_block(name, args)
+        self.record(name, args)
+        return blocked
 
     def reset(self) -> None:
         """Clear loop tracking state on session reset or switch."""
@@ -158,7 +173,7 @@ class SafeToolDispatcher:
         for idx, tc in enumerate(tool_calls):
             name = str(tc.get("name", "unknown"))
             args = self._parse_args(tc.get("args"))
-            if self._loop_detector.should_block(name, args):
+            if self._loop_detector.would_block(name, args):
                 results_by_idx[idx] = self._build_loop_breaker_msg(tc)
                 continue
             if self._permission_guard is not None:
@@ -166,6 +181,7 @@ class SafeToolDispatcher:
                 if not check_res.allowed:
                     results_by_idx[idx] = self._build_permission_denied_msg(tc, check_res.reason)
                     continue
+            self._loop_detector.record(name, args)
             allowed.append((idx, tc))
 
         if allowed:

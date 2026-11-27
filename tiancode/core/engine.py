@@ -18,6 +18,7 @@ from tiancode.core.permissions import ApprovalPromptFn, PermissionGuard, Permiss
 from tiancode.core.prompts import TIANCODE_SYSTEM_PROMPT
 from tiancode.core.state import prune_messages
 from tiancode.core.stream_events import (
+    close_pending_tool_calls,
     iter_message_events,
     persist_engine_session,
     repair_pending_tool_calls,
@@ -62,6 +63,7 @@ class TianCodeEngine:
         self.memory_store = CognitiveMemoryStore()
         self.usage_tracker = TokenUsageTracker()
         self.active_session_id: str = "tiancode_repl"
+        self.last_persist_error: Optional[str] = None
 
         self.planner = TaskPlanner()
         self.subagent_runner = SubagentRunner(
@@ -94,21 +96,44 @@ class TianCodeEngine:
         git_store = GitSnapshotStore(work_dir=work_dir)
         return git_store if git_store.is_git_repo() else InMemorySnapshotStore(work_dir=work_dir)
 
-    def switch_workspace(self, target_dir: Union[Path, str]) -> Path:
-        """Validate and atomically re-anchor sandbox, snapshot store, subagent, skills, and tools."""
+    def switch_workspace(
+        self,
+        target_dir: Union[Path, str],
+        *,
+        discard_snapshots: bool = True,
+        session_id: Optional[str] = None,
+    ) -> Path:
+        """Validate and re-anchor sandbox, snapshot store, subagent, skills, and tools.
+
+        ``discard_snapshots`` drops the undo set when the directory actually
+        changes. Resume passes False so a failed checkpoint write can still
+        roll the previous undo set back with the previous directory.
+        """
         target_path = Path(target_dir).expanduser().resolve()
         if not target_path.exists() or not target_path.is_dir():
             raise ValueError(f"目标工作区目录不存在或不是有效目录: {target_dir}")
 
+        try:
+            previous = Path(self.settings.work_dir).expanduser().resolve()
+        except OSError:
+            previous = Path(self.settings.work_dir)
+        moved = previous != target_path
         self.settings.work_dir = target_path
-        if not getattr(self, "_custom_snapshot_store", False):
+        if moved and discard_snapshots and not getattr(self, "_custom_snapshot_store", False):
             self.snapshot_store = self._select_snapshot_store(target_path)
+        elif hasattr(self.snapshot_store, "work_dir"):
+            self.snapshot_store.work_dir = target_path
+            if moved and discard_snapshots and hasattr(self.snapshot_store, "clear"):
+                self.snapshot_store.clear()
         self.subagent_runner.work_dir = target_path
         self.skill_loader.workspace_dir = target_path
         self._task_system_prompt = None
         self.reload_llm()
         if hasattr(self, "memory_store"):
-            self.memory_store.touch_workspace(target_path, session_id=self.active_session_id)
+            self.memory_store.touch_workspace(
+                target_path,
+                session_id=session_id or self.active_session_id,
+            )
         return target_path
 
     def _get_config_path(self, config_path: Optional[Path] = None) -> Path:
@@ -218,7 +243,13 @@ class TianCodeEngine:
             max_chars = getattr(self.settings, "max_context_chars", 40000)
             if not isinstance(max_chars, int):
                 max_chars = 40000
-            trimmed = prune_messages(state["messages"], max_retained=self.settings.max_history_messages, max_context_chars=max_chars)
+            trimmed = close_pending_tool_calls(
+                prune_messages(
+                    state["messages"],
+                    max_retained=self.settings.max_history_messages,
+                    max_context_chars=max_chars,
+                )
+            )
             static_prompt = getattr(self, "_task_system_prompt", None) or self._build_static_system_prompt()
             sys_msg = SystemMessage(content=static_prompt)
 
@@ -253,6 +284,7 @@ class TianCodeEngine:
     def stream_task(self, prompt: str, thread_id: str = "tiancode_default") -> Generator[Dict[str, Any], None, None]:
         """Stream real-time thinking, tokens, tool lifecycle events, and turn usage telemetry."""
         self.active_session_id = thread_id
+        self.last_persist_error = None
         if self.sync_config_if_changed():
             from tiancode.cli.formatter import TerminalFormatter
             TerminalFormatter.print_info(f"检测到外部配置文件已更新，已自动动态重载连接 ({self.settings.model})！")

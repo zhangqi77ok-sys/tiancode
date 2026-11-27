@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from tiancode.core.mcp_auth import expand_env_vars, expand_mapping
+from tiancode.core.mcp_auth import McpAuthError, expand_env_vars
 from tiancode.core.path_safety import WorkspacePathError, workspace_directory_entry
 from tiancode.core.mcp_transports import (
     _DEFAULT_TIMEOUT_SECONDS,
@@ -110,7 +110,26 @@ def _sanitize_segment(raw: str) -> str:
     return _SAFE_NAME_RE.sub("_", (raw or "").strip()).strip("_") or "item"
 
 
-def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerConfig], List[str]]:
+def _is_inside(path: Path, root: Path) -> bool:
+    """True when path resolves to root or a directory under it."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _expand_config_value(value: Any) -> str:
+    """Expand one mcp.json string. Unset placeholders fail closed."""
+    return expand_env_vars(str(value), strict=True)
+
+
+def _load_single_mcp_file(
+    path: Path,
+    source: str,
+    *,
+    sandbox_root: Optional[Path] = None,
+) -> Tuple[Dict[str, McpServerConfig], List[str]]:
     """Read one regular mcp.json. A symlink or hard link is not opened."""
     label = path.name
     if path.is_symlink():
@@ -147,30 +166,43 @@ def _load_single_mcp_file(path: Path, source: str) -> Tuple[Dict[str, McpServerC
             continue
         t_raw = entry.get("timeoutSeconds", entry.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS))
         timeout_s = max(1, int(t_raw)) if str(t_raw).isdigit() else _DEFAULT_TIMEOUT_SECONDS
-        url = expand_env_vars(str(entry.get("url") or "")).strip()
-        cmd = expand_env_vars(str(entry.get("command") or "")).strip()
         disabled = bool(entry.get("disabled", False))
         # Cursor/VS Code style "type": "http"|"sse"|"stdio" — url 仍优先判定传输
         type_hint = str(entry.get("type") or entry.get("transport") or "").strip().lower()
+        try:
+            url = _expand_config_value(entry.get("url") or "").strip()
+            cmd = _expand_config_value(entry.get("command") or "").strip()
+            args = [_expand_config_value(item) for item in (entry.get("args") or [])]
+            env = {str(key): _expand_config_value(value) for key, value in (entry.get("env") or {}).items()}
+            headers = {
+                str(key): _expand_config_value(value) for key, value in (entry.get("headers") or {}).items()
+            }
+            raw_cwd = _expand_config_value(entry.get("cwd") or "").strip()
+        except McpAuthError as exc:
+            errors.append(f"MCP 服务 '{name}' 未加载: {exc}")
+            continue
         if not url and not cmd and not disabled:
             errors.append(f"MCP 服务 '{name}' 缺少 command 或 url ({path})")
             continue
-        raw_cwd = expand_env_vars(str(entry.get("cwd") or "")).strip()
         resolved_cwd = ""
         if raw_cwd:
-            p = Path(raw_cwd).expanduser()
-            resolved_cwd = str((p if p.is_absolute() else (base_dir / p)).resolve())
+            cwd_path = Path(raw_cwd).expanduser()
+            resolved = (cwd_path if cwd_path.is_absolute() else (base_dir / cwd_path)).resolve()
+            if sandbox_root is not None and not _is_inside(resolved, sandbox_root):
+                errors.append(f"MCP 服务 '{name}' 的 cwd 越出工作区，已拒绝加载: {resolved}")
+                continue
+            resolved_cwd = str(resolved)
         auth_raw = entry.get("auth") if isinstance(entry.get("auth"), dict) else {}
         transport = "http" if url or type_hint in ("http", "sse", "streamable-http", "streamable_http") else "stdio"
         configs[str(name)] = McpServerConfig(
             name=str(name),
             transport=transport,
             command=cmd,
-            args=[expand_env_vars(str(a)) for a in (entry.get("args") or [])],
-            env=expand_mapping({str(k): str(v) for k, v in (entry.get("env") or {}).items()}),
+            args=args,
+            env=env,
             cwd=resolved_cwd,
             url=url,
-            headers=expand_mapping({str(k): str(v) for k, v in (entry.get("headers") or {}).items()}),
+            headers=headers,
             auth=dict(auth_raw),
             timeout_seconds=timeout_s,
             disabled=disabled,
@@ -193,7 +225,11 @@ def load_mcp_configs(
     ws_configs: Dict[str, McpServerConfig] = {}
     ws_errors: List[str] = []
     if w_path is not None:
-        ws_configs, ws_errors = _load_single_mcp_file(w_path, f"workspace:{w_path}")
+        ws_configs, ws_errors = _load_single_mcp_file(
+            w_path,
+            f"workspace:{w_path}",
+            sandbox_root=Path(work_dir).resolve(),
+        )
     merged.update(ws_configs)
     auto_shell = discover_tianshell_mcp(merged)
     if auto_shell is not None:

@@ -212,6 +212,26 @@ def test_http_legacy_sse_fallback_on_405() -> None:
     assert client.calls[2]["url"] == "https://legacy.example.com/messages"
 
 
+def test_http_404_reinitializes_the_session_once() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(session="sess-old"),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(status_code=404, text="session missing"),
+        _init_ok(session="sess-new"),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(payload={"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "pong"}]}}),
+    )
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport.connect()
+    assert transport.call_tool("ping", {}) == "pong"
+    assert transport.session_id == "sess-new"
+    methods = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert methods.count("initialize") == 2
+    retry = [call for call in client.calls if call.get("json", {}).get("method") == "tools/call"][-1]
+    assert retry["headers"].get("Mcp-Session-Id") == "sess-new"
+
+
 def test_http_close_sends_session_delete() -> None:
     client = _FakeClient()
     client.enqueue(_init_ok(), _FakeResponse(status_code=202, text=""))
