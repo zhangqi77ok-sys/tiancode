@@ -31,6 +31,35 @@ DANGEROUS_PATTERNS = [
     r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",            # fork bomb
 ]
 
+# Applied after quotes and newlines are stripped. Each pattern must be a command,
+# not a mention of the word inside echo or a commit message.
+_CMD = r"(?:^|&&|\|\||;|\|)\s*"
+_EXTRA_DANGEROUS_PATTERNS = [
+    _CMD + r"sudo\b",
+    _CMD + r"(?:shutdown|reboot|poweroff|halt)\b",
+    r"\bsystemctl\s+(?:poweroff|reboot|halt|suspend|hibernate|kexec)\b",
+    r"\binit\s+[06]\b",
+    _CMD + r"git\s+push\b.*(?:\s--force(?:-with-lease)?\b|\s-f\b)",
+    _CMD + r"rm\b[^|;]*\s/(?:etc|usr|bin|boot|home|root|sys|proc|dev|sbin|lib|lib64|opt|var|run)(?:/|\s|$)",
+    r"\b(?:curl|wget)\b.*\|\s*(?:/usr/bin/|/bin/)?(?:python3?|perl|ruby|node|php|zsh|ksh)\b",
+    r"\bbase64\s+(?:-d|--decode)\b.*\|\s*(?:/usr/bin/|/bin/)?(?:python3?|perl|ruby|node|bash|sh|zsh|ksh)\b",
+    _CMD + r"shred\b",
+    _CMD + r"chmod\b.*\b777\b",
+    _CMD + r"find\b.*\s-exec\s+rm\b",
+    r">\s*/dev/(?:sd[a-z]|nvme|hd[a-z]|vd[a-z]|mmcblk|disk)\b",
+    r"shutil\.rmtree\(\s*/",
+    _CMD + r"(?:nc|ncat|netcat)\b.*\s-e\s",
+]
+
+
+def _normalize_command(command: str) -> str:
+    """Collapse whitespace and quotes so `rm -rf "/"` matches the same rule as `rm -rf /`."""
+    text = str(command).replace("\x00", " ")
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = text.replace("$(", " ").replace("`", " ")
+    text = text.replace("'", "").replace('"', "")
+    return re.sub(r"\s+", " ", text).strip()
+
 SENSITIVE_ENV_KEYS = {
     "TIANCODE_API_KEY",
     "OPENAI_API_KEY",
@@ -53,11 +82,18 @@ _GIT_CONFIG_KEY_SLOT = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 
 
 def is_dangerous_command(command: str | List[str]) -> bool:
-    """Check if command matches high-risk destructive signatures."""
-    cmd_str = " ".join(command) if isinstance(command, (list, tuple)) else str(command)
-    for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, cmd_str, re.IGNORECASE):
-            return True
+    """Check if command matches high-risk destructive signatures.
+
+    The raw text is checked first so patterns that look for quotes still match.
+    A second pass strips quotes and newlines, which is how `rm -rf "/"` and a
+    command split across lines reach the same rules.
+    """
+    raw = " ".join(command) if isinstance(command, (list, tuple)) else str(command)
+    patterns = (*DANGEROUS_PATTERNS, *_EXTRA_DANGEROUS_PATTERNS)
+    for text in (raw, _normalize_command(raw)):
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
     return False
 
 
@@ -169,13 +205,15 @@ def _run_managed_process(cmd: Any, work_dir: Path, *, use_shell: bool, timeout: 
         except subprocess.TimeoutExpired:
             kill_process_tree(proc)
             try:
-                raw_out, _ = proc.communicate(timeout=2)
+                raw_out, raw_err = proc.communicate(timeout=2)
             except Exception:
-                raw_out = b""
+                raw_out, raw_err = b"", b""
+            note = f"执行超时（超过 {timeout} 秒被强制终止）"
+            stderr = _decode_process_bytes(raw_err).strip()
             return ExecutionResult(
                 exit_code=-1,
                 stdout=_decode_process_bytes(raw_out),
-                stderr=f"执行超时（超过 {timeout} 秒被强制终止）",
+                stderr=f"{stderr}\n{note}" if stderr else note,
                 timed_out=True,
             )
     except Exception as exc:

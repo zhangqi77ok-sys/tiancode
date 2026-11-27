@@ -103,16 +103,7 @@ class SlashCommandHandler:
         TerminalFormatter.print_success("已完成时光倒流回滚：")
         for item in reverted:
             get_console().print(Text(f"  ⏪ {item}", style=TEXT_MUTED))
-        try:
-            active_id = getattr(self.engine, "active_session_id", "tiancode_repl")
-            persisted = self.engine.session_store.load(active_id)
-            if persisted:
-                self.engine.session_store.save(
-                    session_id=active_id, work_dir=persisted.metadata.work_dir,
-                    messages=persisted.messages, plan=self.engine.planner.active_plan, snapshots=[],
-                )
-        except Exception:
-            pass
+        self._persist_live_session(snapshots=[])
 
     def _handle_commit(self, custom_msg: str = "") -> None:
         visible = [d for d in self.engine.snapshot_store.compute_diffs() if not d.is_empty]
@@ -172,6 +163,46 @@ class SlashCommandHandler:
         pids = [problem_arg.strip()] if problem_arg.strip() else None
         TerminalFormatter.print_info("⚡ 正在启动 TianCode 自动化本地微型基准评测 (Micro Benchmark)...")
         print(BenchmarkRunner(engine=self.engine).run_suite(problem_ids=pids).format_table())
+
+    def _persist_live_session(self, snapshots: Optional[list] = None) -> None:
+        """Write the live transcript after a local command that changed undo state.
+
+        Reading the on-disk session here would put back messages from the last
+        successful model turn and drop anything still only in the checkpoint.
+        """
+        from tiancode.core.stream_events import close_pending_tool_calls
+
+        active_id = getattr(self.engine, "active_session_id", "tiancode_repl")
+        messages: list = []
+        graph = getattr(self.engine, "graph", None)
+        config = {"configurable": {"thread_id": active_id}}
+        if graph is not None and callable(getattr(graph, "get_state", None)):
+            try:
+                state = graph.get_state(config)
+                raw = list((getattr(state, "values", None) or {}).get("messages") or [])
+                messages = close_pending_tool_calls(raw)
+            except Exception:
+                messages = []
+        work_dir = str(getattr(getattr(self.engine, "settings", None), "work_dir", "") or "")
+        if not messages:
+            persisted = self.engine.session_store.load(active_id)
+            if persisted is None:
+                return
+            messages = list(persisted.messages)
+            if not work_dir:
+                work_dir = persisted.metadata.work_dir
+        if snapshots is None and hasattr(self.engine.snapshot_store, "export_snapshots"):
+            snapshots = self.engine.snapshot_store.export_snapshots()
+        try:
+            self.engine.session_store.save(
+                session_id=active_id,
+                work_dir=work_dir or ".",
+                messages=messages,
+                plan=getattr(getattr(self.engine, "planner", None), "active_plan", None),
+                snapshots=snapshots or [],
+            )
+        except Exception as exc:
+            TerminalFormatter.print_warning(f"工作区已更新，但会话文件未能写入: {exc}")
 
     def _handle_clear(self) -> None:
         self.engine.reset_session()
@@ -234,11 +265,15 @@ class SlashCommandHandler:
             TerminalFormatter.print_info("当前上下文无历史交互消息，无需压缩。")
             return
         from tiancode.core.compactor import ContextCompactor
+        from tiancode.core.stream_events import install_thread_messages
+
         result = ContextCompactor(max_retained_messages=max_msgs, max_context_chars=max_chars).compact_with_stats(messages)
         if result.compacted_chars < result.original_chars or len(result.messages) < len(messages):
-            self.engine.graph.update_state(config, {"messages": result.messages})
+            installed = install_thread_messages(self.engine.graph, config, result.messages)
             saved = max(0, result.original_chars - result.compacted_chars)
-            TerminalFormatter.print_success(f"上下文压缩完成！已折叠 {result.folded_count} 条消息，释放约 {saved} 字符 (当前共 {len(result.messages)} 条)。")
+            TerminalFormatter.print_success(
+                f"上下文压缩完成！已折叠 {result.folded_count} 条消息，释放约 {saved} 字符 (当前共 {len(installed)} 条)。"
+            )
         else:
             TerminalFormatter.print_info("当前上下文未超出预算阈值，无需压缩。")
 

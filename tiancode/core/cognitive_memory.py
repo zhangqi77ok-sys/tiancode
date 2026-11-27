@@ -16,6 +16,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from tiancode.domain.memory import EpisodeRecord, MemoryScope, RecallHit, SemanticFact, WorkspaceEntity
 
 MAX_WORKSPACES, MAX_EPISODES, MAX_FACTS = 12, 50, 100
+MEMORY_SCHEMA_VERSION = 1
 _STACK_MARKERS: Tuple[Tuple[str, str], ...] = (
     ("pom.xml", "Maven/Java"), ("build.gradle", "Gradle"), ("build.gradle.kts", "Gradle"),
     ("pyproject.toml", "Python"), ("requirements.txt", "Python"),
@@ -65,6 +66,19 @@ def _replace_private_memory(path: Path, payload: Dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
         raise
     os.replace(temporary, path)
+
+
+def _memory_schema_readable(data: Dict[str, Any]) -> bool:
+    """True when this process understands the memory document version.
+
+    Missing schema_version is version 0 and uses the current field names.
+    """
+    if "schema_version" not in data:
+        return True
+    version = data["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        return False
+    return version <= MEMORY_SCHEMA_VERSION
 
 
 def _now_iso() -> str:
@@ -182,6 +196,7 @@ class CognitiveMemoryStore:
         self.workspaces: Dict[str, WorkspaceEntity] = {}
         self.episodes: List[EpisodeRecord] = []
         self.facts: List[SemanticFact] = []
+        self._persist_blocked = False
         self._load()
 
     def _load(self) -> None:
@@ -193,6 +208,11 @@ class CognitiveMemoryStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
+            return
+        if not isinstance(data, dict) or not _memory_schema_readable(data):
+            # A newer or unreadable schema must not be parsed and then saved
+            # back as version 1, which would drop fields this process does not know.
+            self._persist_blocked = True
             return
         for k, v in (data.get("workspaces") or {}).items():
             try:
@@ -211,7 +231,10 @@ class CognitiveMemoryStore:
                 pass
 
     def _save(self) -> None:
+        if self._persist_blocked:
+            return
         payload = {
+            "schema_version": MEMORY_SCHEMA_VERSION,
             "workspaces": {k: asdict(v) for k, v in self.workspaces.items()},
             "episodes": [asdict(e) for e in self.episodes[-MAX_EPISODES:]],
             "facts": [{**asdict(f), "scope": f.scope.value} for f in self.facts[-MAX_FACTS:]],

@@ -2,8 +2,6 @@
 
 import difflib
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from langchain_core.tools import BaseTool, tool
@@ -153,39 +151,27 @@ def _resolve_targeted_test_cmd(work_dir: Path, base_cmd: str, filename: Optional
 def _run_post_edit_verification(work_dir: Path, filename: Optional[str] = None) -> Optional[str]:
     """Helper to detect and run project test suite for self-healing verification with safety and env scrubbing."""
     from tiancode.core.polyglot import detect_project_test_command
-    from tiancode.tools.execution import get_sanitized_env, is_dangerous_command
+    from tiancode.tools.execution import execute_shell_command
 
     cmd = detect_project_test_command(work_dir)
     if not cmd:
         return None
     cmd = _resolve_targeted_test_cmd(work_dir, cmd, filename)
-
-    if is_dangerous_command(cmd):
-        return "自动化测试安全拦截：检测到高危测试命令，已阻止执行。"
-
     try:
-        creationflags = 0x08000000 if sys.platform == "win32" else 0
-        res = subprocess.run(
-            cmd,
-            cwd=str(work_dir),
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=8,
-            encoding="utf-8",
-            errors="replace",
-            env=get_sanitized_env(),
-            creationflags=creationflags,
-        )
-        if res.returncode == 0:
-            return f"已自动运行 '{cmd}' 单测验证通过 (100% 绿灯，无需再重复运行)"
-        else:
-            err_msg = (res.stderr.strip() or res.stdout.strip())[-1000:]
-            return f"自动化测试未通过 (Exit {res.returncode})：\n{err_msg}\n请根据上述报错自我修正；若修复陷入死胡同，可调用 'rollback_turn' 安全回滚。"
-    except subprocess.TimeoutExpired:
-        return "自动化测试超时（超过 8 秒未完成，已终止）"
+        res = execute_shell_command(cmd, work_dir, timeout=8)
     except Exception as exc:
         return f"自动化测试跳过: {str(exc)}"
+    if res.exit_code == 126:
+        return "自动化测试安全拦截：检测到高危测试命令，已阻止执行。"
+    if res.timed_out:
+        return "自动化测试超时（超过 8 秒未完成，已终止）"
+    if res.is_success:
+        return f"已自动运行 '{cmd}' 单测验证通过 (100% 绿灯，无需再重复运行)"
+    err_msg = (res.stderr.strip() or res.stdout.strip())[-1000:]
+    return (
+        f"自动化测试未通过 (Exit {res.exit_code})：\n{err_msg}\n"
+        "请根据上述报错自我修正；若修复陷入死胡同，可调用 'rollback_turn' 安全回滚。"
+    )
 
 
 def create_file_tools(store: SnapshotStore, work_dir: Path, auto_heal: bool = True) -> List[BaseTool]:

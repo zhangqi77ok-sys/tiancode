@@ -238,10 +238,14 @@ def _run_oneshot_task(engine: Any, task_str: str, thread_id: str) -> None:
         )
     except KeyboardInterrupt:
         fmt.print_warning("已取消当前生成。未完成的工具调用已标记为中断。")
+        _sym("report_persist_error", "tiancode.core.stream_events")(engine)
         sys.exit(130)
     except Exception as exc:
         fmt.print_warning(f"单发任务执行失败: {str(exc)}")
+        _sym("report_persist_error", "tiancode.core.stream_events")(engine)
         sys.exit(1)
+    else:
+        _sym("report_persist_error", "tiancode.core.stream_events")(engine)
 
 
 def main() -> None:

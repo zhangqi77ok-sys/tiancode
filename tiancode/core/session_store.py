@@ -19,6 +19,58 @@ from tiancode.domain.models import (
 )
 
 
+SESSION_SCHEMA_VERSION = 1
+
+
+class SessionLoadError(Exception):
+    """Why a session file could not be turned into a PersistedSession."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _schema_refusal(payload: Any) -> Optional[str]:
+    """Return a reason to refuse overwriting a session file, or None."""
+    if not isinstance(payload, dict) or "schema_version" not in payload:
+        return None
+    version = payload["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        return "schema_version 无法识别，已拒绝覆盖"
+    if version > SESSION_SCHEMA_VERSION:
+        return f"会话文件 schema_version={version} 高于当前 {SESSION_SCHEMA_VERSION}，已拒绝覆盖"
+    return None
+
+
+def migrate_session_payload(payload: Any) -> Dict[str, Any]:
+    """Bring a decoded session document up to SESSION_SCHEMA_VERSION.
+
+    Version 0 is the original document with no schema_version field. It has
+    the same metadata, messages, plan, snapshots, and usage shape as version 1,
+    so the migration only stamps the version. Newer versions are refused so a
+    downgrade cannot drop fields it does not understand.
+    """
+    if not isinstance(payload, dict):
+        raise SessionLoadError("corrupt", "会话文件不是 JSON 对象")
+    version = payload.get("schema_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise SessionLoadError("corrupt", "schema_version 不是整数")
+    if version > SESSION_SCHEMA_VERSION:
+        raise SessionLoadError(
+            "unsupported",
+            f"会话 schema_version={version} 高于当前 {SESSION_SCHEMA_VERSION}",
+        )
+    if not isinstance(payload.get("metadata", {}), dict):
+        raise SessionLoadError("corrupt", "metadata 不是对象")
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list):
+        raise SessionLoadError("corrupt", "messages 不是数组")
+    migrated = dict(payload)
+    migrated["schema_version"] = SESSION_SCHEMA_VERSION
+    migrated["messages"] = messages
+    return migrated
+
+
 def _replace_private_json(path: Path, payload: Dict[str, Any]) -> None:
     """Write JSON as a private regular file. Do not follow a symlink at the temp name."""
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -87,6 +139,7 @@ class SessionStore:
         chosen = sessions_dir or storage_dir or get_default_sessions_dir()
         self.storage_dir = _logical_directory(Path(chosen))
         self.sessions_dir = self.storage_dir
+        self.last_load_error: Optional[SessionLoadError] = None
         if not self.storage_dir.is_symlink():
             self.storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -142,12 +195,19 @@ class SessionStore:
 
         created_at = now_iso
         if file_path.exists():
+            old_data: Any = None
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     old_data = json.load(f)
-                    created_at = old_data.get("metadata", {}).get("created_at", now_iso)
-            except Exception:
-                pass
+            except json.JSONDecodeError:
+                old_data = None
+            except OSError as exc:
+                raise IOError(f"无法读取已有会话文件: {exc}") from exc
+            refusal = _schema_refusal(old_data)
+            if refusal:
+                raise IOError(refusal)
+            if isinstance(old_data, dict) and isinstance(old_data.get("metadata"), dict):
+                created_at = old_data["metadata"].get("created_at", now_iso)
 
         serialized_msgs = []
         for m in messages:
@@ -175,6 +235,7 @@ class SessionStore:
         )
 
         payload = {
+            "schema_version": SESSION_SCHEMA_VERSION,
             "metadata": asdict(metadata),
             "messages": serialized_msgs,
             "plan": plan_dict,
@@ -190,20 +251,31 @@ class SessionStore:
         return metadata
 
     def load(self, session_id: str) -> Optional[PersistedSession]:
-        """Load session state from disk safely."""
+        """Load session state from disk safely.
+
+        Returns None for a missing, unreadable, corrupt, or too-new file.
+        ``last_load_error.kind`` is ``not_found``, ``denied``, ``corrupt``,
+        or ``unsupported`` so callers can tell those cases apart.
+        """
+        self.last_load_error = None
         try:
             file_path = self._file_path(session_id)
-        except Exception:
+        except Exception as exc:
+            self.last_load_error = SessionLoadError("denied", str(exc))
             return None
 
-        if not file_path.exists() or file_path.is_symlink() or is_shared_hardlink(file_path):
+        if file_path.is_symlink() or is_shared_hardlink(file_path):
+            self.last_load_error = SessionLoadError("denied", "会话文件是链接，未读取。")
+            return None
+        if not file_path.exists():
+            self.last_load_error = SessionLoadError("not_found", f"未找到会话 {session_id}")
             return None
 
         try:
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
             fd = os.open(file_path, flags)
             with os.fdopen(fd, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data = migrate_session_payload(json.load(f))
 
             meta_data = data.get("metadata", {})
             metadata = SessionMetadata(
@@ -220,7 +292,6 @@ class SessionStore:
             )
 
             raw_plan = data.get("plan")
-            plan_obj = self.rehydrate_plan(raw_plan) if raw_plan else None
 
             return PersistedSession(
                 metadata=metadata,
@@ -229,7 +300,14 @@ class SessionStore:
                 snapshots=data.get("snapshots", []),
                 usage=data.get("usage"),
             )
-        except Exception:
+        except SessionLoadError as exc:
+            self.last_load_error = exc
+            return None
+        except json.JSONDecodeError as exc:
+            self.last_load_error = SessionLoadError("corrupt", f"会话 JSON 无法解析: {exc.msg}")
+            return None
+        except Exception as exc:
+            self.last_load_error = SessionLoadError("corrupt", str(exc))
             return None
 
     def list_sessions(self) -> List[SessionMetadata]:

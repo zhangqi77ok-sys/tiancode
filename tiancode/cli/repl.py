@@ -222,3 +222,7 @@ def start_repl(engine: TianCodeEngine, session_id: Optional[str] = None) -> None
             TerminalFormatter.print_warning("已取消当前生成。未完成的工具调用已标记为中断，可以继续输入。")
         except Exception as exc:
             TerminalFormatter.print_warning(f"任务执行异常: {str(exc)}")
+        finally:
+            from tiancode.core.stream_events import report_persist_error
+
+            report_persist_error(engine)

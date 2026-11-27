@@ -57,15 +57,16 @@ SAFE_READ_TOOLS = frozenset({
     "list_files",
     "get_repo_map",
     "show_task_plan",
-    "create_task_plan",
-    "complete_step",
-    "fail_step",
     "invoke_subagent",
     "recall_memory",
     "web_fetch",
     "git_status",
     "git_diff",
 })
+
+# Plan mutations change the long-task board the agent follows. Read-only mode
+# can still display the board via show_task_plan; creating or advancing steps
+# requires the same approval as any other write.
 
 
 class PermissionGuard:

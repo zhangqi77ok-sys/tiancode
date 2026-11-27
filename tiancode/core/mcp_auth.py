@@ -27,15 +27,29 @@ class McpAuthError(RuntimeError):
     """Raised when MCP HTTP authentication cannot proceed."""
 
 
-def expand_env_vars(raw: str, environ: Optional[Dict[str, str]] = None) -> str:
-    """Expand `${VAR}` / `$VAR` placeholders using environ (default os.environ)."""
+def expand_env_vars(raw: str, environ: Optional[Dict[str, str]] = None, *, strict: bool = False) -> str:
+    """Expand `${VAR}` / `$VAR` placeholders using environ (default os.environ).
+
+    When ``strict`` is set, a placeholder whose variable is unset raises
+    ``McpAuthError`` instead of being copied through as the literal ``${VAR}``.
+    Auth headers and server commands use strict mode so a missing secret fails
+    closed. An empty string is a set value and is kept.
+    """
     env = environ if environ is not None else os.environ
+    missing: list[str] = []
 
     def _repl(match: re.Match[str]) -> str:
         key = match.group(1) or match.group(2)
-        return env.get(key, match.group(0))
+        if key not in env:
+            missing.append(key)
+            return match.group(0)
+        return env[key]
 
-    return _ENV_PATTERN.sub(_repl, raw)
+    expanded = _ENV_PATTERN.sub(_repl, raw)
+    if strict and missing:
+        names = ", ".join(dict.fromkeys(missing))
+        raise McpAuthError(f"MCP 配置引用了未设置的环境变量: {names}")
+    return expanded
 
 
 def expand_mapping(raw: Optional[Dict[str, str]], environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -71,7 +85,11 @@ def build_auth_headers(
         return {}
     kind = str(auth_cfg.get("type") or auth_cfg.get("kind") or "bearer").strip().lower()
     if kind in ("bearer", "token"):
-        token = expand_env_vars(str(auth_cfg.get("token") or auth_cfg.get("accessToken") or ""), environ).strip()
+        token = expand_env_vars(
+            str(auth_cfg.get("token") or auth_cfg.get("accessToken") or ""),
+            environ,
+            strict=True,
+        ).strip()
         if not token:
             raise McpAuthError("MCP auth.type=bearer 缺少 token")
         return {"Authorization": f"Bearer {token}"}
@@ -121,16 +139,20 @@ class OAuthTokenProvider:
         http_client: Any = None,
         environ: Optional[Dict[str, str]] = None,
     ) -> "OAuthTokenProvider":
-        token_url = expand_env_vars(str(auth_cfg.get("tokenUrl") or auth_cfg.get("token_url") or ""), environ).strip()
-        client_id = expand_env_vars(str(auth_cfg.get("clientId") or auth_cfg.get("client_id") or ""), environ).strip()
+        token_url = expand_env_vars(
+            str(auth_cfg.get("tokenUrl") or auth_cfg.get("token_url") or ""), environ, strict=True
+        ).strip()
+        client_id = expand_env_vars(
+            str(auth_cfg.get("clientId") or auth_cfg.get("client_id") or ""), environ, strict=True
+        ).strip()
         client_secret = expand_env_vars(
-            str(auth_cfg.get("clientSecret") or auth_cfg.get("client_secret") or ""), environ
+            str(auth_cfg.get("clientSecret") or auth_cfg.get("client_secret") or ""), environ, strict=True
         ).strip()
         refresh = expand_env_vars(
-            str(auth_cfg.get("refreshToken") or auth_cfg.get("refresh_token") or ""), environ
+            str(auth_cfg.get("refreshToken") or auth_cfg.get("refresh_token") or ""), environ, strict=True
         ).strip()
         resource = expand_env_vars(
-            str(auth_cfg.get("resource") or resource_url or ""), environ
+            str(auth_cfg.get("resource") or resource_url or ""), environ, strict=True
         ).strip()
         scopes_raw = auth_cfg.get("scopes") or auth_cfg.get("scope") or []
         if isinstance(scopes_raw, str):

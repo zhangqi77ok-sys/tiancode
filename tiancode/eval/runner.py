@@ -82,79 +82,111 @@ class BenchmarkRunner:
             subprocess.run(["git", "commit", "-m", "starter code"], cwd=str(sandbox_path), env=git_env, capture_output=True, check=False)
 
             # 3. Autonomous Execution: solve_fn or TianCodeEngine
-            if solve_fn is not None:
-                solve_fn(sandbox_path)
-                turn_count = 1
-            else:
-                # Spawn isolated engine for this sandbox with auto_heal disabled
-                eval_settings = Settings(
-                    api_key=self.settings.api_key,
-                    base_url=self.settings.base_url,
-                    model=self.settings.model,
-                    work_dir=sandbox_path,
-                    auto_heal=False,
-                )
-                sandbox_engine = TianCodeEngine(settings=eval_settings)
-                tracker = AgentTurnTracker(max_turns=problem.max_turns)
-
-                try:
-                    for step in sandbox_engine.stream_task(problem.description, thread_id=f"eval_{problem.id}"):
-                        if tracker.observe(step):
-                            break
-                    turn_count = tracker.final_turn_count
-                except Exception as exc:
-                    duration = time.time() - start_time
-                    return EvalResult(
-                        problem_id=problem.id,
-                        title=problem.title,
-                        success=False,
-                        duration_seconds=duration,
-                        turn_count=tracker.final_turn_count,
-                        error_message=f"Agent runtime exception: {str(exc)}",
+            sandbox_engine: Optional[TianCodeEngine] = None
+            try:
+                if solve_fn is not None:
+                    solve_fn(sandbox_path)
+                    turn_count = 1
+                else:
+                    # Spawn isolated engine for this sandbox with auto_heal disabled.
+                    # Sessions and memory stay inside the sandbox so a benchmark
+                    # cannot overwrite the operator's real history.
+                    eval_settings = Settings(
+                        api_key=self.settings.api_key,
+                        base_url=self.settings.base_url,
+                        model=self.settings.model,
+                        work_dir=sandbox_path,
+                        auto_heal=False,
                     )
+                    sandbox_engine = TianCodeEngine(settings=eval_settings)
+                    self._isolate_eval_runtime(sandbox_engine, sandbox_path)
+                    tracker = AgentTurnTracker(max_turns=problem.max_turns)
 
-            # 4. Capture Diff Summary
-            diff_proc = subprocess.run(
-                ["git", "diff", "HEAD"],
-                cwd=str(sandbox_path),
-                env=git_env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            diff_summary = diff_proc.stdout.strip()
+                    try:
+                        for step in sandbox_engine.stream_task(problem.description, thread_id=f"eval_{problem.id}"):
+                            if tracker.observe(step):
+                                break
+                        turn_count = tracker.final_turn_count
+                    except Exception as exc:
+                        duration = time.time() - start_time
+                        return EvalResult(
+                            problem_id=problem.id,
+                            title=problem.title,
+                            success=False,
+                            duration_seconds=duration,
+                            turn_count=tracker.final_turn_count,
+                            error_message=f"Agent runtime exception: {str(exc)}",
+                        )
 
-            # 5. Materialize hidden test files
-            for rel_path, content in problem.test_files.items():
-                test_dest = sandbox_path / rel_path
-                test_dest.parent.mkdir(parents=True, exist_ok=True)
-                test_dest.write_text(content, encoding="utf-8")
+                # 4. Capture Diff Summary
+                diff_proc = subprocess.run(
+                    ["git", "diff", "HEAD"],
+                    cwd=str(sandbox_path),
+                    env=git_env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                diff_summary = diff_proc.stdout.strip()
 
-            # 6. Execute hidden test suite using pytest or unittest
-            test_proc = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q"],
-                cwd=str(sandbox_path),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=problem.timeout_seconds,
-            )
+                # 5. Materialize hidden test files
+                for rel_path, content in problem.test_files.items():
+                    test_dest = sandbox_path / rel_path
+                    test_dest.parent.mkdir(parents=True, exist_ok=True)
+                    test_dest.write_text(content, encoding="utf-8")
 
-            duration = time.time() - start_time
-            is_success = (test_proc.returncode == 0)
-            error_msg = None if is_success else (test_proc.stdout + "\n" + test_proc.stderr).strip()
+                # 6. Execute hidden test suite using pytest or unittest
+                test_proc = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "-p",
+                        "no:cacheprovider",
+                        "--noconftest",
+                        "--confcutdir",
+                        str(sandbox_path),
+                        "--rootdir",
+                        str(sandbox_path),
+                        "--override-ini",
+                        "testpaths=.",
+                        ".",
+                    ],
+                    cwd=str(sandbox_path),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=problem.timeout_seconds,
+                )
 
-            return EvalResult(
-                problem_id=problem.id,
-                title=problem.title,
-                success=is_success,
-                duration_seconds=duration,
-                turn_count=turn_count,
-                diff_summary=diff_summary,
-                error_message=error_msg,
-            )
+                duration = time.time() - start_time
+                is_success = (test_proc.returncode == 0)
+                error_msg = None if is_success else (test_proc.stdout + "\n" + test_proc.stderr).strip()
+
+                return EvalResult(
+                    problem_id=problem.id,
+                    title=problem.title,
+                    success=is_success,
+                    duration_seconds=duration,
+                    turn_count=turn_count,
+                    diff_summary=diff_summary,
+                    error_message=error_msg,
+                )
+            finally:
+                if sandbox_engine is not None:
+                    sandbox_engine.close()
+
+    @staticmethod
+    def _isolate_eval_runtime(engine: TianCodeEngine, sandbox_path: Path) -> None:
+        """Point session and memory writes at the sandbox, not the user profile."""
+        from tiancode.core.cognitive_memory import CognitiveMemoryStore
+        from tiancode.core.session_store import SessionStore
+
+        engine.session_store = SessionStore(sessions_dir=sandbox_path / ".tiancode-eval-sessions")
+        engine.memory_store = CognitiveMemoryStore(memory_path=sandbox_path / ".tiancode-eval-memory.json")
 
     def run_suite(self, problem_ids: Optional[List[str]] = None) -> EvalReport:
         """Run all or selected benchmark problems and return aggregate report."""

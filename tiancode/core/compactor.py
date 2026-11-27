@@ -125,10 +125,16 @@ class ContextCompactor:
         )
         return SystemMessage(content=card_content)
 
+    def _seal(self, messages: List[BaseMessage]) -> List[BaseMessage]:
+        """Close open tool calls and drop orphan results after folding."""
+        from tiancode.core.stream_events import close_pending_tool_calls
+
+        return close_pending_tool_calls(list(messages))
+
     def compact(self, messages: List[BaseMessage]) -> List[BaseMessage]:
         """Perform multi-tier compaction: observation masking, budget-aware trimming, and card injection."""
         if len(messages) <= 2:
-            return list(messages)
+            return self._seal(messages)
 
         # 1. Observation Masking (Fold older bloated ToolMessages)
         masked_msgs = self.mask_observations(messages)
@@ -143,7 +149,7 @@ class ContextCompactor:
         )
 
         if not needs_trimming:
-            return masked_msgs
+            return self._seal(masked_msgs)
 
         # 3. Macro Slicing: always retain the initial user prompt (messages[0])
         first_msg = masked_msgs[0]
@@ -177,8 +183,8 @@ class ContextCompactor:
 
         if dropped_messages:
             card = self.generate_compaction_card(dropped_messages)
-            return [first_msg, card] + tail_msgs
-        return [first_msg] + tail_msgs
+            return self._seal([first_msg, card] + tail_msgs)
+        return self._seal([first_msg] + tail_msgs)
 
     def compact_with_stats(self, messages: List[BaseMessage]) -> CompactionResult:
         """Compact messages and return structured statistics including original/compacted character count."""
