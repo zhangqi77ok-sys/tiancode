@@ -211,13 +211,152 @@ _PACKAGE_LAUNCHERS = frozenset({"npx", "npm", "pnpm", "yarn", "bunx", "uvx"})
 _PNPM_VALUE_FLAGS = frozenset({
     "--dir", "--filter", "--prefix", "--cwd", "--config", "-C", "-F",
 })
-_YARN_VALUE_FLAGS = frozenset({"--cwd", "--cache-folder"})
+_YARN_VALUE_FLAGS = frozenset({
+    "--cwd", "--cache-folder", "--global-folder", "--link-folder", "--modules-folder",
+    "--mutex", "--network-concurrency", "--network-timeout", "--https-proxy", "--proxy",
+    "--otp", "--preferred-cache-folder", "--registry", "--use-yarnrc",
+})
 _BUN_VALUE_FLAGS = frozenset({"--cwd", "--config", "--backend"})
 # These write node_modules and run lifecycle scripts from the repo or the package.
 _DEPENDENCY_SUBCOMMANDS = frozenset({
     "install", "i", "ci", "add", "update", "upgrade", "uninstall", "remove",
     "link", "unlink", "rebuild", "dedupe", "prune", "explore",
+    "install-test", "install-ci-test",
 })
+# `npm pack` / `publish` / `version` run prepare, prepack, or preversion from
+# package.json. The command word itself is not `run`.
+_LIFECYCLE_COMMANDS = frozenset({"pack", "publish", "version"})
+_SCRIPT_COMMANDS = frozenset({"run", "test", "start", "stop", "restart"})
+# npm abbreviations from npm's own cmd-list. `run-script`, `rum`, and `urn`
+# are `run`. `t` and `tst` are `test`. `rb` is `rebuild`. `it` installs and
+# then runs the test script. A value such as `--prefix pkg` is not the command.
+_NPM_ALIASES = {
+    "run-script": "run",
+    "rum": "run",
+    "urn": "run",
+    "t": "test",
+    "tst": "test",
+    "add": "install",
+    "i": "install",
+    "in": "install",
+    "ins": "install",
+    "inst": "install",
+    "insta": "install",
+    "instal": "install",
+    "isnt": "install",
+    "isnta": "install",
+    "isntal": "install",
+    "isntall": "install",
+    "it": "install-test",
+    "cit": "install-ci-test",
+    "clean-install-test": "install-ci-test",
+    "sit": "install-ci-test",
+    "clean-install": "ci",
+    "ic": "ci",
+    "install-clean": "ci",
+    "isntall-clean": "ci",
+    "unlink": "uninstall",
+    "remove": "uninstall",
+    "rm": "uninstall",
+    "r": "uninstall",
+    "un": "uninstall",
+    "rb": "rebuild",
+    "ln": "link",
+    "up": "update",
+    "upgrade": "update",
+    "udpate": "update",
+    "ddp": "dedupe",
+    "x": "exec",
+    "verison": "version",
+}
+# pnpm uses the same script aliases, and an unknown word is `pnpm run` or,
+# when no script has that name, `pnpm exec` of a local bin.
+_PNPM_ALIASES = {
+    "run-script": "run",
+    "t": "test",
+    "tst": "test",
+    "i": "install",
+    "it": "install-test",
+    "ln": "link",
+    "rb": "rebuild",
+    "rm": "uninstall",
+    "un": "uninstall",
+    "uni": "uninstall",
+    "remove": "uninstall",
+    "up": "update",
+    "upgrade": "update",
+    "ic": "ci",
+    "clean-install": "ci",
+    "install-clean": "ci",
+    "ls": "list",
+    "la": "ll",
+    "c": "config",
+    "dislink": "unlink",
+}
+_YARN_ALIASES = {
+    "upgradeinteractive": "upgrade-interactive",
+    "generatelockentry": "generate-lock-entry",
+}
+# npm options whose next word is a value, not the subcommand. Taken from
+# npm 10's config definitions, excluding flags that can also be bare booleans
+# (`--browser`, `--color`): swallowing the following word would hide `install`.
+_NPM_VALUE_FLAGS = frozenset({
+    "--_auth", "--access", "--also", "--audit-level", "--auth-type", "--before",
+    "--ca", "--cache", "--cache-max", "--cache-min", "--cafile", "--call",
+    "--cert", "--cidr", "--cpu", "--depth", "--diff", "--diff-dst-prefix",
+    "--diff-src-prefix", "--diff-unified", "--editor", "--expect-result-count",
+    "--fetch-retries", "--fetch-retry-factor", "--fetch-retry-maxtimeout",
+    "--fetch-retry-mintimeout", "--fetch-timeout", "--git", "--globalconfig",
+    "--heading", "--https-proxy", "--include", "--init-author-email",
+    "--init-author-name", "--init-author-url", "--init-license", "--init-module",
+    "--init-version", "--init.author.email", "--init.author.name",
+    "--init.author.url", "--init.license", "--init.module", "--init.version",
+    "--install-strategy", "--key", "--libc", "--local-address", "--location",
+    "--lockfile-version", "--loglevel", "--logs-dir", "--logs-max",
+    "--maxsockets", "--message", "--node-options", "--noproxy", "--omit",
+    "--only", "--os", "--otp", "--package", "--pack-destination", "--prefix",
+    "--preid", "--provenance-file", "--proxy", "--registry",
+    "--replace-registry-host", "--save-prefix", "--sbom-format", "--sbom-type",
+    "--scope", "--script-shell", "--searchexclude", "--searchlimit",
+    "--searchopts", "--searchstaleness", "--shell", "--tag",
+    "--tag-version-prefix", "--umask", "--user-agent", "--userconfig",
+    "--viewer", "--which", "--workspace",
+})
+# Short options that take a value. npm `-C` is `--prefix`, `-w` is `--workspace`.
+_NPM_SHORT_VALUES = frozenset({"C", "w", "c", "m", "L"})
+_PNPM_LONG_VALUES = frozenset({
+    "--dir", "--filter", "--prefix", "--cwd", "--config", "--reporter",
+    "--loglevel", "--npm-path", "--use-node-version", "--workspace-concurrency",
+    "--resume-from", "--store-dir", "--cache-dir", "--modules-dir",
+    "--global-dir", "--virtual-store-dir", "--package-import-method",
+    "--node-linker", "--registry", "--https-proxy", "--proxy", "--noproxy",
+    "--userconfig", "--globalconfig", "--depth", "--filter-prod",
+    "--test-pattern", "--changed-files-ignore-pattern",
+})
+_PNPM_SHORT_VALUES = frozenset({"C", "F"})
+# These pnpm commands do not run a package.json script or a local bin.
+# Anything else is `pnpm run` or `pnpm exec`, including `pnpm wipe` and a
+# name that only exists under node_modules/.bin. `exec` is refused separately.
+_PNPM_SAFE_COMMANDS = frozenset({
+    "dlx", "list", "ll", "why", "outdated", "licenses", "audit", "config",
+    "get", "set", "init", "doctor", "root", "bin", "env", "store", "cache",
+    "cat-file", "cat-index", "find-hash", "self-update", "help",
+    "ignored-builds", "completion",
+})
+# Yarn 1 runs any name that is not a builtin as a script. `dlx` is not a
+# Yarn 1 builtin, but corepack forwards it and the launch is pinned later.
+_YARN_SAFE_COMMANDS = frozenset({
+    "dlx", "access", "audit", "autoclean", "bin", "cache", "check", "config",
+    "create", "generate-lock-entry", "generateLockEntry", "global", "help",
+    "import", "info", "init", "licenses", "list", "login", "logout",
+    "outdated", "owner", "policies", "tag", "team", "upgrade-interactive",
+    "upgradeInteractive", "versions", "why", "unplug",
+})
+_MANAGER_ALIASES = {
+    "npm": _NPM_ALIASES,
+    "pnpm": _PNPM_ALIASES,
+    "yarn": _YARN_ALIASES,
+}
 _PACKAGE_SPEC = re.compile(r"^@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._+-]+)?$")
 _SCOPED_INSTALL = re.compile(r"^(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(?:@.+)?$")
 _PLAIN_INSTALL = re.compile(r"^([A-Za-z0-9._-]+)(?:@.+)?$")
@@ -719,6 +858,111 @@ def _unwrap_corepack(words: List[str]) -> List[str]:
     return [program, *leading, *words[2:]]
 
 
+def _canonicalize_manager(program: str, word: str) -> str:
+    """Map `t` to `test` and `rb` to `rebuild`. Unknown words stay as written."""
+    return _MANAGER_ALIASES.get(program, {}).get(word, word)
+
+
+def _manager_positionals(program: str, args: List[str]) -> List[str]:
+    """Positionals, after a value flag consumes its argument.
+
+    `npm --prefix pkg install` is `install`. `npm -C pkg run wipe` is
+    `run wipe`. The value is not a positional, so it cannot hide the
+    subcommand. `--prefix=pkg` already carries its value.
+    """
+    if program == "npm":
+        longs, shorts = _NPM_VALUE_FLAGS, _NPM_SHORT_VALUES
+    elif program == "pnpm":
+        longs, shorts = _PNPM_LONG_VALUES, _PNPM_SHORT_VALUES
+    elif program == "yarn":
+        longs, shorts = _YARN_VALUE_FLAGS, frozenset()
+    else:
+        longs, shorts = frozenset(), frozenset()
+    found: List[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            if index + 1 < len(args):
+                found.append(args[index + 1])
+            break
+        if arg.startswith("-") and arg != "-":
+            name, eq, _value = arg.partition("=")
+            if eq:
+                index += 1
+                continue
+            short = arg[1] if not arg.startswith("--") and len(arg) >= 2 else ""
+            if short in shorts:
+                if len(arg) == 2 and index + 1 < len(args) and args[index + 1] != "--":
+                    index += 2
+                    continue
+                index += 1
+                continue
+            takes_value = name in longs or (program == "pnpm" and name.startswith("--config"))
+            if takes_value and index + 1 < len(args) and args[index + 1] != "--":
+                index += 2
+                continue
+            index += 1
+            continue
+        found.append(arg)
+        index += 1
+    return found
+
+
+def _refuse_package_script(script_name: str, root: Path, base: Path) -> str:
+    """Refuse `npm run <name>` and the lifecycle shortcuts that mean the same thing."""
+    if not script_name:
+        return "工作区 MCP 的 package 脚本名无效，已拒绝启动"
+    if _looks_like_path(script_name):
+        file_error = _regular_workspace_file(script_name, root, base)
+        if file_error:
+            return file_error
+    else:
+        script_error = _named_package_script_error(root, script_name)
+        if script_error:
+            return script_error
+    return "工作区 MCP 不能运行 package 脚本，那会执行仓库里的文件，已拒绝启动"
+
+
+def _managed_package_error(program: str, args: List[str], root: Path, base: Path) -> Optional[str]:
+    """Refuse an npm, pnpm, or yarn launch that would run repository code.
+
+    npm only runs a script for `run` and a few aliases. pnpm and Yarn 1 also
+    run a script, or a bin under node_modules/.bin, when the word is not one
+    of their own commands. `pack`, `publish`, and `version` run lifecycle
+    scripts. `pnpm exec` and `yarn exec` are left for the launcher check,
+    which already refuses them. `pnpm dlx` and `yarn dlx` stay allowed so
+    the spawn can pin them outside the repo.
+    """
+    positionals = _manager_positionals(program, args)
+    if not positionals:
+        return None
+    command = _canonicalize_manager(program, positionals[0])
+    if command in _SCRIPT_COMMANDS:
+        if command == "run":
+            script_name = positionals[1] if len(positionals) > 1 else ""
+        else:
+            script_name = command
+        return _refuse_package_script(script_name, root, base)
+    if command in _DEPENDENCY_SUBCOMMANDS:
+        return "工作区 MCP 不能在仓库里安装或重建依赖，那会写入 node_modules 并执行安装脚本，已拒绝启动"
+    if command in _LIFECYCLE_COMMANDS:
+        return f"工作区 MCP 不能用 {program} {command} 启动，它会执行仓库里的生命周期脚本，已拒绝启动"
+    if program == "yarn" and command == "node":
+        return "工作区 MCP 不能用 yarn node 启动，它会执行 node 代码，已拒绝启动"
+    if program == "yarn" and command in {"workspace", "workspaces"}:
+        return "工作区 MCP 不能用 yarn workspace 启动，它会执行仓库里的脚本，已拒绝启动"
+    if command == "exec":
+        return None
+    safe = _PNPM_SAFE_COMMANDS if program == "pnpm" else _YARN_SAFE_COMMANDS if program == "yarn" else None
+    if safe is not None and command not in safe:
+        return (
+            f"工作区 MCP 不能用 {program} {positionals[0]} 启动，"
+            "它会执行仓库里的脚本或已安装的程序，已拒绝启动"
+        )
+    return None
+
+
 def _workspace_command_error(
     command: str,
     args: List[str],
@@ -729,7 +973,13 @@ def _workspace_command_error(
 
     A shell, an interpreter (`node server.js`, `python -m`), a package script,
     a path argument, an install, or an already-installed local package does not
-    start. `npx -y @scope/pkg` may still start when that package is not in the
+    start. npm aliases (`t`, `tst`, `run-script`, `rum`, `rb`, `it`) are the
+    same command as the long name. A value flag such as `--prefix`, `-C`,
+    `--filter`, or `--cwd` is not the subcommand. `pack`, `publish`, and
+    `version` run lifecycle scripts. pnpm and Yarn run a package.json script
+    or a local bin for a name that is not one of their own commands, and
+    `yarn node` runs node. `yarn workspace` runs a script in another package.
+    `npx -y @scope/pkg` may still start when that package is not in the
     repo; the spawn then pins npm's prefix and cache outside the workspace so
     the launch does not read or write this repo's node_modules. `pnpm dlx`,
     `yarn dlx`, uvx, pip, and `uv pip` are pinned the same way. `bunx`,
@@ -758,7 +1008,11 @@ def _workspace_command_error(
     rest = words[1:]
     if program in _SHELL_NAMES:
         return "工作区 MCP 的 command 是 shell，已拒绝启动"
-    if program in _SCRIPT_RUNNERS:
+    if program in {"npm", "pnpm", "yarn"}:
+        managed = _managed_package_error(program, rest, root, base)
+        if managed:
+            return managed
+    elif program in _SCRIPT_RUNNERS:
         script_name = _runner_script_name(program, rest)
         if script_name is not None:
             if not script_name:

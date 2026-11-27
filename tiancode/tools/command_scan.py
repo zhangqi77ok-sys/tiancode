@@ -12,10 +12,11 @@ cases that still run:
   `eval` input
 - the code string of `python -c`, `node -e` / `--eval`, `ruby -e`, `perl -e`,
   `bun -e`, and `php -r` / `-R` / `-B` / `-E`, including the string passed to
-  `os.system` or `execSync`. Perl and Ruby append every `-e` as another line,
-  so those lines are scanned together. Python runs only the first `-c`. Node
-  and Bun run only the last `-e` / `--eval`. PHP rejects a second `-r`. Those
-  three are not joined.
+  `os.system` or `execSync`. `yarn node -e` is that same node program: Yarn
+  forwards the words after its own flags to node. Perl and Ruby append every
+  `-e` as another line, so those lines are scanned together. Python runs only
+  the first `-c`. Node and Bun run only the last `-e` / `--eval`. PHP rejects
+  a second `-r`. Those three are not joined.
 
 `eval "$(pyenv init -)"` stays allowed. `bash -c 'pytest -q'` stays allowed.
 `python -c "print('hello')"` stays allowed. `echo hello | sh` was already
@@ -710,6 +711,12 @@ _CODE_LONG = {
     "nodejs": {"--eval", "--print"},
     "bun": {"--eval", "--print"},
 }
+# Yarn flags whose next word is a directory or a number, not `node`.
+_YARN_VALUE_FLAGS = frozenset({
+    "--cwd", "--cache-folder", "--global-folder", "--link-folder", "--modules-folder",
+    "--mutex", "--network-concurrency", "--network-timeout", "--https-proxy", "--proxy",
+    "--otp", "--preferred-cache-folder", "--registry", "--use-yarnrc",
+})
 # These short flags take the next word, so `python -W error -c ...` still sees `-c`.
 _VALUE_LETTERS = {
     "python": "WX",
@@ -828,6 +835,32 @@ def _payloads_of(program: str, command: Sequence[str]) -> List[str]:
     return payloads
 
 
+def _yarn_forwarded_node(command: Sequence[str]) -> Optional[List[str]]:
+    """The `node ...` tail of `yarn node`, or None when yarn is not launching node.
+
+    Yarn's own flags are skipped first, so `yarn --cwd pkg node -e ...` is
+    still node's `-e` program. A later script path is not inline code.
+    """
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            return None
+        if word.startswith("-"):
+            name, eq, _value = word.partition("=")
+            index += 1
+            if name in _YARN_VALUE_FLAGS and not eq and index < len(command) and command[index] != "--":
+                index += 1
+            continue
+        name = word.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        if name in {"node", "nodejs"}:
+            return list(command[index:])
+        return None
+    return None
+
+
 def interpreter_payloads(text: str) -> List[Tuple[str, str]]:
     """`(program, code)` pairs a shell will hand to python -c, node -e, and the rest.
 
@@ -850,6 +883,11 @@ def interpreter_payloads(text: str) -> List[Tuple[str, str]]:
             if program == "busybox" and len(command) > 1:
                 command = command[1:]
                 program = execution._command_basename(command[0])
+            if program == "yarn":
+                forwarded = _yarn_forwarded_node(command)
+                if forwarded is not None:
+                    command = forwarded
+                    program = "node"
             for payload in _payloads_of(program, command):
                 found.append((program, payload))
     return found

@@ -71,6 +71,35 @@ def test_bun_run_test_reads_scripts_test(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_test_aliases_read_the_same_script(tmp_path: Path) -> None:
+    marker = tmp_path / "ran.txt"
+    _package(tmp_path / "package.json", {"test": _dangerous(marker), "t": "echo ok"})
+
+    for command in (
+        "npm t",
+        "npm tst",
+        "npm run-script test",
+        "npm rum test",
+        "npm urn test",
+        "pnpm t",
+        "pnpm tst",
+        "pnpm run-script test",
+        "npm --prefix . t",
+        "pnpm --filter app t",
+    ):
+        reason = package_script_block_reason(command, tmp_path)
+        assert reason is not None, command
+    assert package_script_block_reason("yarn t", tmp_path) is None
+    assert package_script_block_reason("npm run t", tmp_path) is None
+    assert package_script_block_reason("pnpm --filter app t", tmp_path) is not None
+    filtered = package_script_block_reason("pnpm --filter app t", tmp_path)
+    assert filtered is not None and "--filter" in filtered
+
+    result = execute_shell_command("npm t", work_dir=tmp_path, timeout=5)
+    assert result.exit_code == 126
+    assert not marker.exists()
+
+
 def test_env_prefix_does_not_hide_npm_test(tmp_path: Path) -> None:
     marker = tmp_path / "ran.txt"
     _package(tmp_path / "package.json", {"test": _dangerous(marker)})
