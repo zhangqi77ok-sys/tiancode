@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +29,63 @@ def _owned_marker(path: Path, *, directory: bool = False) -> bool:
 def _has_regular_python_file(work_dir: Path) -> bool:
     """True when the workspace root has a regular Python file of its own."""
     return any(_owned_marker(path) for path in work_dir.glob("*.py"))
+
+
+_SCRIPT_RUN = re.compile(
+    r"(?:^|&&|\|\||;)\s*(?:npm|pnpm|yarn|bun)\s+run\s+([A-Za-z0-9_.:/-]+)"
+)
+
+
+def _test_script_bodies(scripts: dict) -> list[tuple[str, str]]:
+    """pretest/test/posttest and the `npm run` chain they reach, stopping on cycles."""
+    from tiancode.tools.execution import _normalize_command
+
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        if name in seen or len(ordered) >= 8:
+            return
+        body = scripts.get(name)
+        if not isinstance(body, str) or not body.strip():
+            seen.add(name)
+            return
+        seen.add(name)
+        ordered.append((name, body))
+        for match in _SCRIPT_RUN.finditer(_normalize_command(body)):
+            add(match.group(1))
+
+    for name in ("pretest", "test", "posttest"):
+        add(name)
+    return ordered
+
+
+def package_test_block_reason(work_dir: Path) -> Optional[str]:
+    """Why `npm test` / `pnpm test` / `yarn test` must not start, or None.
+
+    A symlink or hard link is not opened: the package manager would follow it.
+    The test script, its pretest and posttest hooks, and the short `npm run`
+    chain they reach are checked with the same dangerous-command rules as the shell.
+    """
+    from tiancode.core.path_safety import is_shared_hardlink
+    from tiancode.tools.execution import is_dangerous_command
+
+    pkg = work_dir / "package.json"
+    if pkg.is_symlink() or is_shared_hardlink(pkg):
+        return "package.json 是符号链接或硬链接，已拒绝执行其中的测试脚本"
+    if not pkg.is_file():
+        return None
+    try:
+        data = json.loads(pkg.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    if not isinstance(scripts, dict):
+        return None
+    for name, body in _test_script_bodies(scripts):
+        if is_dangerous_command(body):
+            return f"package.json scripts.{name} 含高危命令，已拒绝执行"
+    return None
 
 
 def _has_real_node_test_script(pkg_json: Path) -> bool:

@@ -18,6 +18,7 @@ __all__ = [
     "parse_www_authenticate",
     "build_auth_headers",
     "OAuthTokenProvider",
+    "referenced_sensitive_env_names",
 ]
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -54,6 +55,18 @@ def expand_env_vars(raw: str, environ: Optional[Dict[str, str]] = None, *, stric
 
 def expand_mapping(raw: Optional[Dict[str, str]], environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     return {str(k): expand_env_vars(str(v), environ) for k, v in (raw or {}).items()}
+
+
+def referenced_sensitive_env_names(raw: str) -> list[str]:
+    """Sensitive `${VAR}` / `$VAR` names in one config string. Values are not read."""
+    from tiancode.tools.execution import is_sensitive_env_name
+
+    found: list[str] = []
+    for match in _ENV_PATTERN.finditer(raw or ""):
+        key = match.group(1) or match.group(2)
+        if is_sensitive_env_name(key) and key not in found:
+            found.append(key)
+    return found
 
 
 def parse_www_authenticate(header_value: str) -> Dict[str, str]:

@@ -162,6 +162,9 @@ def _run_post_edit_verification(work_dir: Path, filename: Optional[str] = None) 
     except Exception as exc:
         return f"自动化测试跳过: {str(exc)}"
     if res.exit_code == 126:
+        detail = res.stderr.strip()
+        if detail:
+            return f"自动化测试安全拦截：{detail}"
         return "自动化测试安全拦截：检测到高危测试命令，已阻止执行。"
     if res.timed_out:
         return "自动化测试超时（超过 8 秒未完成，已终止）"

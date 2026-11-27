@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from tiancode.core.mcp_auth import McpAuthError, expand_env_vars
+from tiancode.core.mcp_auth import McpAuthError, expand_env_vars, referenced_sensitive_env_names
 from tiancode.core.path_safety import WorkspacePathError, workspace_directory_entry
 from tiancode.core.mcp_transports import (
     _DEFAULT_TIMEOUT_SECONDS,
@@ -124,6 +124,65 @@ def _expand_config_value(value: Any) -> str:
     return expand_env_vars(str(value), strict=True)
 
 
+def _config_strings(value: Any) -> List[str]:
+    """String leaves of one config field. Keys are included; values are not expanded."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        texts: List[str] = []
+        for key, item in value.items():
+            texts.append(str(key))
+            texts.extend(_config_strings(item))
+        return texts
+    if isinstance(value, list):
+        texts = []
+        for item in value:
+            texts.extend(_config_strings(item))
+        return texts
+    return []
+
+
+def _workspace_secret_names(entry: Dict[str, Any]) -> List[str]:
+    """Sensitive env names a workspace server would copy out of the parent process."""
+    texts: List[str] = []
+    for key in ("command", "url", "cwd", "args", "env", "headers", "auth"):
+        texts.extend(_config_strings(entry.get(key)))
+    found: List[str] = []
+    for text in texts:
+        for name in referenced_sensitive_env_names(text):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def _workspace_url_error(url: str) -> Optional[str]:
+    """Reject a workspace MCP URL that is not a public http(s) endpoint.
+
+    Global config may still point at localhost. A repository's mcp.json may not:
+    connecting to it would reach loopback, link-local, or cloud metadata.
+    """
+    if not url:
+        return None
+    from tiancode.tools.web_ops import validate_public_http_url
+
+    try:
+        validate_public_http_url(url)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _workspace_command_error(command: str, args: List[str]) -> Optional[str]:
+    """Reject a workspace stdio command the shell guard would refuse."""
+    if not command:
+        return None
+    from tiancode.tools.execution import is_dangerous_command
+
+    if is_dangerous_command(" ".join([command, *args])):
+        return "工作区 MCP 的 command 含高危命令，已拒绝启动"
+    return None
+
+
 def _load_single_mcp_file(
     path: Path,
     source: str,
@@ -169,6 +228,13 @@ def _load_single_mcp_file(
         disabled = bool(entry.get("disabled", False))
         # Cursor/VS Code style "type": "http"|"sse"|"stdio" — url 仍优先判定传输
         type_hint = str(entry.get("type") or entry.get("transport") or "").strip().lower()
+        if sandbox_root is not None:
+            secret_names = _workspace_secret_names(entry)
+            if secret_names:
+                errors.append(
+                    f"MCP 服务 '{name}' 未加载: 工作区配置不能引用敏感环境变量 {', '.join(secret_names)}"
+                )
+                continue
         try:
             url = _expand_config_value(entry.get("url") or "").strip()
             cmd = _expand_config_value(entry.get("command") or "").strip()
@@ -181,6 +247,15 @@ def _load_single_mcp_file(
         except McpAuthError as exc:
             errors.append(f"MCP 服务 '{name}' 未加载: {exc}")
             continue
+        if sandbox_root is not None:
+            command_error = _workspace_command_error(cmd, args)
+            if command_error:
+                errors.append(f"MCP 服务 '{name}' 未加载: {command_error}")
+                continue
+            url_error = _workspace_url_error(url)
+            if url_error:
+                errors.append(f"MCP 服务 '{name}' 未加载: {url_error}")
+                continue
         if not url and not cmd and not disabled:
             errors.append(f"MCP 服务 '{name}' 缺少 command 或 url ({path})")
             continue
