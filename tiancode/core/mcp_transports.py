@@ -436,14 +436,11 @@ def _isolate_yarn_dlx(args: Sequence[str]) -> LauncherIsolation:
     )
 
 
-def _uv_tool_run(program: str, args: Sequence[str]) -> bool:
-    if program == "uvx":
-        return True
-    if program != "uv":
-        return False
+def _uv_words(args: Sequence[str], limit: int = 2) -> List[str]:
+    """Leading positionals. A uv global flag and its value are not positionals."""
     words: List[str] = []
     index = 0
-    while index < len(args) and len(words) < 2:
+    while index < len(args) and len(words) < limit:
         arg = args[index]
         if arg == "--":
             break
@@ -456,7 +453,15 @@ def _uv_tool_run(program: str, args: Sequence[str]) -> bool:
             continue
         words.append(arg)
         index += 1
-    return words[:2] in (["tool", "run"], ["tool", "uvx"])
+    return words
+
+
+def _uv_tool_run(program: str, args: Sequence[str]) -> bool:
+    if program == "uvx":
+        return True
+    if program != "uv":
+        return False
+    return _uv_words(args)[:2] in (["tool", "run"], ["tool", "uvx"])
 
 
 def _isolate_uv_tool(args: Sequence[str]) -> LauncherIsolation:
@@ -480,6 +485,109 @@ def _isolate_uv_tool(args: Sequence[str]) -> LauncherIsolation:
             "UV_CACHE_DIR": str(root / "cache"),
         },
         drop_keys=_UV_DROP_KEYS,
+    )
+
+
+# These uv commands build the project or run its environment. `uv tool run` is
+# not in this set; that launch is pinned above. `uv pip sync` and `uv pip
+# compile` read a requirements file that can name a local package.
+_UV_PROJECT_COMMANDS = frozenset({"run", "sync", "add", "remove", "build"})
+_UV_PIP_REFUSED = frozenset({"sync", "compile"})
+_UV_PIP_VALUE_FLAGS = _UV_INDEX_FLAGS | _UV_GLOBAL_VALUE_FLAGS | frozenset({
+    "--requirements", "--requirement", "-r",
+    "--group", "--extra",
+    "--editable", "-e",
+    "--target", "-t",
+    "--prefix",
+    "--excludes",
+    "--python-version",
+    "--no-editable-package",
+    "--no-sources-package",
+    "--no-build-isolation-package",
+})
+_UV_PIP_BOOL_FLAGS = _UV_BOOL_FLAGS | frozenset({
+    "--system",
+    "--no-sources",
+    "--no-build-isolation",
+    "--all-extras",
+})
+# `UV_PYTHON` selects the interpreter even when `--system` is present, so a
+# workspace path in that variable executes. uvx keeps `UV_PYTHON` on purpose;
+# `uv pip` cannot.
+_UV_PIP_DROP_KEYS = _UV_DROP_KEYS + (
+    "UV_PYTHON",
+    "UV_PROJECT_ENVIRONMENT",
+    "UV_SYSTEM_PYTHON",
+    "UV_NO_SOURCES",
+    "UV_NO_CONFIG",
+    "VIRTUAL_ENV",
+)
+
+
+def _split_after_positionals(
+    args: Sequence[str],
+    count: int,
+    value_flags: frozenset,
+) -> Tuple[List[str], List[str]]:
+    """Split just after the Nth positional. Text after `--` stays in the tail."""
+    index = 0
+    seen = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return list(args[:index]), list(args[index:])
+        if arg.startswith("-"):
+            name, eq, _value = arg.partition("=")
+            short = ""
+            if len(arg) > 2 and arg.startswith("-") and not arg.startswith("--"):
+                short = arg[:2]
+            index += 1
+            takes_value = name in value_flags or short in value_flags
+            attached = bool(eq) or bool(short and short in value_flags)
+            if takes_value and not attached and index < len(args) and args[index] != "--":
+                index += 1
+            continue
+        seen += 1
+        index += 1
+        if seen == count:
+            return list(args[:index]), list(args[index:])
+    return list(args), []
+
+
+def _isolate_uv_pip(args: Sequence[str]) -> LauncherIsolation:
+    """Pin `uv pip` off the repo's config, cache, and virtualenv.
+
+    A project `uv.toml` selects the index. `--no-config` ignores that file, but
+    not `UV_INDEX_URL`, so the env pin is required. uv also runs `.venv/bin/python`
+    while it looks for an environment, and `UV_PYTHON` still wins over `--system`.
+    `--group` can name a path package even with `--no-config`, so group and
+    source flags are removed. `--no-sources` and the public index are added for
+    `install` only: `uv pip list` rejects those flags. Requirement files are
+    removed, because they can point back at a workspace path. Flags after `--`
+    stay.
+    """
+    root = _empty_launch_dir("tiancode-uvpip-")
+    cleaned = _strip_named_flags(args, _UV_PIP_VALUE_FLAGS, _UV_PIP_BOOL_FLAGS)
+    head, tail = _split_after_positionals(cleaned, 2, _UV_PIP_VALUE_FLAGS)
+    pins = ["--system"]
+    if _uv_words(cleaned)[1:2] == ["install"]:
+        pins.extend([
+            "--no-sources",
+            "--default-index", _PUBLIC_PYPI,
+            "--index-url", _PUBLIC_PYPI,
+        ])
+    return LauncherIsolation(
+        args=["--no-config", "--cache-dir", str(root / "cache"), *head, *pins, *tail],
+        directory=root,
+        env={
+            "UV_INDEX_URL": _PUBLIC_PYPI,
+            "UV_DEFAULT_INDEX": _PUBLIC_PYPI,
+            "UV_CACHE_DIR": str(root / "cache"),
+            "UV_NO_CONFIG": "1",
+            "UV_NO_SOURCES": "1",
+            "UV_SYSTEM_PYTHON": "1",
+        },
+        drop_keys=_UV_PIP_DROP_KEYS,
     )
 
 
@@ -519,13 +627,15 @@ def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
     """Point a workspace package launch away from the repo's config and bins.
 
     npx and `npm exec` get an empty prefix. `pnpm dlx` gets an empty `--dir`.
-    `yarn dlx`, uvx, and pip are pinned with env and index flags. `corepack
-    pnpm` and `corepack yarn` are the same launch, because corepack forwards
-    its first argument. `corepack pnpx` is `pnpm dlx`. `corepack pnpm@9` keeps
-    the version. A flag before that argument is corepack's own flag, not the
-    forwarded program. `bunx`, `pnpm exec`, `yarn exec`, `pipx`, `cargo`, and
-    `rustup` are refused before this runs: they execute workspace code and have
-    no prefix that keeps the tool's cwd in the repo.
+    `yarn dlx`, uvx, pip, and `uv pip` are pinned with env and index flags.
+    `corepack pnpm` and `corepack yarn` are the same launch, because corepack
+    forwards its first argument. `corepack pnpx` is `pnpm dlx`. `corepack pnpm@9`
+    keeps the version. A flag before that argument is corepack's own flag, not
+    the forwarded program. `bunx`, `pnpm exec`, `yarn exec`, `pipx`, `cargo`,
+    `rustup`, poetry, bundler, composer, gem, and uv's project commands are
+    refused before this runs: they execute workspace code and have no prefix
+    that keeps the tool's cwd in the repo. `uv pip sync` and `uv pip compile`
+    are refused too, because the requirements file is the command.
     The caller's flags after `--` are left untouched. A command this function
     does not isolate is returned unchanged, with no directory.
     """
@@ -545,6 +655,10 @@ def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
         return _isolate_yarn_dlx(plain)
     if _uv_tool_run(program, plain):
         return _isolate_uv_tool(plain)
+    if program == "uv":
+        words = _uv_words(plain)
+        if len(words) >= 2 and words[0] == "pip" and words[1] not in _UV_PIP_REFUSED:
+            return _isolate_uv_pip(plain)
     if _is_pip(program):
         return _isolate_pip(plain)
     if program not in {"npx", "npm"}:

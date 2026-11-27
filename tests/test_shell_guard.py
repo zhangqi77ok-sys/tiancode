@@ -123,6 +123,7 @@ _BLOCKED = [
     "php -r 'file_put_contents(\"run.sh\", \"echo hi\\n\");'; bash run.sh",
     "php -r 'fopen(\"run.sh\", \"w\");'; bash run.sh",
     "bun -e 'Bun.write(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
+    "bun -e 'console.log(1)' -e 'await Bun.write(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
 ]
 
 _ALLOWED = [
@@ -189,6 +190,7 @@ _ALLOWED = [
     "perl -e 'open(F, \"<\", \"notes.txt\");'; perl notes.txt",
     "php -r 'echo file_get_contents(\"notes.txt\");'; php notes.txt",
     "node -e 'console.log(1)' -e 'console.log(2)'",
+    "bun -e 'console.log(1)' -e 'console.log(2)'",
 ]
 
 
@@ -281,6 +283,31 @@ def test_split_perl_and_ruby_one_liners_do_not_start(tmp_path: Path) -> None:
         assert "12345" in harmless.stdout
     if shutil.which("perl") is None and shutil.which("ruby") is None:
         pytest.skip("perl and ruby are not installed")
+
+
+def test_bun_runs_only_the_last_eval(tmp_path: Path) -> None:
+    """Bun keeps the last `-e`. An earlier one is not executed and is not joined."""
+    import shutil
+
+    if shutil.which("bun") is None:
+        pytest.skip("bun is not installed")
+    marker = tmp_path / "ran"
+    listed = execute_shell_command(
+        "bun -e 'console.log(111)' -e 'console.log(222)'",
+        work_dir=tmp_path,
+        timeout=10,
+    )
+    assert listed.exit_code == 0
+    assert "222" in listed.stdout
+    assert "111" not in listed.stdout
+    blocked = execute_shell_command(
+        f"bun -e 'console.log(1)' -e 'await Bun.write(\"run.sh\", \"touch {marker}\\n\")'; bash run.sh",
+        work_dir=tmp_path,
+        timeout=10,
+    )
+    assert blocked.exit_code == 126
+    assert not marker.exists()
+    assert not (tmp_path / "run.sh").exists()
 
 
 def test_python_runs_only_the_first_c(tmp_path: Path) -> None:

@@ -423,6 +423,56 @@ def test_workspace_refuses_launchers_that_run_repo_bins(tmp_path: Path) -> None:
     assert _workspace_command_error("go", ["run", "main.go"], work, work) is not None
 
 
+def test_workspace_refuses_project_managers_and_shim_writes(tmp_path: Path) -> None:
+    work = tmp_path / "proj"
+    (work / "bin").mkdir(parents=True)
+    for command, args in (
+        ("poetry", ["run", "hello"]),
+        ("bundle", ["exec", "hello"]),
+        ("bundler", ["env"]),
+        ("composer", ["run", "evil"]),
+        ("composer.phar", ["install"]),
+        ("gem", ["build", "evil.gemspec"]),
+        ("uv", ["run", "hello"]),
+        ("uv", ["sync"]),
+        ("uv", ["add", "cowsay"]),
+        ("uv", ["remove", "cowsay"]),
+        ("uv", ["build"]),
+        ("uv", ["--directory", str(work), "run", "hello"]),
+        ("uv", ["pip", "sync", "req.txt"]),
+        ("uv", ["pip", "compile", "req.in"]),
+        ("uv", ["pip", "install", "-e", "evilpkg"]),
+        ("uv", ["pip", "install", "--editable=evilpkg"]),
+        ("uv", ["pip", "install", "evil.tar.gz"]),
+        ("uv", ["pip", "install", "file:evil.tar.gz"]),
+        ("pip", ["install", "-e", "evilpkg"]),
+        ("pip3", ["install", "--editable", "evilpkg"]),
+    ):
+        reason = _workspace_command_error(command, args, work, work)
+        assert reason is not None, (command, args)
+    assert _workspace_command_error("uv", ["pip", "install", "cowsay"], work, work) is None
+    assert _workspace_command_error("uv", ["tool", "run", "ruff"], work, work) is None
+    assert _workspace_command_error("uvx", ["ruff"], work, work) is None
+    assert _workspace_command_error("pip", ["install", "cowsay"], work, work) is None
+
+    assert _workspace_command_error("corepack", ["enable", "--install-directory", "bin"], work, work) is not None
+    assert _workspace_command_error("corepack", ["enable", "--install-directory=bin"], work, work) is not None
+    assert _workspace_command_error("corepack", ["enable", "--install-directory=."], work, work) is not None
+    assert _workspace_command_error(
+        "corepack", ["enable", f"--install-directory={work}"], work, work
+    ) is not None
+    assert _workspace_command_error("corepack", ["enable", "--install-directory=bin/../bin"], work, work) is not None
+    outside = tmp_path / "outside"
+    assert _workspace_command_error(
+        "corepack", ["enable", f"--install-directory={outside}"], work, work
+    ) is None
+    assert _workspace_command_error("corepack", ["enable"], work, work) is None
+    assert _workspace_command_error("corepack", ["enable", "--help"], work, work) is None
+    assert _workspace_command_error("corepack", ["enable", "--install-directory=bin", "-h"], work, work) is None
+    assert _workspace_command_error("corepack", ["prepare", "yarn@1.22.22"], work, work) is None
+    assert _workspace_command_error("corepack", ["-h"], work, work) is None
+
+
 def test_workspace_package_launchers_are_pinned_outside_the_repo(tmp_path: Path) -> None:
     import shutil
 
@@ -542,6 +592,60 @@ def test_workspace_package_launchers_are_pinned_outside_the_repo(tmp_path: Path)
         assert env["PIP_INDEX_URL"] == "https://pypi.org/simple"
         assert "PIP_CONFIG_FILE" not in env
         assert env["PATH"] == "/usr/bin"
+
+        uvpip = isolate_workspace_npm(
+            "uv",
+            [
+                "pip", "install",
+                "--extra-index-url", "http://127.0.0.1:9/extra",
+                "-r", "req.txt",
+                "--group", "dev",
+                "--find-links", "wheels",
+                "-e", "evilpkg",
+                "cowsay",
+            ],
+        )
+        directories.append(uvpip.directory)
+        joined = " ".join(uvpip.args)
+        assert uvpip.args[0] == "--no-config"
+        assert "--system" in uvpip.args
+        assert "--no-sources" in uvpip.args
+        assert "--default-index" in uvpip.args
+        assert "https://pypi.org/simple" in uvpip.args
+        assert "cowsay" in uvpip.args
+        assert "--extra-index-url" not in uvpip.args
+        assert "--group" not in uvpip.args
+        assert "-e" not in uvpip.args
+        assert "evilpkg" not in uvpip.args
+        assert "req.txt" not in uvpip.args
+        assert "wheels" not in uvpip.args
+        assert "127.0.0.1" not in joined
+        assert uvpip.directory is not None
+        assert work.resolve() not in Path(next(
+            uvpip.args[index + 1] for index, arg in enumerate(uvpip.args) if arg == "--cache-dir"
+        )).resolve().parents
+        env = _apply_launcher_env(
+            {
+                "UV_INDEX_URL": "http://127.0.0.1:9/simple",
+                "UV_PYTHON": str(work / ".venv" / "bin" / "python"),
+                "UV_PROJECT_ENVIRONMENT": str(work / ".venv"),
+                "VIRTUAL_ENV": str(work / ".venv"),
+                "PATH": "/usr/bin",
+            },
+            uvpip,
+        )
+        assert env["UV_INDEX_URL"] == "https://pypi.org/simple"
+        assert env["UV_SYSTEM_PYTHON"] == "1"
+        assert "UV_PYTHON" not in env
+        assert "UV_PROJECT_ENVIRONMENT" not in env
+        assert "VIRTUAL_ENV" not in env
+        assert env["PATH"] == "/usr/bin"
+
+        uvlist = isolate_workspace_npm("uv", ["pip", "list"])
+        directories.append(uvlist.directory)
+        assert "--system" in uvlist.args
+        assert "--no-sources" not in uvlist.args
+        assert "--index-url" not in uvlist.args
     finally:
         for directory in directories:
             if directory is not None:
@@ -669,4 +773,89 @@ def test_pip_install_does_not_use_a_workspace_index(tmp_path: Path) -> None:
     combined = result.stdout + result.stderr
     assert b"127.0.0.1" not in combined
     assert result.returncode == 0
+
+
+def test_uv_pip_does_not_use_the_workspace(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    from tiancode.core.mcp_transports import _apply_launcher_env, isolate_workspace_npm
+
+    work = tmp_path / "proj"
+    work.mkdir()
+    marker = work / "ran"
+    venv_python = work / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    (work / ".venv" / "pyvenv.cfg").write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.12.3\n",
+        encoding="utf-8",
+    )
+    venv_python.write_text(f"#!/bin/sh\necho hijacked > {marker}\nexit 1\n", encoding="utf-8")
+    venv_python.chmod(0o755)
+    (work / "uv.toml").write_text('index-url = "http://127.0.0.1:9/simple"\n', encoding="utf-8")
+    isolated = isolate_workspace_npm(
+        "uv",
+        ["pip", "install", "--dry-run", "--no-deps", "pip"],
+    )
+    assert isolated.directory is not None
+    env = _apply_launcher_env(
+        {**os.environ, "UV_INDEX_URL": "http://127.0.0.1:9/simple", "UV_PYTHON": str(venv_python)},
+        isolated,
+    )
+    try:
+        result = subprocess.run(
+            [uv, *isolated.args],
+            cwd=work,
+            env=env,
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+    finally:
+        shutil.rmtree(isolated.directory, ignore_errors=True)
+
+    combined = result.stdout + result.stderr
+    assert b"127.0.0.1" not in combined
+    assert not marker.exists()
+    assert result.returncode == 0
+
+
+def test_corepack_enable_writes_shims_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    corepack = shutil.which("corepack")
+    if corepack is None:
+        pytest.skip("corepack is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    assert _workspace_command_error("corepack", ["enable", "--install-directory=bin"], work, work) is not None
+
+    help_dir = tmp_path / "help"
+    help_dir.mkdir()
+    helped = subprocess.run(
+        [corepack, "enable", "--install-directory=bin", "-h"],
+        cwd=help_dir,
+        check=False,
+        timeout=20,
+        capture_output=True,
+    )
+    assert helped.returncode == 0
+    assert not (help_dir / "bin").exists()
+
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    wrote = subprocess.run(
+        [corepack, "enable", "--install-directory", str(shims)],
+        cwd=work,
+        check=False,
+        timeout=20,
+        capture_output=True,
+    )
+    assert wrote.returncode == 0
+    assert (shims / "pnpm").is_symlink() or (shims / "pnpm").exists()
+    assert not (work / "pnpm").exists()
 

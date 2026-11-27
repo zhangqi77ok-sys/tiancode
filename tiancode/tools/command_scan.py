@@ -11,10 +11,11 @@ cases that still run:
 - a variable assigned from a substitution and then used as the command or as
   `eval` input
 - the code string of `python -c`, `node -e` / `--eval`, `ruby -e`, `perl -e`,
-  and `php -r` / `-R` / `-B` / `-E`, including the string passed to `os.system`
-  or `execSync`. Perl and Ruby append every `-e` as another line, so those
-  lines are scanned together. Python runs only the first `-c`, Node runs only
-  the last `-e`, and PHP rejects a second `-r`, so those are not joined.
+  `bun -e`, and `php -r` / `-R` / `-B` / `-E`, including the string passed to
+  `os.system` or `execSync`. Perl and Ruby append every `-e` as another line,
+  so those lines are scanned together. Python runs only the first `-c`. Node
+  and Bun run only the last `-e` / `--eval`. PHP rejects a second `-r`. Those
+  three are not joined.
 
 `eval "$(pyenv init -)"` stays allowed. `bash -c 'pytest -q'` stays allowed.
 `python -c "print('hello')"` stays allowed. `echo hello | sh` was already
@@ -697,8 +698,9 @@ _CODE_LETTERS = {
     "php": "rRBE",
 }
 # These interpreters append each code flag as another line of one program.
-# Python keeps only the first `-c`. Node keeps only the last `-e`. PHP errors
-# on a second `-r`. Joining those would describe a program that does not run.
+# Python keeps only the first `-c`. Node and Bun keep only the last `-e`
+# (Bun 1.4 does this for `-e` and `--eval`; an earlier flag is not executed).
+# PHP errors on a second `-r`. Joining those would describe a program that does not run.
 _JOINED_CODE = {
     "perl": "\n",
     "ruby": "\n",
