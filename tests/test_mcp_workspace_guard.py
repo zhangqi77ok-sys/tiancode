@@ -559,6 +559,11 @@ def test_yarn_dlx_does_not_run_a_repo_yarn_path(tmp_path: Path) -> None:
         shutil.rmtree(isolated.directory, ignore_errors=True)
 
     assert not marker.exists()
+    # Yarn 1 treats `dlx` as a script name and never reads yarnPath. Berry
+    # prints dlx help when the rc file and yarnPath are ignored.
+    combined = result.stdout + result.stderr
+    if b"yarn run v1." in combined and b"package.json" in combined:
+        return
     assert result.returncode == 0
-    assert b"yarnPath" not in result.stdout
+    assert b"temporary environment" in result.stdout
 
