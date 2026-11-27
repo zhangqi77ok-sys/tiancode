@@ -20,8 +20,11 @@ from tiancode.core.mcp_transports import (
     _DEFAULT_TIMEOUT_SECONDS,
     HttpMcpTransport,
     StdioMcpTransport,
+    _UV_PIP_REFUSED,
+    _UV_PROJECT_COMMANDS,
     _corepack_forward_plan,
     _is_pip,
+    _uv_words,
 )
 from tiancode.core.mcp_discovery import (
     discover_tianshell_mcp,
@@ -442,6 +445,69 @@ def _pip_local_artifact(token: str) -> bool:
     return lowered.endswith(_PIP_ARCHIVE_SUFFIXES)
 
 
+def _editable_install(args: List[str]) -> bool:
+    """True when `-e` / `--editable` would build a local project.
+
+    The directory is often a bare name (`evilpkg`), so the generic path check
+    does not see it. An editable install runs that project's build backend.
+    """
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return False
+        name, _eq, _value = arg.partition("=")
+        if name in {"-e", "--editable"}:
+            return True
+        index += 1
+    return False
+
+
+def _corepack_is_help(args: List[str]) -> bool:
+    """True when corepack will print help and not run the subcommand."""
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg in {"-h", "--help"} or arg.startswith("--help="):
+            return True
+    return False
+
+
+def _corepack_install_directories(args: List[str]) -> List[str]:
+    """Values of `--install-directory`, including `--install-directory=bin`."""
+    found: List[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            break
+        name, eq, value = arg.partition("=")
+        if name == "--install-directory":
+            if eq:
+                found.append(value)
+            elif index + 1 < len(args):
+                found.append(args[index + 1])
+                index += 2
+                continue
+        index += 1
+    return found
+
+
+def _path_inside_workspace(root: Path, base: Path, raw: str) -> bool:
+    """True when `raw`, relative to the launch directory, stays inside the repo."""
+    text = raw.strip()
+    if not text:
+        return False
+    candidate = Path(text).expanduser()
+    dest = candidate if candidate.is_absolute() else base / candidate
+    try:
+        resolved = dest.resolve()
+        resolved.relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _corepack_action(args: List[str]) -> str:
     """Corepack's own subcommand, such as `use`. A flag value is not the subcommand."""
     index = 0
@@ -468,8 +534,12 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
     `pipx` runs `__pypackages__` from the working directory with no switch that
     turns that off. `cargo` and `rustup` read `.cargo/config.toml` from that
     directory, including `rustc-wrapper` and source replacement, and those keys
-    cannot all be cleared from the command line. `pnpm dlx`, `yarn dlx`, uvx,
-    and pip are isolated at spawn instead.
+    cannot all be cleared from the command line. Poetry runs the project
+    environment. Bundler evaluates the Gemfile as Ruby, including under
+    `BUNDLE_IGNORE_CONFIG`. Composer runs scripts and `vendor/bin`. `gem build`
+    evaluates a gemspec. `uv run`, `uv sync`, and `uv build` build the project.
+    `pnpm dlx`, `yarn dlx`, uvx, pip, and `uv pip install` are isolated at spawn
+    instead.
     """
     if program == "bunx":
         return "工作区 MCP 不能用 bunx 启动，它会执行仓库里的可执行文件，已拒绝启动"
@@ -483,6 +553,36 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
         return "工作区 MCP 不能用 pipx 启动，它会执行仓库里的 __pypackages__，已拒绝启动"
     if program in {"cargo", "rustup"}:
         return "工作区 MCP 不能用 cargo 或 rustup 启动，它会读取仓库里的 .cargo 配置并执行其中的命令，已拒绝启动"
+    if program == "poetry":
+        return "工作区 MCP 不能用 poetry 启动，它会在仓库的项目环境里执行命令，已拒绝启动"
+    if program in {"bundle", "bundler"}:
+        return "工作区 MCP 不能用 bundler 启动，它会把仓库里的 Gemfile 当作代码执行，已拒绝启动"
+    if program in {"composer", "composer.phar"}:
+        return "工作区 MCP 不能用 composer 启动，它会执行仓库里的 composer 脚本和 vendor 程序，已拒绝启动"
+    if program == "gem":
+        return "工作区 MCP 不能用 gem 启动，它会把仓库里的 gemspec 当作代码执行，已拒绝启动"
+    if program == "uv":
+        words = _uv_words(args)
+        if words and words[0] in _UV_PROJECT_COMMANDS:
+            return "工作区 MCP 不能用 uv 的项目命令启动，它会构建仓库里的包并执行其中的代码，已拒绝启动"
+        if len(words) >= 2 and words[0] == "pip" and words[1] in _UV_PIP_REFUSED:
+            return "工作区 MCP 不能用 uv pip sync 或 uv pip compile 启动，它会按仓库里的依赖文件安装并执行代码，已拒绝启动"
+    return None
+
+
+def _corepack_shim_error(program: str, args: List[str], root: Path, base: Path) -> Optional[str]:
+    """Refuse `corepack enable` when the shim directory is inside the repo.
+
+    The default directory is the directory that contains the corepack binary,
+    which is outside the workspace. `--install-directory=bin` is not a path
+    argument, but corepack still creates `pnpm` and `yarn` symlinks there.
+    `--help` prints usage and does not write.
+    """
+    if program != "corepack" or _corepack_is_help(args) or _corepack_action(args) != "enable":
+        return None
+    for raw in _corepack_install_directories(args):
+        if _path_inside_workspace(root, base, raw):
+            return "工作区 MCP 不能用 corepack enable 把 shim 写进仓库，已拒绝启动"
     return None
 
 
@@ -542,10 +642,13 @@ def _workspace_command_error(
     start. `npx -y @scope/pkg` may still start when that package is not in the
     repo; the spawn then pins npm's prefix and cache outside the workspace so
     the launch does not read or write this repo's node_modules. `pnpm dlx`,
-    `yarn dlx`, uvx, and pip are pinned the same way. `bunx`, `pnpm exec`,
-    `yarn exec`, `pipx`, `cargo`, and `rustup` do not start. `corepack use`
-    and `corepack up` do not start: they run the package manager's install in
-    the repo. The same check runs again immediately before the process is spawned.
+    `yarn dlx`, uvx, pip, and `uv pip` are pinned the same way. `bunx`,
+    `pnpm exec`, `yarn exec`, `pipx`, `cargo`, `rustup`, poetry, bundler,
+    composer, and gem do not start. `uv run`, `uv sync`, and `uv build` do not
+    start. `corepack use` and `corepack up` do not start: they run the package
+    manager's install in the repo. `corepack enable` does not start when
+    `--install-directory` is inside the repo. The same check runs again
+    immediately before the process is spawned.
     """
     if not command:
         return None
@@ -581,10 +684,14 @@ def _workspace_command_error(
         return launcher_error
     if program == "corepack" and _corepack_action(rest) in {"use", "up"}:
         return "工作区 MCP 不能用 corepack use 或 corepack up 启动，它会在仓库里执行包管理器的安装，已拒绝启动"
-    if _is_pip(program):
-        for arg in rest:
-            if _pip_local_artifact(arg):
-                return "工作区 MCP 不能用 pip 安装仓库里的文件，已拒绝启动"
+    shim_error = _corepack_shim_error(program, rest, root, base)
+    if shim_error:
+        return shim_error
+    if _is_pip(program) and (_editable_install(rest) or any(_pip_local_artifact(arg) for arg in rest)):
+        return "工作区 MCP 不能用 pip 安装仓库里的文件，已拒绝启动"
+    if program == "uv" and _uv_words(rest)[:1] == ["pip"]:
+        if _editable_install(rest) or any(_pip_local_artifact(arg) for arg in rest):
+            return "工作区 MCP 不能用 uv pip 安装仓库里的文件，已拒绝启动"
     if program in _INTERPRETERS:
         error = _interpreter_error(program, rest, root, base)
         if error:
