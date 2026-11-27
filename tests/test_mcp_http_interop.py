@@ -212,7 +212,7 @@ def test_http_legacy_sse_fallback_on_405() -> None:
     assert client.calls[2]["url"] == "https://legacy.example.com/messages"
 
 
-def test_http_404_reinitializes_the_session_once() -> None:
+def test_tools_list_404_reinitializes_and_retries() -> None:
     client = _FakeClient()
     client.enqueue(
         _init_ok(session="sess-old"),
@@ -220,16 +220,36 @@ def test_http_404_reinitializes_the_session_once() -> None:
         _FakeResponse(status_code=404, text="session missing"),
         _init_ok(session="sess-new"),
         _FakeResponse(status_code=202, text=""),
-        _FakeResponse(payload={"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "pong"}]}}),
+        _FakeResponse(payload={"jsonrpc": "2.0", "id": 3, "result": {"tools": [{"name": "ping"}]}}),
     )
     transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
     transport.connect()
-    assert transport.call_tool("ping", {}) == "pong"
+    assert transport.list_tools()[0]["name"] == "ping"
     assert transport.session_id == "sess-new"
     methods = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
     assert methods.count("initialize") == 2
-    retry = [call for call in client.calls if call.get("json", {}).get("method") == "tools/call"][-1]
+    assert methods.count("tools/list") == 2
+    retry = [call for call in client.calls if call.get("json", {}).get("method") == "tools/list"][-1]
     assert retry["headers"].get("Mcp-Session-Id") == "sess-new"
+
+
+def test_tools_call_404_reinitializes_without_resending() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(session="sess-old"),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(status_code=404, text="session missing"),
+        _init_ok(session="sess-new"),
+        _FakeResponse(status_code=202, text=""),
+    )
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport.connect()
+    with pytest.raises(RuntimeError, match="404"):
+        transport.call_tool("ping", {})
+    assert transport.session_id == "sess-new"
+    methods = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert methods.count("initialize") == 2
+    assert methods.count("tools/call") == 1
 
 
 def test_http_503_retries_tools_list_with_retry_after() -> None:
@@ -303,22 +323,41 @@ def test_initialize_502_is_retried() -> None:
     assert methods.count("initialize") == 2
 
 
-def test_tools_call_503_is_retried() -> None:
+def test_tools_call_503_is_not_retried() -> None:
     client = _FakeClient()
     client.enqueue(
         _init_ok(),
         _FakeResponse(status_code=202, text=""),
         _FakeResponse(status_code=503, text="busy", headers={"Retry-After": "0.2"}),
-        _FakeResponse(payload={"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "pong"}]}}),
+    )
+
+    def _fail_if_sleep(_seconds: float) -> None:
+        raise AssertionError("tools/call 503 must not retry")
+
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = _fail_if_sleep
+    transport.connect()
+    with pytest.raises(RuntimeError, match="503"):
+        transport.call_tool("ping", {})
+    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert calls.count("tools/call") == 1
+
+
+def test_initialize_503_is_retried() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _FakeResponse(status_code=503, text="busy", headers={"Retry-After": "0.2"}),
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
     )
     waits: list[float] = []
     transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
     transport._sleeper = waits.append
     transport.connect()
-    assert transport.call_tool("ping", {}) == "pong"
+    assert transport.protocol_version == "2025-06-18"
     assert waits == [0.2]
-    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
-    assert calls.count("tools/call") == 2
+    methods = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert methods.count("initialize") == 2
 
 
 def test_initialize_408_is_retried() -> None:

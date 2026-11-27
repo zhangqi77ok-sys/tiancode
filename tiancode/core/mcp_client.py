@@ -198,6 +198,10 @@ _EVAL_FLAGS = {
 _SCRIPT_SUFFIXES = frozenset({
     ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".py", ".rb", ".php",
 })
+_PACKAGE_LAUNCHERS = frozenset({"npx", "npm", "pnpm", "yarn", "bunx", "uvx"})
+_PACKAGE_SPEC = re.compile(r"^@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._+-]+)?$")
+_SCOPED_INSTALL = re.compile(r"^(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(?:@.+)?$")
+_PLAIN_INSTALL = re.compile(r"^([A-Za-z0-9._-]+)(?:@.+)?$")
 
 
 def _program_name(token: str) -> str:
@@ -233,8 +237,8 @@ def _looks_like_path(token: str) -> bool:
 def _regular_workspace_file(token: str, root: Path, base: Path) -> Optional[str]:
     """Reject a script that is missing, linked, or outside the workspace.
 
-    A normal `node server.js` stays allowed: the file is a regular file inside
-    the project, which is how a local MCP server is started.
+    A regular file inside the project returns None. The workspace launcher
+    still refuses to execute it: the file is repository code.
     """
     from tiancode.core.path_safety import is_shared_hardlink
 
@@ -345,17 +349,81 @@ def _interpreter_error(binary: str, args: List[str], root: Path, base: Path) -> 
     return None
 
 
+def _arg_points_at_repo_file(token: str) -> bool:
+    """True when the argument is a path shape rather than a package spec.
+
+    The file does not have to exist yet. `server.js` can be created in the
+    moment before exec, so the shape is enough to refuse it.
+    """
+    if not token or token.startswith("-"):
+        return False
+    if _PACKAGE_SPEC.fullmatch(token):
+        return False
+    if token.startswith(".") or "/" in token or "\\" in token:
+        return True
+    return Path(token).suffix.lower() in _SCRIPT_SUFFIXES
+
+
+def _install_dir_name(token: str) -> Optional[str]:
+    """Return `node_modules` path for `@scope/name` or `name`, ignoring a version."""
+    if not token or token.startswith("-"):
+        return None
+    scoped = _SCOPED_INSTALL.fullmatch(token)
+    if scoped:
+        return scoped.group(1)
+    plain = _PLAIN_INSTALL.fullmatch(token)
+    if plain:
+        return plain.group(1)
+    return None
+
+
+def _package_installed(modules: Path, token: str) -> bool:
+    installed = _install_dir_name(token)
+    if not installed:
+        return False
+    candidate = modules.joinpath(*installed.split("/"))
+    return candidate.is_symlink() or candidate.exists()
+
+
+def _installed_package_error(program: str, args: List[str], base: Path) -> Optional[str]:
+    """Refuse npx/uvx when the named package or bin already lives in the repo.
+
+    `npx -y @scope/pkg` otherwise executes `node_modules/@scope/pkg` from the
+    workspace, which is repository code. A package that is not installed yet
+    is still launched from the registry.
+    """
+    if program not in _PACKAGE_LAUNCHERS:
+        return None
+    modules = base / "node_modules"
+    bindir = modules / ".bin"
+    for arg in args:
+        if not arg or arg.startswith("-"):
+            continue
+        if _package_installed(modules, arg):
+            return "工作区 MCP 会执行仓库里已安装的包，已拒绝启动"
+        if _PACKAGE_SPEC.fullmatch(arg):
+            continue
+        leaf = Path(arg).name
+        if not leaf or leaf in {".", ".."}:
+            continue
+        binary = bindir / leaf
+        if binary.is_symlink() or binary.exists():
+            return "工作区 MCP 的参数会命中仓库里已安装的可执行文件，已拒绝启动"
+    return None
+
+
 def _workspace_command_error(
     command: str,
     args: List[str],
     root: Path,
     base: Path,
 ) -> Optional[str]:
-    """Reject a workspace stdio command that is not a normal MCP launch.
+    """Reject a workspace stdio command that would execute a repository file.
 
-    `node server.js` and `npx -y some-server` still start when the script is a
-    regular file inside the workspace. A shell, an inline `-e`/`-c`, a symlink,
-    or a path outside the workspace does not.
+    A shell, an interpreter (`node server.js`, `python -m`), a package script,
+    a path argument, or an already-installed local package does not start.
+    `npx -y @scope/pkg` still starts when that package is not in the repo.
+    The same check runs again immediately before the process is spawned.
     """
     if not command:
         return None
@@ -376,13 +444,28 @@ def _workspace_command_error(
             if not script_name:
                 return "工作区 MCP 的 package 脚本名无效，已拒绝启动"
             if _looks_like_path(script_name):
-                return _regular_workspace_file(script_name, root, base)
-            return _named_package_script_error(root, script_name)
+                file_error = _regular_workspace_file(script_name, root, base)
+                if file_error:
+                    return file_error
+            else:
+                script_error = _named_package_script_error(root, script_name)
+                if script_error:
+                    return script_error
+            return "工作区 MCP 不能运行 package 脚本，那会执行仓库里的文件，已拒绝启动"
     if program in _INTERPRETERS:
-        return _interpreter_error(program, rest, root, base)
+        error = _interpreter_error(program, rest, root, base)
+        if error:
+            return error
+        return "工作区 MCP 不能用解释器启动，那会执行仓库里的文件，已拒绝启动"
     if _looks_like_path(words[0]):
-        return _regular_workspace_file(words[0], root, base)
-    return None
+        error = _regular_workspace_file(words[0], root, base)
+        if error:
+            return error
+        return "工作区 MCP 不能直接启动工作区内的文件，已拒绝启动"
+    for arg in rest:
+        if _arg_points_at_repo_file(arg):
+            return "工作区 MCP 的参数会指向仓库里的文件，已拒绝启动"
+    return _installed_package_error(program, rest, base)
 
 
 def _load_single_mcp_file(
@@ -560,9 +643,29 @@ class McpManager:
         if cfg.disabled:
             self._statuses[name] = McpServerStatus(name=name, transport=cfg.transport, source=cfg.source, enabled=False)
             return
+        launch_guard = None
+        executable_guard = None
         if cfg.transport != "http" and cfg.source.startswith("workspace:"):
             base = Path(cfg.cwd) if cfg.cwd else self.work_dir
-            command_error = _workspace_command_error(cfg.command, cfg.args, self.work_dir, base)
+            command = cfg.command
+            args = list(cfg.args)
+            root = self.work_dir
+
+            def launch_guard(
+                command: str = command,
+                args: List[str] = args,
+                root: Path = root,
+                base: Path = base,
+            ) -> Optional[str]:
+                # Called once here and again inside connect(), immediately before exec.
+                return _workspace_command_error(command, args, root, base)
+
+            def executable_guard(resolved: str, root: Path = root) -> Optional[str]:
+                if _is_inside(Path(resolved), root):
+                    return "工作区 MCP 的可执行文件在仓库内，已拒绝启动"
+                return None
+
+            command_error = launch_guard()
             if command_error:
                 self._statuses[name] = McpServerStatus(
                     name=name,
@@ -587,6 +690,8 @@ class McpManager:
                 env=cfg.env,
                 timeout_seconds=cfg.timeout_seconds,
                 cwd=cfg.cwd or str(self.work_dir),
+                launch_guard=launch_guard,
+                executable_guard=executable_guard,
             )
         )
         try:
