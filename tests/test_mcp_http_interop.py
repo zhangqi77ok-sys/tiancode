@@ -265,6 +265,62 @@ def test_initialize_500_is_retried() -> None:
     assert methods.count("initialize") == 2
 
 
+@pytest.mark.parametrize("status", [408, 500, 504])
+def test_tools_call_timeout_statuses_are_not_retried(status: int) -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(status_code=status, text="late"),
+    )
+
+    def _fail_if_sleep(_seconds: float) -> None:
+        raise AssertionError(f"tools/call {status} must not retry")
+
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = _fail_if_sleep
+    transport.connect()
+    with pytest.raises(RuntimeError, match=str(status)):
+        transport.call_tool("ping", {})
+    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert calls.count("tools/call") == 1
+
+
+def test_tools_call_502_is_retried() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(status_code=502, text="gateway", headers={"Retry-After": "0.2"}),
+        _FakeResponse(payload={"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "pong"}]}}),
+    )
+    waits: list[float] = []
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = waits.append
+    transport.connect()
+    assert transport.call_tool("ping", {}) == "pong"
+    assert waits == [0.2]
+    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert calls.count("tools/call") == 2
+
+
+def test_initialize_408_is_retried() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _FakeResponse(status_code=408, text="slow"),
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+    )
+    waits: list[float] = []
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = waits.append
+    transport.connect()
+    assert transport.protocol_version == "2025-06-18"
+    assert waits and waits[0] > 0
+    methods = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert methods.count("initialize") == 2
+
+
 def test_tools_call_500_is_not_retried() -> None:
     client = _FakeClient()
     client.enqueue(

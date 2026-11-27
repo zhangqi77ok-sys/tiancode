@@ -41,6 +41,99 @@ class AgentTurnTracker:
         return max(self.tool_turns, 1 if self.has_token_output else 0)
 
 
+def sandbox_destination(sandbox: Path, rel_path: str) -> Path:
+    """Return a file path inside the sandbox.
+
+    Absolute paths, `..`, and a symlink at any component are refused. The
+    destination is not created and a link target is not opened.
+    """
+    root = sandbox.resolve()
+    raw = Path(rel_path)
+    if (
+        not str(rel_path).strip()
+        or "\x00" in str(rel_path)
+        or raw.is_absolute()
+        or any(part in ("", ".", "..") for part in raw.parts)
+    ):
+        raise ValueError(f"评测文件路径越出沙箱: {rel_path}")
+    current = root
+    for part in raw.parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"评测文件路径越出沙箱: {rel_path}")
+        try:
+            current.resolve().relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"评测文件路径越出沙箱: {rel_path}") from exc
+    leaf = current / raw.parts[-1]
+    if leaf.is_symlink():
+        raise ValueError(f"评测文件路径越出沙箱: {rel_path}")
+    return leaf
+
+
+def materialize_sandbox_files(sandbox: Path, files: Dict[str, str]) -> None:
+    """Write benchmark files. Every path must stay inside the sandbox."""
+    for rel_path, content in files.items():
+        dest = sandbox_destination(sandbox, rel_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+
+
+def _hidden_pytest_command(sandbox_path: Path) -> List[str]:
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--noconftest",
+        "--confcutdir",
+        str(sandbox_path),
+        "--rootdir",
+        str(sandbox_path),
+        "--override-ini",
+        "testpaths=.",
+        ".",
+    ]
+
+
+def _process_text(raw: bytes | str | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", errors="replace")
+
+
+def run_hidden_pytest(sandbox_path: Path, timeout_seconds: int) -> tuple[int, str, str, bool]:
+    """Run sandbox tests. On timeout, kill the process group and keep partial output.
+
+    The return is `(exit_code, stdout, stderr, timed_out)`. A timeout is not
+    raised: one hung problem must not abort the rest of the suite.
+    """
+    proc = subprocess.Popen(
+        _hidden_pytest_command(sandbox_path),
+        cwd=str(sandbox_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=(sys.platform != "win32"),
+    )
+    try:
+        raw_out, raw_err = proc.communicate(timeout=timeout_seconds)
+        code = proc.returncode if proc.returncode is not None else 1
+        return code, _process_text(raw_out), _process_text(raw_err), False
+    except subprocess.TimeoutExpired:
+        from tiancode.tools.execution import kill_process_tree
+
+        kill_process_tree(proc)
+        try:
+            raw_out, raw_err = proc.communicate(timeout=2)
+        except Exception:
+            raw_out, raw_err = b"", b""
+        return -1, _process_text(raw_out), _process_text(raw_err), True
+
+
 class BenchmarkRunner:
     """Executes benchmark problems within isolated environments."""
 
@@ -65,11 +158,18 @@ class BenchmarkRunner:
         with tempfile.TemporaryDirectory() as tmpdir:
             sandbox_path = Path(tmpdir).resolve()
 
-            # 1. Materialize starter files
-            for rel_path, content in problem.starter_files.items():
-                dest = sandbox_path / rel_path
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(content, encoding="utf-8")
+            # 1. Materialize starter files inside the sandbox only.
+            try:
+                materialize_sandbox_files(sandbox_path, problem.starter_files)
+            except ValueError as exc:
+                return EvalResult(
+                    problem_id=problem.id,
+                    title=problem.title,
+                    success=False,
+                    duration_seconds=time.time() - start_time,
+                    turn_count=0,
+                    error_message=str(exc),
+                )
 
             # 2. Initialize Git repo in sandbox for clean tracking
             from tiancode.core.git_store import git_workspace_env
@@ -130,41 +230,37 @@ class BenchmarkRunner:
                 )
                 diff_summary = diff_proc.stdout.strip()
 
-                # 5. Materialize hidden test files
-                for rel_path, content in problem.test_files.items():
-                    test_dest = sandbox_path / rel_path
-                    test_dest.parent.mkdir(parents=True, exist_ok=True)
-                    test_dest.write_text(content, encoding="utf-8")
+                # 5. Materialize hidden test files inside the sandbox only.
+                try:
+                    materialize_sandbox_files(sandbox_path, problem.test_files)
+                except ValueError as exc:
+                    return EvalResult(
+                        problem_id=problem.id,
+                        title=problem.title,
+                        success=False,
+                        duration_seconds=time.time() - start_time,
+                        turn_count=turn_count,
+                        diff_summary=diff_summary,
+                        error_message=str(exc),
+                    )
 
-                # 6. Execute hidden test suite using pytest or unittest
-                test_proc = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-q",
-                        "-p",
-                        "no:cacheprovider",
-                        "--noconftest",
-                        "--confcutdir",
-                        str(sandbox_path),
-                        "--rootdir",
-                        str(sandbox_path),
-                        "--override-ini",
-                        "testpaths=.",
-                        ".",
-                    ],
-                    cwd=str(sandbox_path),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=problem.timeout_seconds,
-                )
-
+                # 6. Execute hidden test suite. A timeout becomes a failed result.
+                code, stdout, stderr, timed_out = run_hidden_pytest(sandbox_path, problem.timeout_seconds)
                 duration = time.time() - start_time
-                is_success = (test_proc.returncode == 0)
-                error_msg = None if is_success else (test_proc.stdout + "\n" + test_proc.stderr).strip()
+                if timed_out:
+                    note = f"隐藏测试超时（超过 {problem.timeout_seconds} 秒被强制终止）"
+                    tail = f"{stdout}\n{stderr}".strip()
+                    return EvalResult(
+                        problem_id=problem.id,
+                        title=problem.title,
+                        success=False,
+                        duration_seconds=duration,
+                        turn_count=turn_count,
+                        diff_summary=diff_summary,
+                        error_message=f"{note}\n{tail}".strip(),
+                    )
+                is_success = code == 0
+                error_msg = None if is_success else f"{stdout}\n{stderr}".strip()
 
                 return EvalResult(
                     problem_id=problem.id,

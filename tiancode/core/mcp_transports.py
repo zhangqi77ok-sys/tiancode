@@ -28,9 +28,10 @@ _MCP_PROTOCOL_VERSION = "2025-06-18"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26", "2024-11-05"})
 _DEFAULT_TIMEOUT_SECONDS = 30
 _MAX_HTTP_ATTEMPTS = 3
-# 500 on tools/call is not retried: the tool may already have run.
+# 408, 500, and 504 on tools/call are not retried: the tool may already have run.
+# 429, 502, and 503 still retry, including tools/call.
 _RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
-_SENSITIVE_ENV_KEYS = frozenset({"TIANCODE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"})
+_TOOLS_CALL_NO_RETRY = frozenset({408, 500, 504})
 _SAFE_BASE_ENV = frozenset({
     "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
     "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "PROGRAMDATA", "OS",
@@ -39,12 +40,18 @@ _SAFE_BASE_ENV = frozenset({
 
 
 def _build_scrubbed_env(server_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """Build subprocess env without leaking parent LLM API credentials."""
+    """Build subprocess env without leaking parent credentials.
+
+    The allowlist used to keep every `PYTHON*` name, including `PYTHON_TOKEN`.
+    Sensitive names are dropped first, using the same rule as the shell.
+    """
+    from tiancode.tools.execution import is_sensitive_env_name
+
     clean_env: Dict[str, str] = {}
     for key, value in os.environ.items():
-        upper = key.upper()
-        if upper in _SENSITIVE_ENV_KEYS or upper.endswith(("_API_KEY", "_SECRET", "_TOKEN")):
+        if is_sensitive_env_name(key):
             continue
+        upper = key.upper()
         if upper in _SAFE_BASE_ENV or upper.startswith(("PYTHON", "LC_")):
             clean_env[key] = value
     if server_env:
@@ -269,7 +276,7 @@ class StdioMcpTransport:
                     continue
                 if isinstance(msg, dict) and "id" in msg:
                     with self._lock:
-                        waiter = self._pending.get(msg["id"])
+                        waiter = _pending_waiter(self._pending, msg["id"])
                     if waiter is not None:
                         waiter.put_nowait(msg)
         finally:
@@ -319,6 +326,25 @@ class StdioMcpTransport:
                     stream.close()
             except OSError:
                 pass
+
+
+def _pending_waiter(pending: Dict[Any, Any], msg_id: Any) -> Any:
+    """Find the waiter for a JSON-RPC id. Some servers stringify a numeric id."""
+    if isinstance(msg_id, bool):
+        return None
+    if msg_id in pending:
+        return pending[msg_id]
+    alt: Any = None
+    if isinstance(msg_id, str) and msg_id.isdecimal():
+        try:
+            alt = int(msg_id)
+        except ValueError:
+            return None
+    elif isinstance(msg_id, int):
+        alt = str(msg_id)
+    if alt is None:
+        return None
+    return pending.get(alt)
 
 
 def _list_tools_paginated(request_fn) -> List[Dict[str, Any]]:
@@ -454,7 +480,7 @@ class HttpMcpTransport:
         if attempt + 1 >= _MAX_HTTP_ATTEMPTS or status not in _RETRYABLE_HTTP_STATUS:
             return False
         method = str(payload.get("method") or "")
-        if status == 500 and method == "tools/call":
+        if method == "tools/call" and status in _TOOLS_CALL_NO_RETRY:
             return False
         return True
 

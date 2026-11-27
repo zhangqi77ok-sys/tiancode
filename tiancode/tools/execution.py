@@ -34,6 +34,20 @@ DANGEROUS_PATTERNS = [
 # Applied after quotes and newlines are stripped. Each pattern must be a command,
 # not a mention of the word inside echo or a commit message.
 _CMD = r"(?:^|&&|\|\||;|\|)\s*"
+# Characters a shell ignores and a regex would otherwise treat as part of the token.
+_INVISIBLE_CHARS = re.compile(
+    "[\u200b\u200c\u200d\u2060\ufeff\u180e"
+    "\u202a\u202b\u202c\u202d\u202e"
+    "\u2066\u2067\u2068\u2069]"
+)
+_SHELL_SPLIT = re.compile(r"\s*(?:&&|\|\||;)\s*")
+_PM_HEAD = re.compile(r"^(npm|pnpm|yarn|bun)\b(.*)$", re.IGNORECASE)
+_PM_PREFIX = re.compile(r"(?:--prefix|--dir|--cwd|-C)(?:=|\s+)(\S+)", re.IGNORECASE)
+_PM_PREFIX_BARE = re.compile(r"(?:--prefix|--dir|--cwd|-C)\s*$", re.IGNORECASE)
+_PM_UNSCOPED = re.compile(
+    r"(?:^|\s)(?:--filter|--workspace|--recursive)(?:\s|=|$)|(?:^|\s)(?:-r|-w)(?:\s|$)",
+    re.IGNORECASE,
+)
 _EXTRA_DANGEROUS_PATTERNS = [
     _CMD + r"sudo\b",
     _CMD + r"(?:shutdown|reboot|poweroff|halt)\b",
@@ -53,11 +67,20 @@ _EXTRA_DANGEROUS_PATTERNS = [
 
 
 def _normalize_command(command: str) -> str:
-    """Collapse whitespace and quotes so `rm -rf "/"` matches the same rule as `rm -rf /`."""
+    """Collapse quotes, invisible characters, and `$IFS` so one rule sees them.
+
+    A shell runs `r\\m` as `rm` and treats `$IFS` as a space. This pass does
+    the same before matching. It is not a shell parser: aliases, encoded
+    payloads, and values computed at runtime are not expanded.
+    """
     text = str(command).replace("\x00", " ")
+    text = _INVISIBLE_CHARS.sub("", text)
     text = re.sub(r"[\r\n\t]+", " ", text)
     text = text.replace("$(", " ").replace("`", " ")
+    text = re.sub(r"\$\{IFS\}", " ", text)
+    text = re.sub(r"\$IFS\b", " ", text)
     text = text.replace("'", "").replace('"', "")
+    text = re.sub(r"\\(.)", r"\1", text)
     return re.sub(r"\s+", " ", text).strip()
 
 SENSITIVE_ENV_KEYS = {
@@ -97,8 +120,8 @@ def is_dangerous_command(command: str | List[str]) -> bool:
     return False
 
 
-def _is_sensitive_env_name(name: str) -> bool:
-    """Return whether a subprocess should not inherit this environment variable."""
+def is_sensitive_env_name(name: str) -> bool:
+    """Return whether a child process should not inherit this environment variable."""
     if _GIT_CONFIG_KEY_SLOT.fullmatch(name):
         return False
     return name in SENSITIVE_ENV_KEYS or _SENSITIVE_ENV_NAME.search(name) is not None
@@ -106,7 +129,7 @@ def _is_sensitive_env_name(name: str) -> bool:
 
 def get_sanitized_env() -> Dict[str, str]:
     """Scrub credentials and token-like variables from the subprocess environment."""
-    return {key: value for key, value in os.environ.items() if not _is_sensitive_env_name(key)}
+    return {key: value for key, value in os.environ.items() if not is_sensitive_env_name(key)}
 
 
 _ERROR_SIGNAL_MARKERS = (
@@ -225,15 +248,138 @@ def _run_managed_process(cmd: Any, work_dir: Path, *, use_shell: bool, timeout: 
         )
 
 
+def _blocked_result(detail: str) -> ExecutionResult:
+    return ExecutionResult(
+        exit_code=126,
+        stdout="",
+        stderr=f"⚠️ 安全拦截 (Security guardrail)：{detail}",
+        timed_out=False,
+    )
+
+
+def _manager_args(rest: str) -> str:
+    """Drop arguments after `--`. Those belong to the script, not the package manager."""
+    return re.split(r"\s--(?:\s|$)", rest, maxsplit=1)[0]
+
+
+def _mentions_package_test(binary: str, args: str) -> bool:
+    if binary == "bun":
+        return re.search(r"(?:^|\s)run\s+test(?:\s|$)", args) is not None
+    return re.search(r"(?:^|\s)test(?:\s|$)", args) is not None
+
+
+def _parse_package_test(segment: str) -> tuple[str | None, bool] | None:
+    """Return `(prefix, unscoped)` when this segment runs a package test script.
+
+    `prefix` is None when the command stays in the current directory, or "" when
+    a directory flag has no usable path. `unscoped` means --filter, --workspace,
+    or --recursive would run a package.json this check cannot see.
+    """
+    match = _PM_HEAD.match(segment.strip())
+    if match is None:
+        return None
+    binary = match.group(1).lower()
+    manager_args = _manager_args(match.group(2))
+    unscoped = _PM_UNSCOPED.search(manager_args) is not None
+    if unscoped and _mentions_package_test(binary, manager_args):
+        return None, True
+    scoped = _PM_UNSCOPED.sub(" ", manager_args)
+    prefixes = _PM_PREFIX.findall(scoped)
+    cleaned = _PM_PREFIX.sub(" ", scoped)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(")")
+    if binary == "bun":
+        runs = cleaned == "run test" or cleaned.startswith("run test ")
+    else:
+        runs = (
+            cleaned == "test"
+            or cleaned.startswith("test ")
+            or cleaned == "run test"
+            or cleaned.startswith("run test ")
+        )
+    if not runs:
+        return None
+    if prefixes:
+        return prefixes[-1], False
+    if _PM_PREFIX_BARE.search(scoped):
+        return "", False
+    return None, False
+
+
+def _directory_inside(cwd: Path, raw_target: str, root: Path) -> Path | None:
+    """Resolve a cd or --prefix target. None when it leaves the workspace."""
+    target = raw_target.strip()
+    if not target or target.startswith("-"):
+        return None
+    path = Path(target)
+    dest = path if path.is_absolute() else cwd / path
+    try:
+        resolved = dest.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def package_script_block_reason(command: str, work_dir: Path) -> str | None:
+    """Refuse npm/pnpm/yarn test when the script that would run is unsafe.
+
+    `npm test` itself is not a dangerous string. The script, its pretest and
+    posttest hooks, and the `npm run` chain they reach are read from
+    package.json. A link is not followed. `--prefix` must stay inside the
+    workspace. `--filter` and `--recursive` are refused because they run
+    package.json files this check does not open. `bun test` is the runner,
+    not the script; `bun run test` is.
+    """
+    text = _normalize_command(command)
+    if not text:
+        return None
+    root = work_dir.resolve()
+    cwd = root
+    cd_escaped = False
+    from tiancode.core.polyglot import package_test_block_reason
+
+    for segment in _SHELL_SPLIT.split(text):
+        piece = segment.strip()
+        if not piece:
+            continue
+        if piece == "cd" or piece.startswith("cd "):
+            target = "" if piece == "cd" else piece[3:].strip()
+            nxt = _directory_inside(cwd, target, root)
+            if nxt is None:
+                cd_escaped = True
+            else:
+                cwd = nxt
+                cd_escaped = False
+            continue
+        parsed = _parse_package_test(piece)
+        if parsed is None:
+            continue
+        prefix, unscoped = parsed
+        if cd_escaped:
+            return "测试命令在越出工作区的目录中运行，已拒绝执行"
+        if unscoped:
+            return "包管理器的 --filter、--workspace 或 --recursive 会运行未经检查的脚本，已拒绝执行"
+        if prefix == "":
+            return "测试命令的 --prefix/--cwd 无法确认仍在工作区内，已拒绝执行"
+        base = cwd
+        if prefix:
+            dest = _directory_inside(cwd, prefix, root)
+            if dest is None:
+                return "测试命令的 --prefix/--cwd 越出工作区，已拒绝执行"
+            base = dest
+        reason = package_test_block_reason(base)
+        if reason:
+            return reason
+    return None
+
+
 def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> ExecutionResult:
     """Execute arbitrary shell command in work_dir with timeout, safety checks, and env scrubbing."""
     if is_dangerous_command(command):
-        return ExecutionResult(
-            exit_code=126,
-            stdout="",
-            stderr="⚠️ 安全拦截 (Security guardrail)：检测到高危系统破坏性命令，执行已被阻止！",
-            timed_out=False,
-        )
+        return _blocked_result("检测到高危系统破坏性命令，执行已被阻止！")
+    reason = package_script_block_reason(command, work_dir)
+    if reason:
+        return _blocked_result(reason)
     return _run_managed_process(command, work_dir, use_shell=True, timeout=timeout)
 
 
