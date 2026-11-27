@@ -51,6 +51,23 @@ _BLOCKED = [
     "bash -c \"$(echo cm0gLXJmIC8= | base64 -d)\"",
     "bash -c \"$(base64 -d payload.bin)\"",
     "base64 -d payload > /tmp/run.sh; bash /tmp/run.sh",
+    "export -f git",
+    "declare -fx git",
+    "typeset -xf git",
+    "bash -lc 'pytest -q'",
+    "sh -i",
+    "dash -l",
+    "zsh -c 'echo hi'",
+    "FOO=1 BASH_ENV=./evil bash -c ls",
+    "env BASH_ENV=./evil bash -c ls",
+    "SHELLOPTS=expand_aliases bash -c ls",
+    "export SHELLOPTS=expand_aliases",
+    "python3 gen.py | bash",
+    "echo hello | sh",
+    "find . -exec bash -c 'echo hi' \\;",
+    "xargs bash -c 'echo hi'",
+    "xargs -n 1 sh",
+    "busybox sh -l",
 ]
 
 _ALLOWED = [
@@ -74,6 +91,16 @@ _ALLOWED = [
     "echo hello | base64",
     "command -v sudo",
     "env git status --short",
+    "zsh -f -c 'echo hi'",
+    "zsh -fc 'echo hi'",
+    "declare -x PATH=/usr/bin",
+    "echo 'export -f helper'",
+    "echo 'hello | sh'",
+    "echo SHELLOPTS=expand_aliases",
+    "echo hi | grep bash",
+    "find . -name '*.py' -print",
+    "xargs echo",
+    "FOO=1 bash -c 'pytest -q'",
 ]
 
 
@@ -93,6 +120,40 @@ def test_blocked_command_does_not_start(tmp_path: Path) -> None:
     assert result.exit_code == 126
     assert "安全拦截" in result.stderr
     assert not marker.exists()
+
+
+def test_exported_function_does_not_start(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    command = f"evil() {{ touch {marker}; }}; export -f evil; bash -c evil"
+    result = execute_shell_command(command, work_dir=tmp_path, timeout=5)
+    assert result.exit_code == 126
+    assert not marker.exists()
+
+
+def test_parent_shell_hooks_do_not_reach_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    startup = tmp_path / "startup.sh"
+    startup.write_text("echo EVIL_BASH_ENV\n", encoding="utf-8")
+    monkeypatch.setenv("BASH_ENV", str(startup))
+    monkeypatch.setenv("BASH_FUNC_evilfunc%%", "() { echo EVIL_FUNC; }")
+    monkeypatch.setenv("SHELLOPTS", "pipefail:expand_aliases")
+    monkeypatch.setenv("ENV", "production")
+
+    inherited = execute_shell_command("bash -c 'printf OK'", work_dir=tmp_path, timeout=5)
+    assert inherited.exit_code == 0
+    assert inherited.stdout.strip() == "OK"
+    assert "EVIL_BASH_ENV" not in inherited.stdout
+    assert "EVIL_FUNC" not in inherited.stdout
+
+    shown = execute_shell_command(
+        "printenv BASH_ENV BASH_FUNC_evilfunc%% SHELLOPTS ENV || true",
+        work_dir=tmp_path,
+        timeout=5,
+    )
+    assert "EVIL" not in shown.stdout
+    assert str(startup) not in shown.stdout
+    assert "expand_aliases" not in shown.stdout
+    assert "pipefail" in shown.stdout
+    assert "production" in shown.stdout
 
 
 def test_wrapped_sudo_does_not_start(tmp_path: Path) -> None:

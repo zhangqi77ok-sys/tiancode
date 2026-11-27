@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -28,11 +28,19 @@ _MCP_PROTOCOL_VERSION = "2025-06-18"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26", "2024-11-05"})
 _DEFAULT_TIMEOUT_SECONDS = 30
 _MAX_HTTP_ATTEMPTS = 3
-# 408, 500, 502, and 504 on tools/call are not retried: a gateway may already
-# have run the tool. 429 still retries. 503 still retries, including tools/call,
-# because it usually means the server did not accept the request.
+# tools/call is not retried on 408, 500, 502, 503, or 504. A gateway can return
+# those after the tool has already run. 429 still retries. initialize and
+# tools/list still retry 503. A session 404 reconnects, but tools/call is not
+# sent again; only read-only methods below are.
 _RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
-_TOOLS_CALL_NO_RETRY = frozenset({408, 500, 502, 504})
+_TOOLS_CALL_NO_RETRY = frozenset({408, 500, 502, 503, 504})
+_SESSION_REPLAY_METHODS = frozenset({
+    "tools/list",
+    "resources/list",
+    "resources/templates/list",
+    "prompts/list",
+    "ping",
+})
 _SAFE_BASE_ENV = frozenset({
     "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
     "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "PROGRAMDATA", "OS",
@@ -183,12 +191,16 @@ class StdioMcpTransport:
         env: Optional[Dict[str, str]] = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
         cwd: Optional[str] = None,
+        launch_guard: Optional[Callable[[], Optional[str]]] = None,
+        executable_guard: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self.command = command
         self.args = list(args or [])
         self.env = dict(env or {})
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.cwd = cwd
+        self._launch_guard = launch_guard
+        self._executable_guard = executable_guard
         self._proc: Optional[subprocess.Popen[str]] = None
         self._lock = threading.Lock()
         self._pending: Dict[int, queue.Queue[Any]] = {}
@@ -198,8 +210,21 @@ class StdioMcpTransport:
         self.protocol_version: str = _MCP_PROTOCOL_VERSION
 
     def connect(self) -> None:
-        """Start subprocess and execute MCP initialize handshake."""
+        """Start subprocess and execute MCP initialize handshake.
+
+        Workspace servers pass guards that run here, after config load and
+        immediately before exec. The child is given the absolute binary that
+        just passed the guard, so PATH is not searched again.
+        """
+        if self._launch_guard is not None:
+            error = self._launch_guard()
+            if error:
+                raise RuntimeError(error)
         cmd_bin = shutil.which(self.command) or self.command
+        if self._executable_guard is not None:
+            error = self._executable_guard(cmd_bin)
+            if error:
+                raise RuntimeError(error)
         flags = 0x08000000 if sys.platform == "win32" else 0
         self._stderr_tail.clear()
         self._stderr_done.clear()
@@ -527,11 +552,15 @@ class HttpMcpTransport:
     def _post_unlocked(self, payload: Dict[str, Any], *, expect_response: bool, allow_legacy_fallback: bool = False) -> Any:
         resp = self._exchange(payload)
         status = getattr(resp, "status_code", 200)
-        # Session expired → clear and re-init once for non-initialize calls.
+        # Session expired → open a new session. Replay only read-only methods.
+        # tools/call is not sent again: the gateway may already have run it.
         if status == 404 and self.session_id and payload.get("method") != "initialize":
+            method = str(payload.get("method") or "")
             self.session_id = None
             self._initialized = False
             self.connect()
+            if method not in _SESSION_REPLAY_METHODS:
+                raise RuntimeError("MCP 会话已失效 (404)，该请求可能已被网关执行，未再次发送。")
             resp = self._exchange(payload)
             status = getattr(resp, "status_code", 200)
         if status in (404, 405) and allow_legacy_fallback and payload.get("method") == "initialize" and not self._legacy_sse:

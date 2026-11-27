@@ -354,8 +354,10 @@ def _normalize_command(command: str) -> str:
     A shell runs `r\\m` as `rm`, treats `$IFS` as a space, and decodes
     `$'...'` and `printf '\\xNN'`. This pass does the same before matching.
     Literal assignments in the same command are substituted by the caller.
-    An alias defined outside this command, or a program that only exists
-    at runtime, is not executed here.
+    Functions and `BASH_ENV` inherited from the parent are removed before the
+    process starts. `export -f`, a login shell, and zsh without `-f` are
+    refused separately: they run code this function never sees. A program that
+    writes a command into a file and only then executes it is not run here.
     """
     text = _expand_printf_literals(_decode_ansi_c_quotes(str(command)))
     text = text.replace("\x00", " ")
@@ -476,6 +478,250 @@ _SENSITIVE_ENV_NAME = re.compile(
 _GIT_CONFIG_KEY_SLOT = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 
 
+_STARTUP_SHELLS = frozenset({"bash", "zsh", "ksh", "mksh", "fish", "sh", "dash", "ash"})
+_XARGS_VALUE_FLAGS = frozenset({
+    "-I", "-J", "-L", "-n", "-P", "-s", "-a", "-E", "-d", "-e",
+    "--max-args", "--max-chars", "--max-procs", "--max-lines",
+    "--delimiter", "--replace", "--arg-file", "--eof", "--process-slot-var",
+})
+
+
+def _drop_shell_inheritance(env: Dict[str, str]) -> Dict[str, str]:
+    """Drop parent startup hooks that are not part of the command text.
+
+    Non-interactive bash imports `BASH_FUNC_*` and reads `BASH_ENV` before the
+    command. `expand_aliases` in `SHELLOPTS` then expands aliases from that
+    file. `pipefail` and every other option stay. `ENV=production` stays too:
+    programs use that name for their own configuration, and a non-interactive
+    `sh -c` does not source it.
+    """
+    cleaned: Dict[str, str] = {}
+    for key, value in env.items():
+        if key == "BASH_ENV" or key.startswith("BASH_FUNC_"):
+            continue
+        if key == "SHELLOPTS":
+            kept = ":".join(part for part in value.split(":") if part and part != "expand_aliases")
+            if kept:
+                cleaned[key] = kept
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _command_basename(token: str) -> str:
+    name = Path(token).name.lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name
+
+
+def _unquote_shell_word(raw: str) -> str:
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        return raw[1:-1]
+    return raw
+
+
+def _is_assignment_word(word: str) -> bool:
+    name, sep, _value = word.partition("=")
+    return bool(sep) and _ASSIGN_NAME.fullmatch(name) is not None
+
+
+def _dangerous_shell_assignment(word: str) -> bool:
+    name, sep, value = word.partition("=")
+    if not sep or _ASSIGN_NAME.fullmatch(name) is None:
+        return False
+    if name == "BASH_ENV" or name.startswith("BASH_FUNC_"):
+        return True
+    return name == "SHELLOPTS" and "expand_aliases" in value
+
+
+def _short_flag_letters(flag: str) -> str:
+    if not flag.startswith("-") or flag.startswith("--"):
+        return ""
+    return flag[1:]
+
+
+def _shell_reads_outside_files(program: str, words: List[str]) -> bool:
+    """True when this invocation loads rc files the command text does not contain."""
+    flags = [word for word in words[1:] if word.startswith("-")]
+    for flag in flags:
+        if flag in {"--login", "--interactive", "--rcfile", "--init-file"}:
+            return True
+        letters = _short_flag_letters(flag)
+        if "i" in letters or "l" in letters:
+            return True
+    if program != "zsh":
+        return False
+    # zsh reads `.zshenv` for every invocation, including `zsh -c`.
+    return not any(flag in {"-f", "--no-rcs"} or "f" in _short_flag_letters(flag) for flag in flags)
+
+
+def _dash_c_body(words: List[str]) -> str | None:
+    for index, word in enumerate(words[1:], start=1):
+        if word == "--":
+            return None
+        if word in {"-c", "--command"} or "c" in _short_flag_letters(word):
+            if index + 1 >= len(words):
+                return None
+            return _unquote_shell_word(words[index + 1])
+        if not word.startswith("-"):
+            return None
+    return None
+
+
+def _exports_function(words: List[str]) -> bool:
+    """True for `export -f` / `declare -fx`. The child then runs a function body."""
+    if not words:
+        return False
+    program = _command_basename(words[0])
+    if program == "export":
+        return any(
+            "f" in _short_flag_letters(word) and "n" not in _short_flag_letters(word)
+            for word in words[1:]
+        )
+    if program not in {"declare", "typeset"}:
+        return False
+    return any(
+        "f" in _short_flag_letters(word) and "x" in _short_flag_letters(word) and "n" not in _short_flag_letters(word)
+        for word in words[1:]
+    )
+
+
+def _peel_prefixes(words: List[str]) -> tuple[List[str], List[str]] | None:
+    """Split leading assignments and env/nice wrappers off a command.
+
+    None means the wrapper only queries a name (`command -v`) and does not run it.
+    """
+    assignments: List[str] = []
+    index = 0
+    while index < len(words):
+        while index < len(words) and _is_assignment_word(words[index]):
+            assignments.append(words[index])
+            index += 1
+        if index >= len(words) or _command_basename(words[index]) not in _WRAPPER_NAMES:
+            break
+        wrapper = _command_basename(words[index])
+        index += 1
+        flags: List[str] = []
+        while index < len(words) and words[index].startswith("-") and not _is_assignment_word(words[index]):
+            flag = words[index]
+            flags.append(flag)
+            index += 1
+            if flag in _WRAPPER_VALUE_FLAGS and index < len(words) and not words[index].startswith("-"):
+                index += 1
+        if wrapper == "command" and {"-v", "-V"} & set(flags):
+            return None
+        if wrapper == "env":
+            while index < len(words) and _is_assignment_word(words[index]):
+                assignments.append(words[index])
+                index += 1
+    return assignments, words[index:]
+
+
+def _xargs_utility(words: List[str]) -> str:
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            return words[index + 1] if index + 1 < len(words) else ""
+        if word.startswith("-"):
+            flag = word.split("=", 1)[0]
+            index += 1
+            if flag in _XARGS_VALUE_FLAGS and "=" not in word:
+                index += 1
+            continue
+        return word
+    return ""
+
+
+def _find_exec_shell(words: List[str]) -> bool:
+    for index, word in enumerate(words):
+        if word not in {"-exec", "-execdir"} or index + 1 >= len(words):
+            continue
+        if _command_basename(words[index + 1]) in _STARTUP_SHELLS:
+            return True
+    return False
+
+
+def _pipe_parts(segment: str) -> List[str]:
+    parts: List[str] = []
+    buf: List[str] = []
+    quote = ""
+    for char in segment:
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            buf.append(char)
+            continue
+        if char == "|":
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(char)
+    parts.append("".join(buf))
+    return parts
+
+
+def _shell_words(words: List[str]) -> List[str]:
+    if words and words[0] == "&":
+        return words[1:]
+    return words
+
+
+def _command_hides_its_body(raw: str, depth: int = 0) -> bool:
+    """True when the shell would run text that is not in this command.
+
+    Login and interactive shells, zsh without `-f`, `export -f`, and
+    `BASH_ENV` / `BASH_FUNC_*` / `SHELLOPTS=expand_aliases` pull in code defined
+    outside the text. A pipe into a shell, `find -exec sh`, and `xargs bash`
+    run whatever another program prints. `echo 'export -f helper'` does not.
+    """
+    if depth > 4:
+        return False
+    setters = {"export", "declare", "typeset", "env"}
+    for segment in _quote_aware_segments(raw):
+        for part_index, part in enumerate(_pipe_parts(segment)):
+            peeled = _peel_prefixes(_split_words(part.strip()))
+            if peeled is None:
+                continue
+            assignments, command = peeled
+            if any(_dangerous_shell_assignment(word) for word in assignments):
+                return True
+            command = _shell_words(command)
+            if not command:
+                continue
+            program = _command_basename(command[0])
+            if part_index > 0 and program in _STARTUP_SHELLS:
+                return True
+            if _exports_function(command):
+                return True
+            if program in setters and any(_dangerous_shell_assignment(word) for word in command[1:]):
+                return True
+            if program in _STARTUP_SHELLS and _shell_reads_outside_files(program, command):
+                return True
+            if program == "find" and _find_exec_shell(command):
+                return True
+            if program == "xargs" and _command_basename(_xargs_utility(command)) in _STARTUP_SHELLS:
+                return True
+            if program == "busybox" and len(command) > 1 and _command_basename(command[1]) in _STARTUP_SHELLS:
+                applet = command[1:]
+                applet_name = _command_basename(applet[0])
+                if _shell_reads_outside_files(applet_name, applet):
+                    return True
+                body = _dash_c_body(applet)
+                if body and _command_hides_its_body(body, depth + 1):
+                    return True
+            if program in _STARTUP_SHELLS:
+                body = _dash_c_body(command)
+                if body and _command_hides_its_body(body, depth + 1):
+                    return True
+    return False
+
+
 def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     """Check if command matches high-risk destructive signatures.
 
@@ -483,8 +729,11 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     Later passes decode `$'...'` and `printf` escapes, substitute literal
     assignments from the same command, and drop leading `env`/`nice` wrappers
     and absolute paths. A decoded payload is refused when it would be executed.
+    Shell startup that would run code from outside this command is refused too.
     """
     raw = " ".join(command) if isinstance(command, (list, tuple)) else str(command)
+    if _command_hides_its_body(raw):
+        return True
     if _depth == 0 and _executed_decoder(raw):
         return True
     patterns = (*DANGEROUS_PATTERNS, *_EXTRA_DANGEROUS_PATTERNS)
@@ -503,8 +752,9 @@ def is_sensitive_env_name(name: str) -> bool:
 
 
 def get_sanitized_env() -> Dict[str, str]:
-    """Scrub credentials and token-like variables from the subprocess environment."""
-    return {key: value for key, value in os.environ.items() if not is_sensitive_env_name(key)}
+    """Scrub credentials and parent shell hooks from the subprocess environment."""
+    cleaned = {key: value for key, value in os.environ.items() if not is_sensitive_env_name(key)}
+    return _drop_shell_inheritance(cleaned)
 
 
 _ERROR_SIGNAL_MARKERS = (

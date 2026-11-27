@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tiancode.core.mcp_auth import McpAuthError, build_auth_headers
-from tiancode.core.mcp_client import load_mcp_configs
+from tiancode.core.mcp_client import McpManager, _workspace_command_error, load_mcp_configs
 
 
 def _write(path: Path, servers: dict) -> None:
@@ -98,7 +98,7 @@ def test_workspace_mcp_rejects_secrets_private_urls_and_dangerous_commands(
     assert dumped.count("workspace-must-not-copy") == 1
 
 
-def test_workspace_stdio_keeps_a_local_server_and_rejects_shells(tmp_path: Path) -> None:
+def test_workspace_stdio_rejects_repo_files_and_shells(tmp_path: Path) -> None:
     work = tmp_path / "proj"
     (work / "sub").mkdir(parents=True)
     (work / "server.js").write_text("console.log('ok')\n", encoding="utf-8")
@@ -125,6 +125,7 @@ def test_workspace_stdio_keeps_a_local_server_and_rejects_shells(tmp_path: Path)
             "nested": {"command": "node", "args": ["server.js"], "cwd": "sub"},
             "bun": {"command": "bun", "args": ["run", "src/index.ts"]},
             "remote": {"command": "npx", "args": ["-y", "@example/mcp-server"]},
+            "scriptarg": {"command": "npx", "args": ["server.js"]},
             "module": {"command": "python", "args": ["-m", "mcp.server"]},
             "start": {"command": "npm", "args": ["run", "start"]},
             "inline": {"command": "node", "args": ["-e", "process.exit(0)"]},
@@ -142,10 +143,12 @@ def test_workspace_stdio_keeps_a_local_server_and_rejects_shells(tmp_path: Path)
     configs, errors = load_mcp_configs(work, global_config_path=global_cfg)
 
     assert configs["shell"].command == "bash"
-    for name in ("local", "nested", "bun", "remote", "module", "start"):
-        assert name in configs
-    assert configs["local"].args == ["server.js"]
-    for name in ("inline", "pyc", "wrapped", "escape", "linked", "hard", "wipe", "missing"):
+    assert "remote" in configs
+    assert configs["remote"].args == ["-y", "@example/mcp-server"]
+    for name in (
+        "local", "nested", "bun", "module", "start", "scriptarg",
+        "inline", "pyc", "wrapped", "escape", "linked", "hard", "wipe", "missing",
+    ):
         assert name not in configs
     joined = "\n".join(errors)
     assert "shell" in joined
@@ -155,8 +158,107 @@ def test_workspace_stdio_keeps_a_local_server_and_rejects_shells(tmp_path: Path)
     assert "越出工作区" in joined
     assert "高危命令" in joined
     assert "普通文件" in joined
+    assert "解释器" in joined
+    assert "package 脚本" in joined
+    assert "参数会指向仓库里的文件" in joined
     # The workspace entry named shell was rejected; the global one remains.
     assert "echo hi" in configs["shell"].args
+
+
+def test_global_mcp_can_still_name_an_interpreter(tmp_path: Path) -> None:
+    work = tmp_path / "proj"
+    work.mkdir()
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {"local": {"command": "node", "args": ["server.js"]}})
+
+    configs, errors = load_mcp_configs(work, global_config_path=global_cfg)
+
+    assert errors == []
+    assert configs["local"].command == "node"
+    assert configs["local"].args == ["server.js"]
+
+
+def test_workspace_npx_rejects_an_installed_package_and_a_local_bin(tmp_path: Path) -> None:
+    work = tmp_path / "proj"
+    package = work / "node_modules" / "@example" / "mcp-server"
+    package.mkdir(parents=True)
+    (package / "index.js").write_text("process.exit(0)\n", encoding="utf-8")
+    bindir = work / "node_modules" / ".bin"
+    bindir.mkdir(parents=True)
+    (bindir / "local-tool").write_text("#!/bin/sh\n", encoding="utf-8")
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {})
+    _write(
+        work / ".tiancode" / "mcp.json",
+        {
+            "vendored": {"command": "npx", "args": ["-y", "@example/mcp-server"]},
+            "bin": {"command": "npx", "args": ["local-tool"]},
+            "other": {"command": "npx", "args": ["-y", "@other/not-installed"]},
+        },
+    )
+
+    configs, errors = load_mcp_configs(work, global_config_path=global_cfg)
+
+    assert "other" in configs
+    assert "vendored" not in configs
+    assert "bin" not in configs
+    joined = "\n".join(errors)
+    assert "已安装的包" in joined
+    assert "可执行文件" in joined
+
+
+def test_workspace_stdio_rechecks_immediately_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "proj"
+    work.mkdir()
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {})
+    _write(
+        work / ".tiancode" / "mcp.json",
+        {"remote": {"command": "npx", "args": ["-y", "@example/mcp-server"]}},
+    )
+    calls = {"n": 0}
+
+    def wrapped(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] >= 3:
+            return "工作区 MCP 的启动目标已变化，已拒绝启动"
+        return _workspace_command_error(*args, **kwargs)
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("stdio process started")
+
+    monkeypatch.setattr("tiancode.core.mcp_client._workspace_command_error", wrapped)
+    monkeypatch.setattr("tiancode.core.mcp_transports.subprocess.Popen", explode)
+    statuses = McpManager(work, global_config_path=global_cfg).reload()
+
+    remote = next(item for item in statuses if item.name == "remote")
+    assert calls["n"] >= 3
+    assert remote.connected is False
+    assert "已变化" in remote.error
+
+
+def test_workspace_path_shadow_is_not_executed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    work = tmp_path / "proj"
+    work.mkdir()
+    marker = work / "ran"
+    launcher = work / "npx"
+    launcher.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{work}{os.pathsep}{os.environ.get('PATH', '/usr/bin')}")
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {})
+    _write(
+        work / ".tiancode" / "mcp.json",
+        {"remote": {"command": "npx", "args": ["-y", "@example/mcp-server"]}},
+    )
+    statuses = McpManager(work, global_config_path=global_cfg).reload()
+
+    remote = next(item for item in statuses if item.name == "remote")
+    assert remote.connected is False
+    assert "仓库内" in remote.error
+    assert not marker.exists()
 
 
 def test_workspace_public_mcp_url_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
