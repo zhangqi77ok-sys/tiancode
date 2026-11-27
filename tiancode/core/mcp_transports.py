@@ -464,18 +464,26 @@ def _uv_tool_run(program: str, args: Sequence[str]) -> bool:
     return _uv_words(args)[:2] in (["tool", "run"], ["tool", "uvx"])
 
 
+# `uv tool run --with-editable` and `--with-requirements` build a local project
+# even when `--no-config` and `--isolated` are set. They are removed below.
+# `--with pkg` is a registry requirement and stays.
+_UV_TOOL_LOCAL_FLAGS = frozenset({"--with-editable", "--with-requirements"})
+
+
 def _isolate_uv_tool(args: Sequence[str]) -> LauncherIsolation:
     """Pin uvx / `uv tool run` at the public index and a private cache.
 
     `--no-config` does not override `UV_INDEX_URL`, so the env pin is required.
     `--isolated` ignores a tool that was already installed from another index.
+    It does not ignore `--with-editable` or `--with-requirements`: those still
+    build a local project, so both flags are removed.
     """
     root = _empty_launch_dir("tiancode-uvx-")
     flags = ["--no-config", "--isolated", "--cache-dir", str(root / "cache")]
     return LauncherIsolation(
         args=flags + _strip_named_flags(
             args,
-            _UV_INDEX_FLAGS | {"--cache-dir", "--directory", "--project"},
+            _UV_INDEX_FLAGS | _UV_TOOL_LOCAL_FLAGS | {"--cache-dir", "--directory", "--project"},
             _UV_BOOL_FLAGS,
         ),
         directory=root,
@@ -488,10 +496,14 @@ def _isolate_uv_tool(args: Sequence[str]) -> LauncherIsolation:
     )
 
 
-# These uv commands build the project or run its environment. `uv tool run` is
-# not in this set; that launch is pinned above. `uv pip sync` and `uv pip
+# These uv commands build the project or run its environment. On uv 0.13.10,
+# `uv lock`, `uv export`, and `uv tree` call the project's build backend when
+# metadata is dynamic, and `--no-build` does not stop that call. `uv tool run`
+# is not in this set; that launch is pinned above. `uv pip sync` and `uv pip
 # compile` read a requirements file that can name a local package.
-_UV_PROJECT_COMMANDS = frozenset({"run", "sync", "add", "remove", "build"})
+_UV_PROJECT_COMMANDS = frozenset({
+    "run", "sync", "add", "remove", "build", "lock", "export", "tree",
+})
 _UV_PIP_REFUSED = frozenset({"sync", "compile"})
 _UV_PIP_VALUE_FLAGS = _UV_INDEX_FLAGS | _UV_GLOBAL_VALUE_FLAGS | frozenset({
     "--requirements", "--requirement", "-r",
@@ -632,10 +644,13 @@ def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
     forwards its first argument. `corepack pnpx` is `pnpm dlx`. `corepack pnpm@9`
     keeps the version. A flag before that argument is corepack's own flag, not
     the forwarded program. `bunx`, `pnpm exec`, `yarn exec`, `pipx`, `cargo`,
-    `rustup`, poetry, bundler, composer, gem, and uv's project commands are
-    refused before this runs: they execute workspace code and have no prefix
-    that keeps the tool's cwd in the repo. `uv pip sync` and `uv pip compile`
-    are refused too, because the requirements file is the command.
+    `rustup`, poetry, bundler, composer, gem, pdm, hatch, pipenv, rye, make,
+    and uv's project commands (`run`, `sync`, `build`, `lock`, `export`,
+    `tree`) are refused before this runs: they execute workspace code and have
+    no prefix that keeps the tool's cwd in the repo. `uv pip sync` and `uv pip
+    compile` are refused too, because the requirements file is the command.
+    `uv tool run --with-editable` is refused; `--with-requirements` is removed
+    below so the file is not read.
     The caller's flags after `--` are left untouched. A command this function
     does not isolate is returned unchanged, with no directory.
     """
