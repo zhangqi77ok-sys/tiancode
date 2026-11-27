@@ -265,7 +265,7 @@ def test_initialize_500_is_retried() -> None:
     assert methods.count("initialize") == 2
 
 
-@pytest.mark.parametrize("status", [408, 500, 504])
+@pytest.mark.parametrize("status", [408, 500, 502, 504])
 def test_tools_call_timeout_statuses_are_not_retried(status: int) -> None:
     client = _FakeClient()
     client.enqueue(
@@ -286,12 +286,29 @@ def test_tools_call_timeout_statuses_are_not_retried(status: int) -> None:
     assert calls.count("tools/call") == 1
 
 
-def test_tools_call_502_is_retried() -> None:
+def test_initialize_502_is_retried() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _FakeResponse(status_code=502, text="gateway", headers={"Retry-After": "0.2"}),
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+    )
+    waits: list[float] = []
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = waits.append
+    transport.connect()
+    assert transport.protocol_version == "2025-06-18"
+    assert waits == [0.2]
+    methods = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert methods.count("initialize") == 2
+
+
+def test_tools_call_503_is_retried() -> None:
     client = _FakeClient()
     client.enqueue(
         _init_ok(),
         _FakeResponse(status_code=202, text=""),
-        _FakeResponse(status_code=502, text="gateway", headers={"Retry-After": "0.2"}),
+        _FakeResponse(status_code=503, text="busy", headers={"Retry-After": "0.2"}),
         _FakeResponse(payload={"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "pong"}]}}),
     )
     waits: list[float] = []

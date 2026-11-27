@@ -172,14 +172,216 @@ def _workspace_url_error(url: str) -> Optional[str]:
     return None
 
 
-def _workspace_command_error(command: str, args: List[str]) -> Optional[str]:
-    """Reject a workspace stdio command the shell guard would refuse."""
+_SHELL_NAMES = frozenset({
+    "sh", "bash", "dash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh",
+    "cmd", "powershell", "pwsh", "busybox",
+})
+_WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"})
+_WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
+_INTERPRETERS = frozenset({
+    "node", "nodejs", "bun", "deno", "tsx", "ts-node",
+    "python", "python3", "python2", "perl", "ruby", "php",
+})
+_SCRIPT_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
+_SCRIPT_SHORTCUTS = frozenset({"test", "start", "stop", "restart"})
+_EVAL_FLAGS = {
+    "node": {"-e", "--eval"},
+    "nodejs": {"-e", "--eval"},
+    "bun": {"-e", "--eval"},
+    "python": {"-c"},
+    "python3": {"-c"},
+    "python2": {"-c"},
+    "perl": {"-e"},
+    "ruby": {"-e"},
+    "php": {"-r"},
+}
+_SCRIPT_SUFFIXES = frozenset({
+    ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".py", ".rb", ".php",
+})
+
+
+def _program_name(token: str) -> str:
+    name = Path(token).name.lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name
+
+
+def _unwrap_stdio_argv(words: List[str]) -> List[str]:
+    """Drop leading env/nice/nohup so the real program is what gets checked."""
+    argv = list(words)
+    while argv and _program_name(argv[0]) in _WRAPPER_NAMES:
+        wrapper = _program_name(argv.pop(0))
+        while argv and argv[0].startswith("-"):
+            flag = argv.pop(0)
+            if flag in _WRAPPER_VALUE_FLAGS and argv and not argv[0].startswith("-"):
+                argv.pop(0)
+        if wrapper == "env":
+            while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+                argv.pop(0)
+    return argv
+
+
+def _looks_like_path(token: str) -> bool:
+    if not token or token.startswith("-"):
+        return False
+    if "/" in token or "\\" in token or token.startswith("."):
+        return True
+    return Path(token).suffix.lower() in _SCRIPT_SUFFIXES
+
+
+def _regular_workspace_file(token: str, root: Path, base: Path) -> Optional[str]:
+    """Reject a script that is missing, linked, or outside the workspace.
+
+    A normal `node server.js` stays allowed: the file is a regular file inside
+    the project, which is how a local MCP server is started.
+    """
+    from tiancode.core.path_safety import is_shared_hardlink
+
+    candidate = Path(token)
+    dest = candidate if candidate.is_absolute() else base / candidate
+    if dest.is_symlink():
+        return "工作区 MCP 的脚本是符号链接，已拒绝启动"
+    try:
+        resolved = dest.resolve()
+        resolved.relative_to(root.resolve())
+    except (OSError, ValueError):
+        return "工作区 MCP 的脚本越出工作区，已拒绝启动"
+    if is_shared_hardlink(dest):
+        return "工作区 MCP 的脚本是硬链接，已拒绝启动"
+    if not dest.is_file():
+        return "工作区 MCP 的脚本必须是工作区内的普通文件，已拒绝启动"
+    return None
+
+
+def _runner_script_name(binary: str, args: List[str]) -> Optional[str]:
+    """Return the package.json script name, or None when this is not `run`.
+
+    `bun test` is Bun's runner, not `scripts.test`, so it is not a script name.
+    """
+    positionals: List[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            if index + 1 < len(args):
+                positionals.append(args[index + 1])
+            break
+        if arg.startswith("-"):
+            index += 1
+            continue
+        positionals.append(arg)
+        index += 1
+    if not positionals:
+        return None
+    if positionals[0] == "run":
+        return positionals[1] if len(positionals) > 1 else ""
+    if binary != "bun" and positionals[0] in _SCRIPT_SHORTCUTS:
+        return positionals[0]
+    return None
+
+
+def _named_package_script_error(root: Path, name: str) -> Optional[str]:
+    from tiancode.core.path_safety import is_shared_hardlink
+    from tiancode.core.polyglot import _read_owned_text
+    from tiancode.tools.execution import is_dangerous_command
+
+    if not name or name.startswith("-"):
+        return "工作区 MCP 的 package 脚本名无效，已拒绝启动"
+    pkg = root / "package.json"
+    if pkg.is_symlink() or is_shared_hardlink(pkg):
+        return "工作区 MCP 的 package.json 是符号链接或硬链接，已拒绝启动"
+    if not pkg.is_file():
+        return None
+    text = _read_owned_text(pkg)
+    if text is None:
+        return "工作区 MCP 的 package.json 无法作为普通文件读取，已拒绝启动"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    body = scripts.get(name) if isinstance(scripts, dict) else None
+    if not isinstance(body, str):
+        return None
+    if is_dangerous_command(body):
+        return f"工作区 MCP 的 package 脚本 {name} 含高危命令，已拒绝启动"
+    return None
+
+
+def _interpreter_error(binary: str, args: List[str], root: Path, base: Path) -> Optional[str]:
+    script_args = list(args)
+    if binary == "deno" and script_args[:1] == ["eval"]:
+        return "工作区 MCP 的解释器不能内联执行代码，已拒绝启动"
+    if binary == "deno" and script_args[:1] == ["run"]:
+        script_args = script_args[1:]
+    evals = _EVAL_FLAGS.get(binary, frozenset())
+    for arg in script_args:
+        head = arg.split("=", 1)[0]
+        if arg in evals or head in evals:
+            return "工作区 MCP 的解释器不能内联执行代码，已拒绝启动"
+    if binary in {"python", "python3", "python2"}:
+        for index, arg in enumerate(script_args):
+            if arg != "-m":
+                continue
+            module = script_args[index + 1] if index + 1 < len(script_args) else ""
+            if not module or "/" in module or "\\" in module or module.startswith(".") or ".." in module.split("."):
+                return "工作区 MCP 的 Python 模块名无效，已拒绝启动"
+            return None
+    positionals: List[str] = []
+    for arg in script_args:
+        if arg == "--" or arg.startswith("-"):
+            continue
+        positionals.append(arg)
+    paths = [item for item in positionals if _looks_like_path(item)]
+    if not paths:
+        if positionals:
+            return None
+        return "工作区 MCP 的解释器缺少工作区内的脚本文件，已拒绝启动"
+    for path in paths:
+        error = _regular_workspace_file(path, root, base)
+        if error:
+            return error
+    return None
+
+
+def _workspace_command_error(
+    command: str,
+    args: List[str],
+    root: Path,
+    base: Path,
+) -> Optional[str]:
+    """Reject a workspace stdio command that is not a normal MCP launch.
+
+    `node server.js` and `npx -y some-server` still start when the script is a
+    regular file inside the workspace. A shell, an inline `-e`/`-c`, a symlink,
+    or a path outside the workspace does not.
+    """
     if not command:
         return None
     from tiancode.tools.execution import is_dangerous_command
 
     if is_dangerous_command(" ".join([command, *args])):
         return "工作区 MCP 的 command 含高危命令，已拒绝启动"
+    words = _unwrap_stdio_argv([command, *args])
+    if not words or not words[0].strip():
+        return "工作区 MCP 的 command 无效，已拒绝启动"
+    program = _program_name(words[0])
+    rest = words[1:]
+    if program in _SHELL_NAMES:
+        return "工作区 MCP 的 command 是 shell，已拒绝启动"
+    if program in _SCRIPT_RUNNERS:
+        script_name = _runner_script_name(program, rest)
+        if script_name is not None:
+            if not script_name:
+                return "工作区 MCP 的 package 脚本名无效，已拒绝启动"
+            if _looks_like_path(script_name):
+                return _regular_workspace_file(script_name, root, base)
+            return _named_package_script_error(root, script_name)
+    if program in _INTERPRETERS:
+        return _interpreter_error(program, rest, root, base)
+    if _looks_like_path(words[0]):
+        return _regular_workspace_file(words[0], root, base)
     return None
 
 
@@ -247,8 +449,18 @@ def _load_single_mcp_file(
         except McpAuthError as exc:
             errors.append(f"MCP 服务 '{name}' 未加载: {exc}")
             continue
+        resolved_cwd = ""
+        cwd_base = sandbox_root
+        if raw_cwd:
+            cwd_path = Path(raw_cwd).expanduser()
+            resolved = (cwd_path if cwd_path.is_absolute() else (base_dir / cwd_path)).resolve()
+            if sandbox_root is not None and not _is_inside(resolved, sandbox_root):
+                errors.append(f"MCP 服务 '{name}' 的 cwd 越出工作区，已拒绝加载: {resolved}")
+                continue
+            resolved_cwd = str(resolved)
+            cwd_base = resolved
         if sandbox_root is not None:
-            command_error = _workspace_command_error(cmd, args)
+            command_error = _workspace_command_error(cmd, args, sandbox_root, cwd_base or sandbox_root)
             if command_error:
                 errors.append(f"MCP 服务 '{name}' 未加载: {command_error}")
                 continue
@@ -259,14 +471,6 @@ def _load_single_mcp_file(
         if not url and not cmd and not disabled:
             errors.append(f"MCP 服务 '{name}' 缺少 command 或 url ({path})")
             continue
-        resolved_cwd = ""
-        if raw_cwd:
-            cwd_path = Path(raw_cwd).expanduser()
-            resolved = (cwd_path if cwd_path.is_absolute() else (base_dir / cwd_path)).resolve()
-            if sandbox_root is not None and not _is_inside(resolved, sandbox_root):
-                errors.append(f"MCP 服务 '{name}' 的 cwd 越出工作区，已拒绝加载: {resolved}")
-                continue
-            resolved_cwd = str(resolved)
         auth_raw = entry.get("auth") if isinstance(entry.get("auth"), dict) else {}
         transport = "http" if url or type_hint in ("http", "sse", "streamable-http", "streamable_http") else "stdio"
         configs[str(name)] = McpServerConfig(
@@ -356,6 +560,19 @@ class McpManager:
         if cfg.disabled:
             self._statuses[name] = McpServerStatus(name=name, transport=cfg.transport, source=cfg.source, enabled=False)
             return
+        if cfg.transport != "http" and cfg.source.startswith("workspace:"):
+            base = Path(cfg.cwd) if cfg.cwd else self.work_dir
+            command_error = _workspace_command_error(cfg.command, cfg.args, self.work_dir, base)
+            if command_error:
+                self._statuses[name] = McpServerStatus(
+                    name=name,
+                    transport=cfg.transport,
+                    source=cfg.source,
+                    enabled=True,
+                    connected=False,
+                    error=command_error,
+                )
+                return
         transport = (
             HttpMcpTransport(
                 cfg.url,

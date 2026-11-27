@@ -9,7 +9,12 @@ import pytest
 from tiancode.config.settings import Settings
 from tiancode.core.engine import TianCodeEngine
 from tiancode.eval.models import BenchmarkProblem
-from tiancode.eval.runner import BenchmarkRunner, run_hidden_pytest, sandbox_destination
+from tiancode.eval.runner import (
+    BenchmarkRunner,
+    materialize_sandbox_files,
+    run_hidden_pytest,
+    sandbox_destination,
+)
 from tests.test_session_resume import _isolate
 
 
@@ -77,6 +82,44 @@ def test_eval_refuses_a_path_outside_the_sandbox(tmp_path: Path, monkeypatch: py
     assert result.success is False
     assert "沙箱" in (result.error_message or "")
     assert list(tmp_path.rglob("outside.txt")) == []
+
+
+def test_materialize_writes_a_nested_file(tmp_path: Path) -> None:
+    root = tmp_path / "box"
+    root.mkdir()
+
+    materialize_sandbox_files(root, {"pkg/a.py": "VALUE = 1\n"})
+
+    written = root / "pkg" / "a.py"
+    assert written.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert written.is_file() and not written.is_symlink()
+
+
+def test_materialize_does_not_follow_a_directory_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "box"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="沙箱"):
+        materialize_sandbox_files(root, {"link/secret.txt": "CANARY-OUTSIDE"})
+
+    assert list(outside.iterdir()) == []
+
+
+def test_materialize_does_not_follow_a_leaf_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "box"
+    outside = tmp_path / "outside.txt"
+    root.mkdir()
+    outside.write_text("KEEP\n", encoding="utf-8")
+    (root / "leaf").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="沙箱"):
+        materialize_sandbox_files(root, {"leaf": "CANARY-OUTSIDE"})
+
+    assert outside.read_text(encoding="utf-8") == "KEEP\n"
+    assert (root / "leaf").is_symlink()
 
 
 def test_sandbox_destination_rejects_a_symlink_parent(tmp_path: Path) -> None:

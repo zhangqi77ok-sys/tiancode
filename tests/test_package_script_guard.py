@@ -54,6 +54,57 @@ def test_pretest_and_nested_run_are_inspected(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_bun_run_test_reads_scripts_test(tmp_path: Path) -> None:
+    from tiancode.core.polyglot import detect_project_profile
+
+    marker = tmp_path / "ran.txt"
+    _package(tmp_path / "package.json", {"test": "echo ok", "pretest": _dangerous(marker)})
+    (tmp_path / "bun.lock").write_text("{}\n", encoding="utf-8")
+
+    profile = detect_project_profile(tmp_path)
+    blocked = package_script_block_reason(profile.test_command or "", tmp_path)
+
+    assert profile.package_manager == "bun"
+    assert profile.test_command == "bun run test"
+    assert blocked is not None and "scripts.pretest" in blocked
+    assert package_script_block_reason("bun test", tmp_path) is None
+    assert not marker.exists()
+
+
+def test_env_prefix_does_not_hide_npm_test(tmp_path: Path) -> None:
+    marker = tmp_path / "ran.txt"
+    _package(tmp_path / "package.json", {"test": _dangerous(marker)})
+
+    assigned = package_script_block_reason("FOO=1 npm test", tmp_path)
+    wrapped = package_script_block_reason("env npm test", tmp_path)
+
+    assert assigned is not None and "scripts.test" in assigned
+    assert wrapped is not None and "scripts.test" in wrapped
+    _package(
+        tmp_path / "package.json",
+        {"test": "A=wipe; npm run $A", "wipe": _dangerous(marker)},
+    )
+    followed = package_script_block_reason("npm test", tmp_path)
+    assert followed is not None and "scripts.wipe" in followed
+    assert not marker.exists()
+
+
+def test_symlinked_bun_lock_does_not_select_bun(tmp_path: Path) -> None:
+    from tiancode.core.polyglot import detect_project_profile
+
+    outside = tmp_path / "outside.lock"
+    outside.write_text("{}\n", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    _package(work / "package.json", {"test": "echo ok"})
+    (work / "bun.lock").symlink_to(outside)
+
+    profile = detect_project_profile(work)
+
+    assert profile.package_manager == "npm"
+    assert profile.test_command == "npm test"
+
+
 def test_safe_script_and_unrelated_commands_stay_allowed(tmp_path: Path) -> None:
     marker = tmp_path / "ran.txt"
     _package(tmp_path / "package.json", {"test": "echo ok"})

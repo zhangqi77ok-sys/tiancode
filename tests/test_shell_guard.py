@@ -37,6 +37,20 @@ _BLOCKED = [
     "rm${IFS}-rf${IFS}/",
     "rm\u200b -rf /",
     "r\u200dm -rf /",
+    "$'\\x72\\x6d' -rf /",
+    "$(printf '\\x72\\x6d') -rf /",
+    "a=rm; $a -rf /",
+    "a=rm; b=-rf; c=/; $a $b $c",
+    "env sudo reboot",
+    "env -i sudo reboot",
+    "/usr/bin/sudo reboot",
+    "doas reboot",
+    "bash -ic ls",
+    "shopt -s expand_aliases",
+    "BASH_ENV=./evil bash -c ls",
+    "bash -c \"$(echo cm0gLXJmIC8= | base64 -d)\"",
+    "bash -c \"$(base64 -d payload.bin)\"",
+    "base64 -d payload > /tmp/run.sh; bash /tmp/run.sh",
 ]
 
 _ALLOWED = [
@@ -54,6 +68,12 @@ _ALLOWED = [
     "ls /etc",
     "echo rm$IFS",
     "r\\m notes.txt",
+    "bash -c 'pytest -q'",
+    "a=pytest; $a -q",
+    "base64 -d notes.txt",
+    "echo hello | base64",
+    "command -v sudo",
+    "env git status --short",
 ]
 
 
@@ -72,6 +92,13 @@ def test_blocked_command_does_not_start(tmp_path: Path) -> None:
     result = execute_shell_command(f"sudo touch {marker}", work_dir=tmp_path, timeout=5)
     assert result.exit_code == 126
     assert "安全拦截" in result.stderr
+    assert not marker.exists()
+
+
+def test_wrapped_sudo_does_not_start(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    result = execute_shell_command(f"env sudo touch {marker}", work_dir=tmp_path, timeout=5)
+    assert result.exit_code == 126
     assert not marker.exists()
 
 

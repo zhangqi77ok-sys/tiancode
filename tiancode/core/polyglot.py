@@ -26,6 +26,24 @@ def _owned_marker(path: Path, *, directory: bool = False) -> bool:
     return path.is_dir() if directory else path.is_file()
 
 
+def _read_owned_text(path: Path) -> str | None:
+    """Read a regular file without following a link. None when that open fails.
+
+    The check and the read are the same open: a directory entry swapped to a
+    symlink between `is_file` and `read_text` is not followed.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
 def _has_regular_python_file(work_dir: Path) -> bool:
     """True when the workspace root has a regular Python file of its own."""
     return any(_owned_marker(path) for path in work_dir.glob("*.py"))
@@ -38,7 +56,7 @@ _SCRIPT_RUN = re.compile(
 
 def _test_script_bodies(scripts: dict) -> list[tuple[str, str]]:
     """pretest/test/posttest and the `npm run` chain they reach, stopping on cycles."""
-    from tiancode.tools.execution import _normalize_command
+    from tiancode.tools.execution import _expand_literal_assignments, _normalize_command
 
     ordered: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -52,7 +70,8 @@ def _test_script_bodies(scripts: dict) -> list[tuple[str, str]]:
             return
         seen.add(name)
         ordered.append((name, body))
-        for match in _SCRIPT_RUN.finditer(_normalize_command(body)):
+        visible = _normalize_command(_expand_literal_assignments(body))
+        for match in _SCRIPT_RUN.finditer(visible):
             add(match.group(1))
 
     for name in ("pretest", "test", "posttest"):
@@ -75,9 +94,12 @@ def package_test_block_reason(work_dir: Path) -> Optional[str]:
         return "package.json 是符号链接或硬链接，已拒绝执行其中的测试脚本"
     if not pkg.is_file():
         return None
+    text = _read_owned_text(pkg)
+    if text is None:
+        return "package.json 无法作为普通文件读取，已拒绝执行其中的测试脚本"
     try:
-        data = json.loads(pkg.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return None
     scripts = data.get("scripts") if isinstance(data, dict) else None
     if not isinstance(scripts, dict):
@@ -94,9 +116,12 @@ def _has_real_node_test_script(pkg_json: Path) -> bool:
 
     if pkg_json.is_symlink() or is_shared_hardlink(pkg_json):
         return False
+    text = _read_owned_text(pkg_json)
+    if text is None:
+        return False
     try:
-        data = json.loads(pkg_json.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return False
     scripts = data.get("scripts")
     if not isinstance(scripts, dict):
@@ -110,11 +135,13 @@ def _has_real_node_test_script(pkg_json: Path) -> bool:
 def _detect_node_profile(work_dir: Path) -> ProjectProfile:
     """Detect JS/TS package manager and test command if test script exists."""
     has_test = _has_real_node_test_script(work_dir / "package.json")
-    if (work_dir / "bun.lockb").is_file() or (work_dir / "bun.lock").is_file():
-        mgr, cmd = "bun", "bun test"
-    elif (work_dir / "pnpm-lock.yaml").is_file():
+    # `bun test` is Bun's own runner and ignores scripts.test. The script,
+    # including pretest and posttest, runs only as `bun run test`.
+    if _owned_marker(work_dir / "bun.lockb") or _owned_marker(work_dir / "bun.lock"):
+        mgr, cmd = "bun", "bun run test"
+    elif _owned_marker(work_dir / "pnpm-lock.yaml"):
         mgr, cmd = "pnpm", "pnpm test"
-    elif (work_dir / "yarn.lock").is_file():
+    elif _owned_marker(work_dir / "yarn.lock"):
         mgr, cmd = "yarn", "yarn test"
     else:
         mgr, cmd = "npm", "npm test"
@@ -156,7 +183,12 @@ def detect_project_profile(work_dir: Path) -> ProjectProfile:
     has_python = any(_owned_marker(work_dir / name) for name in py_markers)
     has_python = has_python or _owned_marker(work_dir / "tests", directory=True) or _has_regular_python_file(work_dir)
     if has_python:
-        mgr = "uv" if (work_dir / "uv.lock").is_file() else ("poetry" if (work_dir / "poetry.lock").is_file() else "pip/pytest")
+        if _owned_marker(work_dir / "uv.lock"):
+            mgr = "uv"
+        elif _owned_marker(work_dir / "poetry.lock"):
+            mgr = "poetry"
+        else:
+            mgr = "pip/pytest"
         return ProjectProfile("Python", mgr, "pytest")
 
     if _owned_marker(work_dir / "CMakeLists.txt"):
