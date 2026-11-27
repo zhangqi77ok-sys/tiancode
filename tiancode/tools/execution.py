@@ -732,8 +732,12 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     Shell startup that would run code from outside this command is refused too.
     `bash -c`, `eval`, and a shell heredoc are checked again as their own
     command, so `bash -c 'sudo reboot'` does not hide behind the outer word.
+    `python -c`, `node -e`, `ruby -e`, `perl -e`, and `php -r` are checked the
+    same way: the code string is scanned, and so is the command passed to
+    `os.system`, `execSync`, or a backtick in Ruby, Perl, or PHP.
     A command substitution is refused when its body is dangerous, because the
     shell runs that body. `eval "$(pyenv init -)"` stays allowed.
+    `python -c "print('hello')"` and `pytest -q` stay allowed.
     """
     if _depth > 6:
         return False
@@ -741,7 +745,9 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     if _command_hides_its_body(raw):
         return True
     from tiancode.tools.command_scan import (
+        executed_literals,
         inline_scripts,
+        interpreter_payloads,
         runs_written_file,
         substitution_bodies,
         unseen_execution,
@@ -769,6 +775,16 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
             seen_scripts.add(cleaned)
             if is_dangerous_command(cleaned, _depth=_depth + 1):
                 return True
+        for program, payload in interpreter_payloads(text):
+            cleaned = payload.strip()
+            if not cleaned or cleaned == raw.strip():
+                continue
+            if is_dangerous_command(cleaned, _depth=_depth + 1):
+                return True
+            for piece in executed_literals(program, cleaned):
+                piece = piece.strip()
+                if piece and piece != raw.strip() and is_dangerous_command(piece, _depth=_depth + 1):
+                    return True
     patterns = (*DANGEROUS_PATTERNS, *_EXTRA_DANGEROUS_PATTERNS)
     texts = _match_candidates(raw) if _depth == 0 else [raw]
     for text in texts:

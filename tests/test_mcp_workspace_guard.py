@@ -333,7 +333,8 @@ def test_isolated_npx_does_not_run_a_workspace_bin(tmp_path: Path) -> None:
     launcher.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
     launcher.chmod(0o755)
     (work / ".npmrc").write_text("script-shell=/tmp/tiancode-evil-shell\n", encoding="utf-8")
-    args, directory = isolate_workspace_npm("npx", ["--offline", "--yes", "hello-local"])
+    isolated = isolate_workspace_npm("npx", ["--offline", "--yes", "hello-local"])
+    args, directory = isolated.args, isolated.directory
     assert directory is not None
     try:
         result = subprocess.run(
@@ -383,3 +384,186 @@ def test_bearer_auth_rejects_an_unset_token(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("MISSING_MCP_TOKEN", raising=False)
     with pytest.raises(McpAuthError, match="MISSING_MCP_TOKEN"):
         build_auth_headers({"type": "bearer", "token": "${MISSING_MCP_TOKEN}"})
+
+
+def test_workspace_refuses_launchers_that_run_repo_bins(tmp_path: Path) -> None:
+    work = tmp_path / "proj"
+    work.mkdir()
+    for command, args in (
+        ("bunx", ["hello"]),
+        ("bun", ["x", "hello"]),
+        ("bun", ["--cwd", "/tmp", "bunx", "hello"]),
+        ("pnpm", ["--dir", "/tmp", "exec", "hello"]),
+        ("yarn", ["exec", "hello"]),
+    ):
+        reason = _workspace_command_error(command, args, work, work)
+        assert reason is not None and "可执行文件" in reason
+    assert _workspace_command_error("pnpm", ["dlx", "cowsay"], work, work) is None
+    assert _workspace_command_error("yarn", ["dlx", "cowsay"], work, work) is None
+    assert _workspace_command_error("uvx", ["ruff"], work, work) is None
+    assert _workspace_command_error("npx", ["-y", "cowsay"], work, work) is None
+    assert _workspace_command_error("corepack", ["pnpm", "exec", "hello"], work, work) is not None
+    assert _workspace_command_error("corepack", ["yarn", "exec", "hello"], work, work) is not None
+    assert _workspace_command_error("corepack", ["pnpm", "install"], work, work) is not None
+    assert _workspace_command_error("corepack", ["pnpm", "dlx", "cowsay"], work, work) is None
+
+
+def test_workspace_package_launchers_are_pinned_outside_the_repo(tmp_path: Path) -> None:
+    import shutil
+
+    from tiancode.core.mcp_transports import _PUBLIC_NPM_REGISTRY, _apply_launcher_env, isolate_workspace_npm
+
+    work = tmp_path / "proj"
+    work.mkdir()
+    directories = []
+    try:
+        pnpm = isolate_workspace_npm(
+            "pnpm",
+            ["--dir", str(work), "--config.registry=http://127.0.0.1:9", "dlx", "cowsay"],
+        )
+        directories.append(pnpm.directory)
+        assert pnpm.directory is not None
+        joined = " ".join(pnpm.args)
+        assert str(work) not in joined
+        assert "127.0.0.1" not in joined
+        assert str(pnpm.directory) in pnpm.args
+        assert "--config.registry=https://registry.npmjs.org" in pnpm.args
+        env = _apply_launcher_env(
+            {
+                "npm_config_registry": "http://127.0.0.1:9",
+                "PNPM_CONFIG_REGISTRY": "http://127.0.0.1:9",
+                "PATH": "/usr/bin",
+            },
+            pnpm,
+        )
+        assert env["npm_config_registry"] == _PUBLIC_NPM_REGISTRY
+        assert "PNPM_CONFIG_REGISTRY" not in env
+        assert env["PATH"] == "/usr/bin"
+
+        yarn = isolate_workspace_npm("yarn", ["dlx", "cowsay"])
+        directories.append(yarn.directory)
+        env = _apply_launcher_env(
+            {
+                "YARN_IGNORE_PATH": "0",
+                "YARN_NPM_REGISTRY_SERVER": "http://127.0.0.1:9",
+                "COREPACK_HOME": "/keep",
+            },
+            yarn,
+        )
+        assert env["YARN_IGNORE_PATH"] == "1"
+        assert env["YARN_ENABLE_SCRIPTS"] == "false"
+        assert env["YARN_NPM_REGISTRY_SERVER"] == "https://registry.yarnpkg.com"
+        assert env["YARN_RC_FILENAME"].startswith("tiancode-yarnrc-")
+        assert env["COREPACK_HOME"] == "/keep"
+        assert work.resolve() not in Path(env["YARN_CACHE_FOLDER"]).resolve().parents
+
+        uv = isolate_workspace_npm(
+            "uvx",
+            ["--index-url", "http://127.0.0.1:9/simple", "--from", "ruff", "ruff"],
+        )
+        directories.append(uv.directory)
+        assert "--index-url" not in uv.args
+        assert "http://127.0.0.1:9/simple" not in uv.args
+        assert "--from" in uv.args
+        assert "--no-config" in uv.args and "--isolated" in uv.args
+        env = _apply_launcher_env({"UV_INDEX_URL": "http://127.0.0.1:9/simple", "UV_PYTHON": "3.12"}, uv)
+        assert env["UV_INDEX_URL"] == "https://pypi.org/simple"
+        assert env["UV_PYTHON"] == "3.12"
+
+        tool = isolate_workspace_npm("uv", ["tool", "run", "--index-url=http://127.0.0.1:9/simple", "ruff"])
+        directories.append(tool.directory)
+        assert "127.0.0.1" not in " ".join(tool.args)
+        assert tool.args[0] == "--no-config"
+        assert "ruff" in tool.args
+
+        via_corepack = isolate_workspace_npm("corepack", ["pnpm", "--dir", str(work), "dlx", "cowsay"])
+        directories.append(via_corepack.directory)
+        assert via_corepack.args[0] == "pnpm"
+        assert str(work) not in via_corepack.args
+        assert "--dir" in via_corepack.args
+    finally:
+        for directory in directories:
+            if directory is not None:
+                shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_pnpm_dlx_does_not_run_a_workspace_bin(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        pytest.skip("pnpm is not installed")
+    from tiancode.core.mcp_transports import _apply_launcher_env, isolate_workspace_npm
+
+    work = tmp_path / "proj"
+    bindir = work / "node_modules" / ".bin"
+    bindir.mkdir(parents=True)
+    marker = work / "ran"
+    launcher = bindir / "hello-local"
+    launcher.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    (work / ".npmrc").write_text(
+        "registry=http://127.0.0.1:9\n@evil:registry=http://127.0.0.1:9\n",
+        encoding="utf-8",
+    )
+    isolated = isolate_workspace_npm("pnpm", ["dlx", "hello-local"])
+    assert isolated.directory is not None
+    env = _apply_launcher_env(dict(os.environ), isolated)
+    try:
+        subprocess.run(
+            [pnpm, *isolated.args],
+            cwd=work,
+            env=env,
+            check=False,
+            timeout=25,
+            capture_output=True,
+        )
+    finally:
+        shutil.rmtree(isolated.directory, ignore_errors=True)
+
+    assert not marker.exists()
+
+
+def test_yarn_dlx_does_not_run_a_repo_yarn_path(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    yarn = shutil.which("yarn")
+    if yarn is None:
+        pytest.skip("yarn is not installed")
+    from tiancode.core.mcp_transports import _apply_launcher_env, isolate_workspace_npm
+
+    work = tmp_path / "proj"
+    work.mkdir()
+    marker = work / "ran"
+    evil = work / "evil.cjs"
+    evil.write_text(
+        f"require('fs').writeFileSync({str(marker)!r}, 'x')\nprocess.exit(42)\n",
+        encoding="utf-8",
+    )
+    (work / ".yarnrc.yml").write_text(f"yarnPath: {json.dumps(str(evil))}\n", encoding="utf-8")
+    isolated = isolate_workspace_npm("yarn", ["dlx", "--help"])
+    assert isolated.directory is not None
+    env = _apply_launcher_env(dict(os.environ), isolated)
+    try:
+        result = subprocess.run(
+            [yarn, *isolated.args],
+            cwd=work,
+            env=env,
+            check=False,
+            timeout=25,
+            capture_output=True,
+        )
+    finally:
+        shutil.rmtree(isolated.directory, ignore_errors=True)
+
+    assert not marker.exists()
+    # Yarn 1 treats `dlx` as a script name and never reads yarnPath. Berry
+    # prints dlx help when the rc file and yarnPath are ignored.
+    combined = result.stdout + result.stderr
+    if b"yarn run v1." in combined and b"package.json" in combined:
+        return
+    assert result.returncode == 0
+    assert b"temporary environment" in result.stdout
+

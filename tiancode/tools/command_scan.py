@@ -10,10 +10,13 @@ cases that still run:
 - a file this command writes and a later word executes
 - a variable assigned from a substitution and then used as the command or as
   `eval` input
+- the code string of `python -c`, `node -e` / `--eval`, `ruby -e`, `perl -e`,
+  and `php -r`, including the string passed to `os.system` or `execSync`
 
 `eval "$(pyenv init -)"` stays allowed. `bash -c 'pytest -q'` stays allowed.
-`echo hello | sh` was already refused; writing that output to a file and
-running the file is refused for the same reason.
+`python -c "print('hello')"` stays allowed. `echo hello | sh` was already
+refused; writing that output to a file and running the file is refused for
+the same reason. `busybox wget -O` is the same write as `wget -O`.
 """
 
 from __future__ import annotations
@@ -344,8 +347,22 @@ def _redirection_targets(segment: str) -> List[str]:
     return targets
 
 
+def _download_words(words: Sequence[str]) -> Sequence[str]:
+    """Unwrap `busybox wget` so it is checked as wget. The applet is the next word."""
+    if not words:
+        return words
+    execution = _exec()
+    program = execution._command_basename(words[0])
+    if program == "busybox" and len(words) > 1:
+        applet = execution._command_basename(words[1])
+        if applet in {"curl", "wget", "tee"}:
+            return [applet, *words[2:]]
+    return words
+
+
 def _tool_output_paths(words: Sequence[str]) -> List[str]:
     """Files curl, wget, or tee write. The bytes are not in this command."""
+    words = _download_words(words)
     if not words:
         return []
     execution = _exec()
@@ -407,6 +424,7 @@ def _writes_of(segment: str) -> Set[str]:
             continue
         _assignments, command = peeled
         found.update(_tool_output_paths(execution._shell_words(command)))
+    found.update(interpreter_write_paths(segment))
     return {item for item in found if item}
 
 
@@ -659,3 +677,318 @@ def inline_scripts(text: str) -> List[str]:
                     scripts.append(body)
     scripts.extend(_heredoc_scripts(text))
     return scripts
+
+
+# The last letter of a short cluster consumes the code. `-Bc` is `-B` then `-c`.
+_CODE_LETTERS = {
+    "python": "c",
+    "python2": "c",
+    "python3": "c",
+    "node": "ep",
+    "nodejs": "ep",
+    "bun": "ep",
+    "ruby": "e",
+    "perl": "eE",
+    "php": "r",
+}
+_CODE_LONG = {
+    "node": {"--eval", "--print"},
+    "nodejs": {"--eval", "--print"},
+    "bun": {"--eval", "--print"},
+}
+# These short flags take the next word, so `python -W error -c ...` still sees `-c`.
+_VALUE_LETTERS = {
+    "python": "WX",
+    "python2": "WX",
+    "python3": "WX",
+    "node": "r",
+    "nodejs": "r",
+    "bun": "r",
+    "ruby": "I",
+    "perl": "I",
+    "php": "d",
+}
+_EXEC_CALL = re.compile(
+    r"""(?x)
+    \bos\s*\.\s*(?:system|popen)\s*\(
+    | \bsubprocess\s*\.\s*(?:run|call|Popen|check_call|check_output|getoutput|getstatusoutput)\s*\(
+    | \bcommands\s*\.\s*(?:getoutput|getstatusoutput)\s*\(
+    | \bpty\s*\.\s*spawn\s*\(
+    | \b(?:execFileSync|execSync|spawnSync|execFile)\s*\(
+    | \.(?:execFileSync|execSync|spawnSync|execFile|exec|spawn)\s*\(
+    | \b(?:shell_exec|passthru|proc_open)\s*\(
+    | (?<![.\w])(?:system|exec|popen)\s*(?:\(|\s+)
+    """
+)
+_OPEN_CALL = re.compile(r"\bopen\s*\(")
+_PATH_WRITE = re.compile(
+    r"""\bPath\s*\(\s*(['"])(?P<path>(?:\\.|(?!\1).)*)\1\s*\)\s*\.\s*write_(?:text|bytes)\s*\("""
+)
+_JS_WRITE = re.compile(r"\b(?:writeFileSync|appendFileSync|writeFile|appendFile)\s*\(")
+
+
+def _short_option(program: str, word: str) -> Tuple[str, str]:
+    """Classify one short-option word.
+
+    `code` means this flag's argument is the program text. `value` means the
+    rest of the cluster, or the next word, belongs to the flag. `stop` means
+    `python -m`, which is a module name and not inline code.
+    """
+    if not word.startswith("-") or word.startswith("--"):
+        return "", ""
+    cluster = word[1:]
+    code_letters = _CODE_LETTERS.get(program, "")
+    value_letters = _VALUE_LETTERS.get(program, "")
+    index = 0
+    while index < len(cluster):
+        char = cluster[index]
+        if program.startswith("python") and char == "m":
+            return "stop", ""
+        if char in code_letters:
+            return "code", cluster[index + 1 :]
+        if char in value_letters:
+            return "value", cluster[index + 1 :]
+        index += 1
+    return "flag", ""
+
+
+def _long_code(program: str, word: str) -> Optional[str]:
+    """Inline code attached to `--eval=...`, or `""` when the next word is the code."""
+    name, eq, value = word.partition("=")
+    if name not in _CODE_LONG.get(program, ()):
+        return None
+    if eq:
+        return _unwrap_quotes(value)
+    return ""
+
+
+def _payloads_of(program: str, command: Sequence[str]) -> List[str]:
+    if program not in _CODE_LETTERS and program not in _CODE_LONG:
+        return []
+    payloads: List[str] = []
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            break
+        attached = _long_code(program, word)
+        if attached is not None:
+            if attached:
+                payloads.append(attached)
+            elif index + 1 < len(command):
+                index += 1
+                payloads.append(_unwrap_quotes(command[index]))
+            index += 1
+            continue
+        kind, extra = _short_option(program, word)
+        if kind == "stop":
+            break
+        if kind == "code":
+            if extra:
+                payloads.append(_unwrap_quotes(extra))
+            elif index + 1 < len(command):
+                index += 1
+                payloads.append(_unwrap_quotes(command[index]))
+            index += 1
+            continue
+        if kind == "value":
+            if not extra and index + 1 < len(command) and not command[index + 1].startswith("-"):
+                index += 1
+            index += 1
+            continue
+        if word.startswith("-"):
+            index += 1
+            continue
+        break
+    return [item for item in payloads if item]
+
+
+def interpreter_payloads(text: str) -> List[Tuple[str, str]]:
+    """`(program, code)` pairs a shell will hand to python -c, node -e, and the rest.
+
+    The code is one shell word, so the danger patterns never see `sudo` inside
+    `os.system('sudo reboot')` as its own command. The caller scans that word.
+    """
+    execution = _exec()
+    found: List[Tuple[str, str]] = []
+    for segment in execution._quote_aware_segments(text):
+        for part in execution._pipe_parts(segment):
+            tokens = _shell_tokens(part.strip())
+            peeled = execution._peel_prefixes(tokens)
+            if peeled is None:
+                continue
+            _assignments, command = peeled
+            command = execution._shell_words(command)
+            if not command:
+                continue
+            program = execution._command_basename(command[0])
+            if program == "busybox" and len(command) > 1:
+                command = command[1:]
+                program = execution._command_basename(command[0])
+            for payload in _payloads_of(program, command):
+                found.append((program, payload))
+    return found
+
+
+def _string_literals(text: str) -> List[str]:
+    """Quoted spans. Backticks are included because several of these languages execute them."""
+    found: List[str] = []
+    index = 0
+    limit = len(text)
+    while index < limit:
+        if text.startswith(("'''", '"""'), index):
+            quote = text[index : index + 3]
+            end = text.find(quote, index + 3)
+            if end < 0:
+                break
+            found.append(text[index + 3 : end])
+            index = end + 3
+            continue
+        if text[index] not in "'\"`":
+            index += 1
+            continue
+        quote = text[index]
+        end = index + 1
+        while end < limit:
+            if text[end] == "\\":
+                end += 2
+                continue
+            if text[end] == quote:
+                break
+            end += 1
+        else:
+            break
+        found.append(text[index + 1 : end])
+        index = end + 1
+    return found
+
+
+def _balanced_slice(text: str, open_at: int) -> str:
+    """Text inside the paren that opens at `open_at - 1` is `(`, so `open_at` is the first inner char."""
+    end = _read_balanced(text, open_at, "(", ")")
+    if end is None:
+        return text[open_at:]
+    return text[open_at:end]
+
+
+def _exec_arguments(payload: str) -> List[str]:
+    arguments: List[str] = []
+    for match in _EXEC_CALL.finditer(payload):
+        token = match.group(0).rstrip()
+        if token.endswith("("):
+            arguments.append(_balanced_slice(payload, match.end()))
+            continue
+        rest = payload[match.end() :]
+        # `system 'reboot'` and `system ['sudo', 'reboot']` without a paren.
+        bracket = rest.find("[")
+        paren = rest.find("(")
+        if 0 <= bracket < 80 and (paren < 0 or bracket < paren):
+            end = _read_balanced(rest, bracket + 1, "[", "]")
+            arguments.append(rest[bracket : end + 1] if end is not None else rest[:80])
+            continue
+        arguments.append(rest[:160])
+    return arguments
+
+
+def _backtick_commands(payload: str) -> List[str]:
+    """Ruby, Perl, and PHP run a backtick span as a shell command."""
+    bodies: List[str] = []
+    index = 0
+    limit = len(payload)
+    quote = ""
+    while index < limit:
+        char = payload[index]
+        if quote:
+            if char == "\\" and quote != "'":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if char != "`":
+            index += 1
+            continue
+        end = index + 1
+        while end < limit:
+            if payload[end] == "\\":
+                end += 2
+                continue
+            if payload[end] == "`":
+                break
+            end += 1
+        else:
+            break
+        body = payload[index + 1 : end].strip()
+        if body:
+            bodies.append(body)
+        index = end + 1
+    return bodies
+
+
+def executed_literals(program: str, payload: str) -> List[str]:
+    """Shell text an interpreter one-liner will actually pass to the operating system.
+
+    `print('sudo reboot')` is not here. `os.system('sudo reboot')` is, and so is
+    `subprocess.run(['rm', '-rf', '/'])` joined back into one command. A full
+    language parser is not attempted: a string built by an f-expression or by
+    `exec()` of another code string is not reconstructed.
+    """
+    found: List[str] = []
+    if program in {"ruby", "perl", "php"}:
+        found.extend(_backtick_commands(payload))
+    for argument in _exec_arguments(payload):
+        literals = [item.strip() for item in _string_literals(argument) if item.strip()]
+        if not literals:
+            continue
+        found.append(" ".join(literals))
+        found.extend(literals)
+    return found
+
+
+def _mode_writes(mode: str) -> bool:
+    return any(char in mode for char in "wax+")
+
+
+def _python_write_paths(payload: str) -> Set[str]:
+    found: Set[str] = set()
+    for match in _OPEN_CALL.finditer(payload):
+        argument = _balanced_slice(payload, match.end())
+        literals = _string_literals(argument)
+        mode_match = re.search(r"\bmode\s*=\s*(['\"])(.*?)\1", argument)
+        mode = mode_match.group(2) if mode_match else (literals[1] if len(literals) > 1 else "")
+        if literals and _mode_writes(mode):
+            found.add(_path_key(literals[0]))
+    for match in _PATH_WRITE.finditer(payload):
+        found.add(_path_key(match.group("path")))
+    return {item for item in found if item}
+
+
+def _js_write_paths(payload: str) -> Set[str]:
+    found: Set[str] = set()
+    for match in _JS_WRITE.finditer(payload):
+        argument = _balanced_slice(payload, match.end())
+        literals = _string_literals(argument)
+        if literals:
+            found.add(_path_key(literals[0]))
+    return {item for item in found if item}
+
+
+def interpreter_write_paths(text: str) -> Set[str]:
+    """Paths an interpreter one-liner writes, when the call shape is obvious.
+
+    `open(path, "w")`, `Path(path).write_text`, and `fs.writeFile` are writes.
+    `open(path)` reads. A later shell or interpreter that runs that path is the
+    same write-then-execute case as `> run.sh`.
+    """
+    found: Set[str] = set()
+    for program, payload in interpreter_payloads(text):
+        if program in {"python", "python2", "python3"}:
+            found.update(_python_write_paths(payload))
+        elif program in {"node", "nodejs", "bun"}:
+            found.update(_js_write_paths(payload))
+    return found

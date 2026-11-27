@@ -180,3 +180,91 @@ def test_tox_refuses_a_linked_config(tmp_path: Path) -> None:
 
     assert reason is not None and "链接" in reason
     assert not marker.exists()
+
+
+def test_make_suffix_rule_runs_when_the_prerequisite_exists(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    recipe = _dangerous(marker)
+    (tmp_path / "Makefile").write_text(f".sh:\n\t{recipe}\n", encoding="utf-8")
+    (tmp_path / "foo.sh").write_text("echo hi\n", encoding="utf-8")
+
+    reason = recipe_block_reason("make foo", tmp_path)
+
+    assert reason is not None and "foo" in reason
+    cleared = tmp_path / "cleared"
+    cleared.mkdir()
+    (cleared / "Makefile").write_text(f".SUFFIXES:\n.sh:\n\t{recipe}\n", encoding="utf-8")
+    (cleared / "foo.sh").write_text("echo hi\n", encoding="utf-8")
+    assert recipe_block_reason("make foo", cleared) is None
+
+    added = tmp_path / "added"
+    added.mkdir()
+    (added / "Makefile").write_text(f".foo:\n\t{recipe}\n.SUFFIXES: .foo\n", encoding="utf-8")
+    (added / "x.foo").write_text("echo hi\n", encoding="utf-8")
+    assert recipe_block_reason("make x", added) is not None
+
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    (explicit / "Makefile").write_text(f"foo:\n\t@echo ok\n.sh:\n\t{recipe}\n", encoding="utf-8")
+    (explicit / "foo.sh").write_text("echo hi\n", encoding="utf-8")
+    assert recipe_block_reason("make foo", explicit) is None
+    assert not marker.exists()
+
+
+def test_make_double_suffix_uses_the_suffix_list_order(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "Makefile").write_text(
+        ".c.o:\n\t" + _dangerous(marker) + "\n.s.o:\n\t@echo other\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "foo.c").write_text("int x;\n", encoding="utf-8")
+    (tmp_path / "foo.s").write_text("nop\n", encoding="utf-8")
+
+    reason = recipe_block_reason("make foo.o", tmp_path)
+
+    assert reason is not None and "foo.o" in reason
+    assert not marker.exists()
+
+
+def test_make_eval_call_and_foreach_expand_before_exec(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    body = _dangerous(marker)
+    (tmp_path / "Makefile").write_text(
+        "define recipe\n"
+        "$(1):\n"
+        f"\t{body}\n"
+        "endef\n"
+        "$(eval $(call recipe,test))\n",
+        encoding="utf-8",
+    )
+
+    reason = recipe_block_reason("make test", tmp_path)
+
+    assert reason is not None and "test" in reason
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "Makefile").write_text(
+        "define recipe\n"
+        "$(1):\n"
+        f"\t{body}\n"
+        "endef\n"
+        "$(foreach t,test,$(eval $(call recipe,$(t))))\n",
+        encoding="utf-8",
+    )
+    assert recipe_block_reason("make test", nested) is not None
+    braced = tmp_path / "braced"
+    braced.mkdir()
+    (braced / "Makefile").write_text(
+        "X := ${shell " + body + "}\nhelp:\n\t@echo ok\n",
+        encoding="utf-8",
+    )
+    assert recipe_block_reason("make -n help", braced) is not None
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    (safe / "Makefile").write_text(
+        "define CMD\necho ok\nendef\ntest:\n\t$(call CMD)\n",
+        encoding="utf-8",
+    )
+    assert recipe_block_reason("make test", safe) is None
+    assert not marker.exists()
+
