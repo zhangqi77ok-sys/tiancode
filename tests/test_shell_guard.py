@@ -104,6 +104,25 @@ _BLOCKED = [
     "node -e 'require(\"fs\").writeFileSync(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
     "node -e 'require(\"fs\").appendFileSync(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
     "bun -e \"require('child_process').execSync('sudo reboot')\"",
+    "perl -e 'system(\"sudo reboot\"' -e ')'",
+    "perl -e 'system(\"chmod 777 secrets.txt\"' -e ')'",
+    "ruby -e 'system(\"sudo reboot\"' -e ')'",
+    "ruby -e '%x{sudo reboot}'",
+    "ruby -e '%x(reboot)'",
+    "perl -e 'qx{sudo reboot}'",
+    "perl -e 'qx/reboot/'",
+    "php -R 'system(\"sudo reboot\");'",
+    "php -B 'system(\"reboot\");'",
+    "php -E 'system(\"reboot\");'",
+    "ruby -e 'File.write(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
+    "ruby -e 'IO.write(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
+    "ruby -e 'File.binwrite(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
+    "ruby -e 'File.open(\"run.sh\", \"w\"){|f| f.puts \"echo hi\"}'; bash run.sh",
+    "perl -e 'open(my $fh, \">\", \"run.sh\"); print $fh \"echo hi\\n\";'; bash run.sh",
+    "perl -e 'open(F, \">run.sh\"); print F \"echo hi\\n\";'; bash run.sh",
+    "php -r 'file_put_contents(\"run.sh\", \"echo hi\\n\");'; bash run.sh",
+    "php -r 'fopen(\"run.sh\", \"w\");'; bash run.sh",
+    "bun -e 'Bun.write(\"run.sh\", \"echo hi\\n\")'; bash run.sh",
 ]
 
 _ALLOWED = [
@@ -158,6 +177,18 @@ _ALLOWED = [
     "php -r \"echo 1;\"",
     "python3 -c 'print(open(\"notes.txt\").read())'; python notes.txt",
     "python3 -c 'open(\"notes.txt\", mode=\"r\").read()'; python notes.txt",
+    "python3 -c 'print(111)' -c 'print(222)'",
+    "perl -e 'print 12;' -e 'print 345;'",
+    "ruby -e 'print 12' -e 'print 345'",
+    "perl -e 'print \"sudo reboot\"' -e 'print \"\\n\"'",
+    "ruby -e 'puts \"%x{sudo reboot}\"'",
+    "php -R 'echo \"hello\";'",
+    "php -d display_errors=0 -r 'echo 1;'",
+    "ruby -e 'File.write(\"notes.txt\", \"hi\")'; cat notes.txt",
+    "ruby -e 'File.open(\"notes.txt\"){|f| f.read}'; ruby notes.txt",
+    "perl -e 'open(F, \"<\", \"notes.txt\");'; perl notes.txt",
+    "php -r 'echo file_get_contents(\"notes.txt\");'; php notes.txt",
+    "node -e 'console.log(1)' -e 'console.log(2)'",
 ]
 
 
@@ -220,6 +251,43 @@ def test_written_script_does_not_start(tmp_path: Path) -> None:
     assert result.exit_code == 126
     assert not marker.exists()
     assert not (tmp_path / "run.sh").exists()
+
+
+def test_split_perl_and_ruby_one_liners_do_not_start(tmp_path: Path) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("perl"):
+        blocked = execute_shell_command(
+            f"perl -e 'system(\"sudo touch {marker}\"' -e ')'",
+            work_dir=tmp_path,
+            timeout=5,
+        )
+        assert blocked.exit_code == 126
+        assert not marker.exists()
+        harmless = execute_shell_command("perl -e 'print 12;' -e 'print 345;'", work_dir=tmp_path, timeout=5)
+        assert harmless.exit_code == 0
+        assert "12345" in harmless.stdout
+    if shutil.which("ruby"):
+        blocked = execute_shell_command(
+            f"ruby -e 'File.write(\"run.sh\", \"sudo touch {marker}\\n\")'; bash run.sh",
+            work_dir=tmp_path,
+            timeout=5,
+        )
+        assert blocked.exit_code == 126
+        assert not marker.exists()
+        harmless = execute_shell_command("ruby -e 'print 12' -e 'puts 345'", work_dir=tmp_path, timeout=5)
+        assert harmless.exit_code == 0
+        assert "12345" in harmless.stdout
+    if shutil.which("perl") is None and shutil.which("ruby") is None:
+        pytest.skip("perl and ruby are not installed")
+
+
+def test_python_runs_only_the_first_c(tmp_path: Path) -> None:
+    result = execute_shell_command("python3 -c 'print(111)' -c 'print(222)'", work_dir=tmp_path, timeout=5)
+    assert result.exit_code == 0
+    assert "111" in result.stdout
+    assert "222" not in result.stdout
 
 
 def test_interpreter_one_liner_does_not_start(tmp_path: Path) -> None:

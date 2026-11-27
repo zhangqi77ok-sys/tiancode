@@ -11,7 +11,10 @@ cases that still run:
 - a variable assigned from a substitution and then used as the command or as
   `eval` input
 - the code string of `python -c`, `node -e` / `--eval`, `ruby -e`, `perl -e`,
-  and `php -r`, including the string passed to `os.system` or `execSync`
+  and `php -r` / `-R` / `-B` / `-E`, including the string passed to `os.system`
+  or `execSync`. Perl and Ruby append every `-e` as another line, so those
+  lines are scanned together. Python runs only the first `-c`, Node runs only
+  the last `-e`, and PHP rejects a second `-r`, so those are not joined.
 
 `eval "$(pyenv init -)"` stays allowed. `bash -c 'pytest -q'` stays allowed.
 `python -c "print('hello')"` stays allowed. `echo hello | sh` was already
@@ -689,7 +692,16 @@ _CODE_LETTERS = {
     "bun": "ep",
     "ruby": "e",
     "perl": "eE",
-    "php": "r",
+    # PHP `-r` is one program. `-R` runs per input line, `-B` before, `-E` after.
+    # The letters are case-sensitive: `-e` is the debugger flag, not code.
+    "php": "rRBE",
+}
+# These interpreters append each code flag as another line of one program.
+# Python keeps only the first `-c`. Node keeps only the last `-e`. PHP errors
+# on a second `-r`. Joining those would describe a program that does not run.
+_JOINED_CODE = {
+    "perl": "\n",
+    "ruby": "\n",
 }
 _CODE_LONG = {
     "node": {"--eval", "--print"},
@@ -724,7 +736,15 @@ _OPEN_CALL = re.compile(r"\bopen\s*\(")
 _PATH_WRITE = re.compile(
     r"""\bPath\s*\(\s*(['"])(?P<path>(?:\\.|(?!\1).)*)\1\s*\)\s*\.\s*write_(?:text|bytes)\s*\("""
 )
-_JS_WRITE = re.compile(r"\b(?:writeFileSync|appendFileSync|writeFile|appendFile)\s*\(")
+_JS_WRITE = re.compile(
+    r"\b(?:writeFileSync|appendFileSync|writeFile|appendFile)\s*\(|\bBun\s*\.\s*write\s*\("
+)
+_RUBY_WRITE = re.compile(r"\b(?:File|IO)\s*\.\s*(?:write|binwrite)\s*(?:\(|(?=['\"]))")
+_RUBY_OPEN = re.compile(r"\b(?:File|IO)\s*\.\s*(?:open|new)\s*(?:\(|(?=['\"]))")
+_PHP_PUT = re.compile(r"\bfile_put_contents\s*\(")
+_PHP_FOPEN = re.compile(r"\bfopen\s*\(")
+_PERL_WRITE_PREFIXES = ("+>>", "+>", "+<", ">>", ">")
+_PERL_WRITE_MODES = frozenset(_PERL_WRITE_PREFIXES)
 
 
 def _short_option(program: str, word: str) -> Tuple[str, str]:
@@ -800,7 +820,10 @@ def _payloads_of(program: str, command: Sequence[str]) -> List[str]:
             index += 1
             continue
         break
-    return [item for item in payloads if item]
+    payloads = [item for item in payloads if item]
+    if len(payloads) > 1 and program in _JOINED_CODE:
+        payloads.append(_JOINED_CODE[program].join(payloads))
+    return payloads
 
 
 def interpreter_payloads(text: str) -> List[Tuple[str, str]]:
@@ -930,17 +953,93 @@ def _backtick_commands(payload: str) -> List[str]:
     return bodies
 
 
+_DELIM_CLOSE = {"{": "}", "(": ")", "[": "]", "/": "/"}
+
+
+def _read_delimited(payload: str, start: int, open_ch: str) -> Optional[Tuple[str, int]]:
+    """Body and the index after the closer. Brace delimiters nest. `/` does not."""
+    close = _DELIM_CLOSE[open_ch]
+    nest = open_ch != "/"
+    depth = 1
+    index = start
+    limit = len(payload)
+    while index < limit:
+        char = payload[index]
+        if char == "\\":
+            index += 2
+            continue
+        if nest and char == open_ch:
+            depth += 1
+        elif char == close:
+            depth -= 1
+            if depth == 0:
+                return payload[start:index], index + 1
+        index += 1
+    return None
+
+
+def _delimited_exec(payload: str, *, ruby: bool, perl: bool) -> List[str]:
+    """Ruby `%x{cmd}` and Perl `qx{cmd}` run as a shell. Quoted text is not code."""
+    bodies: List[str] = []
+    index = 0
+    limit = len(payload)
+    quote = ""
+    while index < limit:
+        char = payload[index]
+        if quote:
+            if char == "\\" and quote != "'":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        opener = ""
+        start = 0
+        if ruby and payload.startswith("%x", index) and index + 2 < limit and payload[index + 2] in "{([":
+            opener = payload[index + 2]
+            start = index + 3
+        elif (
+            perl
+            and payload.startswith("qx", index)
+            and (index == 0 or not (payload[index - 1].isalnum() or payload[index - 1] == "_"))
+            and index + 2 < limit
+            and payload[index + 2] in "{([/"
+        ):
+            opener = payload[index + 2]
+            start = index + 3
+        if not opener:
+            index += 1
+            continue
+        parsed = _read_delimited(payload, start, opener)
+        if parsed is None:
+            break
+        body, index = parsed
+        if body.strip():
+            bodies.append(body.strip())
+    return bodies
+
+
 def executed_literals(program: str, payload: str) -> List[str]:
     """Shell text an interpreter one-liner will actually pass to the operating system.
 
     `print('sudo reboot')` is not here. `os.system('sudo reboot')` is, and so is
-    `subprocess.run(['rm', '-rf', '/'])` joined back into one command. A full
+    `subprocess.run(['rm', '-rf', '/'])` joined back into one command. Ruby
+    `%x{...}` and Perl `qx{...}` are the same kind of call as a backtick. A full
     language parser is not attempted: a string built by an f-expression or by
     `exec()` of another code string is not reconstructed.
     """
     found: List[str] = []
     if program in {"ruby", "perl", "php"}:
         found.extend(_backtick_commands(payload))
+    if program == "ruby":
+        found.extend(_delimited_exec(payload, ruby=True, perl=False))
+    elif program == "perl":
+        found.extend(_delimited_exec(payload, ruby=False, perl=True))
     for argument in _exec_arguments(payload):
         literals = [item.strip() for item in _string_literals(argument) if item.strip()]
         if not literals:
@@ -952,6 +1051,85 @@ def executed_literals(program: str, payload: str) -> List[str]:
 
 def _mode_writes(mode: str) -> bool:
     return any(char in mode for char in "wax+")
+
+
+def _php_mode_writes(mode: str) -> bool:
+    """PHP `fopen` creates or changes a file for `w`, `a`, `x`, `c`, and `+`."""
+    return any(char in mode for char in "waxc+")
+
+
+def _call_literals(payload: str, match: re.Match[str]) -> List[str]:
+    """String literals of one call. A leading `(` is the argument list; otherwise the rest of the statement."""
+    if match.group(0).rstrip().endswith("("):
+        return _string_literals(_balanced_slice(payload, match.end()))
+    rest = payload[match.end():]
+    semi = rest.find(";")
+    if semi >= 0:
+        rest = rest[:semi]
+    return _string_literals(rest)
+
+
+def _perl_redirect_path(literal: str) -> str:
+    """Path from Perl's two-argument `open` mode, such as `>run.sh`. `<file` only reads."""
+    for prefix in _PERL_WRITE_PREFIXES:
+        if literal.startswith(prefix) and len(literal) > len(prefix):
+            return literal[len(prefix):].strip()
+    return ""
+
+
+def _perl_open_region(payload: str, at: int) -> str:
+    rest = payload[at:]
+    stripped = rest.lstrip()
+    if stripped.startswith("("):
+        open_at = at + rest.find("(") + 1
+        return _balanced_slice(payload, open_at)
+    semi = rest.find(";")
+    return rest[:semi] if semi >= 0 else rest[:200]
+
+
+def _perl_write_paths(payload: str) -> Set[str]:
+    found: Set[str] = set()
+    for match in re.finditer(r"\bopen\b", payload):
+        literals = [item.strip() for item in _string_literals(_perl_open_region(payload, match.end())) if item.strip()]
+        for literal in literals:
+            path = _perl_redirect_path(literal)
+            if path:
+                found.add(_path_key(path))
+        if any(literal in _PERL_WRITE_MODES for literal in literals):
+            for literal in literals:
+                if literal in _PERL_WRITE_MODES or literal == "<" or _perl_redirect_path(literal):
+                    continue
+                found.add(_path_key(literal))
+                break
+    return {item for item in found if item}
+
+
+def _ruby_write_paths(payload: str) -> Set[str]:
+    found: Set[str] = set()
+    for match in _RUBY_WRITE.finditer(payload):
+        literals = _call_literals(payload, match)
+        if literals:
+            found.add(_path_key(literals[0]))
+    for match in _RUBY_OPEN.finditer(payload):
+        literals = _call_literals(payload, match)
+        mode = literals[1] if len(literals) > 1 else ""
+        if literals and _mode_writes(mode):
+            found.add(_path_key(literals[0]))
+    return {item for item in found if item}
+
+
+def _php_write_paths(payload: str) -> Set[str]:
+    found: Set[str] = set()
+    for match in _PHP_PUT.finditer(payload):
+        literals = _call_literals(payload, match)
+        if literals:
+            found.add(_path_key(literals[0]))
+    for match in _PHP_FOPEN.finditer(payload):
+        literals = _call_literals(payload, match)
+        mode = literals[1] if len(literals) > 1 else ""
+        if literals and _php_mode_writes(mode):
+            found.add(_path_key(literals[0]))
+    return {item for item in found if item}
 
 
 def _python_write_paths(payload: str) -> Set[str]:
@@ -982,8 +1160,10 @@ def interpreter_write_paths(text: str) -> Set[str]:
     """Paths an interpreter one-liner writes, when the call shape is obvious.
 
     `open(path, "w")`, `Path(path).write_text`, and `fs.writeFile` are writes.
-    `open(path)` reads. A later shell or interpreter that runs that path is the
-    same write-then-execute case as `> run.sh`.
+    So are `File.write` / `IO.write`, Perl `open` with `>`, PHP `file_put_contents`,
+    and `fopen` with a write mode. `open(path)` and `File.open(path)` read.
+    A later shell or interpreter that runs that path is the same write-then-execute
+    case as `> run.sh`.
     """
     found: Set[str] = set()
     for program, payload in interpreter_payloads(text):
@@ -991,4 +1171,10 @@ def interpreter_write_paths(text: str) -> Set[str]:
             found.update(_python_write_paths(payload))
         elif program in {"node", "nodejs", "bun"}:
             found.update(_js_write_paths(payload))
+        elif program == "ruby":
+            found.update(_ruby_write_paths(payload))
+        elif program == "perl":
+            found.update(_perl_write_paths(payload))
+        elif program == "php":
+            found.update(_php_write_paths(payload))
     return found

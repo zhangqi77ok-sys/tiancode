@@ -732,9 +732,10 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     Shell startup that would run code from outside this command is refused too.
     `bash -c`, `eval`, and a shell heredoc are checked again as their own
     command, so `bash -c 'sudo reboot'` does not hide behind the outer word.
-    `python -c`, `node -e`, `ruby -e`, `perl -e`, and `php -r` are checked the
-    same way: the code string is scanned, and so is the command passed to
-    `os.system`, `execSync`, or a backtick in Ruby, Perl, or PHP.
+    `python -c`, `node -e`, `ruby -e`, `perl -e`, and `php -r`/`-R` are checked
+    the same way: the code string is scanned, and so is the command passed to
+    `os.system`, `execSync`, a backtick, Ruby `%x`, or Perl `qx`. Perl and Ruby
+    lines from adjacent `-e` flags are scanned as one program.
     A command substitution is refused when its body is dangerous, because the
     shell runs that body. `eval "$(pyenv init -)"` stays allowed.
     `python -c "print('hello')"` and `pytest -q` stay allowed.
