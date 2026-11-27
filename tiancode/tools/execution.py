@@ -1,5 +1,6 @@
 """Subprocess execution tools with timeout, safety guardrails, env scrubbing, and output capture."""
 
+import base64
 import os
 import re
 import subprocess
@@ -49,7 +50,7 @@ _PM_UNSCOPED = re.compile(
     re.IGNORECASE,
 )
 _EXTRA_DANGEROUS_PATTERNS = [
-    _CMD + r"sudo\b",
+    _CMD + r"(?:sudo|doas)\b",
     _CMD + r"(?:shutdown|reboot|poweroff|halt)\b",
     r"\bsystemctl\s+(?:poweroff|reboot|halt|suspend|hibernate|kexec)\b",
     r"\binit\s+[06]\b",
@@ -63,17 +64,301 @@ _EXTRA_DANGEROUS_PATTERNS = [
     r">\s*/dev/(?:sd[a-z]|nvme|hd[a-z]|vd[a-z]|mmcblk|disk)\b",
     r"shutil\.rmtree\(\s*/",
     _CMD + r"(?:nc|ncat|netcat)\b.*\s-e\s",
+    # Interactive shells and alias expansion run rc-file aliases this check cannot see.
+    r"\b(?:bash|zsh|ksh|fish)\s+-[A-Za-z]*i[A-Za-z]*\b",
+    r"\b(?:bash|zsh|ksh|fish)\s+--interactive\b",
+    r"\b(?:bash|zsh)\s+--(?:rcfile|init-file)\b",
+    r"\bshopt\s+-s\b[^|;]*\bexpand_aliases\b",
+    r"\bset\s+-o\s+expand_aliases\b",
+    r"(?:^|&&|\|\||;|\|)\s*(?:export\s+)?BASH_ENV=",
 ]
 
 
-def _normalize_command(command: str) -> str:
-    """Collapse quotes, invisible characters, and `$IFS` so one rule sees them.
+# Leading wrappers hide a command from patterns that require the start of a segment.
+# sudo/doas stay in place so the privilege pattern still sees them.
+_WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"})
+_WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
+_ANSI_C_QUOTE = re.compile(r"\$'((?:\\.|[^'])*)'")
+_PRINTF_SUB = re.compile(
+    r"""\$\(\s*printf\s+(?:'((?:\\.|[^'])*)'|"((?:\\.|[^"])*)")\s*\)"""
+    r"""|`\s*printf\s+(?:'((?:\\.|[^'])*)'|"((?:\\.|[^"])*)")\s*`"""
+)
+_ASSIGN_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DOLLAR_NAME = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_DECODER = re.compile(
+    r"\b(?:base64\s+(?:-[A-Za-z]*[dD][A-Za-z]*|--decode)"
+    r"|xxd\b[^;|&]*\s-[A-Za-z]*r[A-Za-z]*"
+    r"|uudecode"
+    r"|openssl\s+base64\s+-d"
+    r"|openssl\s+enc\s+-d\b)",
+    re.IGNORECASE,
+)
+_DECODE_REDIRECT = re.compile(
+    r"\b(?:base64\s+(?:-[A-Za-z]*[dD][A-Za-z]*|--decode)"
+    r"|xxd\b[^;|&]*\s-[A-Za-z]*r[A-Za-z]*"
+    r"|uudecode)\b[^;|&]*?>\s*([^\s;|&]+)",
+    re.IGNORECASE,
+)
+_EXECUTOR = re.compile(
+    r"\b(?:bash|sh|zsh|dash|ksh|fish|eval|source|exec|python3?|perl|ruby|node|php)\b",
+    re.IGNORECASE,
+)
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/]{8,}={0,2}")
+_ANSI_SIMPLE = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "E": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "?": "?",
+}
 
-    A shell runs `r\\m` as `rm` and treats `$IFS` as a space. This pass does
-    the same before matching. It is not a shell parser: aliases, encoded
-    payloads, and values computed at runtime are not expanded.
+
+def _decode_ansi_c_body(body: str) -> str:
+    """Decode one `$'...'` or `printf` body. This does not run the shell."""
+    out: List[str] = []
+    index = 0
+    limit = len(body)
+    while index < limit:
+        if body[index] != "\\" or index + 1 >= limit:
+            out.append(body[index])
+            index += 1
+            continue
+        nxt = body[index + 1]
+        if nxt in _ANSI_SIMPLE:
+            out.append(_ANSI_SIMPLE[nxt])
+            index += 2
+            continue
+        if nxt == "x":
+            cursor = index + 2
+            digits: List[str] = []
+            while cursor < limit and len(digits) < 2 and body[cursor] in "0123456789abcdefABCDEF":
+                digits.append(body[cursor])
+                cursor += 1
+            if digits:
+                out.append(chr(int("".join(digits), 16)))
+                index = cursor
+                continue
+        if nxt in ("u", "U"):
+            width = 4 if nxt == "u" else 8
+            digits = body[index + 2 : index + 2 + width]
+            if len(digits) == width and all(char in "0123456789abcdefABCDEF" for char in digits):
+                code = int(digits, 16)
+                if 0 <= code <= 0x10FFFF:
+                    out.append(chr(code))
+                    index += 2 + width
+                    continue
+        if nxt in "01234567":
+            cursor = index + 1
+            digits = []
+            while cursor < limit and len(digits) < 3 and body[cursor] in "01234567":
+                digits.append(body[cursor])
+                cursor += 1
+            out.append(chr(int("".join(digits), 8)))
+            index = cursor
+            continue
+        out.append("\\")
+        out.append(nxt)
+        index += 2
+    return "".join(out)
+
+
+def _decode_ansi_c_quotes(text: str) -> str:
+    return _ANSI_C_QUOTE.sub(lambda match: _decode_ansi_c_body(match.group(1)), text)
+
+
+def _expand_printf_literals(text: str) -> str:
+    """Replace a literal `$(printf '...')` with the characters printf would print."""
+
+    def repl(match: re.Match[str]) -> str:
+        body = next(group for group in match.groups() if group is not None)
+        return _decode_ansi_c_body(body)
+
+    return _PRINTF_SUB.sub(repl, text)
+
+
+def _quote_aware_segments(text: str) -> List[str]:
+    parts: List[str] = []
+    buf: List[str] = []
+    quote = ""
+    index = 0
+    limit = len(text)
+    while index < limit:
+        char = text[index]
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            buf.append(char)
+            index += 1
+            continue
+        if text.startswith("&&", index) or text.startswith("||", index):
+            parts.append("".join(buf))
+            buf = []
+            index += 2
+            continue
+        if char == ";":
+            parts.append("".join(buf))
+            buf = []
+            index += 1
+            continue
+        buf.append(char)
+        index += 1
+    parts.append("".join(buf))
+    return [part for part in parts if part.strip()]
+
+
+def _split_words(segment: str) -> List[str]:
+    words: List[str] = []
+    index = 0
+    limit = len(segment)
+    while index < limit:
+        while index < limit and segment[index].isspace():
+            index += 1
+        if index >= limit:
+            break
+        buf: List[str] = []
+        quote = ""
+        while index < limit:
+            char = segment[index]
+            if quote:
+                buf.append(char)
+                if char == quote:
+                    quote = ""
+                index += 1
+                continue
+            if char.isspace():
+                break
+            if char in "'\"":
+                quote = char
+            buf.append(char)
+            index += 1
+        if buf:
+            words.append("".join(buf))
+    return words
+
+
+def _unquote_literal(raw: str) -> str | None:
+    if "$" in raw or "`" in raw:
+        return None
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        return raw[1:-1]
+    return raw
+
+
+def _literal_assignment(word: str) -> tuple[str, str] | None:
+    if "=" not in word:
+        return None
+    name, _, raw = word.partition("=")
+    if _ASSIGN_NAME.fullmatch(name) is None:
+        return None
+    value = _unquote_literal(raw)
+    if value is None:
+        return None
+    return name, value
+
+
+def _expand_dollars(word: str, values: Dict[str, str]) -> str:
+    if len(word) >= 2 and word[0] == "'" and word[-1] == "'":
+        return word
+
+    def repl(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        return values.get(name, match.group(0))
+
+    return _DOLLAR_NAME.sub(repl, word)
+
+
+def _expand_literal_assignments(text: str) -> str:
+    """Substitute literal `name=value` bindings from this same command.
+
+    `a=rm; $a -rf /` is visible after substitution. A value produced by
+    another program is left untouched, because this pass does not run it.
     """
-    text = str(command).replace("\x00", " ")
+    values: Dict[str, str] = {}
+    rendered: List[str] = []
+    for segment in _quote_aware_segments(text):
+        words = _split_words(segment)
+        index = 0
+        while index < len(words):
+            parsed = _literal_assignment(words[index])
+            if parsed is None:
+                break
+            name, value = parsed
+            values[name] = value
+            index += 1
+        rest = " ".join(_expand_dollars(word, values) for word in words[index:])
+        if rest:
+            rendered.append(rest)
+    return " ; ".join(rendered)
+
+
+def _unwrap_leading_wrappers(text: str) -> str:
+    """Drop leading `env`/`nice`/`nohup` so a later `sudo` or `reboot` is visible.
+
+    `command -v sudo` prints a path; it does not run sudo, so a query flag
+    keeps the original text.
+    """
+    words = text.split()
+    changed = False
+    while words and Path(words[0]).name.lower() in _WRAPPER_NAMES:
+        wrapper = Path(words.pop(0)).name.lower()
+        flags: List[str] = []
+        while words and words[0].startswith("-"):
+            flag = words.pop(0)
+            flags.append(flag)
+            if flag in _WRAPPER_VALUE_FLAGS and words and not words[0].startswith("-"):
+                words.pop(0)
+        if wrapper == "command" and {"-v", "-V"} & set(flags):
+            return text
+        if wrapper == "env":
+            while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+                words.pop(0)
+        changed = True
+    if not changed:
+        return text
+    return " ".join(words)
+
+
+def _basename_words(text: str) -> str:
+    """Match `/usr/bin/sudo` with the same rule as `sudo`."""
+    rebuilt: List[str] = []
+    changed = False
+    for word in text.split():
+        if "/" in word or "\\" in word:
+            name = Path(word).name
+            if name and name != word:
+                changed = True
+                rebuilt.append(name)
+                continue
+        rebuilt.append(word)
+    if not changed:
+        return text
+    return " ".join(rebuilt)
+
+
+def _normalize_command(command: str) -> str:
+    """Collapse quotes, invisible characters, `$IFS`, and literal shell escapes.
+
+    A shell runs `r\\m` as `rm`, treats `$IFS` as a space, and decodes
+    `$'...'` and `printf '\\xNN'`. This pass does the same before matching.
+    Literal assignments in the same command are substituted by the caller.
+    An alias defined outside this command, or a program that only exists
+    at runtime, is not executed here.
+    """
+    text = _expand_printf_literals(_decode_ansi_c_quotes(str(command)))
+    text = text.replace("\x00", " ")
     text = _INVISIBLE_CHARS.sub("", text)
     text = re.sub(r"[\r\n\t]+", " ", text)
     text = text.replace("$(", " ").replace("`", " ")
@@ -82,6 +367,93 @@ def _normalize_command(command: str) -> str:
     text = text.replace("'", "").replace('"', "")
     text = re.sub(r"\\(.)", r"\1", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _match_candidates(raw: str) -> List[str]:
+    prepared = _expand_literal_assignments(_expand_printf_literals(_decode_ansi_c_quotes(raw)))
+    texts: List[str] = []
+    for text in (raw, prepared):
+        normal = _normalize_command(text)
+        unwrapped = _unwrap_leading_wrappers(normal)
+        for candidate in (text, normal, unwrapped, _basename_words(normal), _basename_words(unwrapped)):
+            if candidate and candidate not in texts:
+                texts.append(candidate)
+    return texts
+
+
+def _b64_text(token: str) -> str | None:
+    padded = token + "=" * ((4 - len(token) % 4) % 4)
+    if len(padded) % 4 == 1:
+        return None
+    try:
+        raw = base64.b64decode(padded, validate=True)
+    except ValueError:
+        return None
+    if not raw or len(raw) > 4096 or b"\x00" in raw:
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(char) < 9 or (13 < ord(char) < 32) for char in text):
+        return None
+    return text
+
+
+def _redirect_then_execute(text: str) -> bool:
+    """True when a decoder writes a file and a later word executes that path."""
+    targets: List[str] = []
+    for segment in _SHELL_SPLIT.split(text):
+        match = _DECODE_REDIRECT.search(segment)
+        if match:
+            target = match.group(1).strip("'\"")
+            if target:
+                targets.append(target)
+        if not targets:
+            continue
+        words = {word.strip("'\"") for word in segment.split()}
+        if any(target in words for target in targets) and _EXECUTOR.search(segment):
+            return True
+    return False
+
+
+def _segment_executes_decoder(segment: str) -> bool:
+    if _DECODER.search(segment) is None:
+        return False
+    if re.search(r"(?:^|&&|\|\||;|\|)\s*\$\([^)]*(?:base64|xxd|uudecode|openssl)\b", segment, re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:eval|source|exec)\b", segment, re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:bash|sh|zsh|dash|ksh|fish)\s+-c\b", segment, re.IGNORECASE):
+        return True
+    if "<(" in segment:
+        return True
+    return bool(re.search(r"\|\s*(?:/usr/bin/|/bin/)?(?:ba)?sh\b", segment, re.IGNORECASE))
+
+
+def _executed_decoder(text: str) -> bool:
+    """True when decoded bytes are executed and were not already a plain command.
+
+    Printing `base64 -d file` stays allowed. `bash -c "$(... | base64 -d)"`
+    and `base64 -d x > run.sh; bash run.sh` do not: the bytes actually run,
+    and a static pattern never sees them.
+    """
+    if _redirect_then_execute(text):
+        return True
+    for segment in _SHELL_SPLIT.split(text):
+        if not _segment_executes_decoder(segment):
+            continue
+        saw_payload = False
+        for token in _B64_TOKEN.findall(segment):
+            decoded = _b64_text(token)
+            if decoded is None:
+                continue
+            saw_payload = True
+            if is_dangerous_command(decoded, _depth=1):
+                return True
+        if not saw_payload:
+            return True
+    return False
 
 SENSITIVE_ENV_KEYS = {
     "TIANCODE_API_KEY",
@@ -104,16 +476,19 @@ _SENSITIVE_ENV_NAME = re.compile(
 _GIT_CONFIG_KEY_SLOT = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 
 
-def is_dangerous_command(command: str | List[str]) -> bool:
+def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     """Check if command matches high-risk destructive signatures.
 
     The raw text is checked first so patterns that look for quotes still match.
-    A second pass strips quotes and newlines, which is how `rm -rf "/"` and a
-    command split across lines reach the same rules.
+    Later passes decode `$'...'` and `printf` escapes, substitute literal
+    assignments from the same command, and drop leading `env`/`nice` wrappers
+    and absolute paths. A decoded payload is refused when it would be executed.
     """
     raw = " ".join(command) if isinstance(command, (list, tuple)) else str(command)
+    if _depth == 0 and _executed_decoder(raw):
+        return True
     patterns = (*DANGEROUS_PATTERNS, *_EXTRA_DANGEROUS_PATTERNS)
-    for text in (raw, _normalize_command(raw)):
+    for text in _match_candidates(raw):
         for pattern in patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 return True
@@ -327,10 +702,11 @@ def package_script_block_reason(command: str, work_dir: Path) -> str | None:
     posttest hooks, and the `npm run` chain they reach are read from
     package.json. A link is not followed. `--prefix` must stay inside the
     workspace. `--filter` and `--recursive` are refused because they run
-    package.json files this check does not open. `bun test` is the runner,
-    not the script; `bun run test` is.
+    package.json files this check does not open. `bun test` is the native
+    runner and does not read scripts.test; `bun run test` does. A leading
+    `FOO=1` or `env` does not hide the package manager.
     """
-    text = _normalize_command(command)
+    text = _normalize_command(_expand_literal_assignments(command))
     if not text:
         return None
     root = work_dir.resolve()
@@ -339,7 +715,7 @@ def package_script_block_reason(command: str, work_dir: Path) -> str | None:
     from tiancode.core.polyglot import package_test_block_reason
 
     for segment in _SHELL_SPLIT.split(text):
-        piece = segment.strip()
+        piece = _unwrap_leading_wrappers(segment.strip())
         if not piece:
             continue
         if piece == "cd" or piece.startswith("cd "):

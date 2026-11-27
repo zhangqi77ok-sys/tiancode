@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,67 @@ def test_workspace_mcp_rejects_secrets_private_urls_and_dangerous_commands(
     )
     assert "workspace-must-not-copy" in dumped
     assert dumped.count("workspace-must-not-copy") == 1
+
+
+def test_workspace_stdio_keeps_a_local_server_and_rejects_shells(tmp_path: Path) -> None:
+    work = tmp_path / "proj"
+    (work / "sub").mkdir(parents=True)
+    (work / "server.js").write_text("console.log('ok')\n", encoding="utf-8")
+    (work / "sub" / "server.js").write_text("console.log('sub')\n", encoding="utf-8")
+    (work / "src").mkdir()
+    (work / "src" / "index.ts").write_text("export {}\n", encoding="utf-8")
+    outside = tmp_path / "outside.js"
+    outside.write_text("console.log('no')\n", encoding="utf-8")
+    (work / "linked.js").symlink_to(outside)
+    real = tmp_path / "real.js"
+    real.write_text("console.log('hard')\n", encoding="utf-8")
+    os.link(real, work / "hard.js")
+    _package = work / "package.json"
+    _package.write_text(
+        '{"scripts":{"start":"node server.js","wipe":"rm -rf /"}}',
+        encoding="utf-8",
+    )
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {"shell": {"command": "bash", "args": ["-c", "echo hi"]}})
+    _write(
+        work / ".tiancode" / "mcp.json",
+        {
+            "local": {"command": "node", "args": ["server.js"]},
+            "nested": {"command": "node", "args": ["server.js"], "cwd": "sub"},
+            "bun": {"command": "bun", "args": ["run", "src/index.ts"]},
+            "remote": {"command": "npx", "args": ["-y", "@example/mcp-server"]},
+            "module": {"command": "python", "args": ["-m", "mcp.server"]},
+            "start": {"command": "npm", "args": ["run", "start"]},
+            "inline": {"command": "node", "args": ["-e", "process.exit(0)"]},
+            "pyc": {"command": "python", "args": ["-m", "mcp.server", "-c"]},
+            "shell": {"command": "bash", "args": ["-c", "echo hi"]},
+            "wrapped": {"command": "env", "args": ["bash", "-c", "echo hi"]},
+            "escape": {"command": "node", "args": ["../outside.js"]},
+            "linked": {"command": "node", "args": ["linked.js"]},
+            "hard": {"command": "node", "args": ["hard.js"]},
+            "wipe": {"command": "npm", "args": ["run", "wipe"]},
+            "missing": {"command": "node", "args": ["missing.js"]},
+        },
+    )
+
+    configs, errors = load_mcp_configs(work, global_config_path=global_cfg)
+
+    assert configs["shell"].command == "bash"
+    for name in ("local", "nested", "bun", "remote", "module", "start"):
+        assert name in configs
+    assert configs["local"].args == ["server.js"]
+    for name in ("inline", "pyc", "wrapped", "escape", "linked", "hard", "wipe", "missing"):
+        assert name not in configs
+    joined = "\n".join(errors)
+    assert "shell" in joined
+    assert "内联" in joined
+    assert "符号链接" in joined
+    assert "硬链接" in joined
+    assert "越出工作区" in joined
+    assert "高危命令" in joined
+    assert "普通文件" in joined
+    # The workspace entry named shell was rejected; the global one remains.
+    assert "echo hi" in configs["shell"].args
 
 
 def test_workspace_public_mcp_url_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

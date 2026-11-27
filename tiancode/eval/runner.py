@@ -1,5 +1,6 @@
 """Evaluation harness and sandbox runner for benchmark problems."""
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -41,13 +42,16 @@ class AgentTurnTracker:
         return max(self.tool_turns, 1 if self.has_token_output else 0)
 
 
-def sandbox_destination(sandbox: Path, rel_path: str) -> Path:
-    """Return a file path inside the sandbox.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
-    Absolute paths, `..`, and a symlink at any component are refused. The
-    destination is not created and a link target is not opened.
-    """
-    root = sandbox.resolve()
+
+def _sandbox_error(rel_path: str) -> ValueError:
+    return ValueError(f"评测文件路径越出沙箱: {rel_path}")
+
+
+def _sandbox_parts(rel_path: str) -> tuple[str, ...]:
     raw = Path(rel_path)
     if (
         not str(rel_path).strip()
@@ -55,28 +59,109 @@ def sandbox_destination(sandbox: Path, rel_path: str) -> Path:
         or raw.is_absolute()
         or any(part in ("", ".", "..") for part in raw.parts)
     ):
-        raise ValueError(f"评测文件路径越出沙箱: {rel_path}")
+        raise _sandbox_error(rel_path)
+    return raw.parts
+
+
+def sandbox_destination(sandbox: Path, rel_path: str) -> Path:
+    """Return a file path inside the sandbox.
+
+    Absolute paths, `..`, and a symlink at any component are refused. The
+    destination is not created and a link target is not opened. Writing uses
+    `materialize_sandbox_files`, which does not trust this check across a race.
+    """
+    root = sandbox.resolve()
+    parts = _sandbox_parts(rel_path)
     current = root
-    for part in raw.parts[:-1]:
+    for part in parts[:-1]:
         current = current / part
         if current.is_symlink():
-            raise ValueError(f"评测文件路径越出沙箱: {rel_path}")
+            raise _sandbox_error(rel_path)
         try:
             current.resolve().relative_to(root)
         except ValueError as exc:
-            raise ValueError(f"评测文件路径越出沙箱: {rel_path}") from exc
-    leaf = current / raw.parts[-1]
+            raise _sandbox_error(rel_path) from exc
+    leaf = current / parts[-1]
     if leaf.is_symlink():
-        raise ValueError(f"评测文件路径越出沙箱: {rel_path}")
+        raise _sandbox_error(rel_path)
     return leaf
 
 
+def _enter_sandbox_dir(parent_fd: int, name: str, rel_path: str) -> int:
+    """Open a child directory of parent_fd. A symlink is not followed."""
+    flags = os.O_RDONLY | _DIRECTORY | _NOFOLLOW | _CLOEXEC
+    try:
+        return os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise _sandbox_error(rel_path) from exc
+    try:
+        os.mkdir(name, 0o755, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise _sandbox_error(rel_path) from exc
+    try:
+        return os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise _sandbox_error(rel_path) from exc
+
+
+def _create_sandbox_file(dir_fd: int, name: str, content: str, rel_path: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW | _CLOEXEC
+    try:
+        fd = os.open(name, flags, 0o644, dir_fd=dir_fd)
+    except OSError as exc:
+        raise _sandbox_error(rel_path) from exc
+    try:
+        payload = content.encode("utf-8")
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise _sandbox_error(rel_path)
+            view = view[written:]
+        os.fsync(fd)
+    except OSError as exc:
+        raise _sandbox_error(rel_path) from exc
+    finally:
+        os.close(fd)
+
+
+def _write_sandbox_file(root_fd: int, rel_path: str, content: str) -> None:
+    """Create `rel_path` under root_fd. Each step uses O_NOFOLLOW.
+
+    Holding the directory fd means a parent swapped for a symlink after the
+    path check cannot redirect the write. The leaf open fails if that name
+    is itself a symlink.
+    """
+    parts = _sandbox_parts(rel_path)
+    current = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            nxt = _enter_sandbox_dir(current, part, rel_path)
+            os.close(current)
+            current = nxt
+        _create_sandbox_file(current, parts[-1], content, rel_path)
+    finally:
+        os.close(current)
+
+
 def materialize_sandbox_files(sandbox: Path, files: Dict[str, str]) -> None:
-    """Write benchmark files. Every path must stay inside the sandbox."""
-    for rel_path, content in files.items():
-        dest = sandbox_destination(sandbox, rel_path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
+    """Write benchmark files through directory fds. Do not follow a symlink."""
+    if not files:
+        return
+    root = sandbox.resolve()
+    try:
+        root_fd = os.open(root, os.O_RDONLY | _DIRECTORY | _CLOEXEC)
+    except OSError as exc:
+        raise ValueError(f"评测沙箱不可用: {root}") from exc
+    try:
+        for rel_path, content in files.items():
+            _write_sandbox_file(root_fd, rel_path, content)
+    finally:
+        os.close(root_fd)
 
 
 def _hidden_pytest_command(sandbox_path: Path) -> List[str]:

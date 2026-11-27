@@ -28,10 +28,11 @@ _MCP_PROTOCOL_VERSION = "2025-06-18"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26", "2024-11-05"})
 _DEFAULT_TIMEOUT_SECONDS = 30
 _MAX_HTTP_ATTEMPTS = 3
-# 408, 500, and 504 on tools/call are not retried: the tool may already have run.
-# 429, 502, and 503 still retry, including tools/call.
+# 408, 500, 502, and 504 on tools/call are not retried: a gateway may already
+# have run the tool. 429 still retries. 503 still retries, including tools/call,
+# because it usually means the server did not accept the request.
 _RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
-_TOOLS_CALL_NO_RETRY = frozenset({408, 500, 504})
+_TOOLS_CALL_NO_RETRY = frozenset({408, 500, 502, 504})
 _SAFE_BASE_ENV = frozenset({
     "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
     "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "PROGRAMDATA", "OS",
