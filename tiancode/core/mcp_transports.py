@@ -227,30 +227,66 @@ _UV_DROP_KEYS = (
 _PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org"
 _PUBLIC_YARN_REGISTRY = "https://registry.yarnpkg.com"
 _PUBLIC_PYPI = "https://pypi.org/simple"
+# These choose an index, a requirements file, or a wheelhouse. They are removed
+# so a workspace `pip install` uses the public index pinned below. `--isolated`
+# does not ignore `PIP_CONFIG_FILE`; the env drop does.
+_PIP_VALUE_FLAGS = frozenset({
+    "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
+    "-r", "--requirement", "-c", "--constraint", "--trusted-host", "--cache-dir",
+})
+_PIP_BOOL_FLAGS = frozenset({"--no-index", "--isolated", "--no-cache-dir"})
 
 
-_COREPACK_TOOLS = frozenset({"pnpm", "yarn", "npm", "npx"})
+# Corepack forwards only when argv[0] is one of these bins, optionally `name@version`.
+# `pnpx` is pnpm's dlx bin. `yarnpkg` is yarn. A flag value is not argv[0], so
+# `corepack --install-directory pnpm ...` is not a pnpm launch.
+_COREPACK_BIN = {
+    "npm": "npm",
+    "npx": "npx",
+    "pnpm": "pnpm",
+    "pnpx": "pnpm",
+    "yarn": "yarn",
+    "yarnpkg": "yarn",
+}
 
 
-def _peel_corepack(args: Sequence[str]) -> Optional[Tuple[List[str], str, List[str]]]:
-    """Split `corepack [flags] pnpm <rest>` into the flags, the tool, and the rest.
+def _corepack_forward_plan(token: str) -> Optional[Tuple[str, str, List[str]]]:
+    """Return `(spec, program, leading)` when corepack would forward `token`.
 
-    Corepack forwards the remaining arguments. A repo can name `corepack` so the
-    pnpm/yarn checks never see the real program. Unknown corepack subcommands
-    are left alone.
+    `spec` is the argv token corepack itself must still see, so `pnpm@9` keeps
+    its version. `program` is the tool the rest of the checks understand.
+    `leading` is inserted in front of the remaining arguments: `pnpx` is
+    `pnpm dlx`. `None` means corepack does not forward. The first argument is
+    the only one that can forward; `--install-directory pnpm` does not.
     """
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "--":
-            return None
-        if arg.startswith("-"):
-            index += 1
-            continue
-        if arg in _COREPACK_TOOLS:
-            return list(args[:index]), arg, list(args[index + 1 :])
+    if not token or token.startswith("-") or token == "--":
         return None
-    return None
+    name, sep, version = token.partition("@")
+    program = _COREPACK_BIN.get(name)
+    if program is None:
+        return None
+    if name == "pnpx":
+        spec = f"pnpm@{version}" if sep else "pnpm"
+        return spec, "pnpm", ["dlx"]
+    if name == "yarnpkg":
+        return token, "yarn", []
+    return token, program, []
+
+
+def _peel_corepack(args: Sequence[str]) -> Optional[Tuple[List[str], str, str, List[str]]]:
+    """Split `corepack <bin>[@version] <rest>` into flags, the spec, the program, and the rest.
+
+    Corepack decides from its first argument alone. Flags before that argument
+    belong to corepack itself (`enable`, `use`) and are not a package-manager
+    launch, even when a flag's value is the word `pnpm`.
+    """
+    if not args:
+        return None
+    plan = _corepack_forward_plan(args[0])
+    if plan is None:
+        return None
+    spec, program, leading = plan
+    return [], spec, program, [*leading, *list(args[1:])]
 
 
 def _program_name(command: str) -> str:
@@ -447,15 +483,49 @@ def _isolate_uv_tool(args: Sequence[str]) -> LauncherIsolation:
     )
 
 
+def _is_pip(program: str) -> bool:
+    """True for `pip`, `pip3`, and `pip3.12`. `pipx` is a different program."""
+    if program in {"pip", "pip3"}:
+        return True
+    return program.startswith("pip3.") and program[5:].isdigit()
+
+
+def _isolate_pip(args: Sequence[str]) -> LauncherIsolation:
+    """Pin pip at the public index and a private cache.
+
+    `--isolated` ignores user config and `PIP_*` variables, but it still loads
+    `PIP_CONFIG_FILE`, so that name is dropped from the environment as well.
+    Index, find-links, and requirement flags in the arguments are removed:
+    a requirements file can point pip back at a workspace path. Flags after
+    `--` belong to the installed program and stay put.
+    """
+    root = _empty_launch_dir("tiancode-pip-")
+    cleaned = _strip_named_flags(args, _PIP_VALUE_FLAGS, _PIP_BOOL_FLAGS)
+    pins = ["--index-url", _PUBLIC_PYPI, "--cache-dir", str(root / "cache")]
+    if "--" in cleaned:
+        at = cleaned.index("--")
+        cleaned = cleaned[:at] + pins + cleaned[at:]
+    else:
+        cleaned = cleaned + pins
+    return LauncherIsolation(
+        args=["--isolated", *cleaned],
+        directory=root,
+        env={"PIP_INDEX_URL": _PUBLIC_PYPI, "PIP_CACHE_DIR": str(root / "cache")},
+        drop_prefixes=("PIP_",),
+    )
+
+
 def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
     """Point a workspace package launch away from the repo's config and bins.
 
     npx and `npm exec` get an empty prefix. `pnpm dlx` gets an empty `--dir`.
-    `yarn dlx` and uvx are pinned with env and, for uv, index flags. `corepack
+    `yarn dlx`, uvx, and pip are pinned with env and index flags. `corepack
     pnpm` and `corepack yarn` are the same launch, because corepack forwards
-    the rest of the arguments. `bunx`, `pnpm exec`, and `yarn exec` are refused
-    before this runs: they execute a workspace bin and have no prefix that
-    keeps the tool's cwd in the repo.
+    its first argument. `corepack pnpx` is `pnpm dlx`. `corepack pnpm@9` keeps
+    the version. A flag before that argument is corepack's own flag, not the
+    forwarded program. `bunx`, `pnpm exec`, `yarn exec`, `pipx`, `cargo`, and
+    `rustup` are refused before this runs: they execute workspace code and have
+    no prefix that keeps the tool's cwd in the repo.
     The caller's flags after `--` are left untouched. A command this function
     does not isolate is returned unchanged, with no directory.
     """
@@ -465,9 +535,9 @@ def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
         peeled = _peel_corepack(plain)
         if peeled is None:
             return LauncherIsolation(args=plain)
-        prefix, tool, rest = peeled
+        prefix, spec, tool, rest = peeled
         isolated = isolate_workspace_npm(tool, rest)
-        isolated.args = prefix + [tool, *isolated.args]
+        isolated.args = prefix + [spec, *isolated.args]
         return isolated
     if program == "pnpm" and _first_positional(plain, _PNPM_VALUE_FLAGS) == "dlx":
         return _isolate_pnpm_dlx(plain)
@@ -475,6 +545,8 @@ def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
         return _isolate_yarn_dlx(plain)
     if _uv_tool_run(program, plain):
         return _isolate_uv_tool(plain)
+    if _is_pip(program):
+        return _isolate_pip(plain)
     if program not in {"npx", "npm"}:
         return LauncherIsolation(args=plain)
     if program == "npm" and _first_positional(plain, frozenset()) not in {"exec", "x"}:

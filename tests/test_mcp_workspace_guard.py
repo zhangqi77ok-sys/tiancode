@@ -406,6 +406,21 @@ def test_workspace_refuses_launchers_that_run_repo_bins(tmp_path: Path) -> None:
     assert _workspace_command_error("corepack", ["yarn", "exec", "hello"], work, work) is not None
     assert _workspace_command_error("corepack", ["pnpm", "install"], work, work) is not None
     assert _workspace_command_error("corepack", ["pnpm", "dlx", "cowsay"], work, work) is None
+    assert _workspace_command_error("corepack", ["pnpm@9.15.0", "exec", "hello"], work, work) is not None
+    assert _workspace_command_error("corepack", ["yarnpkg", "exec", "hello"], work, work) is not None
+    assert _workspace_command_error("corepack", ["pnpx", "hello"], work, work) is None
+    assert _workspace_command_error("corepack", ["use", "yarn"], work, work) is not None
+    assert _workspace_command_error("corepack", ["up"], work, work) is not None
+    flagged = _workspace_command_error("corepack", ["--install-directory", "pnpm", "use", "yarn"], work, work)
+    assert flagged is not None and "corepack use" in flagged
+    assert _workspace_command_error("corepack", ["--install-directory", "pnpm", "dlx", "cowsay"], work, work) is None
+    assert _workspace_command_error("pip", ["install", "cowsay"], work, work) is None
+    assert _workspace_command_error("pip3", ["install", "evil.whl"], work, work) is not None
+    assert _workspace_command_error("pip", ["install", "file:evil.tar.gz"], work, work) is not None
+    assert _workspace_command_error("pipx", ["run", "cowsay"], work, work) is not None
+    assert _workspace_command_error("cargo", ["install", "serde"], work, work) is not None
+    assert _workspace_command_error("rustup", ["run", "stable", "cargo", "check"], work, work) is not None
+    assert _workspace_command_error("go", ["run", "main.go"], work, work) is not None
 
 
 def test_workspace_package_launchers_are_pinned_outside_the_repo(tmp_path: Path) -> None:
@@ -481,6 +496,52 @@ def test_workspace_package_launchers_are_pinned_outside_the_repo(tmp_path: Path)
         assert via_corepack.args[0] == "pnpm"
         assert str(work) not in via_corepack.args
         assert "--dir" in via_corepack.args
+
+        versioned = isolate_workspace_npm("corepack", ["pnpm@9.15.0", "--dir", str(work), "dlx", "cowsay"])
+        directories.append(versioned.directory)
+        assert versioned.args[0] == "pnpm@9.15.0"
+        assert str(work) not in versioned.args
+        assert "--config.registry=https://registry.npmjs.org" in versioned.args
+
+        via_pnpx = isolate_workspace_npm("corepack", ["pnpx", "cowsay"])
+        directories.append(via_pnpx.directory)
+        assert via_pnpx.args[0] == "pnpm"
+        assert "dlx" in via_pnpx.args
+        assert "--dir" in via_pnpx.args
+        assert "cowsay" in via_pnpx.args
+
+        not_a_forward = isolate_workspace_npm(
+            "corepack",
+            ["--install-directory", "pnpm", "dlx", "cowsay"],
+        )
+        assert not_a_forward.directory is None
+        assert not_a_forward.args == ["--install-directory", "pnpm", "dlx", "cowsay"]
+
+        pip = isolate_workspace_npm(
+            "pip",
+            ["install", "--extra-index-url", "http://127.0.0.1:9/extra", "-r", "requirements.txt", "cowsay"],
+        )
+        directories.append(pip.directory)
+        joined = " ".join(pip.args)
+        assert pip.args[0] == "--isolated"
+        assert "--index-url" in pip.args
+        assert "https://pypi.org/simple" in pip.args
+        assert "127.0.0.1" not in joined
+        assert "--extra-index-url" not in pip.args
+        assert "-r" not in pip.args
+        assert "requirements.txt" not in pip.args
+        assert "cowsay" in pip.args
+        env = _apply_launcher_env(
+            {
+                "PIP_INDEX_URL": "http://127.0.0.1:9/simple",
+                "PIP_CONFIG_FILE": str(work / "pip.conf"),
+                "PATH": "/usr/bin",
+            },
+            pip,
+        )
+        assert env["PIP_INDEX_URL"] == "https://pypi.org/simple"
+        assert "PIP_CONFIG_FILE" not in env
+        assert env["PATH"] == "/usr/bin"
     finally:
         for directory in directories:
             if directory is not None:
@@ -566,4 +627,46 @@ def test_yarn_dlx_does_not_run_a_repo_yarn_path(tmp_path: Path) -> None:
         return
     assert result.returncode == 0
     assert b"temporary environment" in result.stdout
+
+
+def test_pip_install_does_not_use_a_workspace_index(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    pip = shutil.which("pip3") or shutil.which("pip")
+    if pip is None:
+        pytest.skip("pip is not installed")
+    from tiancode.core.mcp_transports import _apply_launcher_env, isolate_workspace_npm
+
+    work = tmp_path / "proj"
+    work.mkdir()
+    config = work / "pip.conf"
+    config.write_text(
+        "[global]\nindex-url = http://127.0.0.1:9/simple\nextra-index-url = http://127.0.0.1:9/extra\n",
+        encoding="utf-8",
+    )
+    isolated = isolate_workspace_npm(
+        "pip3",
+        ["install", "--extra-index-url", "http://127.0.0.1:9/extra", "--dry-run", "--no-deps", "pip"],
+    )
+    assert isolated.directory is not None
+    env = _apply_launcher_env(
+        {**os.environ, "PIP_CONFIG_FILE": str(config), "PIP_INDEX_URL": "http://127.0.0.1:9/simple"},
+        isolated,
+    )
+    try:
+        result = subprocess.run(
+            [pip, *isolated.args],
+            cwd=work,
+            env=env,
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+    finally:
+        shutil.rmtree(isolated.directory, ignore_errors=True)
+
+    combined = result.stdout + result.stderr
+    assert b"127.0.0.1" not in combined
+    assert result.returncode == 0
 

@@ -20,6 +20,8 @@ from tiancode.core.mcp_transports import (
     _DEFAULT_TIMEOUT_SECONDS,
     HttpMcpTransport,
     StdioMcpTransport,
+    _corepack_forward_plan,
+    _is_pip,
 )
 from tiancode.core.mcp_discovery import (
     discover_tianshell_mcp,
@@ -180,7 +182,7 @@ _WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"}
 _WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
 _INTERPRETERS = frozenset({
     "node", "nodejs", "bun", "deno", "tsx", "ts-node",
-    "python", "python3", "python2", "perl", "ruby", "php",
+    "python", "python3", "python2", "perl", "ruby", "php", "go",
 })
 _SCRIPT_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
 _SCRIPT_SHORTCUTS = frozenset({"test", "start", "stop", "restart"})
@@ -423,12 +425,51 @@ def _first_command_word(args: List[str], value_flags: frozenset) -> str:
     return ""
 
 
+# Pip treats these shapes as a local archive even when the token has no slash.
+_PIP_ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz", ".egg")
+# Corepack options that consume the next word. Their value is not the subcommand,
+# even when that value is `pnpm` or `yarn`.
+_COREPACK_VALUE_FLAGS = frozenset({"--install-directory", "--output", "-o"})
+
+
+def _pip_local_artifact(token: str) -> bool:
+    """True when pip would install this token from a local file rather than an index."""
+    if not token or token.startswith("-"):
+        return False
+    lowered = token.lower()
+    if lowered.startswith("file:"):
+        return True
+    return lowered.endswith(_PIP_ARCHIVE_SUFFIXES)
+
+
+def _corepack_action(args: List[str]) -> str:
+    """Corepack's own subcommand, such as `use`. A flag value is not the subcommand."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return ""
+        if arg.startswith("-"):
+            name, eq, _value = arg.partition("=")
+            if name in _COREPACK_VALUE_FLAGS and not eq and index + 1 < len(args):
+                index += 2
+                continue
+            index += 1
+            continue
+        return arg
+    return ""
+
+
 def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
     """Refuse launchers that execute a workspace bin and cannot be pinned safely.
 
     `bunx` and `bun x` run `node_modules/.bin` and there is no prefix that keeps
     the tool's cwd in the repo. `pnpm exec` and `yarn exec` do the same.
-    `pnpm dlx`, `yarn dlx`, and uvx are isolated at spawn instead.
+    `pipx` runs `__pypackages__` from the working directory with no switch that
+    turns that off. `cargo` and `rustup` read `.cargo/config.toml` from that
+    directory, including `rustc-wrapper` and source replacement, and those keys
+    cannot all be cleared from the command line. `pnpm dlx`, `yarn dlx`, uvx,
+    and pip are isolated at spawn instead.
     """
     if program == "bunx":
         return "工作区 MCP 不能用 bunx 启动，它会执行仓库里的可执行文件，已拒绝启动"
@@ -438,6 +479,10 @@ def _unisolated_launcher_error(program: str, args: List[str]) -> Optional[str]:
         return "工作区 MCP 不能用 pnpm exec 启动，它会执行仓库里的可执行文件，已拒绝启动"
     if program == "yarn" and _first_command_word(args, _YARN_VALUE_FLAGS) == "exec":
         return "工作区 MCP 不能用 yarn exec 启动，它会执行仓库里的可执行文件，已拒绝启动"
+    if program == "pipx":
+        return "工作区 MCP 不能用 pipx 启动，它会执行仓库里的 __pypackages__，已拒绝启动"
+    if program in {"cargo", "rustup"}:
+        return "工作区 MCP 不能用 cargo 或 rustup 启动，它会读取仓库里的 .cargo 配置并执行其中的命令，已拒绝启动"
     return None
 
 
@@ -469,21 +514,19 @@ def _installed_package_error(program: str, args: List[str], base: Path) -> Optio
 
 
 def _unwrap_corepack(words: List[str]) -> List[str]:
-    """Treat `corepack pnpm` as pnpm. Corepack forwards those arguments."""
-    if not words or _program_name(words[0]) != "corepack":
+    """Treat `corepack pnpm` as pnpm. Corepack forwards only its first argument.
+
+    `corepack pnpm@9` is pnpm. `corepack pnpx` is `pnpm dlx`. `corepack yarnpkg`
+    is yarn. `corepack --install-directory pnpm` is not a forward: the flag's
+    value is a directory, and corepack does not look past it for a program.
+    """
+    if not words or _program_name(words[0]) != "corepack" or len(words) < 2:
         return words
-    index = 1
-    while index < len(words):
-        arg = words[index]
-        if arg == "--":
-            return words
-        if arg.startswith("-"):
-            index += 1
-            continue
-        if arg in {"pnpm", "yarn", "npm", "npx"}:
-            return [arg, *words[index + 1 :]]
+    plan = _corepack_forward_plan(words[1])
+    if plan is None:
         return words
-    return words
+    _spec, program, leading = plan
+    return [program, *leading, *words[2:]]
 
 
 def _workspace_command_error(
@@ -496,12 +539,13 @@ def _workspace_command_error(
 
     A shell, an interpreter (`node server.js`, `python -m`), a package script,
     a path argument, an install, or an already-installed local package does not
-    start.     `npx -y @scope/pkg` may still start when that package is not in the
+    start. `npx -y @scope/pkg` may still start when that package is not in the
     repo; the spawn then pins npm's prefix and cache outside the workspace so
     the launch does not read or write this repo's node_modules. `pnpm dlx`,
-    `yarn dlx`, and uvx are pinned the same way. `bunx`, `pnpm exec`, and
-    `yarn exec` do not start. The same check runs again immediately before
-    the process is spawned.
+    `yarn dlx`, uvx, and pip are pinned the same way. `bunx`, `pnpm exec`,
+    `yarn exec`, `pipx`, `cargo`, and `rustup` do not start. `corepack use`
+    and `corepack up` do not start: they run the package manager's install in
+    the repo. The same check runs again immediately before the process is spawned.
     """
     if not command:
         return None
@@ -535,6 +579,12 @@ def _workspace_command_error(
     launcher_error = _unisolated_launcher_error(program, rest)
     if launcher_error:
         return launcher_error
+    if program == "corepack" and _corepack_action(rest) in {"use", "up"}:
+        return "工作区 MCP 不能用 corepack use 或 corepack up 启动，它会在仓库里执行包管理器的安装，已拒绝启动"
+    if _is_pip(program):
+        for arg in rest:
+            if _pip_local_artifact(arg):
+                return "工作区 MCP 不能用 pip 安装仓库里的文件，已拒绝启动"
     if program in _INTERPRETERS:
         error = _interpreter_error(program, rest, root, base)
         if error:
