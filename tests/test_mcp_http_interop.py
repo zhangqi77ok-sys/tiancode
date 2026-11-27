@@ -377,6 +377,91 @@ def test_initialize_408_is_retried() -> None:
     assert methods.count("initialize") == 2
 
 
+def test_tools_call_429_without_a_reply_is_retried() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(status_code=429, text="slow down", headers={"Retry-After": "0.2"}),
+        _FakeResponse(
+            payload={"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "ok"}]}},
+        ),
+    )
+    waits: list[float] = []
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = waits.append
+    transport.connect()
+    assert transport.call_tool("ping", {}) == "ok"
+    assert waits == [0.2]
+    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert calls.count("tools/call") == 2
+
+
+def test_tools_call_429_with_a_result_is_not_sent_again() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(
+            status_code=429,
+            payload={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"content": [{"type": "text", "text": "once"}]},
+            },
+        ),
+    )
+
+    def _fail_if_sleep(_seconds: float) -> None:
+        raise AssertionError("tools/call 429 with a result must not retry")
+
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = _fail_if_sleep
+    transport.connect()
+    assert transport.call_tool("ping", {}) == "once"
+    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert calls.count("tools/call") == 1
+
+
+def test_tools_call_429_with_an_error_is_not_sent_again() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(
+            status_code=429,
+            payload={"jsonrpc": "2.0", "id": 2, "error": {"code": -32000, "message": "rate limited"}},
+        ),
+    )
+
+    def _fail_if_sleep(_seconds: float) -> None:
+        raise AssertionError("tools/call 429 with an error must not retry")
+
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = _fail_if_sleep
+    transport.connect()
+    with pytest.raises(RuntimeError, match="rate limited"):
+        transport.call_tool("ping", {})
+    calls = [call["json"].get("method") for call in client.calls if call["method"] == "POST" and call.get("json")]
+    assert calls.count("tools/call") == 1
+
+
+def test_tools_list_429_is_still_retried() -> None:
+    client = _FakeClient()
+    client.enqueue(
+        _init_ok(),
+        _FakeResponse(status_code=202, text=""),
+        _FakeResponse(status_code=429, text="slow down", headers={"Retry-After": "0.2"}),
+        _FakeResponse(payload={"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "ping"}]}}),
+    )
+    waits: list[float] = []
+    transport = HttpMcpTransport("https://mcp.example.com/mcp", http_client=client)
+    transport._sleeper = waits.append
+    transport.connect()
+    assert transport.list_tools()[0]["name"] == "ping"
+    assert waits == [0.2]
+
+
 def test_tools_call_500_is_not_retried() -> None:
     client = _FakeClient()
     client.enqueue(

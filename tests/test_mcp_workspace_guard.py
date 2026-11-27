@@ -261,6 +261,95 @@ def test_workspace_path_shadow_is_not_executed(tmp_path: Path, monkeypatch: pyte
     assert not marker.exists()
 
 
+def test_workspace_npm_install_does_not_start(tmp_path: Path) -> None:
+    work = tmp_path / "proj"
+    work.mkdir()
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {"global_install": {"command": "npm", "args": ["install", "left-pad"]}})
+    _write(
+        work / ".tiancode" / "mcp.json",
+        {
+            "install": {"command": "npm", "args": ["install", "@example/mcp-server"]},
+            "ci": {"command": "npm", "args": ["ci"]},
+            "add": {"command": "pnpm", "args": ["add", "left-pad"]},
+        },
+    )
+
+    configs, errors = load_mcp_configs(work, global_config_path=global_cfg)
+
+    assert "global_install" in configs
+    for name in ("install", "ci", "add"):
+        assert name not in configs
+    assert "node_modules" in "\n".join(errors)
+
+
+def test_workspace_npx_prefix_stays_outside_the_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    work = tmp_path / "proj"
+    work.mkdir()
+    global_cfg = tmp_path / "mcp.json"
+    _write(global_cfg, {"mine": {"command": "npx", "args": ["-y", "@example/mcp-server"]}})
+    _write(
+        work / ".tiancode" / "mcp.json",
+        {"remote": {"command": "npx", "args": ["--prefix=.", "-y", "@example/mcp-server"]}},
+    )
+    calls: list[tuple[list[str], object]] = []
+
+    def explode(argv: list[str], **kwargs: object) -> None:
+        calls.append((list(argv), kwargs.get("cwd")))
+        raise OSError("stopped")
+
+    monkeypatch.setattr("tiancode.core.mcp_transports.shutil.which", lambda _cmd: "/usr/bin/npx")
+    monkeypatch.setattr("tiancode.core.mcp_transports.subprocess.Popen", explode)
+    statuses = McpManager(work, global_config_path=global_cfg).reload()
+
+    by_name = {item.name: item for item in statuses}
+    assert by_name["remote"].connected is False
+    assert "stopped" in by_name["remote"].error
+    workspace_call = next(call for call in calls if "--prefix" in call[0] and str(work) not in call[0])
+    argv, cwd = workspace_call
+    prefix = Path(argv[argv.index("--prefix") + 1])
+    assert prefix.is_absolute()
+    assert work.resolve() not in prefix.resolve().parents
+    assert Path(cwd) == work.resolve()
+    global_call = next(call for call in calls if call[0][1:] == ["-y", "@example/mcp-server"])
+    assert "--prefix" not in global_call[0]
+    McpManager(work, global_config_path=global_cfg).close_all()
+
+
+def test_isolated_npx_does_not_run_a_workspace_bin(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    npx = shutil.which("npx")
+    if npx is None:
+        pytest.skip("npx is not installed")
+    from tiancode.core.mcp_transports import isolate_workspace_npm
+
+    work = tmp_path / "proj"
+    bindir = work / "node_modules" / ".bin"
+    bindir.mkdir(parents=True)
+    marker = work / "ran"
+    launcher = bindir / "hello-local"
+    launcher.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    (work / ".npmrc").write_text("script-shell=/tmp/tiancode-evil-shell\n", encoding="utf-8")
+    args, directory = isolate_workspace_npm("npx", ["--offline", "--yes", "hello-local"])
+    assert directory is not None
+    try:
+        result = subprocess.run(
+            [npx, *args],
+            cwd=work,
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+    assert not marker.exists()
+    assert b"tiancode-evil-shell" not in result.stderr
+
+
 def test_workspace_public_mcp_url_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_getaddrinfo(host: str, port: int, *_args: object, **_kwargs: object) -> list:
         return [(2, 1, 6, "", ("93.184.216.34", port or 443))]
