@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -26,6 +27,9 @@ from tiancode.core.mcp_auth import (
 _MCP_PROTOCOL_VERSION = "2025-06-18"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26", "2024-11-05"})
 _DEFAULT_TIMEOUT_SECONDS = 30
+_MAX_HTTP_ATTEMPTS = 3
+# 500 on tools/call is not retried: the tool may already have run.
+_RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 _SENSITIVE_ENV_KEYS = frozenset({"TIANCODE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"})
 _SAFE_BASE_ENV = frozenset({
     "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
@@ -88,6 +92,57 @@ def _extract_tool_text(result: Any) -> str:
     ]
     text = "\n".join(p for p in parts if p).strip() or json.dumps(result, ensure_ascii=False)
     return f"❌ MCP 工具返回错误: {text}" if result.get("isError") and not text.startswith("❌") else text
+
+
+def _retry_wait_seconds(attempt: int, resp: Any) -> float:
+    """Backoff for one retry. Honor a short Retry-After; otherwise double a small delay."""
+    headers = getattr(resp, "headers", {}) or {}
+    raw = headers.get("Retry-After") or headers.get("retry-after") or ""
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if 0 < seconds <= 2:
+        return seconds
+    return min(0.2, 0.05 * (2 ** attempt))
+
+
+def _first_sse_endpoint(resp: Any) -> str:
+    """Return the first SSE endpoint URI. Stop there; do not drain the rest of the stream."""
+    event_name = ""
+    iterator = getattr(resp, "iter_lines", None)
+    if callable(iterator):
+        lines = iterator()
+    else:
+        lines = (getattr(resp, "text", "") or "").splitlines()
+    for line in lines:
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        stripped = str(line).strip()
+        if not stripped:
+            event_name = ""
+            continue
+        if stripped.startswith("event:"):
+            event_name = stripped[6:].strip()
+            continue
+        if not stripped.startswith("data:"):
+            continue
+        candidate = stripped[5:].strip()
+        if event_name == "endpoint" or (
+            not event_name and (candidate.startswith("/") or candidate.startswith("http"))
+        ):
+            return candidate
+    return ""
+
+
+def _resolve_sse_endpoint(base_url: str, endpoint: str) -> str:
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        return endpoint
+    if endpoint.startswith("/"):
+        parsed = urlparse(base_url)
+        return f"{parsed.scheme}://{parsed.netloc}{endpoint}"
+    base = base_url if base_url.endswith("/") else base_url.rsplit("/", 1)[0] + "/"
+    return urljoin(base, endpoint)
 
 
 def _parse_sse_payload(text: str, req_id: Any) -> Dict[str, Any]:
@@ -312,6 +367,7 @@ class HttpMcpTransport:
         self._legacy_sse = False
         self._post_endpoint = self.url
         self._rpc_lock = threading.RLock()
+        self._sleeper = time.sleep
 
     def connect(self) -> None:
         with self._rpc_lock:
@@ -394,38 +450,47 @@ class HttpMcpTransport:
             raise RuntimeError(format_401_hint(status, www, self.url))
         raise RuntimeError(f"MCP HTTP 错误 ({status}): {body[:200]}")
 
+    def _should_retry_http(self, status: int, payload: Dict[str, Any], attempt: int) -> bool:
+        if attempt + 1 >= _MAX_HTTP_ATTEMPTS or status not in _RETRYABLE_HTTP_STATUS:
+            return False
+        method = str(payload.get("method") or "")
+        if status == 500 and method == "tools/call":
+            return False
+        return True
+
+    def _exchange(self, payload: Dict[str, Any]) -> Any:
+        """POST once, retrying transient HTTP statuses with backoff."""
+        resp: Any = None
+        for attempt in range(_MAX_HTTP_ATTEMPTS):
+            resp = self._client.post(
+                self._post_endpoint,
+                json=payload,
+                headers=self._base_headers(),
+                timeout=self.timeout_seconds,
+            )
+            status = getattr(resp, "status_code", 200)
+            if not self._should_retry_http(status, payload, attempt):
+                return resp
+            self._sleeper(_retry_wait_seconds(attempt, resp))
+        return resp
+
     def _try_legacy_sse_endpoint(self) -> None:
-        """Fall back to 2024-11-05 HTTP+SSE: GET opens stream, first event gives POST endpoint."""
+        """Fall back to 2024-11-05 HTTP+SSE. Read only until the endpoint event."""
         headers = {"Accept": "text/event-stream", **{k: v for k, v in self.headers.items() if k.lower() != "content-type"}}
-        resp = self._client.get(self.url, headers=headers, timeout=self.timeout_seconds)
-        if getattr(resp, "status_code", 200) >= 400:
-            self._raise_http_error(resp)
-        text = getattr(resp, "text", "") or ""
-        endpoint = ""
-        event_name = ""
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("event:"):
-                event_name = stripped[6:].strip()
-            elif stripped.startswith("data:") and event_name == "endpoint":
-                endpoint = stripped[5:].strip()
-                break
-            elif stripped.startswith("data:") and not event_name:
-                # Some servers omit event name and only send data as endpoint URI.
-                candidate = stripped[5:].strip()
-                if candidate.startswith("/") or candidate.startswith("http"):
-                    endpoint = candidate
-                    break
+        stream = getattr(self._client, "stream", None)
+        if callable(stream):
+            with self._client.stream("GET", self.url, headers=headers, timeout=self.timeout_seconds) as resp:
+                if getattr(resp, "status_code", 200) >= 400:
+                    self._raise_http_error(resp)
+                endpoint = _first_sse_endpoint(resp)
+        else:
+            resp = self._client.get(self.url, headers=headers, timeout=self.timeout_seconds)
+            if getattr(resp, "status_code", 200) >= 400:
+                self._raise_http_error(resp)
+            endpoint = _first_sse_endpoint(resp)
         if not endpoint:
             raise RuntimeError("MCP 旧版 HTTP+SSE 未返回 endpoint 事件")
-        if endpoint.startswith("http://") or endpoint.startswith("https://"):
-            self._post_endpoint = endpoint
-        elif endpoint.startswith("/"):
-            parsed = urlparse(self.url)
-            self._post_endpoint = f"{parsed.scheme}://{parsed.netloc}{endpoint}"
-        else:
-            base = self.url if self.url.endswith("/") else self.url.rsplit("/", 1)[0] + "/"
-            self._post_endpoint = urljoin(base, endpoint)
+        self._post_endpoint = _resolve_sse_endpoint(self.url, endpoint)
         self._legacy_sse = True
 
     def _post(self, payload: Dict[str, Any], *, expect_response: bool, allow_legacy_fallback: bool = False) -> Any:
@@ -433,42 +498,22 @@ class HttpMcpTransport:
             return self._post_unlocked(payload, expect_response=expect_response, allow_legacy_fallback=allow_legacy_fallback)
 
     def _post_unlocked(self, payload: Dict[str, Any], *, expect_response: bool, allow_legacy_fallback: bool = False) -> Any:
-        resp = self._client.post(
-            self._post_endpoint,
-            json=payload,
-            headers=self._base_headers(),
-            timeout=self.timeout_seconds,
-        )
+        resp = self._exchange(payload)
         status = getattr(resp, "status_code", 200)
         # Session expired → clear and re-init once for non-initialize calls.
         if status == 404 and self.session_id and payload.get("method") != "initialize":
             self.session_id = None
             self._initialized = False
             self.connect()
-            resp = self._client.post(
-                self._post_endpoint,
-                json=payload,
-                headers=self._base_headers(),
-                timeout=self.timeout_seconds,
-            )
+            resp = self._exchange(payload)
             status = getattr(resp, "status_code", 200)
         if status in (404, 405) and allow_legacy_fallback and payload.get("method") == "initialize" and not self._legacy_sse:
             self._try_legacy_sse_endpoint()
-            resp = self._client.post(
-                self._post_endpoint,
-                json=payload,
-                headers=self._base_headers(),
-                timeout=self.timeout_seconds,
-            )
+            resp = self._exchange(payload)
             status = getattr(resp, "status_code", 200)
         if status == 401 and self._auth_provider is not None:
             self._ensure_auth_headers(force_refresh=True)
-            resp = self._client.post(
-                self._post_endpoint,
-                json=payload,
-                headers=self._base_headers(),
-                timeout=self.timeout_seconds,
-            )
+            resp = self._exchange(payload)
             status = getattr(resp, "status_code", 200)
         if status >= 400:
             self._raise_http_error(resp)
