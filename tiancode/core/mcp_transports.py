@@ -645,10 +645,13 @@ def isolate_workspace_npm(command: str, args: List[str]) -> LauncherIsolation:
     keeps the version. A flag before that argument is corepack's own flag, not
     the forwarded program. `bunx`, `pnpm exec`, `yarn exec`, `pipx`, `cargo`,
     `rustup`, poetry, bundler, composer, gem, pdm, hatch, pipenv, rye, make,
-    and uv's project commands (`run`, `sync`, `build`, `lock`, `export`,
-    `tree`) are refused before this runs: they execute workspace code and have
-    no prefix that keeps the tool's cwd in the repo. `uv pip sync` and `uv pip
-    compile` are refused too, because the requirements file is the command.
+    and the other project executors refused by the workspace command check
+    (gmake, bmake, just, tox, nox, ant, gradle, mvn, cmake, ctest, cpack, git,
+    and the JVM and Ansible launchers) are refused before this runs: they
+    execute workspace code and have no prefix that keeps the tool's cwd in the
+    repo. uv's project commands (`run`, `sync`, `build`, `lock`, `export`,
+    `tree`) are refused too. `uv pip sync` and `uv pip compile` are refused
+    because the requirements file is the command.
     `uv tool run --with-editable` is refused; `--with-requirements` is removed
     below so the file is not read.
     The caller's flags after `--` are left untouched. A command this function

@@ -72,6 +72,24 @@ def test_make_dry_run_skips_a_recipe_it_would_not_execute(tmp_path: Path) -> Non
     assert not marker.exists()
 
 
+def test_gmake_and_bmake_share_the_make_recipe_check(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "Makefile").write_text(
+        f"test:\n\t{_dangerous(marker)}\n",
+        encoding="utf-8",
+    )
+
+    for program in ("gmake", "bmake"):
+        reason = recipe_block_reason(f"{program} test", tmp_path)
+        assert reason is not None and "配方" in reason
+
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    (safe / "Makefile").write_text("test:\n\t@echo ok\n", encoding="utf-8")
+    assert recipe_block_reason("gmake test", safe) is None
+    assert recipe_block_reason("bmake test", safe) is None
+
+
 def test_safe_make_recipe_stays_allowed(tmp_path: Path) -> None:
     (tmp_path / "Makefile").write_text("test:\n\t@echo ok\n", encoding="utf-8")
 

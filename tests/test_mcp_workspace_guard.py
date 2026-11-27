@@ -1171,3 +1171,567 @@ def test_hatchling_build_runs_the_project_hook(tmp_path: Path) -> None:
     subprocess.run([hatchling, "build"], cwd=work, check=False, timeout=30, capture_output=True)
     assert (work / "RAN").read_text(encoding="utf-8") == "hook"
 
+
+_PROJECT_EXECUTORS = (
+    "gmake", "bmake", "just", "tox", "nox", "ant", "gradle", "mvn", "mvnDebug",
+    "cmake", "ctest", "cpack", "kotlinc", "kotlinc-jvm", "kotlin", "scalac", "scala",
+    "groovyc", "groovy", "javac", "javadoc", "jshell", "jdb",
+    "ansible", "ansible-playbook", "ansible-inventory", "ansible-console", "git",
+)
+
+
+def test_workspace_refuses_project_executors_without_blocking_the_shell(tmp_path: Path) -> None:
+    """Workspace MCP refuses the whole launcher. The shell still checks recipes."""
+    from tiancode.core.recipe_guard import recipe_block_reason
+
+    work = tmp_path / "proj"
+    work.mkdir()
+    for program in _PROJECT_EXECUTORS:
+        reason = _workspace_command_error(program, ["--version"], work, work)
+        assert reason is not None and "已拒绝" in reason, program
+    assert _workspace_command_error("env", ["gmake", "all"], work, work) is not None
+    assert _workspace_command_error("/usr/bin/gradle", ["tasks"], work, work) is not None
+    assert _workspace_command_error("ansible-config", ["dump"], work, work) is None
+    assert _workspace_command_error("ansible-doc", ["ping"], work, work) is None
+    assert _workspace_command_error("ansible-vault", ["view", "secret"], work, work) is None
+    assert _workspace_command_error("echo", ["hi"], work, work) is None
+    # `just --list` and `tox --version` do not run recipes. The shell allows them.
+    assert recipe_block_reason("just --list", work) is None
+    assert recipe_block_reason("tox --version", work) is None
+
+
+def _executed(work: Path) -> bool:
+    return (work / "RAN").is_file() or (work / "build" / "RAN").is_file()
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "filename", "text"),
+    [
+        ("gmake", ["all"], "Makefile", "all:\n\ttouch RAN\n"),
+        ("bmake", ["all"], "Makefile", "all:\n\ttouch RAN\n"),
+        ("just", ["evil"], "justfile", "evil:\n    touch RAN\n"),
+        (
+            "ant",
+            [],
+            "build.xml",
+            "<project default=\"x\"><target name=\"x\"><touch file=\"RAN\"/></target></project>\n",
+        ),
+        (
+            "gradle",
+            ["--no-daemon", "tasks"],
+            "build.gradle",
+            "new File(rootDir, \"RAN\").text = \"g\"\n",
+        ),
+        (
+            "tox",
+            ["run", "-e", "evil"],
+            "tox.ini",
+            "[tox]\nenvlist = evil\nskipsdist = true\nno_package = true\n\n"
+            "[testenv:evil]\nskip_install = true\nallowlist_externals = touch\n"
+            "commands = touch {toxinidir}/RAN\n",
+        ),
+        (
+            "cmake",
+            ["-S", ".", "-B", "build"],
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.5)\nproject(evil NONE)\n"
+            "execute_process(COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_SOURCE_DIR}/RAN)\n",
+        ),
+        (
+            "ctest",
+            ["-N"],
+            "CTestTestfile.cmake",
+            "execute_process(COMMAND python3 -c \"open('RAN','w').write('x')\")\n"
+            "add_test(evil /bin/true)\n",
+        ),
+        (
+            "cpack",
+            [],
+            "CPackConfig.cmake",
+            "execute_process(COMMAND python3 -c \"open('RAN','w').write('x')\")\n",
+        ),
+        ("groovy", ["evil.groovy"], "evil.groovy", "new File(\"RAN\").text = \"g\"\n"),
+        ("kotlinc", ["-script", "evil.kts"], "evil.kts", "java.io.File(\"RAN\").createNewFile()\n"),
+        ("kotlinc-jvm", ["-script", "evil.kts"], "evil.kts", "java.io.File(\"RAN\").createNewFile()\n"),
+    ],
+)
+def test_launcher_runs_a_workspace_file_the_guard_refuses(
+    tmp_path: Path, name: str, args: list, filename: str, text: str
+) -> None:
+    import shutil
+    import subprocess
+
+    binary = shutil.which(name)
+    if binary is None:
+        pytest.skip(f"{name} is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / filename).write_text(text, encoding="utf-8")
+    assert _workspace_command_error(name, args, work, work) is not None
+    env = os.environ.copy()
+    if name == "gradle":
+        env["GRADLE_USER_HOME"] = str(work / "gradle-home")
+    result = subprocess.run(
+        [binary, *args],
+        cwd=work,
+        env=env,
+        check=False,
+        timeout=90,
+        capture_output=True,
+    )
+    if not _executed(work):
+        err = (result.stderr or b"").decode("utf-8", "replace")[-800:]
+        raise AssertionError(f"{name} did not execute the workspace file\n{err}")
+
+
+def test_nox_executes_the_noxfile_the_guard_refuses(tmp_path: Path) -> None:
+    import importlib.util
+    import shutil
+    import subprocess
+    import sys
+
+    nox = shutil.which("nox")
+    if nox is not None:
+        argv = [nox, "-l"]
+    elif importlib.util.find_spec("nox") is not None:
+        argv = [sys.executable, "-m", "nox", "-l"]
+    else:
+        pytest.skip("nox is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / "noxfile.py").write_text(
+        "from pathlib import Path\nPath('RAN').write_text('top')\nimport nox\n\n"
+        "@nox.session(python=False)\n"
+        "def evil(session):\n    session.run('true', external=True)\n",
+        encoding="utf-8",
+    )
+    assert _workspace_command_error("nox", ["-l"], work, work) is not None
+    env = os.environ.copy()
+    # nox treats both of these as color flags and exits before loading the file.
+    env.pop("NO_COLOR", None)
+    env.pop("FORCE_COLOR", None)
+    result = subprocess.run(argv, cwd=work, env=env, check=False, timeout=30, capture_output=True)
+    if not _executed(work):
+        err = (result.stderr or b"").decode("utf-8", "replace")[-800:]
+        raise AssertionError(f"nox did not execute noxfile.py\n{err}")
+
+
+def test_mvn_runs_a_bound_plugin_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    mvn = shutil.which("mvn")
+    if mvn is None:
+        pytest.skip("mvn is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / "pom.xml").write_text(
+        "<project>\n"
+        "  <modelVersion>4.0.0</modelVersion>\n"
+        "  <groupId>e</groupId><artifactId>e</artifactId><version>1</version>\n"
+        "  <build><plugins><plugin>\n"
+        "    <groupId>org.apache.maven.plugins</groupId>\n"
+        "    <artifactId>maven-antrun-plugin</artifactId><version>3.1.0</version>\n"
+        "    <executions><execution><phase>validate</phase><goals><goal>run</goal></goals>\n"
+        "      <configuration><target><touch file=\"RAN\"/></target></configuration>\n"
+        "    </execution></executions>\n"
+        "  </plugin></plugins></build>\n"
+        "</project>\n",
+        encoding="utf-8",
+    )
+    assert _workspace_command_error("mvn", ["-B", "validate"], work, work) is not None
+    result = subprocess.run(
+        [mvn, "-B", "validate"],
+        cwd=work,
+        check=False,
+        timeout=90,
+        capture_output=True,
+    )
+    if not _executed(work):
+        text = ((result.stdout or b"") + (result.stderr or b"")).decode("utf-8", "replace")
+        if result.returncode != 0:
+            pytest.skip("mvn could not run the bound plugin in this environment")
+        raise AssertionError(text[-800:])
+
+
+def test_kotlin_and_scala_run_a_workspace_class_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    kotlinc = shutil.which("kotlinc")
+    kotlin = shutil.which("kotlin")
+    scalac = shutil.which("scalac")
+    scala = shutil.which("scala")
+    if kotlinc and kotlin:
+        work = tmp_path / "kotlin"
+        work.mkdir()
+        (work / "Evil.kt").write_text(
+            "fun main() { java.io.File(\"RAN\").createNewFile() }\n",
+            encoding="utf-8",
+        )
+        compiled = subprocess.run(
+            [kotlinc, "Evil.kt", "-d", "."],
+            cwd=work,
+            check=False,
+            timeout=60,
+            capture_output=True,
+        )
+        if compiled.returncode != 0:
+            kotlinc = None
+        else:
+            assert not _executed(work)
+            assert _workspace_command_error("kotlin", ["EvilKt"], work, work) is not None
+            subprocess.run([kotlin, "EvilKt"], cwd=work, check=True, timeout=30)
+            assert _executed(work)
+    if scalac and scala:
+        work = tmp_path / "scala"
+        work.mkdir()
+        (work / "Evil.scala").write_text(
+            "object Evil {\n"
+            "  def main(args: Array[String]): Unit =\n"
+            "    new java.io.File(\"RAN\").createNewFile()\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        compiled = subprocess.run(
+            [scalac, "Evil.scala"],
+            cwd=work,
+            check=False,
+            timeout=60,
+            capture_output=True,
+        )
+        if compiled.returncode != 0:
+            scalac = None
+        else:
+            assert not _executed(work)
+            assert _workspace_command_error("scala", ["Evil"], work, work) is not None
+            subprocess.run([scala, "Evil"], cwd=work, check=True, timeout=30)
+            assert _executed(work)
+    if not ((kotlinc and kotlin) or (scalac and scala)):
+        pytest.skip("kotlin and scala runners are not installed")
+
+
+def test_scalac_macro_and_groovyc_config_run_during_compile(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    scalac = shutil.which("scalac")
+    if scalac is not None:
+        work = tmp_path / "scalac"
+        work.mkdir()
+        (work / "M.scala").write_text(
+            "import scala.language.experimental.macros\n"
+            "import scala.reflect.macros.blackbox.Context\n"
+            "object M {\n"
+            "  def t: Unit = macro ti\n"
+            "  def ti(c: Context): c.Expr[Unit] = {\n"
+            "    new java.io.File(\"RAN\").createNewFile()\n"
+            "    import c.universe._\n"
+            "    c.Expr[Unit](q\"()\")\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (work / "U.scala").write_text(
+            "object U { def main(args: Array[String]): Unit = M.t }\n",
+            encoding="utf-8",
+        )
+        defined = subprocess.run(
+            [scalac, "M.scala"], cwd=work, check=False, timeout=60, capture_output=True
+        )
+        if defined.returncode != 0:
+            scalac = None
+        else:
+            assert not _executed(work)
+            assert _workspace_command_error("scalac", ["U.scala"], work, work) is not None
+            subprocess.run([scalac, "-cp", ".", "U.scala"], cwd=work, check=True, timeout=60)
+            assert _executed(work)
+
+    groovyc = shutil.which("groovyc")
+    if groovyc is not None:
+        work = tmp_path / "groovyc"
+        work.mkdir()
+        (work / "config.groovy").write_text("new File(\"RAN\").text = \"cfg\"\n", encoding="utf-8")
+        (work / "T.groovy").write_text("class T {}\n", encoding="utf-8")
+        assert _workspace_command_error("groovyc", ["T.groovy"], work, work) is not None
+        subprocess.run(
+            [groovyc, "--configscript", "config.groovy", "T.groovy"],
+            cwd=work,
+            check=True,
+            timeout=30,
+        )
+        assert _executed(work)
+    if scalac is None and groovyc is None:
+        pytest.skip("scalac and groovyc are not installed")
+
+
+def test_javac_discovers_a_processor_and_javadoc_runs_a_doclet(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    javac = shutil.which("javac")
+    java_home_tools = javac is not None
+    proved = False
+    if java_home_tools:
+        work = tmp_path / "javac"
+        work.mkdir()
+        (work / "EvilProc.java").write_text(
+            "import java.io.File;\nimport java.util.Set;\n"
+            "import javax.annotation.processing.*;\n"
+            "import javax.lang.model.SourceVersion;\n"
+            "import javax.lang.model.element.TypeElement;\n"
+            "@SupportedAnnotationTypes(\"*\")\n"
+            "@SupportedSourceVersion(SourceVersion.RELEASE_8)\n"
+            "public class EvilProc extends AbstractProcessor {\n"
+            "  static { try { new File(\"RAN\").createNewFile(); } catch (Exception ex) {} }\n"
+            "  public boolean process(Set<? extends TypeElement> a, RoundEnvironment e) {\n"
+            "    return false;\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        compiled = subprocess.run(
+            [javac, "EvilProc.java"], cwd=work, check=False, timeout=30, capture_output=True
+        )
+        if compiled.returncode != 0:
+            javac = None
+        else:
+            proj = work / "proj"
+            proj.mkdir()
+            (proj / "EvilProc.class").write_bytes((work / "EvilProc.class").read_bytes())
+            (proj / "T.java").write_text("class T {}\n", encoding="utf-8")
+            assert _workspace_command_error("javac", ["T.java"], proj, proj) is not None
+            # A later JDK does not discover processors on its own. Naming one still loads it.
+            ran = subprocess.run(
+                [javac, "-processor", "EvilProc", "T.java"],
+                cwd=proj,
+                check=False,
+                timeout=30,
+                capture_output=True,
+            )
+            if ran.returncode != 0 or not _executed(proj):
+                err = ((ran.stdout or b"") + (ran.stderr or b"")).decode("utf-8", "replace")
+                raise AssertionError(err[-800:])
+            proved = True
+
+    javadoc = shutil.which("javadoc")
+    javac = shutil.which("javac")
+    if javadoc and javac:
+        work = tmp_path / "javadoc"
+        work.mkdir()
+        (work / "EvilDoc.java").write_text(
+            "import java.io.File;\nimport java.util.Locale;\nimport java.util.Set;\n"
+            "import javax.lang.model.SourceVersion;\n"
+            "import jdk.javadoc.doclet.Doclet;\n"
+            "import jdk.javadoc.doclet.DocletEnvironment;\n"
+            "import jdk.javadoc.doclet.Reporter;\n"
+            "public class EvilDoc implements Doclet {\n"
+            "  static { try { new File(\"RAN\").createNewFile(); } catch (Exception ex) {} }\n"
+            "  public void init(Locale locale, Reporter reporter) {}\n"
+            "  public String getName() { return \"evil\"; }\n"
+            "  public Set<? extends Option> getSupportedOptions() { return Set.of(); }\n"
+            "  public SourceVersion getSupportedSourceVersion() { return SourceVersion.RELEASE_21; }\n"
+            "  public boolean run(DocletEnvironment env) { return true; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (work / "T.java").write_text("public class T {}\n", encoding="utf-8")
+        compiled = subprocess.run(
+            [javac, "--add-modules", "jdk.javadoc", "EvilDoc.java"],
+            cwd=work,
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+        if compiled.returncode != 0:
+            javadoc = None
+        else:
+            (work / "RAN").unlink(missing_ok=True)
+            assert _workspace_command_error("javadoc", ["T.java"], work, work) is not None
+            subprocess.run(
+                [javadoc, "-doclet", "EvilDoc", "-docletpath", ".", "T.java"],
+                cwd=work,
+                check=True,
+                timeout=30,
+                capture_output=True,
+            )
+            assert _executed(work)
+            proved = True
+    if not proved:
+        pytest.skip("javac and javadoc are not installed or could not compile the probe")
+
+
+def test_jshell_and_jdb_run_workspace_code_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    jshell = shutil.which("jshell")
+    if jshell is not None:
+        work = tmp_path / "jshell"
+        work.mkdir()
+        (work / "in.jsh").write_text("new java.io.File(\"RAN\").createNewFile()\n/exit\n", encoding="utf-8")
+        assert _workspace_command_error("jshell", ["--startup", "in.jsh"], work, work) is not None
+        subprocess.run(
+            [jshell, "--startup", str(work / "in.jsh")],
+            cwd=work,
+            check=True,
+            timeout=30,
+            capture_output=True,
+        )
+        assert _executed(work)
+
+    jdb = shutil.which("jdb")
+    javac = shutil.which("javac")
+    if jdb and javac:
+        work = tmp_path / "jdb"
+        work.mkdir()
+        (work / "Evil.java").write_text(
+            "public class Evil { public static void main(String[] a) throws Exception {"
+            " new java.io.File(\"RAN\").createNewFile(); } }\n",
+            encoding="utf-8",
+        )
+        compiled = subprocess.run(
+            [javac, "Evil.java"], cwd=work, check=False, timeout=30, capture_output=True
+        )
+        if compiled.returncode != 0:
+            jdb = None
+        else:
+            assert _workspace_command_error("jdb", ["Evil"], work, work) is not None
+            subprocess.run(
+                [jdb, "Evil"],
+                cwd=work,
+                input="run\nquit\n",
+                text=True,
+                check=False,
+                timeout=20,
+                capture_output=True,
+            )
+            assert _executed(work)
+    if jshell is None and (jdb is None or javac is None):
+        pytest.skip("jshell and jdb are not installed")
+
+
+def test_ansible_runners_execute_repo_code_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("ansible") is None and shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible is not installed")
+
+    ansible = shutil.which("ansible")
+    if ansible is not None:
+        work = tmp_path / "ansible"
+        (work / "library").mkdir(parents=True)
+        (work / "library" / "ping.py").write_text(
+            "from ansible.module_utils.basic import AnsibleModule\n"
+            "from pathlib import Path\n"
+            "def main():\n"
+            "    Path('RAN').write_text('mod')\n"
+            "    AnsibleModule(argument_spec={}).exit_json(changed=True)\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n",
+            encoding="utf-8",
+        )
+        (work / "ansible.cfg").write_text(
+            "[defaults]\nlibrary = ./library\nhost_key_checking = False\n",
+            encoding="utf-8",
+        )
+        assert _workspace_command_error("ansible", ["localhost", "-m", "ping"], work, work) is not None
+        subprocess.run(
+            [ansible, "localhost", "-i", "localhost,", "-c", "local", "-m", "ping"],
+            cwd=work,
+            check=True,
+            timeout=30,
+            capture_output=True,
+        )
+        assert _executed(work)
+
+    playbook = shutil.which("ansible-playbook")
+    if playbook is not None:
+        work = tmp_path / "playbook"
+        work.mkdir()
+        (work / "site.yml").write_text(
+            "- hosts: localhost\n  gather_facts: false\n  tasks:\n"
+            "    - command: touch RAN\n      args:\n        chdir: \"{{ playbook_dir }}\"\n",
+            encoding="utf-8",
+        )
+        assert _workspace_command_error("ansible-playbook", ["site.yml"], work, work) is not None
+        subprocess.run(
+            [playbook, "-i", "localhost,", "-c", "local", "site.yml"],
+            cwd=work,
+            check=True,
+            timeout=30,
+            capture_output=True,
+        )
+        assert _executed(work)
+
+    inventory = shutil.which("ansible-inventory")
+    if inventory is not None:
+        work = tmp_path / "inventory"
+        work.mkdir()
+        script = work / "inv.sh"
+        script.write_text("#!/bin/sh\ntouch RAN\necho '{\"local\":{\"hosts\":[\"localhost\"]}}'\n", encoding="utf-8")
+        script.chmod(0o755)
+        assert _workspace_command_error("ansible-inventory", ["-i", "inv.sh", "--list"], work, work) is not None
+        subprocess.run(
+            [inventory, "-i", "inv.sh", "--list"],
+            cwd=work,
+            check=True,
+            timeout=30,
+            capture_output=True,
+        )
+        assert _executed(work)
+
+    console = shutil.which("ansible-console")
+    if console is not None:
+        work = tmp_path / "console"
+        (work / "library").mkdir(parents=True)
+        (work / "library" / "ping.py").write_text(
+            "from ansible.module_utils.basic import AnsibleModule\n"
+            "from pathlib import Path\n"
+            "def main():\n"
+            "    Path('RAN').write_text('mod')\n"
+            "    AnsibleModule(argument_spec={}).exit_json(changed=True)\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n",
+            encoding="utf-8",
+        )
+        (work / "ansible.cfg").write_text(
+            "[defaults]\nlibrary = ./library\nhost_key_checking = False\n",
+            encoding="utf-8",
+        )
+        assert _workspace_command_error("ansible-console", [], work, work) is not None
+        subprocess.run(
+            [console, "-i", "localhost,", "-c", "local"],
+            cwd=work,
+            input="ping\nexit\n",
+            text=True,
+            check=False,
+            timeout=30,
+            capture_output=True,
+        )
+        assert _executed(work)
+
+
+def test_git_alias_runs_a_shell_command_the_guard_refuses(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    subprocess.run([git, "init", "-q"], cwd=work, check=True, timeout=15)
+    subprocess.run(
+        [git, "config", "alias.evil", "!touch RAN"],
+        cwd=work,
+        check=True,
+        timeout=15,
+    )
+    assert _workspace_command_error("git", ["evil"], work, work) is not None
+    assert _workspace_command_error("git", ["--version"], work, work) is not None
+    subprocess.run([git, "evil"], cwd=work, check=True, timeout=15)
+    assert _executed(work)
+
+
