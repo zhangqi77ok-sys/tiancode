@@ -938,10 +938,46 @@ def _manager_args(rest: str) -> str:
     return re.split(r"\s--(?:\s|$)", rest, maxsplit=1)[0]
 
 
+def _command_is_package_test(binary: str, cleaned: str) -> bool:
+    """True when the package-manager command itself is the test script.
+
+    The first word is the command. `npm t` and `pnpm tst` are `test`.
+    `run-script test` is `run test`. npm's `rum` and `urn` are `run`.
+    `run t` is a script named t, not scripts.test. Yarn 1 has no `t` alias.
+    `bun test` is Bun's own runner; only `bun run test` reads the script.
+    """
+    words = cleaned.split()
+    if not words:
+        return False
+    head = words[0]
+    nxt = words[1] if len(words) > 1 else ""
+    if binary == "bun":
+        return head == "run" and nxt == "test"
+    if binary == "yarn":
+        return head == "test" or (head == "run" and nxt == "test")
+    if head in {"test", "t", "tst"}:
+        return True
+    if head in {"run", "run-script"} and nxt == "test":
+        return True
+    return binary == "npm" and head in {"rum", "urn"} and nxt == "test"
+
+
 def _mentions_package_test(binary: str, args: str) -> bool:
+    """True when a --filter/--recursive command would run scripts.test.
+
+    The test word may follow the filter value (`pnpm --filter app t`).
+    """
+    if _command_is_package_test(binary, args.strip()):
+        return True
     if binary == "bun":
         return re.search(r"(?:^|\s)run\s+test(?:\s|$)", args) is not None
-    return re.search(r"(?:^|\s)test(?:\s|$)", args) is not None
+    if binary == "yarn":
+        return re.search(r"(?:^|\s)test(?:\s|$)", args) is not None
+    if binary == "npm" and re.search(r"(?:^|\s)(?:rum|urn|run-script)\s+test(?:\s|$)", args):
+        return True
+    if binary == "pnpm" and re.search(r"(?:^|\s)run-script\s+test(?:\s|$)", args):
+        return True
+    return re.search(r"(?:^|\s)(?:test|tst|t)(?:\s|$)", args) is not None
 
 
 def _parse_package_test(segment: str) -> tuple[str | None, bool] | None:
@@ -963,15 +999,7 @@ def _parse_package_test(segment: str) -> tuple[str | None, bool] | None:
     prefixes = _PM_PREFIX.findall(scoped)
     cleaned = _PM_PREFIX.sub(" ", scoped)
     cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(")")
-    if binary == "bun":
-        runs = cleaned == "run test" or cleaned.startswith("run test ")
-    else:
-        runs = (
-            cleaned == "test"
-            or cleaned.startswith("test ")
-            or cleaned == "run test"
-            or cleaned.startswith("run test ")
-        )
+    runs = _command_is_package_test(binary, cleaned)
     if not runs:
         return None
     if prefixes:
@@ -1001,7 +1029,9 @@ def package_script_block_reason(command: str, work_dir: Path) -> str | None:
 
     `npm test` itself is not a dangerous string. The script, its pretest and
     posttest hooks, and the `npm run` chain they reach are read from
-    package.json. A link is not followed. `--prefix` must stay inside the
+    package.json. `npm t`, `npm tst`, `npm run-script test`, and pnpm's
+    `t` / `tst` / `run-script` run that same script. Yarn 1 has no `t`
+    alias. A link is not followed. `--prefix` must stay inside the
     workspace. `--filter` and `--recursive` are refused because they run
     package.json files this check does not open. `bun test` is the native
     runner and does not read scripts.test; `bun run test` does. A leading

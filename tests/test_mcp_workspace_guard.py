@@ -1735,3 +1735,199 @@ def test_git_alias_runs_a_shell_command_the_guard_refuses(tmp_path: Path) -> Non
     assert _executed(work)
 
 
+def test_package_manager_aliases_and_hidden_subcommands_are_refused(tmp_path: Path) -> None:
+    """Aliases, value flags, and implicit pnpm/yarn names do not reach the repo."""
+    work = tmp_path / "proj"
+    work.mkdir()
+    refused = (
+        ("npm", ["t"]),
+        ("npm", ["tst"]),
+        ("npm", ["run-script", "wipe"]),
+        ("npm", ["rum", "wipe"]),
+        ("npm", ["urn", "test"]),
+        ("npm", ["rb"]),
+        ("npm", ["it"]),
+        ("npm", ["pack"]),
+        ("npm", ["publish"]),
+        ("npm", ["version"]),
+        ("npm", ["--prefix", "pkg", "install"]),
+        ("npm", ["-C", "pkg", "install"]),
+        ("npm", ["--loglevel", "silent", "install"]),
+        ("npm", ["--prefix", "pkg", "run", "wipe"]),
+        ("pnpm", ["t"]),
+        ("pnpm", ["tst"]),
+        ("pnpm", ["run-script", "wipe"]),
+        ("pnpm", ["wipe"]),
+        ("pnpm", ["hello-local"]),
+        ("pnpm", ["rb"]),
+        ("pnpm", ["it"]),
+        ("pnpm", ["pack"]),
+        ("pnpm", ["publish"]),
+        ("pnpm", ["--filter", "pkg", "wipe"]),
+        ("pnpm", ["--dir", "pkg", "install"]),
+        ("pnpm", ["-C", "pkg", "install"]),
+        ("pnpm", ["recursive", "run", "wipe"]),
+        ("pnpm", ["m", "run", "wipe"]),
+        ("pnpm", ["--loglevel", "list", "wipe"]),
+        ("yarn", ["wipe"]),
+        ("yarn", ["pack"]),
+        ("yarn", ["publish"]),
+        ("yarn", ["version"]),
+        ("yarn", ["--cwd", "pkg", "wipe"]),
+        ("yarn", ["--cwd", "pkg", "install"]),
+        ("yarn", ["workspace", "pkg", "wipe"]),
+        ("yarn", ["workspaces", "run", "wipe"]),
+        ("yarn", ["node", "-e", "console.log(1)"]),
+        ("yarn", ["--cwd", "pkg", "node", "-e", "console.log(1)"]),
+        ("corepack", ["npm", "t"]),
+        ("corepack", ["pnpm", "wipe"]),
+        ("env", ["npm", "run-script", "wipe"]),
+    )
+    for program, args in refused:
+        reason = _workspace_command_error(program, args, work, work)
+        assert reason is not None and "已拒绝" in reason, (program, args, reason)
+    allowed = (
+        ("npm", ["--version"]),
+        ("npm", ["exec", "cowsay"]),
+        ("npm", ["x", "cowsay"]),
+        ("npm", ["view", "cowsay"]),
+        ("pnpm", ["--version"]),
+        ("pnpm", ["dlx", "cowsay"]),
+        ("pnpm", ["list"]),
+        ("pnpm", ["why", "install"]),
+        ("yarn", ["--version"]),
+        ("yarn", ["dlx", "cowsay"]),
+        ("yarn", ["list"]),
+        ("echo", ["hi"]),
+    )
+    for program, args in allowed:
+        assert _workspace_command_error(program, args, work, work) is None, (program, args)
+
+
+def _git_identity(work: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True, timeout=15)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=work, check=True, timeout=15)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=work, check=True, timeout=15)
+
+
+@pytest.mark.parametrize(
+    ("binary", "args", "kind"),
+    [
+        ("npm", ["run-script", "wipe"], "script"),
+        ("npm", ["t"], "test"),
+        ("npm", ["rum", "wipe"], "script"),
+        ("npm", ["pack"], "prepare"),
+        ("npm", ["publish", "--dry-run"], "prepare"),
+        ("npm", ["version", "1.0.1", "--no-git-tag-version"], "version"),
+        ("npm", ["-C", "pkg", "install"], "prefix-install"),
+        ("pnpm", ["wipe"], "script"),
+        ("pnpm", ["t"], "test"),
+        ("pnpm", ["run-script", "wipe"], "script"),
+        ("pnpm", ["pack"], "prepare"),
+        ("pnpm", ["publish", "--dry-run", "--no-git-checks"], "prepare"),
+        ("pnpm", ["--filter", "pkg", "wipe"], "filter"),
+        ("pnpm", ["--dir", "pkg", "install"], "prefix-install"),
+        ("pnpm", ["hello-local"], "bin"),
+        ("pnpm", ["recursive", "run", "wipe"], "filter"),
+        ("yarn", ["wipe"], "script"),
+        ("yarn", ["pack"], "prepare"),
+        ("yarn", ["version", "--new-version", "1.0.1", "--no-git-tag-version"], "version"),
+        ("yarn", ["--cwd", "pkg", "wipe"], "cwd-script"),
+        ("yarn", ["workspace", "pkg", "wipe"], "workspace"),
+        ("yarn", ["node", "-e", "require('fs').writeFileSync('RAN','x')"], "empty"),
+    ],
+)
+def test_package_manager_alias_runs_repo_code_the_guard_refuses(
+    tmp_path: Path, binary: str, args: list, kind: str
+) -> None:
+    import shutil
+    import subprocess
+
+    program = shutil.which(binary)
+    if program is None:
+        pytest.skip(f"{binary} is not installed")
+    if kind == "version" and shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    work = tmp_path / "proj"
+    work.mkdir()
+    if kind == "script":
+        (work / "package.json").write_text(
+            '{"name":"x","version":"1.0.0","scripts":{"wipe":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    elif kind == "test":
+        (work / "package.json").write_text(
+            '{"name":"x","version":"1.0.0","scripts":{"test":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    elif kind == "prepare":
+        (work / "package.json").write_text(
+            '{"name":"x","version":"1.0.0","scripts":{"prepare":"touch RAN","prepack":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    elif kind == "version":
+        (work / "package.json").write_text(
+            '{"name":"x","version":"1.0.0","scripts":{"preversion":"touch RAN","version":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+        _git_identity(work)
+        subprocess.run(["git", "add", "package.json"], cwd=work, check=True, timeout=15)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=work, check=True, timeout=15)
+    elif kind == "prefix-install":
+        pkg = work / "pkg"
+        pkg.mkdir()
+        (pkg / "package.json").write_text(
+            '{"name":"pkg","version":"1.0.0","scripts":{"preinstall":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    elif kind == "filter":
+        (work / "package.json").write_text('{"name":"root","private":true}\n', encoding="utf-8")
+        (work / "pnpm-workspace.yaml").write_text("packages:\n  - pkg\n", encoding="utf-8")
+        pkg = work / "pkg"
+        pkg.mkdir()
+        (pkg / "package.json").write_text(
+            '{"name":"pkg","version":"1.0.0","scripts":{"wipe":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    elif kind == "bin":
+        bindir = work / "node_modules" / ".bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / "hello-local"
+        launcher.write_text("#!/bin/sh\ntouch RAN\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        (work / "package.json").write_text('{"name":"x","version":"1.0.0"}\n', encoding="utf-8")
+    elif kind == "cwd-script":
+        pkg = work / "pkg"
+        pkg.mkdir()
+        (pkg / "package.json").write_text(
+            '{"name":"pkg","version":"1.0.0","scripts":{"wipe":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    elif kind == "workspace":
+        (work / "package.json").write_text(
+            '{"private":true,"workspaces":["pkg"]}\n',
+            encoding="utf-8",
+        )
+        pkg = work / "pkg"
+        pkg.mkdir()
+        (pkg / "package.json").write_text(
+            '{"name":"pkg","version":"1.0.0","scripts":{"wipe":"touch RAN"}}\n',
+            encoding="utf-8",
+        )
+    assert _workspace_command_error(binary, args, work, work) is not None
+    result = subprocess.run(
+        [program, *args],
+        cwd=work,
+        check=False,
+        timeout=90,
+        capture_output=True,
+    )
+    if not _executed(work) and not any(work.rglob("RAN")):
+        if result.returncode != 0:
+            pytest.skip(f"{binary} could not run this command in this environment")
+        text = ((result.stdout or b"") + (result.stderr or b"")).decode("utf-8", "replace")
+        raise AssertionError(text[-800:])
+
+
