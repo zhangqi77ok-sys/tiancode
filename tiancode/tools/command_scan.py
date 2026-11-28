@@ -459,17 +459,6 @@ def _script_operand(program: str, words: Sequence[str]) -> Optional[str]:
     return None
 
 
-_GIT_HOOKS = {
-    "commit": frozenset({"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"}),
-    "merge": frozenset({"pre-merge-commit", "commit-msg", "post-merge"}),
-    "checkout": frozenset({"post-checkout"}),
-    "switch": frozenset({"post-checkout"}),
-    "rebase": frozenset({"pre-rebase", "post-checkout", "post-rewrite"}),
-    "push": frozenset({"pre-push"}),
-    "am": frozenset({"applypatch-msg", "pre-applypatch", "post-applypatch"}),
-}
-
-
 def _git_subcommand(command: Sequence[str]) -> str:
     """Git's subcommand, after global options. Empty when this is not git."""
     execution = _exec()
@@ -498,7 +487,11 @@ def _git_subcommand(command: Sequence[str]) -> str:
 
 def _git_runs_written_hook(command: Sequence[str], hidden: Set[str]) -> bool:
     """True when this git command would execute a hook path written earlier."""
-    names = _GIT_HOOKS.get(_git_subcommand(command))
+    from tiancode.tools.hidden_exec import RECEIVE_HOOKS, source_hook_names
+
+    names = set(source_hook_names(command))
+    if _git_subcommand(command) == "push":
+        names.update(RECEIVE_HOOKS)
     if not names:
         return False
     for path in hidden:

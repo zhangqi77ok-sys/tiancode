@@ -21,6 +21,7 @@ def _run(
     cwd: Path,
     env: dict | None = None,
     timeout: int = 20,
+    stdin: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     if env:
@@ -29,6 +30,7 @@ def _run(
         argv,
         cwd=cwd,
         env=merged,
+        input=stdin,
         text=True,
         capture_output=True,
         timeout=timeout,
@@ -1610,3 +1612,556 @@ def test_checkout_filters_process_and_clone(tmp_path: Path) -> None:
         f"git clone -c filter.mine.smudge='sudo reboot' {plain} {tmp_path / 'plain-ok'}",
         tmp_path,
     ) is None
+
+
+def test_archive_verify_mergetool_askpass_and_browser(tmp_path: Path) -> None:
+    import shutil
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = repo / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "a"]).returncode == 0
+    base = _git(repo, ["branch", "--show-current"]).stdout.strip()
+    compressor = repo / "zip.sh"
+    _marker_script(compressor, marker, body="cat >/dev/null")
+    out = repo / "out.bin"
+    proved = _git(
+        repo,
+        ["-c", f"tar.tar.gz.command={compressor}", "archive", "--format=tar.gz", "-o", str(out), "HEAD"],
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _git(
+        repo,
+        ["-c", f"tar.tgz.command={compressor}", "archive", "--format=tgz", "-o", str(out), "HEAD"],
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _git(
+        repo,
+        ["-c", f"tar.zip.command={compressor}", "archive", "--format=zip", "-o", str(out), "HEAD"],
+    )
+    if proved.returncode == 0:
+        assert marker.exists(), proved.stderr
+    marker.unlink(missing_ok=True)
+    missed = _git(
+        repo,
+        ["-c", f"tar.tar.command={compressor}", "archive", "--format=tar", "-o", str(out), "HEAD"],
+    )
+    assert not marker.exists(), missed.stderr
+    missed = _git(
+        repo,
+        ["-c", f"tar.tgz.command={compressor}", "archive", "--format=tar.gz", "-o", str(out), "HEAD"],
+    )
+    assert not marker.exists(), missed.stderr
+    missed = _git(
+        repo,
+        ["-c", f"tar.tar.gz.command={compressor}", "archive", "--format=tar.gz", "--list", "HEAD"],
+    )
+    assert not marker.exists(), missed.stderr
+    _blocked("git -c tar.tar.gz.command=sudo archive --format=tar.gz HEAD", repo)
+    assert launch_block_reason("git -c tar.tgz.command=sudo archive --format=tar HEAD", repo) is None
+    assert launch_block_reason("git -c tar.tar.gz.command=sudo archive --list", repo) is None
+
+    if shutil.which("gpg"):
+        home = tmp_path / "gpg"
+        home.mkdir()
+        generated = _run(
+            [
+                "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+                "--quick-gen-key", "t <t@example.com>", "default", "default", "never",
+            ],
+            tmp_path,
+            env={"GNUPGHOME": str(home)},
+        )
+        assert generated.returncode == 0, generated.stderr
+        signed = _git(repo, ["commit", "--allow-empty", "-S", "-m", "signed"], GNUPGHOME=str(home))
+        assert signed.returncode == 0, signed.stderr
+        wrapper = repo / "gpg.sh"
+        wrapper.write_text(f"#!/bin/sh\ntouch {marker}\nexec gpg \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        proved = _git(repo, ["-c", f"gpg.program={wrapper}", "verify-commit", "HEAD"], GNUPGHOME=str(home))
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+        proved = _git(repo, ["-c", f"gpg.program={wrapper}", "log", "-1", "--show-signature"], GNUPGHOME=str(home))
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+        missed = _git(repo, ["-c", f"gpg.program={wrapper}", "log", "-1"], GNUPGHOME=str(home))
+        assert not marker.exists(), missed.stderr
+        proved = _git(
+            repo,
+            ["-c", "log.showSignature=true", "-c", f"gpg.program={wrapper}", "log", "-1"],
+            GNUPGHOME=str(home),
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+        assert _git(repo, ["tag", "-s", "-m", "t", "v1"], GNUPGHOME=str(home)).returncode == 0
+        proved = _git(repo, ["-c", f"gpg.program={wrapper}", "tag", "-v", "v1"], GNUPGHOME=str(home))
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("git -c gpg.program=sudo verify-commit HEAD", repo)
+    assert launch_block_reason("git -c gpg.program=sudo log -1", repo) is None
+    assert launch_block_reason("git -c log.showSignature=true -c gpg.program=sudo log", repo) is not None
+
+    assert _git(repo, ["checkout", "-b", "side"]).returncode == 0
+    (repo / "a.txt").write_text("side\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "side"]).returncode == 0
+    assert _git(repo, ["checkout", base]).returncode == 0
+    (repo / "a.txt").write_text("main\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "main"]).returncode == 0
+    _git(repo, ["merge", "side"])
+    tool = repo / "tool.sh"
+    _marker_script(tool, marker, body="exit 0")
+    proved = _git(repo, ["-c", "merge.tool=mine", "-c", f"mergetool.mine.cmd={tool}", "mergetool"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(
+        repo,
+        ["-c", "merge.tool=mine", "-c", "mergetool.prompt=true", "-c", f"mergetool.mine.cmd={tool}", "mergetool"],
+    )
+    assert not marker.exists(), missed.stderr
+    _blocked("git -c merge.tool=mine -c mergetool.mine.cmd=sudo mergetool", repo)
+    assert launch_block_reason(
+        "git -c merge.tool=mine -c mergetool.prompt=true -c mergetool.mine.cmd=sudo mergetool",
+        repo,
+    ) is None
+
+    ask = repo / "ask.sh"
+    _marker_script(ask, marker, body="exit 0")
+    proved = _credential(repo, ask, "fill")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _credential(repo, ask, "approve")
+    assert not marker.exists(), missed.stderr
+    _blocked("GIT_ASKPASS=sudo git credential fill", repo)
+    assert launch_block_reason("GIT_ASKPASS=sudo git credential approve", repo) is None
+
+    browser = repo / "browser.sh"
+    _marker_script(browser, marker, body="exit 0")
+    proved = _git(
+        repo,
+        ["-c", "web.browser=mine", "-c", f"browser.mine.cmd={browser}", "web--browse", "https://example.invalid"],
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(
+        repo,
+        ["-c", "web.browser=firefox", "-c", f"browser.firefox.cmd={browser}", "web--browse", "https://example.invalid"],
+    )
+    assert not marker.exists(), missed.stderr
+    _blocked("git -c web.browser=mine -c browser.mine.cmd=sudo web--browse https://example.invalid", repo)
+    assert launch_block_reason(
+        "git -c web.browser=firefox -c browser.firefox.cmd=sudo web--browse https://example.invalid",
+        repo,
+    ) is None
+
+
+def _credential(repo: Path, ask: Path, action: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        ["git", "credential", action],
+        repo,
+        env={
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_ASKPASS": str(ask),
+            "GIT_TERMINAL_PROMPT": "0",
+        },
+        stdin="protocol=https\nhost=example.invalid\n\n",
+    )
+
+
+def _hook(repo: Path, name: str, marker: Path) -> None:
+    path = repo / ".git" / "hooks" / name
+    _marker_script(path, marker, body="exit 0")
+
+
+def test_worktree_diff_hash_textconv_and_ext_diff(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    (repo / "b.txt").write_text("b\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt", "b.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "a"]).returncode == 0
+    clean = repo / "clean.sh"
+    _marker_script(clean, marker)
+    assert _git(repo, ["config", "filter.mine.clean", str(clean)]).returncode == 0
+    assert _git(repo, ["config", "filter.mine.smudge", "cat"]).returncode == 0
+    (repo / ".gitattributes").write_text("*.txt filter=mine\n", encoding="utf-8")
+    assert _git(repo, ["add", ".gitattributes"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    assert _git(repo, ["commit", "-m", "attr"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    (repo / "a.txt").write_text("changed\n", encoding="utf-8")
+    proved = _git(repo, ["diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _git(repo, ["diff", "HEAD"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    missed = _git(repo, ["diff", "--cached"])
+    assert not marker.exists(), missed.stderr
+    assert _git(repo, ["commit", "-m", "c"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    (repo / "a.txt").write_text("d\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "d"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    missed = _git(repo, ["diff", "HEAD~1", "HEAD"])
+    assert not marker.exists(), missed.stderr
+    proved = _git(repo, ["hash-object", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _run(
+        ["git", "hash-object", "--stdin"],
+        repo,
+        env={
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        },
+        stdin="hello\n",
+    )
+    assert not marker.exists(), missed.stderr
+    missed = _git(repo, ["hash-object", "--no-filters", "a.txt"])
+    assert not marker.exists(), missed.stderr
+    _git(repo, ["config", "filter.mine.clean", "sudo reboot"])
+    assert launch_block_reason("git diff", repo) is not None
+    assert launch_block_reason("git diff --cached", repo) is None
+    assert launch_block_reason("git diff HEAD~1 HEAD", repo) is None
+    assert launch_block_reason("git hash-object a.txt", repo) is not None
+    assert launch_block_reason("git hash-object --stdin", repo) is None
+    assert launch_block_reason("git hash-object --no-filters a.txt", repo) is None
+    _git(repo, ["config", "filter.mine.clean", "cat"])
+
+    smudge = repo / "smudge.sh"
+    _marker_script(smudge, marker)
+    assert _git(repo, ["config", "filter.mine.smudge", str(smudge)]).returncode == 0
+    (repo / "sub").mkdir()
+    (repo / "sub" / "a.txt").write_text("s\n", encoding="utf-8")
+    assert _git(repo, ["add", "sub"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    assert _git(repo, ["commit", "-m", "sub"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    (repo / "sub" / "a.txt").unlink()
+    proved = _git(repo, ["read-tree", "--reset", "-u", "HEAD"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["read-tree", "-m", "-u", "HEAD"])
+    assert not marker.exists(), missed.stderr
+    marker.unlink(missing_ok=True)
+    assert _git(repo, ["sparse-checkout", "init", "--cone"]).returncode == 0
+    (repo / "sub" / "a.txt").unlink(missing_ok=True)
+    proved = _git(repo, ["sparse-checkout", "set", "sub"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "filter.mine.smudge", "sudo reboot"])
+    assert launch_block_reason("git read-tree --reset -u HEAD", repo) is not None
+    assert launch_block_reason("git read-tree -m -u HEAD", repo) is None
+    assert launch_block_reason("git sparse-checkout set sub", repo) is not None
+    assert launch_block_reason("git sparse-checkout init", repo) is None
+    _git(repo, ["sparse-checkout", "disable"])
+    _git(repo, ["config", "filter.mine.smudge", "cat"])
+
+    (repo / ".gitattributes").write_text("*.txt diff=mine\n", encoding="utf-8")
+    text = repo / "text.sh"
+    _marker_script(text, marker, body="cat")
+    assert _git(repo, ["config", "diff.mine.textconv", str(text)]).returncode == 0
+    (repo / "a.txt").write_text("needle\n", encoding="utf-8")
+    proved = _git(repo, ["blame", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["blame", "--no-textconv", "a.txt"])
+    assert not marker.exists(), missed.stderr
+    proved = _git(repo, ["grep", "--textconv", "needle", "--", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["grep", "needle", "--", "a.txt"])
+    assert not marker.exists(), missed.stderr
+    _git(repo, ["config", "diff.mine.textconv", "sudo reboot"])
+    assert launch_block_reason("git blame a.txt", repo) is not None
+    assert launch_block_reason("git blame --no-textconv a.txt", repo) is None
+    assert launch_block_reason("git grep --textconv needle", repo) is not None
+    assert launch_block_reason("git grep needle", repo) is None
+    assert launch_block_reason("git whatchanged -p -1", repo) is None
+    _git(repo, ["config", "--unset", "diff.mine.textconv"])
+
+    external = repo / "ext.sh"
+    _marker_script(external, marker, body="exit 0")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    assert _git(repo, ["commit", "-m", "needle"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    proved = _git(repo, ["-c", f"diff.external={external}", "log", "-p", "-1", "--ext-diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["-c", f"diff.external={external}", "log", "-p", "-1"])
+    assert not marker.exists(), missed.stderr
+    proved = _git(repo, ["-c", f"diff.external={external}", "show", "--ext-diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _git(repo, ["-c", f"diff.external={external}", "format-patch", "-1", "--stdout", "--ext-diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / "a.txt").write_text("stashed\n", encoding="utf-8")
+    assert _git(repo, ["stash", "push", "-m", "w"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    proved = _git(repo, ["-c", f"diff.external={external}", "stash", "show", "-p", "--ext-diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["-c", f"diff.external={external}", "stash", "show", "-p"])
+    assert not marker.exists(), missed.stderr
+    _blocked("git -c diff.external=sudo log -p --ext-diff", repo)
+    assert launch_block_reason("git -c diff.external=sudo log -p", repo) is None
+    driver = repo / "drv.sh"
+    _marker_script(driver, marker, body="exit 0")
+    assert _git(repo, ["config", "diff.mine.command", str(driver)]).returncode == 0
+    missed = _git(repo, ["log", "-p", "-1", "--ext-diff"])
+    assert not marker.exists(), missed.stderr
+    assert launch_block_reason("git -c diff.mine.command='sudo reboot' log -p --ext-diff", repo) is None
+
+
+def test_hooks_receive_fsmonitor_and_editors(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "a"]).returncode == 0
+    (repo / "a.txt").write_text("b\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "b"]).returncode == 0
+
+    _hook(repo, "post-index-change", marker)
+    proved = _git(repo, ["add", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _git(repo, ["status"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["diff"])
+    assert not marker.exists(), missed.stderr
+    missed = _git(repo, ["log", "-1"])
+    assert not marker.exists(), missed.stderr
+    (repo / ".git" / "hooks" / "post-index-change").write_text("#!/bin/sh\nsudo reboot\n", encoding="utf-8")
+    (repo / ".git" / "hooks" / "post-index-change").chmod(0o755)
+    assert launch_block_reason("git add a.txt", repo) is not None
+    assert launch_block_reason("git status", repo) is not None
+    assert launch_block_reason("git diff", repo) is None
+    (repo / ".git" / "hooks" / "post-index-change").unlink()
+
+    _hook(repo, "reference-transaction", marker)
+    proved = _git(repo, ["commit", "--allow-empty", "-m", "e"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["status"])
+    assert not marker.exists(), missed.stderr
+    (repo / ".git" / "hooks" / "reference-transaction").write_text("#!/bin/sh\nchmod 777 /\n", encoding="utf-8")
+    (repo / ".git" / "hooks" / "reference-transaction").chmod(0o755)
+    assert launch_block_reason("git commit -m m", repo) is not None
+    assert launch_block_reason("git status", repo) is None
+    (repo / ".git" / "hooks" / "reference-transaction").unlink()
+
+    _hook(repo, "post-rewrite", marker)
+    proved = _git(repo, ["commit", "--amend", "--allow-empty", "-m", "amended"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / ".git" / "hooks" / "post-rewrite").unlink()
+
+    _hook(repo, "post-commit", marker)
+    assert _git(repo, ["checkout", "-b", "side"]).returncode == 0
+    (repo / "c.txt").write_text("c\n", encoding="utf-8")
+    assert _git(repo, ["add", "c.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "c"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    assert _git(repo, ["checkout", "-"]).returncode == 0
+    proved = _git(repo, ["cherry-pick", "side"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / ".git" / "hooks" / "post-commit").write_text("#!/bin/sh\nsudo reboot\n", encoding="utf-8")
+    (repo / ".git" / "hooks" / "post-commit").chmod(0o755)
+    assert launch_block_reason("git cherry-pick side", repo) is not None
+    assert launch_block_reason("git cherry-pick -n side", repo) is None
+    (repo / ".git" / "hooks" / "post-commit").unlink()
+
+    _hook(repo, "prepare-commit-msg", marker)
+    proved = _git(repo, ["revert", "--no-edit", "HEAD"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / ".git" / "hooks" / "prepare-commit-msg").unlink()
+
+    _hook(repo, "post-checkout", marker)
+    proved = _git(repo, ["worktree", "add", str(tmp_path / "wt"), "HEAD"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / ".git" / "hooks" / "post-checkout").write_text("#!/bin/sh\nrm -rf /\n", encoding="utf-8")
+    (repo / ".git" / "hooks" / "post-checkout").chmod(0o755)
+    assert launch_block_reason(f"git worktree add {tmp_path / 'wt2'} HEAD", repo) is not None
+    assert launch_block_reason("git worktree list", repo) is None
+    (repo / ".git" / "hooks" / "post-checkout").unlink()
+
+    template = tmp_path / "template" / "hooks"
+    template.mkdir(parents=True)
+    _marker_script(template / "post-checkout", marker, body="exit 0")
+    src = tmp_path / "src"
+    src.mkdir()
+    assert _git(src, ["init"]).returncode == 0
+    (src / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(src, ["add", "a.txt"]).returncode == 0
+    assert _git(src, ["commit", "-m", "a"]).returncode == 0
+    proved = _git(tmp_path, ["clone", "--template", str(tmp_path / "template"), str(src), str(tmp_path / "cloned")])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(
+        tmp_path,
+        ["clone", "--bare", "--template", str(tmp_path / "template"), str(src), str(tmp_path / "bareclone")],
+    )
+    assert not marker.exists(), missed.stderr
+    (template / "post-checkout").write_text("#!/bin/sh\nsudo reboot\n", encoding="utf-8")
+    (template / "post-checkout").chmod(0o755)
+    assert launch_block_reason(
+        f"git clone --template {tmp_path / 'template'} {src} {tmp_path / 'blocked'}",
+        tmp_path,
+    ) is not None
+    assert launch_block_reason(
+        f"git clone --bare --template {tmp_path / 'template'} {src} {tmp_path / 'bare-ok'}",
+        tmp_path,
+    ) is None
+    assert launch_block_reason(f"git init --template {tmp_path / 'template'} {tmp_path / 'inited'}", tmp_path) is None
+
+    bare = tmp_path / "receive.git"
+    assert _git(tmp_path, ["init", "--bare", str(bare)]).returncode == 0
+    assert _git(repo, ["remote", "add", "origin", str(bare)]).returncode == 0
+    assert _git(repo, ["push", "origin", "HEAD:main"]).returncode == 0 or _git(
+        repo, ["push", "origin", "HEAD:master"]
+    ).returncode == 0
+    branch = _git(repo, ["branch", "--show-current"]).stdout.strip()
+    _marker_script(bare / "hooks" / "pre-receive", marker, body="exit 0")
+    (repo / "a.txt").write_text("pushed\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "push"]).returncode == 0
+    missed = _git(repo, ["push", "--dry-run", "origin", f"HEAD:{branch}"])
+    assert not marker.exists(), missed.stderr
+    proved = _git(repo, ["push", "origin", f"HEAD:{branch}"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    other = tmp_path / "other"
+    assert _git(tmp_path, ["clone", str(bare), str(other)]).returncode == 0
+    (other / "a.txt").write_text("from-other\n", encoding="utf-8")
+    assert _git(other, ["commit", "-am", "other"]).returncode == 0
+    other_branch = _git(other, ["branch", "--show-current"]).stdout.strip()
+    assert _git(other, ["push", "origin", f"HEAD:{other_branch}"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    _hook(repo, "post-merge", marker)
+    proved = _git(repo, ["pull", "--rebase", "origin", other_branch])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / ".git" / "hooks" / "post-merge").unlink()
+    (bare / "hooks" / "pre-receive").write_text("#!/bin/sh\nsudo reboot\n", encoding="utf-8")
+    (bare / "hooks" / "pre-receive").chmod(0o755)
+    nested = repo / "nested.git"
+    assert _git(repo, ["init", "--bare", str(nested)]).returncode == 0
+    (nested / "hooks" / "pre-receive").write_text("#!/bin/sh\nsudo reboot\n", encoding="utf-8")
+    (nested / "hooks" / "pre-receive").chmod(0o755)
+    assert launch_block_reason("git push nested.git HEAD:main", repo) is not None
+    assert launch_block_reason("git push --dry-run nested.git HEAD:main", repo) is None
+    assert launch_block_reason(f"git push {bare} HEAD:{branch}", repo) is None
+
+    post_merge = repo / ".git" / "hooks" / "post-merge"
+    post_merge.write_text("#!/bin/sh\nsudo reboot\n", encoding="utf-8")
+    post_merge.chmod(0o755)
+    assert launch_block_reason("git pull --rebase origin " + branch, repo) is not None
+    assert launch_block_reason("git pull origin " + branch, repo) is not None
+    post_merge.unlink()
+
+    watch = repo / "watch.sh"
+    _marker_script(watch, marker, body="exit 0")
+    (repo / "n.txt").write_text("n\n", encoding="utf-8")
+    proved = _git(repo, ["-c", f"core.fsmonitor={watch}", "add", "n.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    missed = _git(repo, ["-c", f"core.fsmonitor={watch}", "log", "-1"])
+    assert not marker.exists(), missed.stderr
+    _blocked("git -c core.fsmonitor=sudo add n.txt", repo)
+    assert launch_block_reason("git -c core.fsmonitor=sudo log -1", repo) is None
+
+    assert _git(repo, ["reset", "HEAD"]).returncode == 0
+    editor = repo / "edit.sh"
+    editor.write_text("#!/bin/sh\nprintf 'edit %s\\n' \"$(git rev-parse HEAD)\" > \"$1\"\n", encoding="utf-8")
+    editor.chmod(0o755)
+    started = _git(repo, ["rebase", "-i", "HEAD~1"], GIT_SEQUENCE_EDITOR=str(editor))
+    assert started.returncode == 0, started.stderr
+    seq = repo / "seq.sh"
+    _marker_script(seq, marker, body="exit 0")
+    proved = _git(repo, ["rebase", "--edit-todo"], GIT_SEQUENCE_EDITOR=str(seq))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["rebase", "--abort"])
+    _blocked("GIT_SEQUENCE_EDITOR=sudo git rebase --edit-todo", repo)
+    assert launch_block_reason("git -c commit.gpgsign=true -c gpg.program=sudo rebase --edit-todo", repo) is None
+
+
+def test_am_three_way_and_stash_apply_run_merge_driver(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("base\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "base"]).returncode == 0
+    driver = repo / "drv.sh"
+    _marker_script(driver, marker, body="exit 0")
+    assert _git(repo, ["config", "merge.filfre.name", "filfre"]).returncode == 0
+    assert _git(repo, ["config", "merge.filfre.driver", f"{driver} %A %O %B"]).returncode == 0
+    (repo / ".gitattributes").write_text("a.txt merge=filfre\n", encoding="utf-8")
+    assert _git(repo, ["add", ".gitattributes"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "attr"]).returncode == 0
+    (repo / "a.txt").write_text("stashed\n", encoding="utf-8")
+    assert _git(repo, ["stash", "push", "-m", "w"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    (repo / "a.txt").write_text("committed\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "committed"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    proved = _git(repo, ["stash", "apply"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "merge.filfre.driver", "sudo reboot %A %O %B"])
+    assert launch_block_reason("git stash apply", repo) is not None
+    assert launch_block_reason("git stash pop", repo) is not None
+    assert launch_block_reason("git am patch", repo) is None
+    assert launch_block_reason("git am -3 patch", repo) is not None
+    assert launch_block_reason("git am --3way patch", repo) is not None
+
+    src = tmp_path / "src"
+    src.mkdir()
+    assert _git(src, ["init"]).returncode == 0
+    (src / "a.txt").write_text("base\n", encoding="utf-8")
+    assert _git(src, ["add", "a.txt"]).returncode == 0
+    assert _git(src, ["commit", "-m", "base"]).returncode == 0
+    (src / "a.txt").write_text("patched\n", encoding="utf-8")
+    assert _git(src, ["commit", "-am", "patched"]).returncode == 0
+    assert _git(src, ["format-patch", "-1", "-o", str(tmp_path / "patches")]).returncode == 0
+    patch = next((tmp_path / "patches").glob("*.patch"))
+    am = tmp_path / "am"
+    am.mkdir()
+    assert _git(am, ["init"]).returncode == 0
+    (am / "a.txt").write_text("base\n", encoding="utf-8")
+    assert _git(am, ["add", "a.txt"]).returncode == 0
+    assert _git(am, ["commit", "-m", "base"]).returncode == 0
+    (am / "a.txt").write_text("local\n", encoding="utf-8")
+    assert _git(am, ["commit", "-am", "local"]).returncode == 0
+    _marker_script(am / "drv.sh", marker, body="exit 0")
+    assert _git(am, ["config", "merge.filfre.name", "filfre"]).returncode == 0
+    assert _git(am, ["config", "merge.filfre.driver", f"{am / 'drv.sh'} %A %O %B"]).returncode == 0
+    (am / ".gitattributes").write_text("*.txt merge=filfre\n", encoding="utf-8")
+    assert _git(am, ["add", ".gitattributes"]).returncode == 0
+    assert _git(am, ["commit", "-m", "attr"]).returncode == 0
+    marker.unlink(missing_ok=True)
+    missed = _git(am, ["am", str(patch)])
+    assert not marker.exists(), missed.stderr
+    _git(am, ["am", "--abort"])
+    proved = _git(am, ["am", "-3", str(patch)])
+    assert marker.exists(), proved.stderr

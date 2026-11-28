@@ -52,17 +52,8 @@ _GO_VALUES = frozenset({"-C", "-modfile", "-overlay", "-run"})
 _INSPECTED = frozenset({"git", "go", "cmake", "cargo", "perl", "prove", "ctest"})
 _EXPORTED_ENV = frozenset({
     "GIT_EXTERNAL_DIFF", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR",
-    "PERL5DB", "PERL5OPT", "PYTHONPATH",
+    "GIT_ASKPASS", "PERL5DB", "PERL5OPT", "PYTHONPATH",
 })
-_HOOKS = {
-    "commit": ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"),
-    "merge": ("pre-merge-commit", "commit-msg", "post-merge"),
-    "checkout": ("post-checkout",),
-    "switch": ("post-checkout",),
-    "rebase": ("pre-rebase", "post-checkout", "post-rewrite"),
-    "push": ("pre-push",),
-    "am": ("applypatch-msg", "pre-applypatch", "post-applypatch"),
-}
 _WRAPPER_VALUE = re.compile(
     r"build\.rustc-wrapper\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|(\S+))",
     re.IGNORECASE,
@@ -196,6 +187,12 @@ def _git_reason(
     cloned = _clone_filter_reason(words, assignments, parent, cwd, root)
     if cloned:
         return cloned
+    template = _clone_template_reason(words, assignments, loaded, parent, cwd, root)
+    if template:
+        return template
+    received = _push_receive_reason(words, assignments, loaded, parent, cwd, root)
+    if received:
+        return received
     return _hook_reason(words, cwd, root, loaded, assignments, parent)
 
 
@@ -220,8 +217,14 @@ def _git_attribute_reason(
     run `smudge`. `stash pop`, `stash apply`, and `stash branch` do too.
     `worktree add` checks out unless `--no-checkout` is set. `checkout-index`
     does when it is given a path, `-a`, or `--stdin`. `diff`, `show`, and
-    `log -p` run `textconv`. `diff.<name>.command` runs for `git diff`.
-    `merge.<name>.driver` runs for `git merge`, `cherry-pick`, and `rebase`.
+    `log -p` run `textconv`. `blame` and `annotate` run it unless
+    `--no-textconv`. `grep --textconv` runs it; plain `grep` does not.
+    `whatchanged -p` does not. `diff.<name>.command` runs for `git diff`.
+    `merge.<name>.driver` runs for `git merge`, `cherry-pick`, `rebase`,
+    `am -3`, and `stash apply`/`pop`. A worktree `git diff` runs `clean`;
+    `--cached` and a two-commit diff do not. `hash-object` runs `clean`
+    for a path unless `--no-filters`. `read-tree --reset -u` and
+    `--prefix -u`, and `sparse-checkout set`, run `smudge`.
     A non-empty `filter.<name>.process` replaces `clean` and `smudge`.
     Git 2.56 starts that process for `git status` when a filtered file is
     dirty. Git 2.43 does not, but the guard does not depend on the installed
@@ -237,7 +240,14 @@ def _git_attribute_reason(
     wanted: List[Tuple[str, str, str]] = []
     args = _git_args(words)
     stash_action = _stash_action(args) if sub == "stash" else ""
-    clean = sub in {"add", "status", "commit"} or stash_action in {"push", "save"}
+    diff_worktree = sub == "diff" and _diff_reads_worktree(args, cwd)
+    hash_clean = sub == "hash-object" and _hash_object_filters(args)
+    clean = (
+        sub in {"add", "status", "commit"}
+        or stash_action in {"push", "save"}
+        or diff_worktree
+        or hash_clean
+    )
     smudge = sub in {
         "checkout", "restore", "switch", "merge", "rebase", "cherry-pick", "revert", "pull", "am",
     } or stash_action in {"pop", "apply", "branch"}
@@ -245,11 +255,21 @@ def _git_attribute_reason(
         smudge = True
     if sub == "checkout-index" and _checkout_index_writes(args):
         smudge = True
+    if sub == "read-tree" and _read_tree_writes(args):
+        smudge = True
+    if sub == "sparse-checkout" and _sparse_checkout_writes(args):
+        smudge = True
     show_patch = sub in {"diff", "show"} or (sub == "log" and _log_shows_patch(args))
+    textconv = show_patch or _blame_uses_textconv(sub, args) or _grep_uses_textconv(sub, args)
+    # `diff.<name>.command` was proved for `git diff` only. `log --ext-diff`
+    # runs `diff.external` and does not run the attribute command.
     external = sub == "diff"
-    merge_driver = sub in {"merge", "cherry-pick", "rebase"}
+    merge_driver = sub in {"merge", "cherry-pick", "rebase"} or stash_action in {"apply", "pop"}
+    if sub == "am" and _am_three_way(args):
+        merge_driver = True
     # `status` still runs `clean`. A process filter replaces that clean command.
-    # Git 2.56 also starts the process itself when a filtered file is dirty.
+    # Git 2.56 also starts that process for `git status` when a filtered file is dirty.
+    # `hash-object` starts the same process when one is configured.
     runs_process = smudge or clean
     for key, value in config.items():
         text = value.strip()
@@ -267,7 +287,7 @@ def _git_attribute_reason(
             name = key[len("filter.") : -len(".process")]
             if name:
                 wanted.append(("filter", name, text))
-        elif show_patch and key.startswith("diff.") and key.endswith(".textconv"):
+        elif textconv and key.startswith("diff.") and key.endswith(".textconv"):
             name = key[len("diff.") : -len(".textconv")]
             if name:
                 wanted.append(("diff", name, text))
@@ -305,6 +325,173 @@ def _log_shows_patch(args: Sequence[str]) -> bool:
     return False
 
 
+def _blame_uses_textconv(sub: str, args: Sequence[str]) -> bool:
+    """`git blame` and `git annotate` run textconv unless `--no-textconv` wins."""
+    if sub not in {"blame", "annotate"}:
+        return False
+    disabled = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name == "--textconv":
+            disabled = False
+        elif name == "--no-textconv":
+            disabled = True
+    return not disabled
+
+
+def _grep_uses_textconv(sub: str, args: Sequence[str]) -> bool:
+    """Plain `git grep` does not run textconv. `--textconv` does. The last flag wins."""
+    if sub != "grep":
+        return False
+    enabled = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name == "--textconv":
+            enabled = True
+        elif name == "--no-textconv":
+            enabled = False
+    return enabled
+
+
+def _hash_object_filters(args: Sequence[str]) -> bool:
+    """`git hash-object` applies clean for a path. `--stdin` alone does not.
+
+    A file operand is a path. `--path` is too. The last of `--no-filters` and
+    `--filters` wins, and `--no-filters` stores the bytes as they are.
+    """
+    enabled = True
+    has_path = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            has_path = has_path or index + 1 < len(args)
+            break
+        name, eq, _value = word.partition("=")
+        if name == "--no-filters":
+            enabled = False
+        elif name == "--filters":
+            enabled = True
+        elif name == "--path":
+            has_path = True
+            if not eq:
+                index += 1
+        elif name in {"-t"} and not eq:
+            index += 1
+        elif word.startswith("-"):
+            index += 1
+            continue
+        else:
+            has_path = True
+        index += 1
+    return enabled and has_path
+
+
+def _am_three_way(args: Sequence[str]) -> bool:
+    """`git am -3` / `--3way` can run a merge driver. A plain `am` does not."""
+    enabled = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"-3", "--3way"}:
+            enabled = True
+        elif name == "--no-3way":
+            enabled = False
+    return enabled
+
+
+_DIFF_VALUE_FLAGS = frozenset({
+    "-U", "--unified", "-l", "--stat-width", "--stat-name-width", "--stat-graph-width",
+    "--stat-count", "--src-prefix", "--dst-prefix", "--line-prefix", "--inter-hunk-context",
+    "--output-indicator-new", "--output-indicator-old", "--output-indicator-context",
+    "-I", "--ignore-matching-lines", "--diff-algorithm", "--anchored", "--word-diff-regex",
+    "--color-moved-ws", "--ws-error-highlight", "-S", "-G", "-O", "--output",
+    "--color", "--word-diff", "--submodule", "--ignore-submodules", "--abbrev",
+    "--diff-filter", "--relative", "--dirstat", "--dirstat-by-file",
+})
+
+
+def _diff_reads_worktree(args: Sequence[str], cwd: Path) -> bool:
+    """True when `git diff` compares the worktree and therefore runs clean.
+
+    `--cached` and `--staged` do not. Two revision arguments do not. A path
+    that exists in the worktree is not a revision, so `git diff a.txt b.txt`
+    still reads the worktree.
+    """
+    revisions = 0
+    cached = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, _value = word.partition("=")
+        if word.startswith("-") and word != "-":
+            if name in {"--cached", "--staged"}:
+                cached = True
+            if name in _DIFF_VALUE_FLAGS and not eq:
+                index += 2
+                continue
+            index += 1
+            continue
+        if _looks_like_revision(word, cwd):
+            revisions += 1
+        index += 1
+    if cached:
+        return False
+    return revisions < 2
+
+
+def _looks_like_revision(token: str, cwd: Path) -> bool:
+    if token in {"HEAD", "@"} or token.startswith(("HEAD", "@{")):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{4,64}", token):
+        return True
+    if any(mark in token for mark in ("~", "^", ":")) or ".." in token:
+        return True
+    path = cwd / token
+    if path.exists():
+        return False
+    return "/" in token
+
+
+def _read_tree_writes(args: Sequence[str]) -> bool:
+    """`read-tree --reset -u` and `--prefix -u` check files out.
+
+    `-m -u` and a bare `read-tree HEAD` do not run smudge. `-i` and `-n`
+    turn the checkout back off.
+    """
+    update = False
+    resetting = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"--reset"} or name.startswith("--prefix"):
+            resetting = True
+        if name in {"-n", "--dry-run", "-i"}:
+            update = False
+        elif name == "-u":
+            update = True
+    return update and resetting
+
+
+def _sparse_checkout_writes(args: Sequence[str]) -> bool:
+    """`sparse-checkout set` checks files out. `init`, `list`, and `disable` did not."""
+    for word in args:
+        if word == "--":
+            break
+        if word.startswith("-"):
+            continue
+        return word == "set"
+    return False
+
+
 def _filter_process(config: Dict[str, str], name: str) -> str:
     """The long-running process command, when one is configured for this filter."""
     return config.get(f"filter.{name}.process", "").strip()
@@ -315,28 +502,9 @@ def _worktree_checks_out(args: Sequence[str]) -> bool:
 
     `worktree list` does not. `-n` is not a worktree flag.
     """
-    action = ""
-    checkout = True
-    index = 0
-    while index < len(args):
-        word = args[index]
-        if word == "--":
-            break
-        name, eq, _value = word.partition("=")
-        if name in {"-b", "-B", "--reason"} and not eq:
-            index += 2
-            continue
-        if word.startswith("-") and word != "-":
-            if name == "--no-checkout":
-                checkout = False
-            elif name == "--checkout":
-                checkout = True
-            index += 1
-            continue
-        if not action:
-            action = word
-        index += 1
-    return action == "add" and checkout
+    from tiancode.tools.hidden_exec import _worktree_add_checks_out
+
+    return _worktree_add_checks_out(args)
 
 
 def _checkout_index_writes(args: Sequence[str]) -> bool:
@@ -671,19 +839,196 @@ def _git_value(raw: str) -> str:
     return text.strip()
 
 
-def _hook_reason(
+def _clone_template_reason(
     words: Sequence[str],
+    assignments: Sequence[str],
+    file_config: Dict[str, str],
+    parent: Dict[str, str],
     cwd: Path,
     root: Path,
+) -> Optional[str]:
+    """Block a template `post-checkout` hook that `git clone` will run.
+
+    `git init --template` copies the hook and does not run it. `--bare` and
+    `--no-checkout` do not either. A template outside the workspace is not read.
+    `--template` replaces `init.templateDir`.
+    """
+    from tiancode.tools.hidden_exec import _git_args, _git_subcommand, effective_git_config
+
+    if _git_subcommand(words) != "clone":
+        return None
+    args = _git_args(words)
+    checkout, _configs, _positionals = _clone_checkout_and_config(args)
+    if not checkout:
+        return None
+    template = ""
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name == "--template":
+            template = value if eq else (args[index + 1] if index + 1 < len(args) else "")
+        index += 1
+    if not template:
+        config = effective_git_config(words, assignments, file_config, parent)
+        template = config.get("init.templatedir", "").strip()
+    if not template:
+        return None
+    path = _resolve(cwd, template)
+    if path.is_symlink():
+        return "clone 模板是符号链接，已拒绝执行"
+    if not _within(root, path):
+        return None
+    return _one_hook_reason(path / "hooks" / "post-checkout", "post-checkout")
+
+
+_PUSH_VALUE_FLAGS = frozenset({"-o", "--push-option"})
+
+
+def _push_receive_reason(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    file_config: Dict[str, str],
+    parent: Dict[str, str],
+    cwd: Path,
+    root: Path,
+) -> Optional[str]:
+    """Block receive hooks in a local repository this push will update.
+
+    `pre-push` in the source repository is handled with the other source hooks.
+    A URL, a path outside the workspace, and `--dry-run` are not read.
+    """
+    from tiancode.tools.hidden_exec import RECEIVE_HOOKS, _git_args, _git_subcommand
+
+    if _git_subcommand(words) != "push":
+        return None
+    args = _git_args(words)
+    if any(word.split("=", 1)[0] in {"-n", "--dry-run"} for word in args):
+        return None
+    remote = ""
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            rest = args[index + 1 :]
+            remote = rest[0] if rest else ""
+            break
+        name, eq, value = word.partition("=")
+        if name == "--repo":
+            remote = value if eq else (args[index + 1] if index + 1 < len(args) else "")
+            break
+        if word.startswith("-") and word != "-":
+            index += 2 if name in _PUSH_VALUE_FLAGS and not eq and index + 1 < len(args) else 1
+            continue
+        remote = word
+        break
+    config = _merged_git_config(words, file_config, assignments, parent)
+    target = _push_local_repo(remote, config, cwd)
+    if target is None:
+        return None
+    if target.is_symlink() or not _within(root, target):
+        return None
+    hooks = _receive_hooks_directory(target)
+    if hooks is None:
+        return None
+    if hooks.is_symlink():
+        return "推送目标的钩子目录是符号链接，已拒绝执行"
+    if not _within(root, hooks):
+        return None
+    for name in RECEIVE_HOOKS:
+        reason = _one_hook_reason(hooks / name, name)
+        if reason:
+            return reason
+    return None
+
+
+def _push_local_repo(remote: str, config: Dict[str, str], cwd: Path) -> Optional[Path]:
+    """The local directory a push updates, when that directory is named here.
+
+    A configured remote name uses its URL. An existing path is the repository.
+    A refspec such as `main` or `HEAD:main` uses the upstream remote, then origin.
+    `host:path` and `https://` are not local repositories.
+    """
+    token = remote.strip()
+    if _scp_like(token):
+        return None
+    if token and _config_remote_url(config, token):
+        return _local_git_path(_config_remote_url(config, token), cwd)
+    if token and "://" in token:
+        return _local_git_path(token, cwd)
+    if token and not _looks_like_refspec(token):
+        path = _local_git_path(token, cwd)
+        if path is not None and path.exists():
+            return path
+    name = _upstream_remote(config, cwd) or "origin"
+    url = _config_remote_url(config, name)
+    if not url:
+        return None
+    return _local_git_path(url, cwd)
+
+
+def _scp_like(token: str) -> bool:
+    """`git@host:path` and `github.com:user/repo` are SSH URLs, not refspecs."""
+    if not token or "://" in token or ":" not in token:
+        return False
+    left = token.split(":", 1)[0]
+    return "@" in left or "." in left
+
+
+def _config_remote_url(config: Dict[str, str], name: str) -> str:
+    return config.get(f"remote.{name.lower()}.url", "").strip()
+
+
+def _looks_like_refspec(token: str) -> bool:
+    return ":" in token and "://" not in token and not token.startswith((".", "/"))
+
+
+def _upstream_remote(config: Dict[str, str], cwd: Path) -> str:
+    git_dir, error = _git_dir(cwd)
+    if error or git_dir is None:
+        return ""
+    head, read_error = _read_trusted(git_dir / "HEAD")
+    if read_error or not head or not head.startswith("ref: refs/heads/"):
+        return ""
+    branch = head.split("refs/heads/", 1)[1].strip()
+    return config.get(f"branch.{branch.lower()}.remote", "").strip()
+
+
+def _local_git_path(raw: str, cwd: Path) -> Optional[Path]:
+    text = raw.strip()
+    if not text or "://" in text and not text.startswith("file://"):
+        return None
+    if text.startswith("file://"):
+        source = _clone_source_path(text, cwd)
+        return source
+    if _looks_like_refspec(text):
+        return None
+    return _resolve(cwd, text)
+
+
+def _receive_hooks_directory(path: Path) -> Optional[Path]:
+    if not path.is_dir():
+        return None
+    git_entry = path / ".git"
+    if git_entry.is_dir() or git_entry.is_file():
+        git_dir, error = _git_dir(path)
+        if error or git_dir is None:
+            return None
+        return git_dir / "hooks"
+    if (path / "HEAD").is_file() and (path / "objects").is_dir():
+        return path / "hooks"
+    return None
+
+
+def _merged_git_config(
+    words: Sequence[str],
     file_config: Dict[str, str],
     assignments: Sequence[str],
     parent: Dict[str, str],
-) -> Optional[str]:
-    from tiancode.tools.hidden_exec import _git_subcommand, _inline_git_config, _slots_from_env
-
-    names = _HOOKS.get(_git_subcommand(words))
-    if not names:
-        return None
+) -> Dict[str, str]:
+    from tiancode.tools.hidden_exec import _inline_git_config, _slots_from_env
 
     env = dict(parent)
     for word in assignments:
@@ -693,28 +1038,52 @@ def _hook_reason(
     config = dict(file_config)
     config.update(_slots_from_env(env))
     config.update(_inline_git_config(words))
+    return config
+
+
+def _one_hook_reason(path: Path, name: str) -> Optional[str]:
+    """Why this one hook file must not run, or None when it is absent or safe."""
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink():
+        return f"git 钩子 {name} 是符号链接，已拒绝执行"
+    from tiancode.core.path_safety import is_shared_hardlink
+
+    if is_shared_hardlink(path):
+        return f"git 钩子 {name} 是硬链接，已拒绝执行"
+    if not _executable(path):
+        return None
+    text, read_error = _read_trusted(path)
+    if read_error or text is None:
+        return f"git 钩子 {name} 无法作为普通文件读取，已拒绝执行"
+    if _text_runs_danger(text):
+        return f"git 钩子 {name} 含高危命令，已拒绝执行"
+    return None
+
+
+def _hook_reason(
+    words: Sequence[str],
+    cwd: Path,
+    root: Path,
+    file_config: Dict[str, str],
+    assignments: Sequence[str],
+    parent: Dict[str, str],
+) -> Optional[str]:
+    from tiancode.tools.hidden_exec import source_hook_names
+
+    names = source_hook_names(words)
+    config = _merged_git_config(words, file_config, assignments, parent)
+    if not names:
+        return None
     directory, error = _hooks_directory(config.get("core.hookspath", ""), cwd, root)
     if error:
         return error
     if directory is None:
         return None
     for name in names:
-        path = directory / name
-        if not path.exists() and not path.is_symlink():
-            continue
-        if path.is_symlink():
-            return f"git 钩子 {name} 是符号链接，已拒绝执行"
-        from tiancode.core.path_safety import is_shared_hardlink
-
-        if is_shared_hardlink(path):
-            return f"git 钩子 {name} 是硬链接，已拒绝执行"
-        if not _executable(path):
-            continue
-        text, read_error = _read_trusted(path)
-        if read_error or text is None:
-            return f"git 钩子 {name} 无法作为普通文件读取，已拒绝执行"
-        if _text_runs_danger(text):
-            return f"git 钩子 {name} 含高危命令，已拒绝执行"
+        reason = _one_hook_reason(directory / name, name)
+        if reason:
+            return reason
     return None
 
 
