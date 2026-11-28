@@ -459,6 +459,57 @@ def _script_operand(program: str, words: Sequence[str]) -> Optional[str]:
     return None
 
 
+_GIT_HOOKS = {
+    "commit": frozenset({"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"}),
+    "merge": frozenset({"pre-merge-commit", "commit-msg", "post-merge"}),
+    "checkout": frozenset({"post-checkout"}),
+    "switch": frozenset({"post-checkout"}),
+    "rebase": frozenset({"pre-rebase", "post-checkout", "post-rewrite"}),
+    "push": frozenset({"pre-push"}),
+    "am": frozenset({"applypatch-msg", "pre-applypatch", "post-applypatch"}),
+}
+
+
+def _git_subcommand(command: Sequence[str]) -> str:
+    """Git's subcommand, after global options. Empty when this is not git."""
+    execution = _exec()
+    if not command or execution._command_basename(command[0]) != "git":
+        return ""
+    values = frozenset({
+        "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+        "--super-prefix", "--list-cmds", "-c", "--config-env",
+    })
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            return command[index + 1] if index + 1 < len(command) else ""
+        name, eq, _value = word.partition("=")
+        if name in {"--version", "--help", "-h"}:
+            return ""
+        if word.startswith("-"):
+            index += 1
+            if name in values and not eq and index < len(command):
+                index += 1
+            continue
+        return execution._command_basename(word)
+    return ""
+
+
+def _git_runs_written_hook(command: Sequence[str], hidden: Set[str]) -> bool:
+    """True when this git command would execute a hook path written earlier."""
+    names = _GIT_HOOKS.get(_git_subcommand(command))
+    if not names:
+        return False
+    for path in hidden:
+        parts = [part for part in path.replace("\\", "/").split("/") if part]
+        if not parts or parts[-1] not in names:
+            continue
+        if "hooks" in parts[:-1]:
+            return True
+    return False
+
+
 def _executes_hidden(segment: str, hidden: Set[str]) -> bool:
     if not hidden:
         return False
@@ -473,6 +524,8 @@ def _executes_hidden(segment: str, hidden: Set[str]) -> bool:
         if not command:
             continue
         if _path_key(command[0]) in hidden:
+            return True
+        if _git_runs_written_hook(command, hidden):
             return True
         program = execution._command_basename(command[0])
         script = _script_operand(program, command)
@@ -594,9 +647,19 @@ def _program_before(prefix: str) -> str:
     return execution._command_basename(command[0])
 
 
-def _heredoc_scripts(raw: str) -> List[str]:
-    """Bodies a shell, source, or eval reads from a heredoc or here-string."""
-    bodies: List[str] = []
+def _command_of_prefix(prefix: str) -> List[str]:
+    execution = _exec()
+    tokens = _shell_tokens(prefix.strip())
+    peeled = execution._peel_prefixes(tokens)
+    if peeled is None:
+        return []
+    _assignments, command = peeled
+    return execution._shell_words(command)
+
+
+def _heredoc_entries(raw: str) -> List[Tuple[List[str], str]]:
+    """`(command words, body)` for each heredoc or here-string."""
+    entries: List[Tuple[List[str], str]] = []
     index = 0
     limit = len(raw)
     quote = ""
@@ -616,14 +679,14 @@ def _heredoc_scripts(raw: str) -> List[str]:
             index += 1
             continue
         line_start = raw.rfind("\n", 0, index) + 1
-        program = _program_before(raw[line_start:index])
-        if program not in _HERE_PROGRAMS:
+        command = _command_of_prefix(raw[line_start:index])
+        if not command:
             index += 2
             continue
         if raw.startswith("<<<", index):
             word, index = _read_word_at(raw, index + 3)
             if word:
-                bodies.append(_unwrap_quotes(word))
+                entries.append((command, _unwrap_quotes(word)))
             continue
         cursor = index + 2
         strip_tabs = False
@@ -647,8 +710,18 @@ def _heredoc_scripts(raw: str) -> List[str]:
             if check == delim:
                 break
             lines.append(line.rstrip("\r\n"))
-        bodies.append("\n".join(lines))
+        entries.append((command, "\n".join(lines)))
         index = newline + 1 + consumed
+    return entries
+
+
+def _heredoc_scripts(raw: str) -> List[str]:
+    """Bodies a shell, source, or eval reads from a heredoc or here-string."""
+    execution = _exec()
+    bodies: List[str] = []
+    for command, body in _heredoc_entries(raw):
+        if execution._command_basename(command[0]) in _HERE_PROGRAMS:
+            bodies.append(body)
     return bodies
 
 
@@ -738,8 +811,12 @@ _EXEC_CALL = re.compile(
     | \b(?:execFileSync|execSync|spawnSync|execFile)\s*\(
     | \.(?:execFileSync|execSync|spawnSync|execFile|exec|spawn)\s*\(
     | \b(?:shell_exec|passthru|proc_open)\s*\(
+    | \bProcessBuilder\s*\(
     | (?<![.\w])(?:system|exec|popen)\s*(?:\(|\s+)
     """
+)
+_AWK_GETLINE = re.compile(
+    r"""(?P<q>['"])(?P<body>(?:\\.|(?!(?P=q)).)*)(?P=q)\s*\|\s*getline"""
 )
 _OPEN_CALL = re.compile(r"\bopen\s*\(")
 _PATH_WRITE = re.compile(
@@ -861,6 +938,129 @@ def _yarn_forwarded_node(command: Sequence[str]) -> Optional[List[str]]:
     return None
 
 
+def reads_program_on_stdin(program: str, command: Sequence[str]) -> bool:
+    """True when a pipe into this process is the program, not data.
+
+    `python3 -c` and `python3 script.py` read data from stdin. `python3` and
+    `python3 -` read the program. `awk -f -` reads the program. `jshell`
+    reads commands from a pipe. Help and version do not.
+    """
+    execution = _exec()
+    program = execution._command_basename(program)
+    if program == "jshell":
+        return not any(word in {"-h", "--help", "--version"} for word in command[1:])
+    if program in {"awk", "mawk", "gawk", "nawk"}:
+        return _awk_program_source(command) == ""
+    if program not in {"python", "python2", "python3", "node", "nodejs", "perl", "php", "ruby"}:
+        return False
+    return _interpreter_script_source(program, command) == ""
+
+
+def _interpreter_script_source(program: str, command: Sequence[str]) -> Optional[str]:
+    """`""` when stdin is the program, the inline code is not returned here.
+
+    None means a script file or `-c`/`-m` already names the program, so stdin
+    is data.
+    """
+    code_flags = {
+        "python": {"-c"},
+        "python2": {"-c"},
+        "python3": {"-c"},
+        "node": {"-e", "--eval", "-p", "--print"},
+        "nodejs": {"-e", "--eval", "-p", "--print"},
+        "perl": {"-e", "-E"},
+        "php": {"-r", "-R", "-B", "-E"},
+        "ruby": {"-e"},
+    }
+    value_flags = {
+        "python": {"-W", "-X"},
+        "python2": {"-W", "-X"},
+        "python3": {"-W", "-X"},
+        "node": {"-r", "--require"},
+        "nodejs": {"-r", "--require"},
+        "perl": {"-I"},
+        "php": {"-d"},
+        "ruby": {"-I"},
+    }
+    codes = code_flags.get(program, frozenset())
+    values = value_flags.get(program, frozenset())
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            nxt = command[index + 1] if index + 1 < len(command) else ""
+            if nxt in {"", "-"}:
+                return ""
+            return None
+        if word in codes or word.split("=", 1)[0] in codes:
+            return None
+        name = word.split("=", 1)[0]
+        if program.startswith("python") and (word == "-m" or word.startswith("-m") and len(word) > 2):
+            return None
+        if word.startswith("-") and not word.startswith("--"):
+            cluster = word[1:]
+            if any(char in codes or (program.startswith("python") and char == "m") for char in cluster):
+                # `-c` or `-m` inside a cluster. `-c` may have the code attached.
+                return None
+            if any(char in {flag[1:] for flag in values if len(flag) == 2} for char in cluster):
+                if cluster[-1] in {flag[1:] for flag in values if len(flag) == 2} and index + 1 < len(command):
+                    index += 2
+                    continue
+            index += 1
+            continue
+        if name in values and "=" not in word:
+            index += 2
+            continue
+        if word.startswith("-"):
+            index += 1
+            continue
+        if word == "-":
+            return ""
+        return None
+    return ""
+
+
+def _awk_program_source(command: Sequence[str]) -> Optional[str]:
+    """Inline awk program, `""` when `-f -` reads stdin, or None for `-f file`."""
+    files = False
+    stdin = False
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            rest = command[index + 1 :]
+            if stdin:
+                return ""
+            if files:
+                return None
+            return _unwrap_quotes(rest[0]) if rest else None
+        name, eq, value = word.partition("=")
+        if name in {"-e", "--source"}:
+            if eq:
+                return _unwrap_quotes(value)
+            if index + 1 < len(command):
+                return _unwrap_quotes(command[index + 1])
+            return None
+        if name in {"-f", "--file"}:
+            target = value if eq else (command[index + 1] if index + 1 < len(command) else "")
+            if _unwrap_quotes(target) in {"-", "/dev/stdin"}:
+                stdin = True
+            else:
+                files = True
+            index += 1 if eq else 2
+            continue
+        if name in {"-F", "--field-separator", "-v", "--assign", "-W"} and not eq:
+            index += 2
+            continue
+        if word.startswith("-"):
+            index += 1
+            continue
+        if stdin or files:
+            return "" if stdin else None
+        return _unwrap_quotes(word)
+    return "" if stdin else None
+
+
 def interpreter_payloads(text: str) -> List[Tuple[str, str]]:
     """`(program, code)` pairs a shell will hand to python -c, node -e, and the rest.
 
@@ -890,6 +1090,21 @@ def interpreter_payloads(text: str) -> List[Tuple[str, str]]:
                     program = "node"
             for payload in _payloads_of(program, command):
                 found.append((program, payload))
+            if program in {"awk", "mawk", "gawk", "nawk"}:
+                source = _awk_program_source(command)
+                if source:
+                    found.append((program, source))
+    for command, body in _heredoc_entries(text):
+        if not command or not body.strip():
+            continue
+        program = execution._command_basename(command[0])
+        if program in {"awk", "mawk", "gawk", "nawk"}:
+            if _awk_program_source(command) == "":
+                found.append((program, body))
+            continue
+        if program in {"python", "python2", "python3", "node", "nodejs", "perl", "php", "ruby", "jshell"}:
+            if reads_program_on_stdin(program, command):
+                found.append((program, body))
     return found
 
 
@@ -1080,6 +1295,11 @@ def executed_literals(program: str, payload: str) -> List[str]:
         found.extend(_delimited_exec(payload, ruby=True, perl=False))
     elif program == "perl":
         found.extend(_delimited_exec(payload, ruby=False, perl=True))
+    if program in {"awk", "mawk", "gawk", "nawk"}:
+        for match in _AWK_GETLINE.finditer(payload):
+            body = match.group("body").strip()
+            if body:
+                found.append(body)
     for argument in _exec_arguments(payload):
         literals = [item.strip() for item in _string_literals(argument) if item.strip()]
         if not literals:
