@@ -223,7 +223,9 @@ def _git_attribute_reason(
     `log -p` run `textconv`. `diff.<name>.command` runs for `git diff`.
     `merge.<name>.driver` runs for `git merge`, `cherry-pick`, and `rebase`.
     A non-empty `filter.<name>.process` replaces `clean` and `smudge`.
-    `git status` does not start that process.
+    Git 2.56 starts that process for `git status` when a filtered file is
+    dirty. Git 2.43 does not, but the guard does not depend on the installed
+    version, so a dangerous process is refused for `status` as well.
     """
     from tiancode.tools.execution import is_dangerous_command
     from tiancode.tools.hidden_exec import _git_args, _git_subcommand, effective_git_config
@@ -246,9 +248,9 @@ def _git_attribute_reason(
     show_patch = sub in {"diff", "show"} or (sub == "log" and _log_shows_patch(args))
     external = sub == "diff"
     merge_driver = sub in {"merge", "cherry-pick", "rebase"}
-    # `status` still runs `clean`, but a long-running process filter does not
-    # start for `git status`. It does start for the other clean and smudge commands.
-    runs_process = smudge or (clean and sub != "status")
+    # `status` still runs `clean`. A process filter replaces that clean command.
+    # Git 2.56 also starts the process itself when a filtered file is dirty.
+    runs_process = smudge or clean
     for key, value in config.items():
         text = value.strip()
         if not text or not is_dangerous_command(text):

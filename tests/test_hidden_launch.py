@@ -1514,7 +1514,9 @@ def test_checkout_filters_process_and_clone(tmp_path: Path) -> None:
     assert not other_mark.exists()
     proc_mark.unlink()
     _git(repo, ["status", "--short"])
-    assert not proc_mark.exists()
+    # Git 2.43 leaves the marker absent. Git 2.56 starts the process when the
+    # filtered file is dirty. Either result is accepted; the refusal is below.
+    proc_mark.unlink(missing_ok=True)
     assert not other_mark.exists()
     (repo / "a.txt").unlink()
     _git(repo, ["checkout", "--", "a.txt"])
@@ -1523,7 +1525,7 @@ def test_checkout_filters_process_and_clone(tmp_path: Path) -> None:
     _git(repo, ["config", "filter.mine.process", "sudo reboot"])
     assert launch_block_reason("git add a.txt", repo) is not None
     assert launch_block_reason("git checkout -- a.txt", repo) is not None
-    assert launch_block_reason("git status", repo) is None
+    assert launch_block_reason("git status", repo) is not None
     _git(repo, ["config", "filter.mine.process", "cat"])
     _git(repo, ["config", "filter.mine.clean", "sudo reboot"])
     assert launch_block_reason("git add a.txt", repo) is None
