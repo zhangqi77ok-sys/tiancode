@@ -193,6 +193,9 @@ def _git_reason(
     attribute = _git_attribute_reason(words, assignments, loaded, parent, cwd, root)
     if attribute:
         return attribute
+    cloned = _clone_filter_reason(words, assignments, parent, cwd, root)
+    if cloned:
+        return cloned
     return _hook_reason(words, cwd, root, loaded, assignments, parent)
 
 
@@ -213,10 +216,16 @@ def _git_attribute_reason(
     Without a matching attribute the command does not run, which was proved
     for `filter.clean`. `git status` does run `clean`, and so does `git stash`
     (the default push). `stash list` does not. `checkout`, `restore`,
-    `switch`, `merge`, `rebase`, and `cherry-pick` run `smudge`. `stash pop`
-    does too. `diff`, `show`, and `log -p` run `textconv`.
-    `diff.<name>.command` runs for `git diff`. `merge.<name>.driver` runs
-    for `git merge`.
+    `switch`, `merge`, `rebase`, `cherry-pick`, `revert`, `pull`, and `am`
+    run `smudge`. `stash pop`, `stash apply`, and `stash branch` do too.
+    `worktree add` checks out unless `--no-checkout` is set. `checkout-index`
+    does when it is given a path, `-a`, or `--stdin`. `diff`, `show`, and
+    `log -p` run `textconv`. `diff.<name>.command` runs for `git diff`.
+    `merge.<name>.driver` runs for `git merge`, `cherry-pick`, and `rebase`.
+    A non-empty `filter.<name>.process` replaces `clean` and `smudge`.
+    Git 2.56 starts that process for `git status` when a filtered file is
+    dirty. Git 2.43 does not, but the guard does not depend on the installed
+    version, so a dangerous process is refused for `status` as well.
     """
     from tiancode.tools.execution import is_dangerous_command
     from tiancode.tools.hidden_exec import _git_args, _git_subcommand, effective_git_config
@@ -229,20 +238,33 @@ def _git_attribute_reason(
     args = _git_args(words)
     stash_action = _stash_action(args) if sub == "stash" else ""
     clean = sub in {"add", "status", "commit"} or stash_action in {"push", "save"}
-    smudge = sub in {"checkout", "restore", "switch", "merge", "rebase", "cherry-pick"} or stash_action == "pop"
+    smudge = sub in {
+        "checkout", "restore", "switch", "merge", "rebase", "cherry-pick", "revert", "pull", "am",
+    } or stash_action in {"pop", "apply", "branch"}
+    if sub == "worktree" and _worktree_checks_out(args):
+        smudge = True
+    if sub == "checkout-index" and _checkout_index_writes(args):
+        smudge = True
     show_patch = sub in {"diff", "show"} or (sub == "log" and _log_shows_patch(args))
     external = sub == "diff"
-    merge_driver = sub == "merge"
+    merge_driver = sub in {"merge", "cherry-pick", "rebase"}
+    # `status` still runs `clean`. A process filter replaces that clean command.
+    # Git 2.56 also starts the process itself when a filtered file is dirty.
+    runs_process = smudge or clean
     for key, value in config.items():
         text = value.strip()
         if not text or not is_dangerous_command(text):
             continue
         if clean and key.startswith("filter.") and key.endswith(".clean"):
             name = key[len("filter.") : -len(".clean")]
-            if name:
+            if name and not _filter_process(config, name):
                 wanted.append(("filter", name, text))
         elif smudge and key.startswith("filter.") and key.endswith(".smudge"):
             name = key[len("filter.") : -len(".smudge")]
+            if name and not _filter_process(config, name):
+                wanted.append(("filter", name, text))
+        elif runs_process and key.startswith("filter.") and key.endswith(".process"):
+            name = key[len("filter.") : -len(".process")]
             if name:
                 wanted.append(("filter", name, text))
         elif show_patch and key.startswith("diff.") and key.endswith(".textconv"):
@@ -281,6 +303,196 @@ def _log_shows_patch(args: Sequence[str]) -> bool:
         if word.startswith("-") and not word.startswith("--") and "p" in word[1:]:
             return True
     return False
+
+
+def _filter_process(config: Dict[str, str], name: str) -> str:
+    """The long-running process command, when one is configured for this filter."""
+    return config.get(f"filter.{name}.process", "").strip()
+
+
+def _worktree_checks_out(args: Sequence[str]) -> bool:
+    """`git worktree add` populates the new tree unless `--no-checkout` wins.
+
+    `worktree list` does not. `-n` is not a worktree flag.
+    """
+    action = ""
+    checkout = True
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, _value = word.partition("=")
+        if name in {"-b", "-B", "--reason"} and not eq:
+            index += 2
+            continue
+        if word.startswith("-") and word != "-":
+            if name == "--no-checkout":
+                checkout = False
+            elif name == "--checkout":
+                checkout = True
+            index += 1
+            continue
+        if not action:
+            action = word
+        index += 1
+    return action == "add" and checkout
+
+
+def _checkout_index_writes(args: Sequence[str]) -> bool:
+    """True when `checkout-index` is asked to write a file.
+
+    With no path, `-a`, or `--stdin` it does not. A later `--no-all` or
+    `--no-stdin` turns that request back off.
+    """
+    all_files = False
+    from_stdin = False
+    paths = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            paths = paths or any(args[index + 1 :])
+            break
+        name, eq, _value = word.partition("=")
+        if name in {"--prefix", "--stage"} and not eq:
+            index += 2
+            continue
+        if word.startswith("-") and word != "-":
+            if name in {"-a", "--all"} or (
+                not word.startswith("--") and "a" in word[1:]
+            ):
+                all_files = True
+            elif name == "--no-all":
+                all_files = False
+            elif name == "--stdin":
+                from_stdin = True
+            elif name == "--no-stdin":
+                from_stdin = False
+            index += 1
+            continue
+        paths = True
+        index += 1
+    return all_files or from_stdin or paths
+
+
+_CLONE_TAKES_VALUE = frozenset({
+    "--template", "--reference", "--reference-if-able",
+    "--origin", "-o", "--branch", "-b", "--upload-pack", "-u",
+    "--depth", "--shallow-since", "--shallow-exclude",
+    "--jobs", "-j", "--separate-git-dir",
+    "--config", "-c", "--server-option", "--filter", "--bundle-uri",
+})
+
+
+def _clone_checkout_and_config(
+    args: Sequence[str],
+) -> Tuple[bool, List[Tuple[str, str]], List[str]]:
+    """Whether clone checks out, the `clone -c` pairs, and the positionals.
+
+    `--bare` and `--mirror` never check out, even after `--checkout`.
+    `-n` / `--no-checkout` and `--checkout` use the last one. `clone -c`
+    is not `git -c`: it is written into the new repository and used for
+    the checkout, unless a `git -c` for the same key overrides it.
+    """
+    from tiancode.tools.hidden_exec import _config_pair
+
+    checkout = True
+    bare = False
+    configs: List[Tuple[str, str]] = []
+    positionals: List[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            positionals.extend(args[index + 1 :])
+            break
+        name, eq, value = word.partition("=")
+        if word.startswith("-") and word != "-":
+            if name in {"-n", "--no-checkout"}:
+                checkout = False
+            elif name == "--checkout":
+                checkout = True
+            elif name in {"--bare", "--mirror"}:
+                bare = True
+            elif name in {"--no-bare", "--no-mirror"}:
+                bare = False
+            if name in {"-c", "--config"}:
+                raw = value if eq else (args[index + 1] if index + 1 < len(args) else "")
+                pair = _config_pair(raw) if raw else None
+                if pair is not None:
+                    configs.append(pair)
+            takes = name in _CLONE_TAKES_VALUE and not eq
+            index += 2 if takes and index + 1 < len(args) else 1
+            continue
+        positionals.append(word)
+        index += 1
+    return checkout and not bare, configs, positionals
+
+
+def _clone_source_path(raw: str, cwd: Path) -> Optional[Path]:
+    """A local clone source. URLs and `host:path` are not read from here."""
+    text = raw.strip()
+    if text.startswith("file://"):
+        rest = text[len("file://") :]
+        if rest.startswith("localhost/"):
+            rest = "/" + rest[len("localhost/") :]
+        if not rest.startswith("/"):
+            return None
+        return Path(rest)
+    if "://" in text:
+        return None
+    if ":" in text and not text.startswith(("/", ".")):
+        return None
+    path = Path(os.path.expanduser(text))
+    if not path.is_absolute():
+        path = cwd / path
+    return path
+
+
+def _clone_filter_reason(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    parent: Dict[str, str],
+    cwd: Path,
+    root: Path,
+) -> Optional[str]:
+    """Block a smudge or process filter that `git clone` would run while checking out.
+
+    The source repository's own config is not used, and neither is the
+    current repository's config. `git -c` overrides `clone -c`. `--bare`,
+    `--mirror`, and a final `--no-checkout` do not check out. A source
+    outside the workspace is not read.
+    """
+    from tiancode.tools.execution import is_dangerous_command
+    from tiancode.tools.hidden_exec import _git_args, _git_subcommand, effective_git_config
+
+    if _git_subcommand(words) != "clone":
+        return None
+    checkout, inline, positionals = _clone_checkout_and_config(_git_args(words))
+    if not checkout or not positionals:
+        return None
+    source = _clone_source_path(positionals[0], cwd)
+    if source is None or source.is_symlink() or not _within(root, source) or not source.is_dir():
+        return None
+    config: Dict[str, str] = {}
+    for key, value in inline:
+        config[key] = value
+    config.update(effective_git_config(words, assignments, None, parent))
+    paths, error = _attribute_files(source, root)
+    if error:
+        return error
+    selected = _attribute_drivers(paths)
+    if isinstance(selected, str):
+        return selected
+    for kind, name in selected:
+        if kind != "filter":
+            continue
+        process = _filter_process(config, name)
+        command = process or config.get(f"filter.{name}.smudge", "").strip()
+        if command and is_dangerous_command(command):
+            return "git 的属性过滤器会执行高危命令，已拒绝执行"
+    return None
 
 
 def _attribute_files(cwd: Path, root: Path) -> Tuple[List[Path], Optional[str]]:

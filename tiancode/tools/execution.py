@@ -1563,6 +1563,9 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     `xvfb-run`, `sg -c`, and `start-stop-daemon --start` are the same kind of
     launcher. `env -C` and `stdbuf --output` take a value, then the command.
     `go -toolexec` and `go test`/`go run -exec` are the program they exec.
+    Signing uses `gpg.program`, `gpg.ssh.program`, or `gpg.x509.program`.
+    `commit --trailer` and `interpret-trailers --trailer` run `trailer.*.cmd`.
+    `difftool.<tool>.cmd` runs when the difftool prompt is off.
     `git filter-branch` filters and the editors behind `git config --edit`,
     `notes append`/`edit`, and `merge`/`cherry-pick`/`revert --edit` are too.
     A pipe into `python` or `node` with no script runs that pipe as the
