@@ -355,3 +355,89 @@ def test_makefiles_suffix_rule_runs_for_the_main_target(tmp_path: Path) -> None:
     assert blocked.exit_code == 126
     assert not marker.exists()
 
+
+def test_make_command_line_eval_and_immediate_assignment(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "Makefile").write_text("all:\n\t@echo ok\n", encoding="utf-8")
+    proved = _run_make(tmp_path, "make --eval='$(shell touch ran)'")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run_make(tmp_path, "make -E '$(shell touch ran)'")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run_make(tmp_path, "make 'X:=$(shell touch ran)'")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run_make(tmp_path, "make 'X!=touch ran'")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+
+    blocked = execute_shell_command(
+        "make --eval='$(shell chmod 777 /)'", work_dir=tmp_path, timeout=5,
+    )
+    assert blocked.exit_code == 126
+    assert not marker.exists()
+    assert recipe_block_reason("make -E '$(shell sudo reboot)'", tmp_path) is not None
+    assert recipe_block_reason("make 'X:=$(shell sudo reboot)'", tmp_path) is not None
+    assert recipe_block_reason("make 'X::=$(shell sudo reboot)'", tmp_path) is not None
+    assert recipe_block_reason("make 'X!=sudo reboot'", tmp_path) is not None
+    assert recipe_block_reason("make 'X=$(shell sudo reboot)'", tmp_path) is None
+    assert recipe_block_reason("make --eval='CFLAGS+=-Wall'", tmp_path) is None
+
+
+def test_make_recursive_assignment_runs_when_a_recipe_expands_it(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "Makefile").write_text("all:\n\t$(X)\n", encoding="utf-8")
+    proved = _run_make(tmp_path, "make 'X=$(shell touch ran)'")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (tmp_path / "Makefile").write_text(
+        "all:\n\t$(X)\n",
+        encoding="utf-8",
+    )
+    reason = recipe_block_reason("make 'X=$(shell sudo reboot)'", tmp_path)
+    assert reason is not None
+    assert not marker.exists()
+
+
+def test_makeflags_eval_runs_at_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "Makefile").write_text("all:\n\t@echo ok\n", encoding="utf-8")
+    proved = _run_make(tmp_path, "MAKEFLAGS='--eval=$(shell touch ran)' make")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run_make(tmp_path, "GNUMAKEFLAGS='--eval=$(shell touch ran)' make")
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+
+    blocked = execute_shell_command(
+        "MAKEFLAGS='--eval=$(shell sudo reboot)' make",
+        work_dir=tmp_path,
+        timeout=5,
+    )
+    assert blocked.exit_code == 126
+    assert not marker.exists()
+    assert recipe_block_reason("GNUMAKEFLAGS='--eval=$(shell rm -rf /)' make", tmp_path) is not None
+    assert recipe_block_reason("MAKEFLAGS= make", tmp_path) is None
+
+    monkeypatch.setenv("MAKEFLAGS", "--eval=$(shell sudo reboot)")
+    parent = execute_shell_command("make", work_dir=tmp_path, timeout=5)
+    assert parent.exit_code == 126
+    assert not marker.exists()
+    assert recipe_block_reason("MAKEFLAGS= make", tmp_path) is None
+
+
+def test_env_chdir_make_uses_that_directory(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "Makefile").write_text("all:\n\ttouch ran\n", encoding="utf-8")
+    (tmp_path / "Makefile").write_text("all:\n\t@echo root\n", encoding="utf-8")
+    proved = _run_make(tmp_path, "env -C nested make")
+    assert proved.returncode == 0 and (nested / "ran").exists(), proved.stderr
+    (nested / "Makefile").write_text("X := $(shell sudo reboot)\nall:\n\t@echo ok\n", encoding="utf-8")
+    reason = recipe_block_reason("env -C nested make", tmp_path)
+    assert reason is not None
+    assert recipe_block_reason("env -C /tmp make", tmp_path) is not None
+    assert not marker.exists()
+

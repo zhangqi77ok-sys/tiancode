@@ -4,8 +4,11 @@
 that runs while make reads the file, and the same idea for just and tox are
 checked with the shell rules. `MAKEFILES` is read first, including a file
 named by the command or the parent environment, but it does not become the
-default goal. A symlink or hard link is not opened. A `-C`, `-f`,
-`--justfile`, or `-c` path that leaves the workspace is refused.
+default goal. `MAKEFLAGS` and `GNUMAKEFLAGS` are extra arguments, so
+`--eval=$(shell ...)` in either one runs while make starts. A command-line
+`:=`, `::=`, or `!=` assignment runs then too, and so does `make -E`. A
+symlink or hard link is not opened. A `-C`, `-f`, `--justfile`, or `-c`
+path that leaves the workspace is refused.
 
 The check is a bounded reader, not a full make implementation. It does expand
 `$(call)`, `$(foreach)`, and `$(eval)` far enough to see a recipe those
@@ -445,7 +448,7 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
             if in_define:
                 if raw_line.strip() == "endef":
                     parsed.variables[in_define] = "\n".join(define_lines)
-                    if define_op in {":=", "!="}:
+                    if define_op in {":=", "::=", "!="}:
                         parsed.immediate_shells.extend(_shell_bodies(parsed.variables[in_define]))
                     in_define = ""
                     define_lines = []
@@ -500,7 +503,7 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
                         value = _expand_make(value, parsed.variables)
                         parsed.immediate_shells.append(value.strip())
                         parsed.immediate_shells.extend(_shell_bodies(value))
-                    elif op == ":=":
+                    elif op in {":=", "::="}:
                         value = _expand_make(
                             value, parsed.variables, read=True, parsed=parsed, pending=pending,
                         )
@@ -534,7 +537,7 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
                     value = _expand_make(value, parsed.variables)
                     parsed.immediate_shells.append(value.strip())
                     parsed.immediate_shells.extend(_shell_bodies(value))
-                elif op == ":=":
+                elif op in {":=", "::="}:
                     value = _expand_make(
                         value, parsed.variables, read=True, parsed=parsed, pending=pending,
                     )
@@ -772,9 +775,15 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
         if word == "--":
             targets.extend(words[index + 1 :])
             break
-        if _assignment_word(word):
-            name, _, value = word.partition("=")
-            overrides[name] = value
+        assigned = _command_assignment(word)
+        if assigned is not None:
+            name, op, value = assigned
+            # `:=` and `!=` run while make reads the command line, before any
+            # target. A recursive `=` waits until a recipe expands it.
+            if op in {":=", "::=", "!="}:
+                evals.append(f"{name}{op}{value}")
+            else:
+                overrides[name] = value
             index += 1
             continue
         if word.startswith("--"):
@@ -797,7 +806,7 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
                     return None, "Makefile 来自标准输入，已拒绝执行"
                 files.append(arg)
             elif name == "--eval":
-                evals.append(arg)
+                evals.append(_unquote_make_word(arg))
             elif name in {"--just-print", "--dry-run", "--recon", "--question"}:
                 dry_run = True
             index += 1
@@ -808,11 +817,12 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
             while cursor < len(cluster):
                 flag = cluster[cursor]
                 rest = cluster[cursor + 1 :]
-                if flag in "CfoWIj":
+                if flag in "CfoWEIj":
                     arg = rest
                     if not arg and flag != "j":
                         index += 1
                         arg = words[index] if index < len(words) else ""
+                    arg = _unquote_make_word(arg)
                     if flag == "C":
                         dest = _inside(root, arg, directory)
                         if dest is None:
@@ -822,6 +832,8 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
                         if arg == "-":
                             return None, "Makefile 来自标准输入，已拒绝执行"
                         files.append(arg)
+                    elif flag == "E":
+                        evals.append(arg)
                     elif flag == "j" and arg and not arg.isdigit() and not rest:
                         pass
                     break
@@ -835,19 +847,180 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
     return _MakeInvoke(directory, files, targets, dry_run, evals, overrides), None
 
 
+def _command_assignment(word: str) -> Optional[tuple]:
+    """`(name, operator, value)` for `X=`, `X:=`, `X::=`, `X!=`, `X+=`, or `X?=`."""
+    if word.startswith("-"):
+        return None
+    for op in ("::=", ":=", "!=", "?=", "+=", "="):
+        slot = word.find(op)
+        if slot <= 0:
+            continue
+        name = word[:slot]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            return name, op, word[slot + len(op) :]
+    return None
+
+
+def _unquote_make_word(word: str) -> str:
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
+        return word[1:-1]
+    return word
+
+
+def _split_make_flag_words(text: str) -> List[str]:
+    """Split MAKEFLAGS without cutting a `$(...)` that contains spaces."""
+    words: List[str] = []
+    buf: List[str] = []
+    depth = 0
+    quote = ""
+    for char in text:
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            buf.append(char)
+            continue
+        if char == "$" and not quote:
+            buf.append(char)
+            continue
+        if char in "({" and buf and buf[-1] == "$":
+            depth += 1
+            buf.append(char)
+            continue
+        if char in ")}" and depth:
+            depth -= 1
+            buf.append(char)
+            continue
+        if char.isspace() and depth == 0:
+            if buf:
+                words.append(_unquote_make_word("".join(buf)))
+                buf = []
+            continue
+        buf.append(char)
+    if buf:
+        words.append(_unquote_make_word("".join(buf)))
+    return words
+
+
 def _assignment_word(word: str) -> bool:
-    name, sep, _value = word.partition("=")
-    return bool(sep) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None and not word.startswith("-")
+    return _command_assignment(word) is not None
+
+
+def _make_env_assignment(word: str, literal) -> Optional[tuple]:
+    """`(name, value)` for a prefix assignment make will inherit.
+
+    A value with `$(...)` is not a shell assignment the rest of the command
+    expands, but make still reads `MAKEFLAGS` and `MAKEFILES` from it.
+    """
+    parsed = literal(word)
+    if parsed is not None:
+        return parsed
+    name, sep, raw = word.partition("=")
+    if not sep or name not in {"MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES"}:
+        return None
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        raw = raw[1:-1]
+    return name, raw
+
+
+def _env_workdir(words: Sequence[str], cwd: Path, root: Path) -> tuple:
+    """Directory `env -C` / `--chdir` uses for the command that follows.
+
+    `(cwd, None)` when env does not change directory. An outside directory
+    is refused, the same way `make -C /tmp` is. `-u` and `-S` take a value,
+    so `env -u FOO -C build make` still sees `build`.
+    """
+    from tiancode.tools.execution import _is_assignment_word
+
+    index = 0
+    while index < len(words) and _is_assignment_word(words[index]):
+        index += 1
+    if index >= len(words) or _basename(words[index]) != "env":
+        return cwd, None
+    index += 1
+    found: Optional[str] = None
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        glued_dir = word.startswith("-C") and not word.startswith("--") and word != "-C"
+        if name in {"-C", "--chdir"} or glued_dir:
+            if glued_dir:
+                found = word[2:]
+            elif eq:
+                found = value
+            elif index + 1 < len(words):
+                index += 1
+                found = words[index]
+            else:
+                found = ""
+            index += 1
+            continue
+        glued_split = word.startswith("-S") and not word.startswith("--") and word != "-S"
+        if name in {"-u", "--unset", "-S", "--split-string"} or glued_split:
+            if not eq and not glued_split and index + 1 < len(words):
+                index += 1
+            index += 1
+            continue
+        if not word.startswith("-"):
+            break
+        index += 1
+    if found is None:
+        return cwd, None
+    dest = _inside(root, _unquote_make_word(found), cwd)
+    if dest is None:
+        return cwd, "env -C 越出工作区，已拒绝执行"
+    return dest, None
+
+
+def _absorb_make_flags(text: str, invoke: _MakeInvoke, cwd: Path, root: Path) -> Optional[str]:
+    """Merge options from MAKEFLAGS. A nested MAKEFLAGS value is not read again."""
+    words = _split_make_flag_words(text)
+    if not words:
+        return None
+    extra, reason = _parse_make_argv(["make", *words], cwd, root)
+    if reason:
+        return reason
+    if extra is None:
+        return None
+    invoke.evals.extend(extra.evals)
+    for name, value in extra.overrides.items():
+        if name in {"MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES"}:
+            continue
+        invoke.overrides.setdefault(name, value)
+    for raw in extra.files:
+        if raw not in invoke.files:
+            invoke.files.append(raw)
+    if extra.dry_run:
+        invoke.dry_run = True
+    if extra.targets:
+        invoke.targets.extend(target for target in extra.targets if target not in invoke.targets)
+    return None
 
 
 def _make_block(
-    words: Sequence[str], cwd: Path, root: Path, inherited: str = "",
+    words: Sequence[str],
+    cwd: Path,
+    root: Path,
+    inherited: str = "",
+    makeflags: str = "",
+    gnumakeflags: str = "",
 ) -> Optional[str]:
     invoke, reason = _parse_make_argv(words, cwd, root)
     if reason:
         return reason
     if invoke is None:
         return None
+    # GNU make reads GNUMAKEFLAGS and then MAKEFLAGS before the makefile.
+    # `--eval=$(shell ...)` in either one runs even when no target exists.
+    for text in (gnumakeflags, makeflags):
+        reason = _absorb_make_flags(text, invoke, cwd, root)
+        if reason:
+            return reason
     # A command-line `make MAKEFILES=b.mk` replaces the environment value,
     # including when the command-line value is empty.
     extra = invoke.overrides["MAKEFILES"] if "MAKEFILES" in invoke.overrides else inherited
@@ -1283,20 +1456,24 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
     read, and does not refuse a recipe that dry-run would skip. A leading
     `MAKEFILES=evil.mk`, `export MAKEFILES=evil.mk`, or `env MAKEFILES=evil.mk`
     is the file make reads before the makefile. The parent environment is
-    used when this command does not set that name.
+    used when this command does not set that name. `MAKEFLAGS` and
+    `GNUMAKEFLAGS` are read the same way. The command is split without
+    stripping `$(...)`, so `make -E '$(shell ...)'` still has its shell text.
     """
     from tiancode.tools.execution import (
+        _INVISIBLE_CHARS,
         _directory_inside,
         _expand_dollars,
         _literal_assignment,
-        _normalize_command,
         _peel_prefixes,
         _quote_aware_segments,
+        _split_words,
+        _unquote_shell_word,
         get_sanitized_env,
     )
 
-    text = _normalize_command(command)
-    if not text:
+    text = _INVISIBLE_CHARS.sub("", str(command)).replace("\x00", "")
+    if not text.strip():
         return None
     root = work_dir.resolve()
     cwd = root
@@ -1304,7 +1481,7 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
     values: Dict[str, str] = {}
     exported: set = set()
     for segment in _quote_aware_segments(text):
-        words = [word.rstrip(")") for word in segment.split() if word.rstrip(")")]
+        words = [_unquote_shell_word(word) for word in _split_words(segment)]
         peeled = _peel_prefixes(words)
         if peeled is None:
             continue
@@ -1312,7 +1489,7 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
         local = {key: values[key] for key in exported}
         assigned: set = set()
         for word in assignments:
-            parsed = _literal_assignment(word)
+            parsed = _make_env_assignment(word, _literal_assignment)
             if parsed is None:
                 continue
             name, value = parsed
@@ -1326,7 +1503,7 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
         program = _basename(command_words[0])
         if program == "export":
             for word in command_words[1:]:
-                parsed = _literal_assignment(word)
+                parsed = _make_env_assignment(word, _literal_assignment)
                 if parsed is None:
                     continue
                 name, value = parsed
@@ -1340,16 +1517,30 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
             if nxt is None:
                 return "配方命令在越出工作区的目录中运行，已拒绝执行"
             continue
-        if "MAKEFILES" in assigned or "MAKEFILES" in exported:
-            inherited = local.get("MAKEFILES", "")
-        else:
-            inherited = parent.get("MAKEFILES", "")
+        def _taken(name: str) -> str:
+            if name in assigned or name in exported:
+                return local.get(name, "")
+            return parent.get(name, "")
+
+        inherited = _taken("MAKEFILES")
+        run_cwd = cwd
+        if program in _MAKE_BINS or program in {"just", "tox"}:
+            run_cwd, chdir_error = _env_workdir(words, cwd, root)
+            if chdir_error:
+                return chdir_error
         if program in _MAKE_BINS:
-            reason = _make_block(command_words, cwd, root, inherited)
+            reason = _make_block(
+                command_words,
+                run_cwd,
+                root,
+                inherited,
+                _taken("MAKEFLAGS"),
+                _taken("GNUMAKEFLAGS"),
+            )
         elif program == "just":
-            reason = _just_block(command_words, cwd, root)
+            reason = _just_block(command_words, run_cwd, root)
         elif program == "tox":
-            reason = _tox_block(command_words, cwd, root)
+            reason = _tox_block(command_words, run_cwd, root)
         else:
             reason = None
         if reason:

@@ -4,8 +4,11 @@
 cases that stay hidden after that peel: `sed` executes the `e` flag,
 `sqlite3 .shell` runs a shell, `git -c` and `git config` plant a shell,
 `find -exec` and `xargs` run the utility they name, `ansible -a` is a
-command, `ssh -o ProxyCommand` runs on this machine, and `tar --to-command`
-and `-I` run a program. `pnpm exec` forwards its tail. A pipe whose program
+command, `ssh -o ProxyCommand` runs on this machine, and `tar --to-command`,
+`-I`, and `--checkpoint-action=exec` run a program. `sort --compress-program`
+and `scp -S` exec a program. `env --split-string` runs its string.
+`vim -c`, `emacs --eval`, and a `groff -U` heredoc run a shell that is not
+the outer command. `pnpm exec` forwards its tail. A pipe whose program
 is not in the text (`sed e`, `.shell` with no command) is unseen. The caller checks
 each returned string with the same danger rules. This is not a language parser.
 """
@@ -122,12 +125,15 @@ def commands_git_will_run(
     *,
     file_config: Optional[Dict[str, str]] = None,
     parent_env: Optional[Dict[str, str]] = None,
+    credential_helpers: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Shell strings this git argv would execute.
 
     On-disk config is the base. `GIT_CONFIG_*` from the parent and from this
     command override it, and `-c` wins. A `git config` write of a shell-valued
     key is included even when this invocation would not run it yet.
+    `credential_helpers` are the on-disk helpers in the order git will try
+    them, before `-c`. An empty `-c credential.helper=` clears that list.
     """
     if not words or _basename(words[0]) != "git":
         return []
@@ -138,7 +144,8 @@ def commands_git_will_run(
     config = {key.lower(): value for key, value in (file_config or {}).items()}
     config.update(_slots_from_env(env))
     config.update(_inline_git_config(words))
-    found = _triggered_git_commands(config, words)
+    found = _triggered_git_commands(config, words, assignments, parent_env or {})
+    found.extend(_credential_shells(words, list(credential_helpers or [])))
     found.extend(_planted_git_commands(words))
     return [item for item in found if item.strip()]
 
@@ -153,7 +160,9 @@ def _scan(raw: str) -> Tuple[List[str], bool]:
     for segment in execution._quote_aware_segments(raw):
         parts = execution._pipe_parts(segment)
         for index, part in enumerate(parts):
-            peeled = execution._peel_prefixes(execution._split_words(part.strip()))
+            raw_words = execution._split_words(part.strip())
+            commands.extend(_env_split_commands(raw_words))
+            peeled = execution._peel_prefixes(raw_words)
             if peeled is None:
                 continue
             assignments, command = peeled
@@ -165,12 +174,29 @@ def _scan(raw: str) -> Tuple[List[str], bool]:
             command = _unwrap_corepack([_plain(word) for word in command])
             if not command:
                 continue
+            # A launcher or env/nice wrapper was in front of this command.
+            # The patterns never see `sudo` in `env -C /tmp sudo` unless the
+            # inner argv is checked on its own. Quote-aware words keep a
+            # value like `xvfb-run -s '-screen 0 1x1x8'` in one piece.
+            outer = _plain_command_words(raw_words)
+            inner = [_plain(word) for word in command]
+            if inner and inner != outer:
+                commands.append(_shell_join(inner))
             program = _basename(command[0])
             previous = parts[index - 1] if index else ""
             extra, hidden = _commands_of(program, command, assignments, previous, heredocs)
             commands.extend(extra)
             unseen = unseen or hidden
     return commands, unseen
+
+
+def _plain_command_words(words: Sequence[str]) -> List[str]:
+    """Words after leading assignments, with one layer of quotes removed."""
+    execution = _execution()
+    index = 0
+    while index < len(words) and execution._is_assignment_word(words[index]):
+        index += 1
+    return [_plain(word) for word in words[index:]]
 
 
 def _commands_of(
@@ -195,9 +221,20 @@ def _commands_of(
     if program == "ansible-test":
         return _ansible_test_commands(command), False
     if program in {"ssh", "scp", "sftp"}:
-        return _ssh_proxy_commands(command), False
+        found = _ssh_proxy_commands(command)
+        if program == "scp":
+            found.extend(_scp_program(command))
+        return found, False
     if program == "tar":
         return _tar_commands(command), False
+    if program == "sort":
+        return _sort_commands(command), False
+    if program in {"vim", "vi", "ex", "view"}:
+        return _vim_commands(command), False
+    if program == "emacs":
+        return _emacs_commands(command), False
+    if program in {"groff", "troff", "nroff"}:
+        return _roff_commands(command, heredocs), False
     if program in {"npm", "pnpm", "yarn"}:
         tail = _package_exec_tail(program, command[1:])
         if tail:
@@ -594,7 +631,12 @@ def _git_args(words: Sequence[str]) -> List[str]:
     return []
 
 
-def _triggered_git_commands(config: Dict[str, str], words: Sequence[str]) -> List[str]:
+def _triggered_git_commands(
+    config: Dict[str, str],
+    words: Sequence[str],
+    assignments: Sequence[str],
+    parent_env: Dict[str, str],
+) -> List[str]:
     sub = _git_subcommand(words)
     if not sub:
         return []
@@ -608,12 +650,93 @@ def _triggered_git_commands(config: Dict[str, str], words: Sequence[str]) -> Lis
     editor = config.get("core.editor", "")
     if editor and sub == "commit" and _commit_uses_editor(words):
         found.append(editor)
+    if sub == "diff":
+        external = _git_external_diff(config, assignments, parent_env)
+        if external:
+            found.append(external)
     if sub not in _GIT_BUILTINS:
         alias = config.get(f"alias.{sub}", "")
         if alias.lstrip().startswith("!"):
             body = alias.lstrip()[1:].strip()
             if body:
                 found.append(body)
+    return found
+
+
+def _git_external_diff(
+    config: Dict[str, str],
+    assignments: Sequence[str],
+    parent_env: Dict[str, str],
+) -> str:
+    """The diff program git will exec. `GIT_EXTERNAL_DIFF` replaces the config.
+
+    An empty environment value disables the config entry. `git status` does
+    not call this program; only `git diff` was proved to.
+    """
+    chosen: Optional[str] = None
+    for name, value in _assignment_pairs(assignments):
+        if name == "GIT_EXTERNAL_DIFF":
+            chosen = value
+    if chosen is None and "GIT_EXTERNAL_DIFF" in parent_env:
+        chosen = parent_env["GIT_EXTERNAL_DIFF"]
+    if chosen is None:
+        chosen = config.get("diff.external", "")
+    return chosen.strip()
+
+
+def _credential_shells(words: Sequence[str], file_helpers: List[str]) -> List[str]:
+    """Shell helpers `git credential` runs. A name without `!` is not a shell.
+
+    Git tries every helper. An empty value clears the ones collected so far,
+    which is how `-c credential.helper=` drops the on-disk list.
+    """
+    if _git_subcommand(words) != "credential":
+        return []
+    helpers = list(file_helpers)
+    for value in _repeated_config(words, "credential.helper"):
+        if value == "":
+            helpers = []
+        else:
+            helpers.append(value)
+    found: List[str] = []
+    for helper in helpers:
+        text = helper.lstrip()
+        if text.startswith("!"):
+            body = text[1:].strip()
+            if body:
+                found.append(body)
+    return found
+
+
+def _repeated_config(words: Sequence[str], key: str) -> List[str]:
+    """Every `-c key=value` in order. A repeated key is not collapsed."""
+    found: List[str] = []
+    index = 1
+    wanted = key.strip().lower()
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name in {"--version", "--help", "-h"}:
+            break
+        if word.startswith("-"):
+            index += 1
+            if name in {"-c", "--config-env"} and not eq and index < len(words):
+                if name == "-c":
+                    pair = _config_pair(words[index])
+                    if pair is not None and pair[0] == wanted:
+                        found.append(pair[1])
+                index += 1
+                continue
+            if name == "-c" and eq:
+                pair = _config_pair(word)
+                if pair is not None and pair[0] == wanted:
+                    found.append(pair[1])
+            elif name in _GIT_GLOBAL_VALUES and not eq and index < len(words):
+                index += 1
+            continue
+        break
     return found
 
 
@@ -872,6 +995,22 @@ def _tar_commands(command: Sequence[str]) -> List[str]:
     while index < len(command):
         word = command[index]
         name, eq, value = word.partition("=")
+        if name == "--checkpoint-action":
+            if eq:
+                payload = value
+                index += 1
+            elif index + 1 < len(command):
+                payload = command[index + 1]
+                index += 2
+            else:
+                return found
+            payload = _plain(payload).strip()
+            if payload.startswith("exec="):
+                # `exec='sudo reboot'` keeps the quotes on the shell text.
+                body = _plain(payload[len("exec=") :].strip())
+                if body:
+                    found.append(body)
+            continue
         if name in {"--to-command", "--use-compress-program"}:
             if eq:
                 payload = value
@@ -903,6 +1042,285 @@ def _tar_commands(command: Sequence[str]) -> List[str]:
                 found.append(payload)
             continue
         index += 1
+    return found
+
+
+def _env_split_commands(words: Sequence[str]) -> List[str]:
+    """The command `env -S` / `--split-string` executes.
+
+    The string is split into arguments, not passed to a shell. `env -S 'pytest -q'`
+    stays a normal command. `env --split-string='rm -rf /'` hides `rm` inside
+    the option once quotes are removed, so the value is returned whole.
+    """
+    execution = _execution()
+    index = 0
+    while index < len(words) and execution._is_assignment_word(words[index]):
+        index += 1
+    if index >= len(words) or _basename(words[index]) != "env":
+        return []
+    index += 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            break
+        plain = _plain(word)
+        name, eq, value = plain.partition("=")
+        glued = plain.startswith("-S") and not plain.startswith("--") and plain not in {"-S", "-S="}
+        if name in {"-S", "--split-string"} or glued:
+            if glued:
+                payload = plain[2:]
+                if payload.startswith("="):
+                    payload = payload[1:]
+            elif eq:
+                payload = value
+            elif index + 1 < len(words):
+                payload = _plain(words[index + 1])
+            else:
+                payload = ""
+            payload = _plain(payload).strip()
+            return [payload] if payload else []
+        if not plain.startswith("-"):
+            break
+        index += 1
+        if name in {"-u", "--unset", "-C", "--chdir"} and not eq and index <= len(words):
+            # The directory or the variable name is not the split string.
+            if not plain.startswith("-C") or plain in {"-C", "--chdir"}:
+                if index < len(words) and not words[index].startswith("-"):
+                    index += 1
+    return []
+
+
+def _scp_program(command: Sequence[str]) -> List[str]:
+    """The program `scp -S` execs in place of ssh. `/usr/bin/ssh` is not a shell."""
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        if word == "--":
+            break
+        if name == "-S" or (word.startswith("-S") and not word.startswith("--") and len(word) > 2):
+            if word.startswith("-S") and word not in {"-S"} and not word.startswith("--"):
+                payload = word[2:]
+            elif eq:
+                payload = value
+            elif index + 1 < len(command):
+                payload = command[index + 1]
+            else:
+                return []
+            payload = _plain(payload).strip()
+            return [payload] if payload else []
+        index += 1
+    return []
+
+
+def _sort_commands(command: Sequence[str]) -> List[str]:
+    """The program GNU sort execs for `--compress-program`. It is not a shell.
+
+    `gzip` stays allowed. `sudo` is the same danger rule as any other program.
+    """
+    found: List[str] = []
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        if name == "--compress-program":
+            if eq:
+                payload = value
+                index += 1
+            elif index + 1 < len(command):
+                payload = command[index + 1]
+                index += 2
+            else:
+                return found
+            payload = _plain(payload).strip()
+            if payload:
+                found.append(payload)
+            continue
+        index += 1
+    return found
+
+
+_VIM_SYSTEM = re.compile(r"""\bsystem\s*\(\s*(['"])((?:\\.|(?!\1).)*)\1""")
+
+
+def _vim_commands(command: Sequence[str]) -> List[str]:
+    """Ex commands from `vim -c`, `--cmd`, and `+cmd`. A named file is not one.
+
+    `!sudo reboot` and `call system("sudo reboot")` were proved. `set number`
+    does not run a shell.
+    """
+    found: List[str] = []
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        body = ""
+        if name in {"-c", "--cmd"}:
+            if eq:
+                body = value
+            elif index + 1 < len(command):
+                body = command[index + 1]
+                index += 1
+        elif word.startswith("+") and word != "+":
+            body = word[1:]
+        elif word == "+" and index + 1 < len(command):
+            body = command[index + 1]
+            index += 1
+        if body:
+            found.extend(_ex_shells(_plain(body)))
+        index += 1
+    return found
+
+
+def _ex_shells(text: str) -> List[str]:
+    found: List[str] = []
+    for part in _split_unquoted(text, "|"):
+        body = part.strip()
+        if body.startswith(":"):
+            body = body[1:].lstrip()
+        body = re.sub(r"^(?:silent!|silent)\s+", "", body)
+        if body.startswith("!"):
+            shell = body[1:].strip()
+            if shell:
+                found.append(shell)
+        for match in _VIM_SYSTEM.finditer(body):
+            shell = match.group(2).strip()
+            if shell:
+                found.append(shell)
+    return found
+
+
+def _split_unquoted(text: str, sep: str) -> List[str]:
+    parts: List[str] = []
+    buf: List[str] = []
+    quote = ""
+    for char in text:
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            buf.append(char)
+            continue
+        if char == sep:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(char)
+    parts.append("".join(buf))
+    return parts
+
+
+_EMACS_SHELL = re.compile(
+    r"""\((?:async-)?shell-command\s+(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')"""
+)
+
+
+def _emacs_commands(command: Sequence[str]) -> List[str]:
+    """Shell text inside `emacs --eval`. `(message "hi")` is not a command.
+
+    `shell-command` and `call-process` were proved. A `--load` file is named
+    by the user and is not read here.
+    """
+    found: List[str] = []
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        body = ""
+        if name in {"--eval", "--execute"}:
+            if eq:
+                body = value
+            elif index + 1 < len(command):
+                body = command[index + 1]
+                index += 1
+        if body:
+            found.extend(_elisp_shells(_plain(body)))
+        index += 1
+    return found
+
+
+def _elisp_shells(text: str) -> List[str]:
+    found: List[str] = []
+    for match in _EMACS_SHELL.finditer(text):
+        body = next(group for group in match.groups() if group is not None)
+        body = body.replace('\\"', '"').replace("\\'", "'").strip()
+        if body:
+            found.append(body)
+    start = 0
+    needle = "(call-process"
+    while True:
+        at = text.find(needle, start)
+        if at < 0:
+            break
+        # `(call-process "sudo" nil nil nil "reboot")` joins the strings.
+        # `nil` is not a string, so the program and its arguments remain.
+        args = _lisp_call_strings(text, at + len(needle))
+        if args:
+            found.append(" ".join(args))
+        start = at + len(needle)
+    return found
+
+
+def _lisp_call_strings(text: str, start: int) -> List[str]:
+    """String literals up to the matching close paren. `nil` is skipped."""
+    found: List[str] = []
+    depth = 1
+    index = start
+    limit = len(text)
+    while index < limit and depth:
+        char = text[index]
+        if char in "'\"":
+            end = index + 1
+            buf: List[str] = []
+            while end < limit and text[end] != char:
+                if text[end] == "\\" and end + 1 < limit:
+                    buf.append(text[end + 1])
+                    end += 2
+                    continue
+                buf.append(text[end])
+                end += 1
+            found.append("".join(buf))
+            index = end + 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        index += 1
+    return [item for item in found if item.strip()]
+
+
+_ROFF_REQUEST = re.compile(r"(?m)^[ \t]*\.(?:sy|pso)[ \t]+(.+?)\s*$")
+
+
+def _roff_commands(
+    command: Sequence[str],
+    heredocs: Sequence[Tuple[Sequence[str], str]],
+) -> List[str]:
+    """`.sy` / `.pso` lines in a heredoc fed to `groff -U`.
+
+    A named document stays visible input. Safer mode does not run these
+    requests, which was proved without `-U`. A pipe is refused separately
+    because its document is not in the command.
+    """
+    execution = _execution()
+    if not execution._roff_unsafe(list(command)):
+        return []
+    if execution._roff_has_file(list(command)):
+        return []
+    found: List[str] = []
+    for words, body in heredocs:
+        if not words or _basename(words[0]) != _basename(command[0]):
+            continue
+        if not execution._roff_unsafe(list(words)):
+            continue
+        for match in _ROFF_REQUEST.finditer(body):
+            shell = match.group(1).strip()
+            if shell:
+                found.append(shell)
     return found
 
 

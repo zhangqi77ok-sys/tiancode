@@ -77,15 +77,28 @@ _EXTRA_DANGEROUS_PATTERNS = [
 # Leading wrappers hide a command from patterns that require the start of a segment.
 # sudo/doas stay in place so the privilege pattern still sees them.
 _WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"})
-_WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
+# A value flag consumes the next word only for the wrapper that actually takes it.
+# `env -i` ignores the environment and does not take a value. `stdbuf -i 0` does.
+# `env -C dir cmd` and `nice --adjustment N cmd` hide `cmd` when the directory or
+# the niceness is left in its place.
+_WRAPPER_VALUE_FLAGS = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "nohup": frozenset(),
+    "time": frozenset(),
+    "command": frozenset(),
+}
 # These run a later argv, or a shell string, so `timeout 5 sudo` is still sudo.
 # A pid query (`ionice -p 1`, `timeout --help`) does not run a command.
 # `setarch` only runs a command after a known architecture. `cmake` is here for
 # `cmake -E env`, `chdir`, `time`, and `remove_directory`; other cmake forms stay.
+# `dbus-run-session` and `xvfb-run` run the command after their own options.
 _LAUNCHERS = frozenset({
     "timeout", "flock", "setsid", "ionice", "taskset", "watch", "chrt", "prlimit", "setpriv",
     "unshare", "setarch", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon",
     "x86_64", "uname26", "capsh", "script", "choom", "cmake",
+    "dbus-run-session", "xvfb-run",
 })
 _SETARCH_ARCH = frozenset({
     "uname26", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon", "x86_64",
@@ -323,6 +336,11 @@ def _expand_literal_assignments(text: str) -> str:
 
 def _option_name(word: str) -> str:
     return word.split("=", 1)[0]
+
+
+def _wrapper_value_flags(wrapper: str) -> frozenset:
+    """Options of this wrapper whose next word is a value, not the command."""
+    return _WRAPPER_VALUE_FLAGS.get(wrapper, frozenset())
 
 
 def _consume_flag(words: List[str], index: int, value_names: frozenset) -> int:
@@ -735,6 +753,22 @@ def _launcher_replacement(words: List[str], *, script_is_rest: bool) -> List[str
     if program == "cmake":
         return _cmake_e_command(words)
 
+    if program == "dbus-run-session":
+        if _has_flag(words, frozenset({"--help", "-h"})):
+            return []
+        # `--config-file` and `--dbus-daemon` name programs of dbus itself.
+        # The remaining words are the command dbus runs on this machine.
+        return _positionals_after(words, 1, frozenset({"--config-file", "--dbus-daemon"}))
+
+    if program == "xvfb-run":
+        if _has_flag(words, frozenset({"--help", "-h"})):
+            return []
+        values = frozenset({
+            "-e", "--error-file", "-f", "--auth-file", "-n", "--server-num",
+            "-p", "--xauth-protocol", "-s", "--server-args",
+        })
+        return _positionals_after(words, 1, values)
+
     return None
 
 
@@ -766,7 +800,13 @@ def _unwrap_leading_wrappers(text: str) -> str:
         while words and words[0].startswith("-"):
             flag = words.pop(0)
             flags.append(flag)
-            if flag in _WRAPPER_VALUE_FLAGS and words and not words[0].startswith("-"):
+            name = flag.split("=", 1)[0]
+            if (
+                "=" not in flag
+                and name in _wrapper_value_flags(wrapper)
+                and words
+                and not words[0].startswith("-")
+            ):
                 words.pop(0)
         if wrapper == "command" and {"-v", "-V"} & set(flags):
             return text
@@ -1091,7 +1131,13 @@ def _peel_prefixes(words: List[str]) -> tuple[List[str], List[str]] | None:
             flag = words[index]
             flags.append(flag)
             index += 1
-            if flag in _WRAPPER_VALUE_FLAGS and index < len(words) and not words[index].startswith("-"):
+            name = flag.split("=", 1)[0]
+            if (
+                "=" not in flag
+                and name in _wrapper_value_flags(wrapper)
+                and index < len(words)
+                and not words[index].startswith("-")
+            ):
                 index += 1
         if wrapper == "command" and {"-v", "-V"} & set(flags):
             return None
@@ -1116,6 +1162,61 @@ def _xargs_utility(words: List[str]) -> str:
             continue
         return word
     return ""
+
+
+_ROFF_BINS = frozenset({"groff", "troff", "nroff"})
+# Short options that take the next word, or the rest of a glued cluster.
+# `-Tascii` is one word. `-T ascii` is two. A later word is then a file.
+_ROFF_VALUE_LETTERS = frozenset("dDfFIKLmMnorTwWP")
+
+
+def _roff_unsafe(words: List[str]) -> bool:
+    """True for `groff -U` / `troff -U` / `nroff -U`. Safer mode does not run `.sy`."""
+    if not words or _command_basename(words[0]) not in _ROFF_BINS:
+        return False
+    for word in words[1:]:
+        if word == "--":
+            return False
+        if word.startswith("-") and not word.startswith("--") and "U" in word[1:]:
+            return True
+    return False
+
+
+def _roff_has_file(words: List[str]) -> bool:
+    """True when a named document follows the options. Stdin is not a named file."""
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            return index + 1 < len(words)
+        if word.startswith("--"):
+            index += 1
+            continue
+        if word.startswith("<<"):
+            # A heredoc is not a document name. The body is scanned separately.
+            return False
+        if word.startswith("-") and word != "-":
+            cluster = word[1:]
+            cursor = 0
+            while cursor < len(cluster):
+                if cluster[cursor] in _ROFF_VALUE_LETTERS:
+                    if not cluster[cursor + 1 :]:
+                        index += 1
+                    break
+                cursor += 1
+            index += 1
+            continue
+        return True
+    return False
+
+
+def _roff_reads_stdin(words: List[str]) -> bool:
+    """True when unsafe roff would execute requests from a pipe, not from a named file.
+
+    `groff -Tascii doc.roff` and `groff -U doc.roff` name the document.
+    `printf '.sy ...' | groff -U` does not: `.sy` runs, and safer mode refuses it.
+    """
+    return _roff_unsafe(words) and not _roff_has_file(words)
 
 
 def _find_exec_shell(words: List[str]) -> bool:
@@ -1181,6 +1282,8 @@ def _command_hides_its_body(raw: str, depth: int = 0) -> bool:
             program = _command_basename(command[0])
             if part_index > 0 and program in _STARTUP_SHELLS:
                 return True
+            if part_index > 0 and _roff_reads_stdin(command):
+                return True
             if part_index > 0:
                 from tiancode.tools.command_scan import reads_program_on_stdin
 
@@ -1229,12 +1332,14 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     shell runs that body. `eval "$(pyenv init -)"` stays allowed.
     `python -c "print('hello')"` and `pytest -q` stay allowed.
     `timeout 5 sudo` is sudo. `unshare`, `setarch`/`linux64`, `capsh -- -c`,
-    `script -c`, `choom -n`, and `cmake -E env`/`chdir`/`time` are the same
-    kind of launcher. A pipe into `python` or `node` with no script runs that
-    pipe as the program. `awk` `system`, `sed` `e`, `sqlite3 .shell`,
+    `script -c`, `choom -n`, `cmake -E env`/`chdir`/`time`, `dbus-run-session`,
+    and `xvfb-run` are the same kind of launcher. `env -C` and
+    `stdbuf --output` take a value, then the command. A pipe into `python` or
+    `node` with no script runs that pipe as the program, and so does a pipe
+    into `groff -U`. `awk` `system`, `sed` `e`, `sqlite3 .shell`,
     `find -exec`, `xargs`, an ansible ad-hoc command, a git `-c` value that
-    runs a shell, `ssh -o ProxyCommand`, and `tar --to-command` / `-I` are
-    scanned as the command they actually run.
+    runs a shell, `ssh -o ProxyCommand`, and `tar --to-command` / `-I` /
+    `--checkpoint-action=exec` are scanned as the command they actually run.
     """
     if _depth > 6:
         return False
