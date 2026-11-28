@@ -217,3 +217,42 @@ def test_auto_heal_does_not_run_a_dangerous_npm_script(tmp_path: Path) -> None:
     assert "scripts.test" in result
     assert not marker.exists()
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "NEW\n"
+
+
+def test_start_and_install_scripts_are_inspected(tmp_path: Path) -> None:
+    marker = tmp_path / "ran.txt"
+    _package(tmp_path / "package.json", {"start": _dangerous(marker), "prestart": "echo ok"})
+    started = package_script_block_reason("npm start", tmp_path)
+    assert started is not None and "scripts.start" in started
+    assert package_script_block_reason("pnpm start", tmp_path) is not None
+    assert package_script_block_reason("yarn start", tmp_path) is not None
+    assert package_script_block_reason("timeout 5 npm start", tmp_path) is not None
+
+    _package(tmp_path / "package.json", {"preinstall": _dangerous(marker), "test": "echo ok"})
+    installed = package_script_block_reason("npm install", tmp_path)
+    assert installed is not None and "scripts.preinstall" in installed
+    assert package_script_block_reason("pnpm install", tmp_path) is not None
+    assert package_script_block_reason("yarn install", tmp_path) is not None
+    assert package_script_block_reason("npm install --ignore-scripts", tmp_path) is None
+
+    _package(tmp_path / "package.json", {"start": _dangerous(marker)})
+    result = execute_shell_command("npm start", work_dir=tmp_path, timeout=5)
+    assert result.exit_code == 126
+    assert not marker.exists()
+
+
+def test_implicit_pnpm_and_yarn_scripts_and_unseen_workspaces(tmp_path: Path) -> None:
+    marker = tmp_path / "ran.txt"
+    _package(tmp_path / "package.json", {"wipe": _dangerous(marker), "node": _dangerous(marker)})
+
+    pnpm = package_script_block_reason("pnpm wipe", tmp_path)
+    yarn = package_script_block_reason("yarn wipe", tmp_path)
+    assert pnpm is not None and "scripts.wipe" in pnpm
+    assert yarn is not None and "scripts.wipe" in yarn
+    assert package_script_block_reason("yarn node -e 'console.log(1)'", tmp_path) is None
+    assert package_script_block_reason("pnpm recursive list", tmp_path) is None
+
+    workspace = package_script_block_reason("yarn workspace pkg start", tmp_path)
+    assert workspace is not None and "workspace" in workspace
+    recursive = package_script_block_reason("pnpm m run wipe", tmp_path)
+    assert recursive is not None and "未经检查" in recursive

@@ -78,6 +78,16 @@ _EXTRA_DANGEROUS_PATTERNS = [
 # sudo/doas stay in place so the privilege pattern still sees them.
 _WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"})
 _WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
+# These run a later argv, or a shell string, so `timeout 5 sudo` is still sudo.
+# A pid query (`ionice -p 1`, `timeout --help`) does not run a command.
+_LAUNCHERS = frozenset({
+    "timeout", "flock", "setsid", "ionice", "taskset", "watch", "chrt", "prlimit", "setpriv",
+})
+_DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", re.IGNORECASE)
+_NODE_LOAD = re.compile(
+    r"(?:^|\s)(--(?:require|import|loader|experimental-loader|experimental-require-module))"
+    r"(?:(=)|[ \t]+)(\S+)"
+)
 _ANSI_C_QUOTE = re.compile(r"\$'((?:\\.|[^'])*)'")
 _PRINTF_SUB = re.compile(
     r"""\$\(\s*printf\s+(?:'((?:\\.|[^'])*)'|"((?:\\.|[^"])*)")\s*\)"""
@@ -304,11 +314,191 @@ def _expand_literal_assignments(text: str) -> str:
     return " ; ".join(rendered)
 
 
+def _option_name(word: str) -> str:
+    return word.split("=", 1)[0]
+
+
+def _consume_flag(words: List[str], index: int, value_names: frozenset) -> int:
+    """Index just after this option. A value flag also consumes the next word."""
+    word = words[index]
+    name, eq, _value = word.partition("=")
+    index += 1
+    if name in value_names and not eq and index < len(words) and not words[index].startswith("-"):
+        index += 1
+    return index
+
+
+def _positionals_after(words: List[str], index: int, value_names: frozenset) -> List[str]:
+    found: List[str] = []
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            return found + words[index + 1 :]
+        if word.startswith("-") and word != "-":
+            index = _consume_flag(words, index, value_names)
+            continue
+        found.append(word)
+        index += 1
+    return found
+
+
+def _has_flag(words: List[str], names: frozenset) -> bool:
+    for word in words[1:]:
+        if word == "--":
+            return False
+        if _option_name(word) in names:
+            return True
+    return False
+
+
+def _launcher_replacement(words: List[str], *, script_is_rest: bool) -> List[str] | None:
+    """The command a launcher runs, or None when `words` does not start with one.
+
+    An empty list means the tool only queries a pid or prints help. It does not
+    run a command. `script_is_rest` is for text whose quotes were already
+    removed: `flock . -c 'sudo reboot'` is then four words, and the script is
+    everything after `-c`.
+    """
+    if not words or _command_basename(words[0]) not in _LAUNCHERS:
+        return None
+    program = _command_basename(words[0])
+
+    if program == "timeout":
+        if _has_flag(words, frozenset({"--help", "--version"})):
+            return []
+        index = 1
+        values = frozenset({"-k", "--kill-after", "-s", "--signal"})
+        while index < len(words) and words[index].startswith("-"):
+            index = _consume_flag(words, index, values)
+        if index >= len(words) or _DURATION.fullmatch(words[index]) is None:
+            return []
+        return words[index + 1 :]
+
+    if program == "setsid":
+        if _has_flag(words, frozenset({"--help", "--version", "-h", "-V"})):
+            return []
+        rest = _positionals_after(words, 1, frozenset())
+        return rest
+
+    if program == "watch":
+        if _has_flag(words, frozenset({"--help", "--version", "-h", "-v"})):
+            return []
+        exec_argv = _has_flag(words, frozenset({"-x", "--exec"}))
+        # `-d` does not consume the command. `--differences=permanent` already holds its value.
+        rest = _positionals_after(words, 1, frozenset({"-n", "--interval", "-q", "--equexit"}))
+        if not rest:
+            return []
+        if exec_argv:
+            return rest
+        return ["sh", "-c", " ".join(_unquote_shell_word(word) for word in rest)]
+
+    if program == "flock":
+        script: str | None = None
+        positionals: List[str] = []
+        index = 1
+        values = frozenset({"-w", "--timeout", "-E", "--conflict-exit-code"})
+        while index < len(words):
+            word = words[index]
+            name, eq, value = word.partition("=")
+            if name in {"-c", "--command"}:
+                if eq:
+                    script = value
+                    index += 1
+                    continue
+                if script_is_rest:
+                    script = " ".join(_unquote_shell_word(part) for part in words[index + 1 :])
+                    index = len(words)
+                    continue
+                if index + 1 < len(words):
+                    script = _unquote_shell_word(words[index + 1])
+                    index += 2
+                    continue
+                return []
+            if word.startswith("-") and word != "-":
+                index = _consume_flag(words, index, values)
+                continue
+            positionals.append(word)
+            index += 1
+        if script is not None:
+            return ["sh", "-c", script] if script else []
+        if len(positionals) >= 2:
+            return positionals[1:]
+        return []
+
+    if program == "ionice":
+        if _has_flag(words, frozenset({"-p", "--pid", "-P", "--pgid", "-u", "--uid"})):
+            rest = _positionals_after(words, 1, frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"}))
+            if not rest:
+                return []
+            return rest
+        return _positionals_after(words, 1, frozenset({"-c", "--class", "-n", "--classdata"}))
+
+    if program == "taskset":
+        if _has_flag(words, frozenset({"--help", "--version", "-h", "-V"})):
+            return []
+        if _has_flag(words, frozenset({"-p", "--pid"})):
+            return []
+        rest = _positionals_after(words, 1, frozenset())
+        # The first positional is the mask or cpu list. The rest is the command.
+        return rest[1:] if len(rest) >= 2 else []
+
+    if program == "chrt":
+        if _has_flag(words, frozenset({"--help", "--version", "-h", "-V", "-m", "--max", "-p", "--pid"})):
+            return []
+        rest = _positionals_after(
+            words,
+            1,
+            frozenset({"-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline"}),
+        )
+        return rest[1:] if len(rest) >= 2 else []
+
+    if program == "prlimit":
+        if _has_flag(words, frozenset({"--help", "--version", "-h", "-V"})):
+            return []
+        values = frozenset({
+            "-p", "--pid", "-o", "--output",
+            "-c", "--core", "-d", "--data", "-e", "--nice", "-f", "--fsize",
+            "-i", "--sigpending", "-l", "--memlock", "-m", "--rss", "-n", "--nofile",
+            "-q", "--msgqueue", "-r", "--rtprio", "-s", "--stack", "-t", "--cpu",
+            "-u", "--nproc", "-v", "--as", "-x", "--locks", "-y", "--rttime",
+        })
+        rest = _positionals_after(words, 1, values)
+        if _has_flag(words, frozenset({"-p", "--pid"})) and not rest:
+            return []
+        return rest
+
+    if program == "setpriv":
+        if _has_flag(words, frozenset({"--help", "--version", "-h", "-V", "--dump", "-d"})):
+            return []
+        values = frozenset({
+            "--ambient-caps", "--inh-caps", "--bounding-set", "--ruid", "--euid",
+            "--rgid", "--egid", "--reuid", "--regid", "--groups", "--securebits",
+            "--pdeathsig", "--selinux-label", "--apparmor-profile",
+        })
+        return _positionals_after(words, 1, values)
+
+    return None
+
+
+def _drop_launchers(words: List[str], *, script_is_rest: bool) -> List[str]:
+    """Replace timeout/flock/watch/... with the command they actually run."""
+    current = list(words)
+    for _ in range(8):
+        if not current:
+            return current
+        inner = _launcher_replacement(current, script_is_rest=script_is_rest)
+        if inner is None:
+            return current
+        current = inner
+    return current
+
+
 def _unwrap_leading_wrappers(text: str) -> str:
     """Drop leading `env`/`nice`/`nohup` so a later `sudo` or `reboot` is visible.
 
     `command -v sudo` prints a path; it does not run sudo, so a query flag
-    keeps the original text.
+    keeps the original text. `timeout 5 sudo` is sudo: the duration is not
+    the command.
     """
     words = text.split()
     changed = False
@@ -326,6 +516,11 @@ def _unwrap_leading_wrappers(text: str) -> str:
             while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
                 words.pop(0)
         changed = True
+    launched = _drop_launchers(words, script_is_rest=True)
+    if launched != words:
+        if len(launched) >= 3 and launched[0] == "sh" and launched[1] == "-c":
+            return launched[2]
+        return " ".join(launched)
     if not changed:
         return text
     return " ".join(words)
@@ -499,6 +694,11 @@ def _drop_shell_inheritance(env: Dict[str, str]) -> Dict[str, str]:
     for key, value in env.items():
         if key == "BASH_ENV" or key.startswith("BASH_FUNC_"):
             continue
+        if key == "NODE_OPTIONS":
+            kept = _scrub_node_options(value)
+            if kept:
+                cleaned[key] = kept
+            continue
         if key == "SHELLOPTS":
             kept = ":".join(part for part in value.split(":") if part and part != "expand_aliases")
             if kept:
@@ -526,11 +726,37 @@ def _is_assignment_word(word: str) -> bool:
     return bool(sep) and _ASSIGN_NAME.fullmatch(name) is not None
 
 
+def _node_options_load_a_file(value: str) -> bool:
+    """True when NODE_OPTIONS would load a file before the visible program.
+
+    `--require dotenv` names a package. `--require ./hook.js` and
+    `--require=/tmp/hook.js` run that file, the same way BASH_ENV does.
+    """
+    for match in _NODE_LOAD.finditer(value):
+        target = match.group(3).strip("'\"")
+        if not target or target.startswith("-"):
+            continue
+        if target.startswith(".") or target.startswith("/") or "/" in target or "\\" in target:
+            return True
+        if Path(target).suffix.lower() in {".js", ".mjs", ".cjs", ".ts", ".tsx", ".node"}:
+            return True
+    return False
+
+
+def _scrub_node_options(value: str) -> str | None:
+    """Drop NODE_OPTIONS when it loads a file. A memory flag on its own stays."""
+    if _node_options_load_a_file(value):
+        return None
+    return value
+
+
 def _dangerous_shell_assignment(word: str) -> bool:
     name, sep, value = word.partition("=")
     if not sep or _ASSIGN_NAME.fullmatch(name) is None:
         return False
     if name == "BASH_ENV" or name.startswith("BASH_FUNC_"):
+        return True
+    if name == "NODE_OPTIONS" and _node_options_load_a_file(_unquote_shell_word(value)):
         return True
     return name == "SHELLOPTS" and "expand_aliases" in value
 
@@ -615,7 +841,7 @@ def _peel_prefixes(words: List[str]) -> tuple[List[str], List[str]] | None:
             while index < len(words) and _is_assignment_word(words[index]):
                 assignments.append(words[index])
                 index += 1
-    return assignments, words[index:]
+    return assignments, _drop_launchers(words[index:], script_is_rest=False)
 
 
 def _xargs_utility(words: List[str]) -> str:
@@ -697,6 +923,11 @@ def _command_hides_its_body(raw: str, depth: int = 0) -> bool:
             program = _command_basename(command[0])
             if part_index > 0 and program in _STARTUP_SHELLS:
                 return True
+            if part_index > 0:
+                from tiancode.tools.command_scan import reads_program_on_stdin
+
+                if reads_program_on_stdin(program, command):
+                    return True
             if _exports_function(command):
                 return True
             if program in setters and any(_dangerous_shell_assignment(word) for word in command[1:]):
@@ -739,6 +970,10 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     A command substitution is refused when its body is dangerous, because the
     shell runs that body. `eval "$(pyenv init -)"` stays allowed.
     `python -c "print('hello')"` and `pytest -q` stay allowed.
+    `timeout 5 sudo` is sudo. A pipe into `python` or `node` with no script
+    runs that pipe as the program. `awk` `system`, `sed` `e`, `sqlite3 .shell`,
+    `find -exec`, `xargs`, an ansible ad-hoc command, and a git `-c` value that
+    runs a shell are scanned as the command they actually run.
     """
     if _depth > 6:
         return False
@@ -753,7 +988,10 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
         substitution_bodies,
         unseen_execution,
     )
+    from tiancode.tools.hidden_exec import concealed_commands, conceals_unseen_input
 
+    if conceals_unseen_input(raw):
+        return True
     if unseen_execution(raw) or runs_written_file(raw):
         return True
     if _depth == 0 and _executed_decoder(raw):
@@ -786,6 +1024,10 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
                 piece = piece.strip()
                 if piece and piece != raw.strip() and is_dangerous_command(piece, _depth=_depth + 1):
                     return True
+    for extra in concealed_commands(raw):
+        cleaned = extra.strip()
+        if cleaned and cleaned != raw.strip() and is_dangerous_command(cleaned, _depth=_depth + 1):
+            return True
     patterns = (*DANGEROUS_PATTERNS, *_EXTRA_DANGEROUS_PATTERNS)
     texts = _match_candidates(raw) if _depth == 0 else [raw]
     for text in texts:
@@ -938,75 +1180,162 @@ def _manager_args(rest: str) -> str:
     return re.split(r"\s--(?:\s|$)", rest, maxsplit=1)[0]
 
 
-def _command_is_package_test(binary: str, cleaned: str) -> bool:
-    """True when the package-manager command itself is the test script.
+def _hook_names(name: str) -> List[str]:
+    return [f"pre{name}", name, f"post{name}"]
 
-    The first word is the command. `npm t` and `pnpm tst` are `test`.
-    `run-script test` is `run test`. npm's `rum` and `urn` are `run`.
-    `run t` is a script named t, not scripts.test. Yarn 1 has no `t` alias.
-    `bun test` is Bun's own runner; only `bun run test` reads the script.
+
+_INSTALL_LIFECYCLE = [
+    "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare",
+]
+_UNINSTALL_LIFECYCLE = ["preuninstall", "uninstall", "postuninstall"]
+
+
+def _args_after_nth_positional(program: str, args: List[str], nth: int) -> List[str] | None:
+    """Arguments after the nth positional. Flag values are not positionals."""
+    from tiancode.core.mcp_client import (
+        _NPM_SHORT_VALUES,
+        _NPM_VALUE_FLAGS,
+        _PNPM_LONG_VALUES,
+        _PNPM_SHORT_VALUES,
+        _YARN_VALUE_FLAGS,
+    )
+
+    if program == "npm":
+        longs, shorts = _NPM_VALUE_FLAGS, _NPM_SHORT_VALUES
+    elif program == "pnpm":
+        longs, shorts = _PNPM_LONG_VALUES, _PNPM_SHORT_VALUES
+    elif program == "yarn":
+        longs, shorts = _YARN_VALUE_FLAGS, frozenset()
+    else:
+        longs, shorts = frozenset(), frozenset()
+    seen = 0
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            rest = args[index + 1 :]
+            target = nth - seen
+            if target < 0 or target >= len(rest):
+                return None
+            return rest[target + 1 :]
+        if arg.startswith("-") and arg != "-":
+            name, eq, _value = arg.partition("=")
+            if eq:
+                index += 1
+                continue
+            short = arg[1] if not arg.startswith("--") and len(arg) >= 2 else ""
+            if short in shorts:
+                attached = len(arg) > 2
+                index += 1 if attached or index + 1 >= len(args) or args[index + 1] == "--" else 2
+                continue
+            takes = name in longs or (program == "pnpm" and name.startswith("--config"))
+            if takes and index + 1 < len(args) and args[index + 1] != "--":
+                index += 2
+                continue
+            index += 1
+            continue
+        if seen == nth:
+            return args[index + 1 :]
+        seen += 1
+        index += 1
+    return None
+
+
+def _script_names_for_manager(program: str, args: List[str], _depth: int = 0) -> List[str] | None:
+    """package.json names this invocation runs, or None when it runs none.
+
+    An empty list means the command is an install that `--ignore-scripts`
+    will not run. `bun test` is Bun's runner. `bun run test` reads the script.
+    Yarn 1 has no `t` alias, so `yarn t` is a script named t.
     """
-    words = cleaned.split()
-    if not words:
-        return False
-    head = words[0]
-    nxt = words[1] if len(words) > 1 else ""
-    if binary == "bun":
-        return head == "run" and nxt == "test"
-    if binary == "yarn":
-        return head == "test" or (head == "run" and nxt == "test")
-    if head in {"test", "t", "tst"}:
-        return True
-    if head in {"run", "run-script"} and nxt == "test":
-        return True
-    return binary == "npm" and head in {"rum", "urn"} and nxt == "test"
+    from tiancode.core.mcp_client import (
+        _PNPM_SAFE_COMMANDS,
+        _YARN_SAFE_COMMANDS,
+        _canonicalize_manager,
+        _manager_positionals,
+    )
 
-
-def _mentions_package_test(binary: str, args: str) -> bool:
-    """True when a --filter/--recursive command would run scripts.test.
-
-    The test word may follow the filter value (`pnpm --filter app t`).
-    """
-    if _command_is_package_test(binary, args.strip()):
-        return True
-    if binary == "bun":
-        return re.search(r"(?:^|\s)run\s+test(?:\s|$)", args) is not None
-    if binary == "yarn":
-        return re.search(r"(?:^|\s)test(?:\s|$)", args) is not None
-    if binary == "npm" and re.search(r"(?:^|\s)(?:rum|urn|run-script)\s+test(?:\s|$)", args):
-        return True
-    if binary == "pnpm" and re.search(r"(?:^|\s)run-script\s+test(?:\s|$)", args):
-        return True
-    return re.search(r"(?:^|\s)(?:test|tst|t)(?:\s|$)", args) is not None
-
-
-def _parse_package_test(segment: str) -> tuple[str | None, bool] | None:
-    """Return `(prefix, unscoped)` when this segment runs a package test script.
-
-    `prefix` is None when the command stays in the current directory, or "" when
-    a directory flag has no usable path. `unscoped` means --filter, --workspace,
-    or --recursive would run a package.json this check cannot see.
-    """
-    match = _PM_HEAD.match(segment.strip())
-    if match is None:
+    if _depth > 4:
+        return ["*"]
+    ignore = any(arg == "--ignore-scripts" or arg.startswith("--ignore-scripts=") for arg in args)
+    positionals = _manager_positionals(program, args)
+    if program == "bun":
+        if len(positionals) >= 2 and positionals[0] == "run" and positionals[1] == "test":
+            return _hook_names("test")
         return None
-    binary = match.group(1).lower()
-    manager_args = _manager_args(match.group(2))
-    unscoped = _PM_UNSCOPED.search(manager_args) is not None
-    if unscoped and _mentions_package_test(binary, manager_args):
-        return None, True
+    if not positionals:
+        return None
+    command = _canonicalize_manager(program, positionals[0])
+    if program == "yarn" and command in {"workspace", "workspaces"}:
+        if command == "workspace" and len(positionals) >= 3:
+            return ["*"]
+        if command == "workspaces" and len(positionals) >= 2 and positionals[1] in {"run", "foreach"}:
+            return ["*"]
+        return None
+    if program == "pnpm" and command in {"recursive", "m", "multi"}:
+        tail = _args_after_nth_positional(program, args, 0)
+        if not tail:
+            return None
+        if ignore and not any(
+            arg == "--ignore-scripts" or arg.startswith("--ignore-scripts=") for arg in tail
+        ):
+            tail = ["--ignore-scripts", *tail]
+        inner = _script_names_for_manager(program, tail, _depth=_depth + 1)
+        if not inner:
+            return None
+        return ["*"]
+    if command == "run":
+        if len(positionals) < 2 or not positionals[1] or positionals[1].startswith("-"):
+            return None
+        return _hook_names(positionals[1])
+    if command in {"test", "start", "stop", "restart"}:
+        return _hook_names(command)
+    if command in {"install", "ci", "add", "update", "upgrade", "install-test", "install-ci-test"}:
+        names = [] if ignore else list(_INSTALL_LIFECYCLE)
+        if command in {"install-test", "install-ci-test"}:
+            names.extend(_hook_names("test"))
+        return names or None
+    if command in {"uninstall", "remove"} and not ignore:
+        return list(_UNINSTALL_LIFECYCLE)
+    if program == "npm" or command == "exec":
+        return None
+    if program == "yarn" and command == "node":
+        return None
+    safe = _PNPM_SAFE_COMMANDS if program == "pnpm" else _YARN_SAFE_COMMANDS
+    if command in safe:
+        return None
+    return _hook_names(command)
+
+
+def _parse_package_scripts(segment: str) -> tuple[str | None, bool, List[str]] | None:
+    """Return `(prefix, unscoped, script names)` when this segment runs package scripts.
+
+    `prefix` is None in the current directory, or "" when a directory flag has
+    no usable path. `unscoped` means another package.json would run.
+    `script names` of `["*"]` is that same unseen package.
+    """
+    from tiancode.core.mcp_client import _unwrap_corepack
+
+    words = _unwrap_corepack(segment.split())
+    if not words:
+        return None
+    program = _command_basename(words[0])
+    if program not in {"npm", "pnpm", "yarn", "bun"}:
+        return None
+    names = _script_names_for_manager(program, words[1:])
+    if not names:
+        return None
+    manager_args = _manager_args(" ".join(words[1:]))
+    unscoped = names == ["*"] or _PM_UNSCOPED.search(manager_args) is not None
+    if unscoped:
+        return None, True, names
     scoped = _PM_UNSCOPED.sub(" ", manager_args)
     prefixes = _PM_PREFIX.findall(scoped)
-    cleaned = _PM_PREFIX.sub(" ", scoped)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(")")
-    runs = _command_is_package_test(binary, cleaned)
-    if not runs:
-        return None
     if prefixes:
-        return prefixes[-1], False
+        return prefixes[-1], False, names
     if _PM_PREFIX_BARE.search(scoped):
-        return "", False
-    return None, False
+        return "", False, names
+    return None, False, names
 
 
 def _directory_inside(cwd: Path, raw_target: str, root: Path) -> Path | None:
@@ -1025,25 +1354,45 @@ def _directory_inside(cwd: Path, raw_target: str, root: Path) -> Path | None:
 
 
 def package_script_block_reason(command: str, work_dir: Path) -> str | None:
-    """Refuse npm/pnpm/yarn test when the script that would run is unsafe.
+    """Refuse a package script whose body is unsafe.
 
-    `npm test` itself is not a dangerous string. The script, its pretest and
-    posttest hooks, and the `npm run` chain they reach are read from
-    package.json. `npm t`, `npm tst`, `npm run-script test`, and pnpm's
-    `t` / `tst` / `run-script` run that same script. Yarn 1 has no `t`
-    alias. A link is not followed. `--prefix` must stay inside the
-    workspace. `--filter` and `--recursive` are refused because they run
-    package.json files this check does not open. `bun test` is the native
-    runner and does not read scripts.test; `bun run test` does. A leading
-    `FOO=1` or `env` does not hide the package manager.
+    `npm test` and `npm start` are not themselves dangerous strings. The
+    script, its pre/post hooks, and the `npm run` chain they reach are read
+    from package.json. `npm install` runs the install lifecycle the same way.
+    `--ignore-scripts` skips that lifecycle. `npm t` and pnpm's `t` are
+    `test`. Yarn 1 has no `t` alias. A link is not followed. `--prefix` must
+    stay inside the workspace. `--filter`, `--recursive`, and `yarn workspace`
+    are refused because they run a package.json this check does not open.
+    `bun test` is the native runner; `bun run test` reads the script.
+    A leading `FOO=1`, `env`, or `timeout` does not hide the package manager.
     """
+    from tiancode.tools.command_scan import substitution_bodies
+
+    pending = [command]
+    seen: set[str] = set()
+    while pending and len(seen) < 8:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        reason = _package_script_in_text(current, work_dir)
+        if reason:
+            return reason
+        for body in substitution_bodies(current):
+            cleaned = body.strip()
+            if cleaned and cleaned not in seen:
+                pending.append(cleaned)
+    return None
+
+
+def _package_script_in_text(command: str, work_dir: Path) -> str | None:
     text = _normalize_command(_expand_literal_assignments(command))
     if not text:
         return None
     root = work_dir.resolve()
     cwd = root
     cd_escaped = False
-    from tiancode.core.polyglot import package_test_block_reason
+    from tiancode.core.polyglot import package_scripts_block_reason
 
     for segment in _SHELL_SPLIT.split(text):
         piece = _unwrap_leading_wrappers(segment.strip())
@@ -1058,23 +1407,23 @@ def package_script_block_reason(command: str, work_dir: Path) -> str | None:
                 cwd = nxt
                 cd_escaped = False
             continue
-        parsed = _parse_package_test(piece)
+        parsed = _parse_package_scripts(piece)
         if parsed is None:
             continue
-        prefix, unscoped = parsed
+        prefix, unscoped, names = parsed
         if cd_escaped:
-            return "测试命令在越出工作区的目录中运行，已拒绝执行"
+            return "包脚本命令在越出工作区的目录中运行，已拒绝执行"
         if unscoped:
-            return "包管理器的 --filter、--workspace 或 --recursive 会运行未经检查的脚本，已拒绝执行"
+            return "包管理器的 --filter、--workspace、--recursive 或 workspace 会运行未经检查的脚本，已拒绝执行"
         if prefix == "":
-            return "测试命令的 --prefix/--cwd 无法确认仍在工作区内，已拒绝执行"
+            return "包脚本命令的 --prefix/--cwd 无法确认仍在工作区内，已拒绝执行"
         base = cwd
         if prefix:
             dest = _directory_inside(cwd, prefix, root)
             if dest is None:
-                return "测试命令的 --prefix/--cwd 越出工作区，已拒绝执行"
+                return "包脚本命令的 --prefix/--cwd 越出工作区，已拒绝执行"
             base = dest
-        reason = package_test_block_reason(base)
+        reason = package_scripts_block_reason(base, names)
         if reason:
             return reason
     return None
@@ -1090,6 +1439,11 @@ def execute_shell_command(command: str, work_dir: Path, timeout: int = 30) -> Ex
     from tiancode.core.recipe_guard import recipe_block_reason
 
     reason = recipe_block_reason(command, work_dir)
+    if reason:
+        return _blocked_result(reason)
+    from tiancode.core.launch_guard import launch_block_reason
+
+    reason = launch_block_reason(command, work_dir)
     if reason:
         return _blocked_result(reason)
     return _run_managed_process(command, work_dir, use_shell=True, timeout=timeout)

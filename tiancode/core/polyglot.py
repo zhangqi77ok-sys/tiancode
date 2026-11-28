@@ -54,8 +54,8 @@ _SCRIPT_RUN = re.compile(
 )
 
 
-def _test_script_bodies(scripts: dict) -> list[tuple[str, str]]:
-    """pretest/test/posttest and the `npm run` chain they reach, stopping on cycles."""
+def _script_bodies(scripts: dict, roots: list[str]) -> list[tuple[str, str]]:
+    """The named scripts and the `npm run` chain they reach, stopping on cycles."""
     from tiancode.tools.execution import _expand_literal_assignments, _normalize_command
 
     ordered: list[tuple[str, str]] = []
@@ -74,29 +74,29 @@ def _test_script_bodies(scripts: dict) -> list[tuple[str, str]]:
         for match in _SCRIPT_RUN.finditer(visible):
             add(match.group(1))
 
-    for name in ("pretest", "test", "posttest"):
+    for name in roots:
         add(name)
     return ordered
 
 
-def package_test_block_reason(work_dir: Path) -> Optional[str]:
-    """Why `npm test` / `pnpm test` / `yarn test` must not start, or None.
+def package_scripts_block_reason(work_dir: Path, names: list[str]) -> Optional[str]:
+    """Why these package.json scripts must not start, or None.
 
     A symlink or hard link is not opened: the package manager would follow it.
-    The test script, its pretest and posttest hooks, and the short `npm run`
-    chain they reach are checked with the same dangerous-command rules as the shell.
+    Each named script and the short `npm run` chain it reaches are checked
+    with the same dangerous-command rules as the shell.
     """
     from tiancode.core.path_safety import is_shared_hardlink
     from tiancode.tools.execution import is_dangerous_command
 
     pkg = work_dir / "package.json"
     if pkg.is_symlink() or is_shared_hardlink(pkg):
-        return "package.json 是符号链接或硬链接，已拒绝执行其中的测试脚本"
+        return "package.json 是符号链接或硬链接，已拒绝执行其中的脚本"
     if not pkg.is_file():
         return None
     text = _read_owned_text(pkg)
     if text is None:
-        return "package.json 无法作为普通文件读取，已拒绝执行其中的测试脚本"
+        return "package.json 无法作为普通文件读取，已拒绝执行其中的脚本"
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -104,10 +104,15 @@ def package_test_block_reason(work_dir: Path) -> Optional[str]:
     scripts = data.get("scripts") if isinstance(data, dict) else None
     if not isinstance(scripts, dict):
         return None
-    for name, body in _test_script_bodies(scripts):
+    for name, body in _script_bodies(scripts, names):
         if is_dangerous_command(body):
             return f"package.json scripts.{name} 含高危命令，已拒绝执行"
     return None
+
+
+def package_test_block_reason(work_dir: Path) -> Optional[str]:
+    """Why `npm test` / `pnpm test` / `yarn test` must not start, or None."""
+    return package_scripts_block_reason(work_dir, ["pretest", "test", "posttest"])
 
 
 def _has_real_node_test_script(pkg_json: Path) -> bool:
