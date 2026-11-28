@@ -6,10 +6,25 @@ The marker is a local file. These tests do not use the network or a credential.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from tiancode.core.recipe_guard import recipe_block_reason
 from tiancode.tools.execution import execute_shell_command
+
+
+def _run_make(work: Path, command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=work,
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
 
 
 def _dangerous(marker: Path) -> str:
@@ -284,5 +299,59 @@ def test_make_eval_call_and_foreach_expand_before_exec(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert recipe_block_reason("make test", safe) is None
+    assert not marker.exists()
+
+
+def test_makefiles_variable_runs_before_the_makefile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "Makefile").write_text("all:\n\t@echo ok\n", encoding="utf-8")
+    (tmp_path / "evil.mk").write_text("X := $(shell touch ran)\n", encoding="utf-8")
+    proved = _run_make(tmp_path, "MAKEFILES=evil.mk make")
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    (tmp_path / "evil.mk").write_text(
+        "X := $(shell " + _dangerous(marker) + ")\n",
+        encoding="utf-8",
+    )
+
+    blocked = execute_shell_command("MAKEFILES=evil.mk make", work_dir=tmp_path, timeout=5)
+    assert blocked.exit_code == 126
+    assert "$(shell)" in blocked.stderr
+    assert not marker.exists()
+    assert recipe_block_reason("make MAKEFILES=evil.mk", tmp_path) is not None
+    assert recipe_block_reason("export MAKEFILES=evil.mk; make", tmp_path) is not None
+    assert recipe_block_reason("env MAKEFILES=evil.mk make", tmp_path) is not None
+    assert recipe_block_reason("MAKEFILES=evil.mk make MAKEFILES=", tmp_path) is None
+    assert recipe_block_reason("MAKEFILES=missing.mk make", tmp_path) is None
+
+    monkeypatch.setenv("MAKEFILES", "evil.mk")
+    parent = execute_shell_command("make", work_dir=tmp_path, timeout=5)
+    assert parent.exit_code == 126
+    assert not marker.exists()
+    monkeypatch.setenv("MAKEFILES", "safe-missing.mk")
+    assert recipe_block_reason("make", tmp_path) is None
+
+    outside = recipe_block_reason("MAKEFILES=/etc/passwd make", tmp_path)
+    assert outside is not None and "MAKEFILES" in outside
+    link = tmp_path / "link.mk"
+    link.symlink_to(tmp_path / "evil.mk")
+    linked = recipe_block_reason("MAKEFILES=link.mk make", tmp_path)
+    assert linked is not None and "链接" in linked
+
+
+def test_makefiles_suffix_rule_runs_for_the_main_target(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "foo.c").write_text("int x;\n", encoding="utf-8")
+    (tmp_path / "suf.mk").write_text(".c.o:\n\ttouch ran\n", encoding="utf-8")
+    (tmp_path / "Makefile").write_text("all: foo.o\n", encoding="utf-8")
+    proved = _run_make(tmp_path, "MAKEFILES=suf.mk make")
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    (tmp_path / "foo.o").unlink(missing_ok=True)
+    (tmp_path / "suf.mk").write_text(".c.o:\n\t" + _dangerous(marker) + "\n", encoding="utf-8")
+
+    blocked = execute_shell_command("MAKEFILES=suf.mk make", work_dir=tmp_path, timeout=5)
+
+    assert blocked.exit_code == 126
     assert not marker.exists()
 
