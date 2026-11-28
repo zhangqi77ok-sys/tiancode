@@ -1562,6 +1562,9 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     `script -c`, `choom -n`, `cmake -E env`/`chdir`/`time`, `dbus-run-session`,
     `xvfb-run`, `sg -c`, and `start-stop-daemon --start` are the same kind of
     launcher. `env -C` and `stdbuf --output` take a value, then the command.
+    `go -toolexec` and `go test`/`go run -exec` are the program they exec.
+    `git filter-branch` filters and the editors behind `git config --edit`,
+    `notes append`/`edit`, and `merge`/`cherry-pick`/`revert --edit` are too.
     A pipe into `python` or `node` with no script runs that pipe as the
     program, and so does a pipe into `groff -U` or `pic -U`. `awk` `system`,
     `sed` `e`, `sqlite3 .shell`, `find -exec`, `xargs`, an ansible ad-hoc

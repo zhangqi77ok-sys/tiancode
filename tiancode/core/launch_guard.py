@@ -49,7 +49,7 @@ _CARGO_VALUES = frozenset({
     "--lockfile-path", "--ignore-rust-version", "--timings", "--explain",
 })
 _GO_VALUES = frozenset({"-C", "-modfile", "-overlay", "-run"})
-_INSPECTED = frozenset({"git", "go", "cmake", "cargo", "perl", "ctest"})
+_INSPECTED = frozenset({"git", "go", "cmake", "cargo", "perl", "prove", "ctest"})
 _EXPORTED_ENV = frozenset({
     "GIT_EXTERNAL_DIFF", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR",
     "PERL5DB", "PERL5OPT", "PYTHONPATH",
@@ -144,7 +144,11 @@ def _reason_for(
     if program == "git":
         return _git_reason(words, assignments, cwd, root, parent)
     if program == "go":
-        return _go_reason(words, cwd, root)
+        return _go_reason(words, assignments, cwd, root, parent)
+    if program == "prove":
+        # prove starts perl, so PERL5OPT and PERL5DB apply. prove's own
+        # letters are not perl switches.
+        return _perl_reason(["perl"], assignments, cwd, root, parent)
     if program == "cmake":
         return _cmake_reason(words, cwd, root)
     if program == "cargo":
@@ -183,13 +187,16 @@ def _git_reason(
     ):
         if is_dangerous_command(extra):
             return "git 的配置会执行高危命令，已拒绝执行"
+    foreach = _submodule_foreach_reason(words, cwd, root)
+    if foreach:
+        return foreach
     attribute = _git_attribute_reason(words, assignments, loaded, parent, cwd, root)
     if attribute:
         return attribute
     return _hook_reason(words, cwd, root, loaded, assignments, parent)
 
 
-_ATTR_DRIVER = re.compile(r"(?:^|\s)(filter|diff)=([A-Za-z0-9_.-]+)")
+_ATTR_DRIVER = re.compile(r"(?:^|\s)(filter|diff|merge)=([A-Za-z0-9_.-]+)")
 _MAX_ATTR_FILES = 32
 
 
@@ -201,12 +208,15 @@ def _git_attribute_reason(
     cwd: Path,
     root: Path,
 ) -> Optional[str]:
-    """Block a clean, smudge, or textconv command when an attribute selects it.
+    """Block a clean, smudge, textconv, or merge-driver command when an attribute selects it.
 
     Without a matching attribute the command does not run, which was proved
-    for `filter.clean`. `git status` does run `clean`. `checkout` and
-    `restore` run `smudge`. `diff`, `show`, and `log -p` run `textconv`.
-    `diff.<name>.command` runs for `git diff`.
+    for `filter.clean`. `git status` does run `clean`, and so does `git stash`
+    (the default push). `stash list` does not. `checkout`, `restore`,
+    `switch`, `merge`, `rebase`, and `cherry-pick` run `smudge`. `stash pop`
+    does too. `diff`, `show`, and `log -p` run `textconv`.
+    `diff.<name>.command` runs for `git diff`. `merge.<name>.driver` runs
+    for `git merge`.
     """
     from tiancode.tools.execution import is_dangerous_command
     from tiancode.tools.hidden_exec import _git_args, _git_subcommand, effective_git_config
@@ -216,10 +226,13 @@ def _git_attribute_reason(
     if not sub:
         return None
     wanted: List[Tuple[str, str, str]] = []
-    clean = sub in {"add", "status", "commit"}
-    smudge = sub in {"checkout", "restore"}
-    show_patch = sub in {"diff", "show"} or (sub == "log" and _log_shows_patch(_git_args(words)))
+    args = _git_args(words)
+    stash_action = _stash_action(args) if sub == "stash" else ""
+    clean = sub in {"add", "status", "commit"} or stash_action in {"push", "save"}
+    smudge = sub in {"checkout", "restore", "switch", "merge", "rebase", "cherry-pick"} or stash_action == "pop"
+    show_patch = sub in {"diff", "show"} or (sub == "log" and _log_shows_patch(args))
     external = sub == "diff"
+    merge_driver = sub == "merge"
     for key, value in config.items():
         text = value.strip()
         if not text or not is_dangerous_command(text):
@@ -240,6 +253,10 @@ def _git_attribute_reason(
             name = key[len("diff.") : -len(".command")]
             if name and name != "external":
                 wanted.append(("diff", name, text))
+        elif merge_driver and key.startswith("merge.") and key.endswith(".driver"):
+            name = key[len("merge.") : -len(".driver")]
+            if name:
+                wanted.append(("merge", name, text))
     if not wanted:
         return None
     paths, error = _attribute_files(cwd, root)
@@ -509,8 +526,97 @@ def _hooks_directory(
     return path, None
 
 
-def _go_reason(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
+_STASH_VALUE = frozenset({"-m", "--message", "--pathspec-from-file"})
+_SUBMODULE_PATH = re.compile(r"^\s*path\s*=\s*(.+?)\s*$")
+
+
+def _stash_action(args: Sequence[str]) -> str:
+    """The stash subcommand. A bare `git stash` is `push`, which runs clean."""
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            rest = args[index + 1 :]
+            return rest[0] if rest else "push"
+        name, eq, _value = word.partition("=")
+        if word.startswith("-") and word != "-":
+            if name in _STASH_VALUE and not eq:
+                index += 2
+                continue
+            index += 1
+            continue
+        return word
+    return "push"
+
+
+def _submodule_foreach_reason(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
+    """The shell `git submodule foreach` runs in each checked-out submodule.
+
+    With no checked-out submodule the command does not run. A deinitialized
+    path listed in `.gitmodules` does not count.
+    """
     from tiancode.tools.execution import is_dangerous_command
+    from tiancode.tools.hidden_exec import _git_args, _git_subcommand, _plain
+
+    if _git_subcommand(words) != "submodule":
+        return None
+    args = [_plain(word) for word in _git_args(words)]
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            return None
+        if word == "foreach":
+            index += 1
+            break
+        if word.startswith("-"):
+            index += 1
+            continue
+        return None
+    else:
+        return None
+    while index < len(args) and args[index].split("=", 1)[0] in {"--recursive", "--quiet", "-q"}:
+        index += 1
+    command = " ".join(args[index:]).strip()
+    if not command or not is_dangerous_command(command):
+        return None
+    modules = cwd / ".gitmodules"
+    if modules.is_symlink():
+        return "git 子模块配置是符号链接，已拒绝执行"
+    if not modules.is_file():
+        return None
+    text, error = _read_trusted(modules)
+    if error or text is None:
+        return "git 子模块配置无法作为普通文件读取，已拒绝执行"
+    for line in text.splitlines():
+        match = _SUBMODULE_PATH.match(line)
+        if match is None:
+            continue
+        raw = match.group(1).strip().strip('"').strip("'")
+        if not raw:
+            continue
+        path = _resolve(cwd, raw)
+        if path.is_symlink() or not _within(root, path):
+            return "git 子模块路径越出工作区或是符号链接，已拒绝执行"
+        git_entry = path / ".git"
+        if git_entry.exists() or git_entry.is_symlink():
+            return "git submodule foreach 会执行高危命令，已拒绝执行"
+    return None
+
+
+def _go_reason(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    cwd: Path,
+    root: Path,
+    parent: Dict[str, str],
+) -> Optional[str]:
+    from tiancode.tools.execution import is_dangerous_command
+    from tiancode.tools.hidden_exec import commands_go_will_run
+
+    for extra in commands_go_will_run(words, assignments, parent):
+        if is_dangerous_command(extra):
+            return "go 会执行高危命令，已拒绝执行"
 
     sub, args, base = _go_invocation(words, cwd, root)
     if sub != "generate":

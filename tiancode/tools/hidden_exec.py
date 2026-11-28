@@ -12,9 +12,14 @@ the outer command. `pic -U` and `groff -U -p` run a `sh` request from a
 heredoc. `sftp -S` and `sftp -D` exec a program, `tar --rsh-command` does
 too when the archive is remote, `zip -T -TT` runs a shell, and
 `gcc -wrapper` execs its wrapper. `pnpm exec` forwards its tail. `perl -d`
-runs `PERL5DB`. A pipe whose program is not in the text (`sed e`, `.shell`
-with no command, `pic -U`) is unseen. The caller checks each returned
-string with the same danger rules. This is not a language parser.
+runs `PERL5DB`, and so does `prove` when `PERL5OPT=-d`. `go build
+-toolexec` and `go test`/`go run -exec` exec that program; `go build -n`
+still runs `-toolexec`, while `-n` and `go test -c` do not run `-exec`.
+`git config --edit`, `notes append`/`edit`, `merge`/`cherry-pick`/`revert
+--edit`, and `filter-branch --*-filter` run a shell. A pipe whose program
+is not in the text (`sed e`, `.shell` with no command, `pic -U`) is unseen.
+The caller checks each returned string with the same danger rules. This is
+not a language parser.
 """
 
 from __future__ import annotations
@@ -235,6 +240,12 @@ def _commands_of(
         return _pic_commands(command, heredocs), False
     if program == "perl":
         return _perl_debug_commands(command, assignments), False
+    if program == "prove":
+        # prove is a perl program. Its own flags are not `perl -d`; the
+        # debugger still starts when PERL5OPT asks for it.
+        return _perl_debug_commands(["perl"], assignments), False
+    if program == "go":
+        return commands_go_will_run(command, assignments), False
     if program == "sort":
         return _sort_commands(command), False
     if program in {"vim", "vi", "ex", "view"}:
@@ -772,7 +783,11 @@ def _tag_uses_editor(words: Sequence[str]) -> bool:
 
 
 def _notes_uses_editor(words: Sequence[str]) -> bool:
-    """`git notes add` opens the editor. `git notes add -m` does not."""
+    """`notes add` and `notes append` open the editor unless `-m` gave a message.
+
+    `notes edit` always opens it. `notes add -m` and `notes append -m` do not.
+    `notes show` does not.
+    """
     if _git_subcommand(words) != "notes":
         return False
     action = ""
@@ -795,7 +810,107 @@ def _notes_uses_editor(words: Sequence[str]) -> bool:
         if not action:
             action = _plain(word)
         index += 1
-    return action == "add" and not has_message
+    if action == "edit":
+        return True
+    return action in {"add", "append"} and not has_message
+
+
+def _trailing_edit(args: Sequence[str]) -> bool:
+    """Whether the last of `--edit` / `-e` / `--no-edit` asks for an editor.
+
+    The last flag wins. `merge --edit --no-edit` does not open one, and
+    `merge --no-edit --edit` does.
+    """
+    editing = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"-e", "--edit"}:
+            editing = True
+        elif name == "--no-edit":
+            editing = False
+    return editing
+
+
+def _config_uses_editor(words: Sequence[str]) -> bool:
+    """`git config --edit` and `git config -e` open the editor."""
+    if _git_subcommand(words) != "config":
+        return False
+    for word in _git_args(words):
+        if word == "--":
+            break
+        if word.split("=", 1)[0] in {"-e", "--edit"}:
+            return True
+    return False
+
+
+def _merge_uses_editor(words: Sequence[str]) -> bool:
+    """`git merge --edit` opens the editor when a merge commit is created.
+
+    `--ff-only` never creates one, so the editor stays closed. A fast-forward
+    without `--ff-only` also stays closed, but that depends on ancestry this
+    check does not compute. `--edit` is still reported unless `--ff-only` is set.
+    `--no-edit` after `--edit` turns it back off.
+    """
+    if _git_subcommand(words) != "merge":
+        return False
+    args = _git_args(words)
+    if _flag_present(args, frozenset({"--ff-only"})):
+        return False
+    return _trailing_edit(args)
+
+
+def _cherry_pick_uses_editor(words: Sequence[str]) -> bool:
+    """`git cherry-pick -e` / `--edit` opens the editor. A plain pick does not."""
+    if _git_subcommand(words) != "cherry-pick":
+        return False
+    return _trailing_edit(_git_args(words))
+
+
+def _revert_uses_editor(words: Sequence[str]) -> bool:
+    """`git revert -e` / `--edit` opens the editor. `--no-edit` does not."""
+    if _git_subcommand(words) != "revert":
+        return False
+    return _trailing_edit(_git_args(words))
+
+
+_FILTER_BRANCH = frozenset({
+    "--setup", "--env-filter", "--tree-filter", "--index-filter",
+    "--parent-filter", "--msg-filter", "--commit-filter", "--tag-name-filter",
+})
+
+
+def _filter_branch_commands(words: Sequence[str]) -> List[str]:
+    """Shell strings `git filter-branch` evals. A subdirectory filter is a path.
+
+    Each of these was proved with a marker. The default message filter is
+    `cat` and the default commit filter is `git commit-tree`, so only an
+    explicit value is returned.
+    """
+    if _git_subcommand(words) != "filter-branch":
+        return []
+    found: List[str] = []
+    index = 0
+    args = _git_args(words)
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name in _FILTER_BRANCH:
+            if eq:
+                body = value
+            elif index + 1 < len(args):
+                body = args[index + 1]
+                index += 1
+            else:
+                body = ""
+            body = _plain(body).strip()
+            if body:
+                found.append(body)
+        index += 1
+    return found
 
 
 def _rebase_execs(words: Sequence[str]) -> List[str]:
@@ -949,6 +1064,17 @@ def _triggered_git_commands(
         external = _git_external_diff(config, assignments, parent_env)
         if external:
             found.append(external)
+    edits = (
+        _config_uses_editor(words)
+        or _merge_uses_editor(words)
+        or _cherry_pick_uses_editor(words)
+        or _revert_uses_editor(words)
+    )
+    if edits:
+        editor = _resolved_editor(config, assignments, parent_env)
+        if editor:
+            found.append(editor)
+    found.extend(_filter_branch_commands(words))
     found.extend(_rebase_execs(words))
     bisect = _bisect_run(words)
     if bisect:
@@ -1675,6 +1801,276 @@ def _perl_debug_commands(command: Sequence[str], assignments: Sequence[str]) -> 
     from tiancode.tools.command_scan import executed_literals
 
     return [piece.strip() for piece in executed_literals("perl", payload) if piece.strip()]
+
+
+# `go test` and `go run` share `-exec`. Build commands share `-toolexec`.
+# A flag in this set consumes the next word, so that word is not itself a flag.
+_GO_VALUE_FLAGS = frozenset({
+    "-C", "-o", "-p", "-covermode", "-coverpkg", "-asmflags", "-buildmode",
+    "-compiler", "-gccgoflags", "-gcflags", "-installsuffix", "-ldflags",
+    "-mod", "-modfile", "-overlay", "-pgo", "-pkgdir", "-tags", "-toolexec",
+    "-exec", "-f", "-run", "-count", "-timeout", "-parallel", "-cpu", "-bench",
+    "-benchtime", "-blockprofile", "-coverprofile", "-cpuprofile", "-memprofile",
+    "-mutexprofile", "-outputdir", "-shuffle", "-skip", "-fuzz", "-fuzztime",
+    "-vet",
+})
+_GO_BOOL_FLAGS = frozenset({"-n", "-c", "-json", "-compiled", "-export"})
+_GO_TOOL_COMMANDS = frozenset({"build", "install", "run", "test", "vet", "list"})
+_GO_EXEC_COMMANDS = frozenset({"run", "test"})
+_GO_TRUE = frozenset({"1", "t", "true"})
+_GO_FALSE = frozenset({"0", "f", "false"})
+
+
+class _GoState:
+    """The go flags that decide whether `-toolexec` or `-exec` actually runs."""
+
+    def __init__(self) -> None:
+        self.toolexec: Optional[str] = None
+        self.exec_cmd: Optional[str] = None
+        self.dry = False
+        self.compile_only = False
+        self.list_compiled = False
+        self.list_export = False
+        self.json_on = False
+        self.json_fields: set = set()
+        self.template = ""
+        self.saw_template = False
+
+
+def _go_flag_name(word: str) -> str:
+    name = word.split("=", 1)[0]
+    if name.startswith("--") and not name.startswith("---"):
+        return "-" + name[2:]
+    return name
+
+
+def _go_bool(value: str) -> Optional[bool]:
+    text = value.strip().lower()
+    if text in _GO_TRUE:
+        return True
+    if text in _GO_FALSE:
+        return False
+    return None
+
+
+def _go_quoted_split(text: str) -> Optional[List[str]]:
+    """Split the way `cmd/internal/quoted.Split` does. None if a quote is open.
+
+    Go execs that argv. It does not run a shell, and a semicolon stays one argument.
+    """
+    fields: List[str] = []
+    index = 0
+    limit = len(text)
+    while index < limit:
+        while index < limit and text[index] in " \t\n\r":
+            index += 1
+        if index >= limit:
+            break
+        if text[index] in "\"'":
+            quote = text[index]
+            end = text.find(quote, index + 1)
+            if end < 0:
+                return None
+            fields.append(text[index + 1 : end])
+            index = end + 1
+            continue
+        end = index
+        while end < limit and text[end] not in " \t\n\r":
+            end += 1
+        fields.append(text[index:end])
+        index = end
+    return fields
+
+
+def _go_apply(state: _GoState, name: str, value: Optional[str]) -> None:
+    """Record one go flag. `value` is None when a boolean flag was bare."""
+    if name == "-toolexec":
+        state.toolexec = value or ""
+        return
+    if name == "-exec":
+        state.exec_cmd = value or ""
+        return
+    if name == "-n":
+        state.dry = True if value is None else _go_bool(value) is not False
+        return
+    if name == "-c":
+        state.compile_only = True if value is None else _go_bool(value) is not False
+        return
+    if name == "-compiled":
+        state.list_compiled = True if value is None else _go_bool(value) is not False
+        return
+    if name == "-export":
+        state.list_export = True if value is None else _go_bool(value) is not False
+        return
+    if name == "-f":
+        state.template = value or ""
+        state.saw_template = True
+        return
+    if name != "-json":
+        return
+    # `-json` is a boolean flag. `-json` and `-json=true` keep the field set.
+    # `-json=Name` adds fields and does not mean "every field".
+    if value is None:
+        state.json_on = True
+        return
+    parsed = _go_bool(value)
+    if parsed is not None:
+        state.json_on = parsed
+        return
+    state.json_on = True
+    for field_name in value.split(","):
+        if field_name:
+            state.json_fields.add(field_name)
+
+
+def _go_walk_args(state: _GoState, args: Sequence[str]) -> None:
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word in {"--", "-args"}:
+            return
+        if not word.startswith("-") or word == "-":
+            index += 1
+            continue
+        name = _go_flag_name(word)
+        _ignored, eq, value = word.partition("=")
+        if name in {"-toolexec", "-exec", "-f"} or (
+            name in _GO_VALUE_FLAGS and name not in _GO_BOOL_FLAGS
+        ):
+            if eq:
+                _go_apply(state, name, value)
+                index += 1
+                continue
+            if name in {"-toolexec", "-exec", "-f"}:
+                nxt = args[index + 1] if index + 1 < len(args) else ""
+                _go_apply(state, name, nxt)
+                index += 2 if index + 1 < len(args) else 1
+                continue
+            index += 2 if index + 1 < len(args) else 1
+            continue
+        if name in _GO_BOOL_FLAGS or name in {"-n", "-c", "-json", "-compiled", "-export"}:
+            _go_apply(state, name, value if eq else None)
+            index += 1
+            continue
+        index += 1
+
+
+def _go_apply_goflags(state: _GoState, raw: str) -> None:
+    """Apply `$GOFLAGS`. A non-flag makes go exit before it runs anything.
+
+    The whole value is ignored in that case: go prints the parse error and
+    does not reach `-toolexec`.
+    """
+    parts = _go_quoted_split(raw)
+    if parts is None:
+        return
+    parsed: List[Tuple[str, Optional[str]]] = []
+    for part in parts:
+        if (
+            not part.startswith("-")
+            or part in {"-", "--"}
+            or part.startswith("---")
+            or part.startswith("-=")
+            or part.startswith("--=")
+        ):
+            return
+        name = _go_flag_name(part)
+        _ignored, eq, value = part.partition("=")
+        if name in {"-toolexec", "-exec", "-f"} and not eq:
+            return
+        parsed.append((name, value if eq else None))
+    for name, value in parsed:
+        _go_apply(state, name, value)
+
+
+def _go_subcommand(words: Sequence[str]) -> Tuple[str, List[str]]:
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            rest = list(words[index + 1 :])
+            if not rest:
+                return "", []
+            return rest[0], rest[1:]
+        name = _go_flag_name(word)
+        _ignored, eq, _value = word.partition("=")
+        if word.startswith("-"):
+            if name == "-C" and not eq:
+                index += 2
+                continue
+            index += 1
+            continue
+        return word, list(words[index + 1 :])
+    return "", []
+
+
+def _go_list_builds(state: _GoState) -> bool:
+    """True when `go list` compiles, which is when `-toolexec` runs.
+
+    Plain `go list` does not. `-compiled`, `-export`, `-json`, `-json=Stale`,
+    and `-f '{{.Stale}}'` do. `-json=Name` and `-f '{{.Name}}'` do not.
+    """
+    if state.list_compiled or state.list_export:
+        return True
+    if state.json_on and (
+        not state.json_fields
+        or "Stale" in state.json_fields
+        or "StaleReason" in state.json_fields
+    ):
+        return True
+    return state.saw_template and ".Stale" in state.template
+
+
+def _go_command_string(value: str) -> Optional[str]:
+    """The argv go will exec, or None when the quote is broken and go exits."""
+    if not value.strip():
+        return ""
+    parts = _go_quoted_split(value)
+    if parts is None or not parts:
+        return "" if parts is not None else None
+    return _shell_join(parts)
+
+
+def commands_go_will_run(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    parent_env: Optional[Dict[str, str]] = None,
+) -> List[str]:
+    """Programs `go -toolexec` and `go -exec` exec.
+
+    The command line replaces the same flag in `GOFLAGS`, and an empty
+    `-toolexec=` clears it. `-toolexec` still runs under `-n`. `-exec` does
+    not run under `-n`, and `go test -c` does not run it either. `go list`
+    runs `-toolexec` only when the listing compiles a package.
+    """
+    if not words or _basename(words[0]) != "go":
+        return []
+    sub, args = _go_subcommand(words)
+    if sub not in _GO_TOOL_COMMANDS and sub not in _GO_EXEC_COMMANDS:
+        return []
+    # GOFLAGS is applied first. The command line then replaces the same flags,
+    # which is the order `go` parses them.
+    state = _GoState()
+    goflags = _env_override("GOFLAGS", assignments, parent_env or {})
+    if goflags:
+        _go_apply_goflags(state, goflags)
+    _go_walk_args(state, args)
+    found: List[str] = []
+    runs_tool = sub in {"build", "install", "run", "test", "vet"} or (
+        sub == "list" and _go_list_builds(state)
+    )
+    if runs_tool and state.toolexec:
+        rendered = _go_command_string(state.toolexec)
+        if rendered:
+            found.append(rendered)
+    runs_exec = sub in _GO_EXEC_COMMANDS and not state.dry and not (
+        sub == "test" and state.compile_only
+    )
+    if runs_exec and state.exec_cmd:
+        rendered = _go_command_string(state.exec_cmd)
+        if rendered:
+            found.append(rendered)
+    return found
 
 
 _VIM_SYSTEM = re.compile(r"""\bsystem\s*\(\s*(['"])((?:\\.|(?!\1).)*)\1""")

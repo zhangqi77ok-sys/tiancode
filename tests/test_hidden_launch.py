@@ -16,7 +16,12 @@ from tiancode.core.launch_guard import launch_block_reason
 from tiancode.tools.execution import execute_shell_command
 
 
-def _run(argv: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str],
+    cwd: Path,
+    env: dict | None = None,
+    timeout: int = 20,
+) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     if env:
         merged.update(env)
@@ -26,7 +31,7 @@ def _run(argv: list[str], cwd: Path, env: dict | None = None) -> subprocess.Comp
         env=merged,
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=timeout,
         check=False,
     )
 
@@ -946,3 +951,251 @@ def test_git_attribute_drivers(tmp_path: Path) -> None:
     _git(repo, ["config", "diff.mine.command", "chmod 777 /"])
     assert launch_block_reason("git diff", repo) is not None
     assert launch_block_reason("git status", repo) is None
+
+
+def test_go_toolexec_and_exec(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("go"):
+        module = tmp_path / "mod"
+        module.mkdir()
+        (module / "go.mod").write_text("module example.com/p\n\ngo 1.22\n", encoding="utf-8")
+        (module / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        wrap = tmp_path / "wrap.sh"
+        wrap.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n", encoding="utf-8")
+        wrap.chmod(0o755)
+        quiet = {"GOSUMDB": "off", "GOPROXY": "off", "GO111MODULE": "on", "GOFLAGS": ""}
+        proved = _run(
+            ["go", "build", "-toolexec", str(wrap), "-o", "out"],
+            module,
+            env=quiet,
+            timeout=60,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "go.mod").write_text("module example.com/t\n\ngo 1.22\n", encoding="utf-8")
+        (tests / "a_test.go").write_text(
+            "package t\nimport \"testing\"\nfunc TestA(t *testing.T) {}\n",
+            encoding="utf-8",
+        )
+        proved = _run(
+            ["go", "test", "-exec", str(wrap), "."],
+            tests,
+            env=quiet,
+            timeout=60,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("go build -toolexec 'sudo reboot'", tmp_path)
+    _blocked("go test -exec 'chmod 777 /'", tmp_path)
+    _blocked("go run -exec 'rm -rf /' .", tmp_path)
+    _blocked("go list -json -toolexec sudo", tmp_path)
+    _blocked("go build -n -toolexec 'rm -rf /'", tmp_path)
+    assert launch_block_reason("go build -toolexec echo", tmp_path) is None
+    assert launch_block_reason("go test -n -exec 'sudo reboot'", tmp_path) is None
+    assert launch_block_reason("go test -c -exec 'chmod 777 /'", tmp_path) is None
+    assert launch_block_reason("go list -toolexec sudo", tmp_path) is None
+    assert launch_block_reason("go list -json=Name -toolexec 'rm -rf /'", tmp_path) is None
+    assert launch_block_reason("go version", tmp_path) is None
+    assert launch_block_reason("GOFLAGS=-toolexec=sudo go build -toolexec=echo", tmp_path) is None
+    assert launch_block_reason("GOFLAGS='-toolexec=sudo reboot' go build", tmp_path) is None
+    monkeypatch.setenv("GOFLAGS", "-toolexec=sudo")
+    reason = launch_block_reason("go build", tmp_path)
+    assert reason is not None and "go" in reason
+    assert launch_block_reason("go build -toolexec=echo", tmp_path) is None
+    assert launch_block_reason("go build -toolexec=", tmp_path) is None
+    assert launch_block_reason("go version", tmp_path) is None
+    assert launch_block_reason("go generate -toolexec sudo", tmp_path) is None
+    monkeypatch.setenv("GOFLAGS", "-count=1")
+    assert launch_block_reason("go test", tmp_path) is None
+
+
+def test_git_editors_and_filter_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = repo / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    editor = repo / "ed.sh"
+    editor.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+    editor.chmod(0o755)
+    proved = _git(repo, ["commit", "-m", "m"], GIT_EDITOR=str(editor))
+    assert proved.returncode == 0
+    proved = _git(repo, ["config", "--edit"], GIT_EDITOR=str(editor))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _git(repo, ["notes", "append"], GIT_EDITOR=str(editor))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("GIT_EDITOR='sudo reboot' git config --edit", repo)
+    _blocked("GIT_EDITOR='chmod 777 /' git notes append", repo)
+    _blocked("GIT_EDITOR='rm -rf /' git notes edit", repo)
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git notes append -m hi", repo) is None
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git config --get user.name", repo) is None
+    assert launch_block_reason("VISUAL='sudo reboot' git config --edit", repo) is None
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git merge topic", repo) is None
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git merge --ff-only --edit side", repo) is None
+    assert launch_block_reason("GIT_EDITOR='rm -rf /' git merge --edit side", repo) is not None
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git merge --edit --no-edit side", repo) is None
+    assert launch_block_reason("GIT_EDITOR='chmod 777 /' git cherry-pick -e side", repo) is not None
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git cherry-pick side", repo) is None
+    assert launch_block_reason("GIT_EDITOR='rm -rf /' git revert --edit HEAD", repo) is not None
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git revert --no-edit HEAD", repo) is None
+
+    script = repo / "filt.sh"
+    script.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    proved = _run(
+        ["git", "filter-branch", "--env-filter", f"touch {marker}", "HEAD"],
+        repo,
+        env={
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "FILTER_BRANCH_SQUELCH": "1",
+        },
+        timeout=60,
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("git filter-branch --tree-filter 'sudo reboot' HEAD", repo)
+    _blocked("git filter-branch --msg-filter 'chmod 777 /' HEAD", repo)
+    _blocked("git filter-branch --setup 'rm -rf /' HEAD", repo)
+    assert launch_block_reason("git filter-branch --tree-filter true HEAD", repo) is None
+    assert launch_block_reason("git filter-branch --subdirectory-filter sub HEAD", repo) is None
+
+
+def test_submodule_foreach_and_stash_filters(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    child = tmp_path / "child"
+    repo.mkdir()
+    child.mkdir()
+    marker = repo / "ran"
+    assert _git(child, ["init"]).returncode == 0
+    (child / "c.txt").write_text("c\n", encoding="utf-8")
+    assert _git(child, ["add", "c.txt"]).returncode == 0
+    assert _git(child, ["commit", "-m", "c"]).returncode == 0
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "a"]).returncode == 0
+    assert launch_block_reason("git submodule foreach 'sudo reboot'", repo) is None
+    added = _git(
+        repo,
+        ["-c", "protocol.file.allow=always", "submodule", "add", str(child), "child"],
+    )
+    assert added.returncode == 0, added.stderr
+    proved = _git(repo, ["submodule", "foreach", f"touch {marker}"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    assert launch_block_reason("git submodule foreach 'chmod 777 /'", repo) is not None
+    _blocked("git submodule foreach 'chmod 777 /'", repo)
+    _blocked("git submodule foreach --recursive 'rm -rf /'", repo)
+    assert launch_block_reason("git submodule foreach 'pytest -q'", repo) is None
+    child_git = repo / "child"
+    if child_git.exists():
+        import shutil
+
+        shutil.rmtree(child_git)
+    assert launch_block_reason("git submodule foreach 'sudo reboot'", repo) is None
+    restored = _git(
+        repo, ["-c", "protocol.file.allow=always", "submodule", "update", "--init"]
+    )
+    assert restored.returncode == 0, restored.stderr
+
+    script = repo / "filt.sh"
+    script.write_text("#!/bin/sh\ntouch ran\ncat\n", encoding="utf-8")
+    script.chmod(0o755)
+    (repo / ".gitattributes").write_text("*.txt filter=mine\n", encoding="utf-8")
+    assert _git(repo, ["config", "filter.mine.clean", str(script)]).returncode == 0
+    assert _git(repo, ["config", "filter.mine.smudge", "cat"]).returncode == 0
+    assert _git(repo, ["add", ".gitattributes"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "attr"]).returncode == 0
+    (repo / "a.txt").write_text("dirty\n", encoding="utf-8")
+    proved = _git(repo, ["stash"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "filter.mine.smudge", str(script)])
+    proved = _git(repo, ["stash", "pop"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "filter.mine.clean", "sudo reboot"])
+    assert launch_block_reason("git stash", repo) is not None
+    assert launch_block_reason("git stash push", repo) is not None
+    assert launch_block_reason("git stash list", repo) is None
+    _git(repo, ["config", "filter.mine.clean", "cat"])
+    _git(repo, ["config", "filter.mine.smudge", "sudo reboot"])
+    assert launch_block_reason("git stash pop", repo) is not None
+    assert launch_block_reason("git switch other", repo) is not None
+    assert launch_block_reason("git cherry-pick side", repo) is not None
+    assert launch_block_reason("git rebase HEAD", repo) is not None
+    assert launch_block_reason("git merge side", repo) is not None
+    assert launch_block_reason("git reset HEAD", repo) is None
+    (repo / ".gitattributes").write_text("a.txt merge=filfre\n", encoding="utf-8")
+    assert _git(repo, ["config", "merge.filfre.driver", "chmod 777 / %A %O %B"]).returncode == 0
+    assert launch_block_reason("git merge side", repo) is not None
+    assert launch_block_reason("git diff", repo) is None
+
+
+def test_merge_driver_runs(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = repo / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("base\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "base"]).returncode == 0
+    branch = _git(repo, ["branch", "--show-current"]).stdout.strip()
+    assert _git(repo, ["checkout", "-b", "side"]).returncode == 0
+    (repo / "a.txt").write_text("side\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "side"]).returncode == 0
+    assert _git(repo, ["checkout", branch]).returncode == 0
+    (repo / "a.txt").write_text("main\n", encoding="utf-8")
+    assert _git(repo, ["commit", "-am", "main"]).returncode == 0
+    driver = repo / "drv.sh"
+    driver.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+    driver.chmod(0o755)
+    assert _git(repo, ["config", "merge.filfre.name", "filfre"]).returncode == 0
+    assert _git(repo, ["config", "merge.filfre.driver", f"{driver} %A %O %B"]).returncode == 0
+    (repo / ".gitattributes").write_text("a.txt merge=filfre\n", encoding="utf-8")
+    assert _git(repo, ["add", ".gitattributes"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "attrs"]).returncode == 0
+    proved = _git(repo, ["merge", "-m", "merged", "side"], GIT_EDITOR="true")
+    assert marker.exists(), proved.stderr
+
+
+def test_prove_runs_perl_hooks(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("prove") and shutil.which("perl"):
+        (tmp_path / "t.t").write_text("print \"ok 1\\n\";\n", encoding="utf-8")
+        proved = _run(
+            ["prove", "t.t"],
+            tmp_path,
+            env={"PERL5OPT": "-d", "PERL5DB": 'system("touch ran");'},
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked('PERL5OPT=-d PERL5DB=\'system("chmod 777 /");\' prove t.t', tmp_path)
+    assert launch_block_reason("prove t.t", tmp_path) is None
+    assert launch_block_reason('PERL5DB=\'system("sudo reboot");\' prove t.t', tmp_path) is None
+    monkeypatch.setenv("PERL5OPT", "-d")
+    monkeypatch.setenv("PERL5DB", 'system("rm -rf /");')
+    reason = launch_block_reason("prove t.t", tmp_path)
+    assert reason is not None and "PERL5DB" in reason
+    monkeypatch.delenv("PERL5OPT", raising=False)
+    monkeypatch.delenv("PERL5DB", raising=False)
+    module = tmp_path / "evil.pm"
+    module.write_text('system("chmod 777 /");\n1;\n', encoding="utf-8")
+    reason = launch_block_reason("PERL5OPT='-I. -Mevil' prove t.t", tmp_path)
+    assert reason is not None and "PERL5OPT" in reason
+    module.write_text('sub later { system("chmod 777 /"); }\n1;\n', encoding="utf-8")
+    assert launch_block_reason("PERL5OPT='-I. -Mevil' prove t.t", tmp_path) is None
