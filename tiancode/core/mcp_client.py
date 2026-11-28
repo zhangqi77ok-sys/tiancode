@@ -183,7 +183,15 @@ _SHELL_NAMES = frozenset({
     "cmd", "powershell", "pwsh", "busybox",
 })
 _WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"})
-_WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
+# Same split as the shell guard: `env -i` takes no value, `stdbuf -i` does.
+_WRAPPER_VALUE_FLAGS = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "nohup": frozenset(),
+    "time": frozenset(),
+    "command": frozenset(),
+}
 _INTERPRETERS = frozenset({
     "node", "nodejs", "bun", "deno", "tsx", "ts-node",
     "python", "python3", "python2", "perl", "ruby", "php", "go",
@@ -376,7 +384,9 @@ def _unwrap_stdio_argv(words: List[str]) -> List[str]:
         wrapper = _program_name(argv.pop(0))
         while argv and argv[0].startswith("-"):
             flag = argv.pop(0)
-            if flag in _WRAPPER_VALUE_FLAGS and argv and not argv[0].startswith("-"):
+            name = flag.split("=", 1)[0]
+            values = _WRAPPER_VALUE_FLAGS.get(wrapper, frozenset())
+            if "=" not in flag and name in values and argv and not argv[0].startswith("-"):
                 argv.pop(0)
         if wrapper == "env":
             while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):

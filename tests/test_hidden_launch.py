@@ -307,3 +307,215 @@ def test_interpreter_stdin_is_the_program(tmp_path: Path) -> None:
     marker.unlink()
     _blocked("echo 'import os; os.system(\"sudo reboot\")' | python3", tmp_path)
     assert launch_block_reason("echo data | python3 -c 'print(1)'", tmp_path) is None
+
+
+def test_env_chdir_split_string_and_display_wrappers(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    proved = _run(["env", "-C", str(nested), "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and (nested / "ran").exists(), proved.stderr
+    proved = _run(["env", "-S", "touch ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run(["env", "--split-string=touch ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run(["stdbuf", "-i", "0", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists()
+    marker.unlink()
+    proved = _run(["nice", "--adjustment", "0", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists()
+    marker.unlink()
+    _blocked("env -C /tmp sudo reboot", tmp_path)
+    _blocked("env --split-string='rm -rf /'", tmp_path)
+    _blocked("stdbuf --output 0 sudo reboot", tmp_path)
+    _blocked("nice --adjustment 0 chmod 777 /", tmp_path)
+
+
+def test_dbus_session_and_xvfb_run_the_command(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    proved = _run(["dbus-run-session", "--", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    proved = _run(["xvfb-run", "-a", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("dbus-run-session sudo reboot", tmp_path)
+    _blocked("xvfb-run -s '-screen 0 640x480x8' sudo reboot", tmp_path)
+
+
+def test_tar_checkpoint_exec_and_sort_compress_program(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "file.txt").write_text("x\n", encoding="utf-8")
+    proved = _run(
+        ["tar", "--checkpoint=1", "--checkpoint-action=exec=touch ran", "-cf", "a.tar", "file.txt"],
+        tmp_path,
+    )
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("tar --checkpoint=1 --checkpoint-action=exec='sudo reboot' -cf a.tar file.txt", tmp_path)
+
+    script = tmp_path / "spill.sh"
+    script.write_text("#!/bin/sh\ntouch ran\ncat\n", encoding="utf-8")
+    script.chmod(0o755)
+    proved = _run(
+        ["sh", "-c", f"seq 1 30000 | sort -S 1k --compress-program={script}"],
+        tmp_path,
+    )
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("sort --compress-program=sudo data", tmp_path)
+
+
+def test_editors_and_unsafe_roff_run_a_shell(tmp_path: Path) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("vim"):
+        proved = _run(["vim", "-u", "NONE", "-es", "-c", "!touch ran", "-c", "qa!"], tmp_path)
+        assert proved.returncode == 0 and marker.exists(), proved.stderr
+        marker.unlink()
+    if shutil.which("emacs"):
+        proved = _run(["emacs", "--batch", "--eval", '(shell-command "touch ran")'], tmp_path)
+        assert proved.returncode == 0 and marker.exists(), proved.stderr
+        marker.unlink()
+    if shutil.which("groff"):
+        proved = _run(
+            ["sh", "-c", "printf '.sy touch ran\\n' | groff -U -Tascii >/dev/null"],
+            tmp_path,
+        )
+        assert proved.returncode == 0 and marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("vim -u NONE -es -c '!sudo reboot' -c qa!", tmp_path)
+    _blocked("emacs --batch --eval '(call-process \"sudo\" nil nil nil \"reboot\")'", tmp_path)
+    _blocked("printf '.sy sudo reboot\\n' | groff -U -Tascii", tmp_path)
+    named = tmp_path / "doc.roff"
+    named.write_text(".sy touch ran\n", encoding="utf-8")
+    assert launch_block_reason("groff -U doc.roff", tmp_path) is None
+
+
+def test_ssh_config_match_exec_and_proxy_command(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    config = tmp_path / "ssh_config"
+    config.write_text('Match exec "touch ran"\n', encoding="utf-8")
+    proved = _run(["ssh", "-F", str(config), "-G", "example.invalid"], tmp_path)
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    config.write_text('Match exec "sudo reboot"\n', encoding="utf-8")
+    _blocked(f"ssh -F {config} -G example.invalid", tmp_path)
+    assert launch_block_reason(f"ssh -V -F {config}", tmp_path) is None
+    config.write_text('Match host nomatch exec "sudo reboot"\n', encoding="utf-8")
+    assert launch_block_reason(f"ssh -F {config} -G example.invalid", tmp_path) is None
+    config.write_text('Match exec "sudo reboot" host nomatch\n', encoding="utf-8")
+    reason = launch_block_reason(f"ssh -F {config} -G example.invalid", tmp_path)
+    assert reason is not None and "Match exec" in reason
+
+    config.write_text("Host *\n  ProxyCommand touch ran\n", encoding="utf-8")
+    proved = _run(
+        [
+            "ssh", "-F", str(config), "-o", "BatchMode=yes", "-o", "ConnectTimeout=1",
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "127.0.0.1",
+        ],
+        tmp_path,
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    config.write_text("Host *\n  ProxyCommand sudo reboot\n", encoding="utf-8")
+    reason = launch_block_reason(f"ssh -F {config} example.invalid", tmp_path)
+    assert reason is not None and "ProxyCommand" in reason
+    assert launch_block_reason(
+        f"ssh -F {config} -o ProxyCommand=echo example.invalid", tmp_path
+    ) is None
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
+    assert launch_block_reason(f"scp -F {config} a.txt b.txt", tmp_path) is None
+    remote = launch_block_reason(f"scp -F {config} host:a b.txt", tmp_path)
+    assert remote is not None and "ProxyCommand" in remote
+    assert launch_block_reason("ssh -G example.invalid", tmp_path) is None
+
+    program = tmp_path / "scp-ssh.sh"
+    program.write_text("#!/bin/sh\ntouch ran\nexit 1\n", encoding="utf-8")
+    program.chmod(0o755)
+    proved = _run(
+        ["scp", "-S", str(program), "-o", "BatchMode=yes", "a.txt", "127.0.0.1:b.txt"],
+        tmp_path,
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("scp -S sudo host:a b.txt", tmp_path)
+
+    real = tmp_path / "real_config"
+    real.write_text("Host *\n  ProxyCommand echo\n", encoding="utf-8")
+    linked = tmp_path / "linked_config"
+    linked.symlink_to(real)
+    reason = launch_block_reason(f"ssh -F {linked} -G example.invalid", tmp_path)
+    assert reason is not None and "符号链接" in reason
+
+    # A distro include is a symlink from ssh_config.d to /usr/lib. The system
+    # reader follows it. A user `-F` file does not.
+    from tiancode.core.launch_guard import _SshScan, _ssh_read, _ssh_system_path
+
+    assert _ssh_system_path(Path("/etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf"))
+    assert not _ssh_system_path(linked)
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    target = lib / "20.conf"
+    target.write_text("Host *\n  ProxyCommand sudo reboot\n", encoding="utf-8")
+    dropin = tmp_path / "ssh_config.d"
+    dropin.mkdir()
+    (dropin / "20.conf").symlink_to(target)
+    main = tmp_path / "main_config"
+    main.write_text(f"Include {dropin}/*.conf\n", encoding="utf-8")
+    followed = _SshScan(command_sets_proxy=False)
+    _ssh_read(main, "example.invalid", None, followed, depth=0, seen=set(), follow=True)
+    assert followed.error == ""
+    assert followed.proxy.startswith("sudo")
+    refused = _SshScan(command_sets_proxy=False)
+    _ssh_read(main, "example.invalid", None, refused, depth=0, seen=set(), follow=False)
+    assert refused.error and "符号链接" in refused.error
+
+
+def test_git_external_diff_and_credential_helper(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert _run(["git", "init"], repo).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _run(["git", "add", "a.txt"], repo).returncode == 0
+    committed = _run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "m"],
+        repo,
+    )
+    assert committed.returncode == 0, committed.stderr
+    (repo / "a.txt").write_text("b\n", encoding="utf-8")
+    script = repo / "ext.sh"
+    script.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    proved = _run(["git", "-c", f"diff.external={script}", "diff"], repo)
+    assert (repo / "ran").exists(), proved.stderr
+    (repo / "ran").unlink()
+    _run(["git", "config", "diff.external", "sudo reboot"], repo)
+    reason = launch_block_reason("git diff", repo)
+    assert reason is not None and "高危" in reason
+    assert launch_block_reason("GIT_EXTERNAL_DIFF= git diff", repo) is None
+    assert launch_block_reason("git status --short", repo) is None
+    assert launch_block_reason("export GIT_EXTERNAL_DIFF='sudo reboot'; git diff", repo) is not None
+
+    _run(["git", "config", "--unset-all", "credential.helper"], repo)
+    helper = _run(["git", "config", "--add", "credential.helper", "!touch ran"], repo)
+    assert helper.returncode == 0, helper.stderr
+    proved = _run(
+        ["sh", "-c", "printf 'protocol=https\\nhost=example.invalid\\n\\n' | git credential fill"],
+        repo,
+    )
+    assert (repo / "ran").exists(), proved.stderr
+    (repo / "ran").unlink()
+    _run(["git", "config", "--unset-all", "credential.helper"], repo)
+    _run(["git", "config", "--add", "credential.helper", "!sudo reboot"], repo)
+    _run(["git", "config", "--add", "credential.helper", "!chmod 777 /"], repo)
+    reason = launch_block_reason("git credential fill", repo)
+    assert reason is not None
+    assert launch_block_reason("git -c credential.helper= credential fill", repo) is None
+    assert launch_block_reason("git status --short", repo) is None

@@ -2,9 +2,10 @@
 
 `git status` and `cmake -E echo` stay allowed. The checks below read the
 file the tool would execute: a git config or hook, a `//go:generate` line,
-a CMake `execute_process`, a Cargo `rustc-wrapper` or `runner`, and a
-`PERL5OPT` module under a relative `-I`. A symlink is not followed. This is
-not a language parser, and it does not start the tool to ask it.
+a CMake `execute_process`, a Cargo `rustc-wrapper` or `runner`, a
+`PERL5OPT` module under a relative `-I`, and an ssh config `Match exec` or
+`ProxyCommand`. A symlink is not followed. This is not a language parser,
+and it does not start the tool to ask it.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -82,6 +84,9 @@ def launch_block_reason(command: str, work_dir: Path) -> Optional[str]:
     root = work_dir.resolve()
     cwd: Optional[Path] = root
     parent = get_sanitized_env()
+    # `export GIT_EXTERNAL_DIFF=...; git diff` is one shell. The export is not
+    # a prefix of the git segment, but git still inherits it.
+    exported_diff: Optional[str] = None
     for segment in _quote_aware_segments(command):
         peeled = _peel_prefixes(_split_words(segment.strip()))
         if peeled is None:
@@ -100,11 +105,25 @@ def launch_block_reason(command: str, work_dir: Path) -> Optional[str]:
             nxt = None if cwd is None else _directory_inside(cwd, target, root)
             cwd = nxt
             continue
+        if program == "export":
+            for word in plain[1:]:
+                name, sep, value = word.partition("=")
+                if sep and name == "GIT_EXTERNAL_DIFF":
+                    exported_diff = value.strip("'\"")
+            continue
+        parent_here = dict(parent)
+        if exported_diff is not None:
+            parent_here["GIT_EXTERNAL_DIFF"] = exported_diff
+        if cwd is None and program in {"ssh", "scp", "sftp"}:
+            reason = _ssh_reason(plain, root, root)
+            if reason:
+                return reason
+            continue
         if cwd is None and program in _INSPECTED:
             return "命令在越出工作区的目录中运行，已拒绝执行"
         if cwd is None:
             continue
-        reason = _reason_for(program, plain, assignments, cwd, root, parent)
+        reason = _reason_for(program, plain, assignments, cwd, root, parent_here)
         if reason:
             return reason
     return None
@@ -128,6 +147,8 @@ def _reason_for(
         return _cargo_reason(words, cwd, root)
     if program == "perl":
         return _perl_reason(words, assignments, cwd, root, parent)
+    if program in {"ssh", "scp", "sftp"}:
+        return _ssh_reason(words, cwd, root)
     return None
 
 
@@ -141,27 +162,31 @@ def _git_reason(
     from tiancode.tools.execution import is_dangerous_command
     from tiancode.tools.hidden_exec import _git_subcommand, commands_git_will_run
 
-    loaded, include_error = _git_file_config(cwd)
+    loaded, helpers, include_error = _git_file_config(cwd)
     sub = _git_subcommand(words)
     if include_error and sub and sub not in {"version", "help"}:
         return include_error
     for extra in commands_git_will_run(
-        words, assignments, file_config=loaded, parent_env=parent
+        words,
+        assignments,
+        file_config=loaded,
+        parent_env=parent,
+        credential_helpers=helpers,
     ):
         if is_dangerous_command(extra):
             return "git 的配置会执行高危命令，已拒绝执行"
     return _hook_reason(words, cwd, root, loaded, assignments, parent)
 
 
-def _git_file_config(cwd: Path) -> Tuple[Dict[str, str], Optional[str]]:
+def _git_file_config(cwd: Path) -> Tuple[Dict[str, str], List[str], Optional[str]]:
     git_dir, dir_error = _git_dir(cwd)
     if dir_error:
-        return {}, dir_error
+        return {}, [], dir_error
     if git_dir is None:
-        return {}, None
+        return {}, [], None
     path = git_dir / "config"
     if not path.exists() and not path.is_symlink():
-        return {}, None
+        return {}, [], None
     return _load_git_config(path, depth=0, seen=set())
 
 
@@ -190,19 +215,19 @@ def _git_dir(cwd: Path) -> Tuple[Optional[Path], Optional[str]]:
 
 def _load_git_config(
     path: Path, *, depth: int, seen: set
-) -> Tuple[Dict[str, str], Optional[str]]:
+) -> Tuple[Dict[str, str], List[str], Optional[str]]:
     key = str(path)
     if key in seen or depth > 4 or len(seen) >= _MAX_INCLUDES:
-        return {}, "git include 层数过多，无法确认配置，已拒绝执行"
+        return {}, [], "git include 层数过多，无法确认配置，已拒绝执行"
     if path.is_symlink():
-        return {}, "git 配置是符号链接，已拒绝执行"
+        return {}, [], "git 配置是符号链接，已拒绝执行"
     text, error = _read_trusted(path)
     if error:
-        return {}, "git 配置无法作为普通文件读取，已拒绝执行"
+        return {}, [], "git 配置无法作为普通文件读取，已拒绝执行"
     if text is None:
-        return {}, None
+        return {}, [], None
     seen.add(key)
-    config, includes = _parse_git_config(text)
+    config, includes, helpers = _parse_git_config(text)
     base = path.parent
     for raw in includes:
         target = Path(os.path.expanduser(raw))
@@ -210,18 +235,20 @@ def _load_git_config(
             target = base / target
         if not target.exists() and not target.is_symlink():
             continue
-        nested, nested_error = _load_git_config(target, depth=depth + 1, seen=seen)
+        nested, nested_helpers, nested_error = _load_git_config(target, depth=depth + 1, seen=seen)
         if nested_error:
-            return config, nested_error
+            return config, helpers, nested_error
         merged = dict(nested)
         merged.update(config)
         config = merged
-    return config, None
+        helpers = nested_helpers + helpers
+    return config, helpers, None
 
 
-def _parse_git_config(text: str) -> Tuple[Dict[str, str], List[str]]:
+def _parse_git_config(text: str) -> Tuple[Dict[str, str], List[str], List[str]]:
     config: Dict[str, str] = {}
     includes: List[str] = []
+    helpers: List[str] = []
     section = ""
     for line in _logical_lines(text):
         stripped = line.strip()
@@ -244,8 +271,15 @@ def _parse_git_config(text: str) -> Tuple[Dict[str, str], List[str]]:
             continue
         if section.startswith("includeif"):
             continue
+        if full == "credential.helper":
+            # An empty value clears helpers already seen in this file.
+            # Git runs every remaining `!` helper, not only the last one.
+            if value == "":
+                helpers = []
+            else:
+                helpers.append(value)
         config[full] = value
-    return config, includes
+    return config, includes, helpers
 
 
 def _logical_lines(text: str) -> List[str]:
@@ -951,6 +985,38 @@ def _text_runs_danger(text: str) -> bool:
     return False
 
 
+def _ssh_system_path(path: Path) -> bool:
+    """True for a path whose own name is under `/etc/ssh`, without following it.
+
+    Ubuntu links `ssh_config.d/20-systemd-ssh-proxy.conf` to
+    `/usr/lib/systemd/...`. The name is still a system file. Resolving first
+    would treat that link as a user file and refuse every `ssh`.
+    """
+    candidate = path if path.is_absolute() else path.absolute()
+    try:
+        candidate.relative_to("/etc/ssh")
+    except ValueError:
+        return False
+    return True
+
+
+def _read_followed(path: Path) -> Tuple[Optional[str], Optional[str]]:
+    """Read a system ssh file, following a distro symlink or hard link."""
+    try:
+        landed = path.resolve(strict=True)
+    except OSError:
+        return None, None
+    if not landed.is_file():
+        return None, None
+    try:
+        text = landed.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, "unreadable"
+    if len(text) > _MAX_TEXT:
+        return None, "too-large"
+    return text, None
+
+
 def _read_trusted(path: Path) -> Tuple[Optional[str], Optional[str]]:
     """`(text, error)`. A missing file is `(None, None)`. A link is an error."""
     from tiancode.core.path_safety import is_shared_hardlink
@@ -1094,3 +1160,431 @@ def _balanced(text: str, start: int) -> Optional[str]:
                 return text[start:index]
         index += 1
     return None
+
+
+_SSH_VALUE_FLAGS = {
+    "ssh": frozenset({
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+        "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+    }),
+    "scp": frozenset({"-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-X"}),
+    "sftp": frozenset({
+        "-B", "-b", "-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-R", "-S", "-s",
+    }),
+}
+_SSH_MATCH_ARG = frozenset({
+    "exec", "host", "originalhost", "user", "localuser", "localnetwork",
+    "rdomain", "address", "tagged",
+})
+_SSH_MAX_FILES = 16
+
+
+def _ssh_reason(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
+    """Block Match exec and a file ProxyCommand that would run a dangerous shell.
+
+    OpenSSH reads the config before it connects. `ssh -V` exits first.
+    A local `scp a b` never starts ssh. `Match host other exec "..."` does
+    not run when this host fails the earlier test.
+    """
+    from tiancode.tools.execution import is_dangerous_command
+
+    if not words:
+        return None
+    kind = Path(words[0]).name.lower()
+    if kind not in _SSH_VALUE_FLAGS or _ssh_skips_config(words):
+        return None
+    if kind == "scp" and not _scp_uses_ssh(words):
+        return None
+    sources, error = _ssh_sources(words, cwd)
+    if error:
+        return error
+    host, user = _ssh_endpoint(words, kind)
+    command_sets_proxy = _ssh_command_sets_proxy(words)
+    bodies, proxy, read_error = _ssh_walk(sources, host, user, command_sets_proxy)
+    if read_error:
+        return read_error
+    for body in bodies:
+        if is_dangerous_command(body):
+            return "ssh 的 Match exec 会执行高危命令，已拒绝执行"
+    if proxy and proxy.lower() not in {"none", "false"} and is_dangerous_command(proxy):
+        return "ssh 的 ProxyCommand 会执行高危命令，已拒绝执行"
+    return None
+
+
+def _ssh_skips_config(words: Sequence[str]) -> bool:
+    """`ssh -V` prints the version and does not open a config file."""
+    return any(word in {"-V", "--version"} for word in words[1:])
+
+
+def _ssh_sources(words: Sequence[str], cwd: Path) -> Tuple[List[Path], Optional[str]]:
+    """`-F` replaces both the user and the system file. Otherwise both are read."""
+    forced = _ssh_flag_value(words, "-F")
+    if forced is not None:
+        if not forced:
+            return [], "ssh 的 -F 没有配置文件，已拒绝执行"
+        path = Path(os.path.expanduser(forced))
+        if not path.is_absolute():
+            path = cwd / path
+        return [path], None
+    found: List[Path] = []
+    user_file = _ssh_user_config()
+    if user_file is not None:
+        found.append(user_file)
+    system = Path("/etc/ssh/ssh_config")
+    if system.exists() or system.is_symlink():
+        found.append(system)
+    return found, None
+
+
+def _ssh_user_config() -> Optional[Path]:
+    """`~/.ssh/config` from the passwd home. A loose mode makes ssh ignore it.
+
+    A symlink is returned so the reader can refuse it. OpenSSH uses the
+    account home, not `$HOME`.
+    """
+    import pwd
+
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        return None
+    directory = home / ".ssh"
+    path = directory / "config"
+    if path.is_symlink() or directory.is_symlink():
+        return path
+    if not path.exists():
+        return None
+    try:
+        loose = stat.S_IWGRP | stat.S_IWOTH
+        if directory.stat().st_mode & loose or path.stat().st_mode & loose:
+            return None
+    except OSError:
+        return path
+    return path
+
+
+def _ssh_flag_value(words: Sequence[str], flag: str) -> Optional[str]:
+    """The last `-F file` or `-Ffile`. None when the flag is absent."""
+    _positionals, options = _ssh_options(words)
+    chosen = None
+    for name, value in options:
+        if name == flag:
+            chosen = value or ""
+    return chosen
+
+
+def _ssh_command_sets_proxy(words: Sequence[str]) -> bool:
+    """True when argv already has ProxyCommand, including `=none`."""
+    _positionals, options = _ssh_options(words)
+    for name, value in options:
+        if name != "-o" or not value:
+            continue
+        key, sep, _rest = value.partition("=")
+        if sep and key.strip().lower() == "proxycommand":
+            return True
+    return False
+
+
+def _scp_uses_ssh(words: Sequence[str]) -> bool:
+    """A colon in a path makes scp treat it as a remote name and start ssh."""
+    positionals, _options = _ssh_options(words)
+    return any(":" in item for item in positionals)
+
+
+def _ssh_endpoint(words: Sequence[str], kind: str) -> Tuple[Optional[str], Optional[str]]:
+    """`(host, user)` from the destination. User is None when it was not written."""
+    positionals, _options = _ssh_options(words)
+    spec = ""
+    if kind == "ssh":
+        spec = positionals[0] if positionals else ""
+    elif kind == "sftp":
+        spec = positionals[0].split(":", 1)[0] if positionals else ""
+    else:
+        for item in positionals:
+            if ":" in item:
+                spec = item.split(":", 1)[0]
+                break
+    if not spec:
+        return None, None
+    if spec.startswith("[") and "]" in spec:
+        spec = spec[1 : spec.index("]")]
+        return spec, None
+    if "@" in spec:
+        user, host = spec.rsplit("@", 1)
+        return host, user or None
+    return spec, None
+
+
+def _ssh_options(words: Sequence[str]) -> Tuple[List[str], List[Tuple[str, Optional[str]]]]:
+    kind = Path(words[0]).name.lower() if words else ""
+    values = _SSH_VALUE_FLAGS.get(kind, frozenset())
+    positionals: List[str] = []
+    options: List[Tuple[str, Optional[str]]] = []
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            positionals.extend(words[index + 1 :])
+            break
+        if word.startswith("--"):
+            name, eq, value = word.partition("=")
+            options.append((name, value if eq else None))
+            index += 1
+            continue
+        if word.startswith("-") and word != "-":
+            flag = f"-{word[1]}"
+            rest = word[2:]
+            if flag in values:
+                if rest:
+                    options.append((flag, rest))
+                    index += 1
+                elif index + 1 < len(words):
+                    options.append((flag, words[index + 1]))
+                    index += 2
+                else:
+                    options.append((flag, ""))
+                    index += 1
+                continue
+            options.append((word, None))
+            index += 1
+            continue
+        positionals.append(word)
+        index += 1
+    return positionals, options
+
+
+def _ssh_walk(
+    paths: Sequence[Path],
+    host: Optional[str],
+    user: Optional[str],
+    command_sets_proxy: bool,
+) -> Tuple[List[str], str, Optional[str]]:
+    state = _SshScan(command_sets_proxy=command_sets_proxy)
+    seen: set = set()
+    for path in paths:
+        _ssh_read(path, host, user, state, depth=0, seen=seen, follow=_ssh_system_path(path))
+        if state.error:
+            return [], "", state.error
+    return state.execs, state.proxy, None
+
+
+@dataclass
+class _SshScan:
+    command_sets_proxy: bool
+    execs: List[str] = field(default_factory=list)
+    proxy: str = ""
+    proxy_set: bool = False
+    error: str = ""
+    files: int = 0
+
+
+def _ssh_read(
+    path: Path,
+    host: Optional[str],
+    user: Optional[str],
+    state: _SshScan,
+    *,
+    depth: int,
+    seen: set,
+    follow: bool,
+) -> None:
+    if state.error:
+        return
+    key = os.path.normpath(str(path))
+    if key in seen:
+        return
+    if depth > 4 or state.files >= _SSH_MAX_FILES:
+        state.error = "ssh 配置 Include 层数过多，已拒绝执行"
+        return
+    follow = follow or _ssh_system_path(path)
+    text, err = _read_followed(path) if follow else _read_trusted(path)
+    if err == "link":
+        state.error = "ssh 配置是符号链接或硬链接，已拒绝执行"
+        return
+    if err:
+        state.error = "ssh 配置无法作为普通文件读取，已拒绝执行"
+        return
+    if text is None:
+        return
+    seen.add(key)
+    state.files += 1
+    applies: Optional[bool] = True
+    for line in _logical_lines(text):
+        tokens = _ssh_tokens(line)
+        if not tokens:
+            continue
+        keyword = tokens[0].lower()
+        if keyword == "host":
+            applies = _ssh_host_applies(tokens[1:], host)
+            continue
+        if keyword == "match":
+            applies, ran = _ssh_match_line(tokens[1:], host, user)
+            state.execs.extend(ran)
+            continue
+        if applies is False:
+            continue
+        if keyword == "include":
+            _ssh_include(
+                tokens[1:], path.parent, host, user, state, depth=depth, seen=seen, follow=follow,
+            )
+            continue
+        if keyword == "proxycommand" and not state.command_sets_proxy and not state.proxy_set:
+            # The first obtained value wins. An unknown block might be that one.
+            state.proxy_set = True
+            state.proxy = " ".join(tokens[1:]).strip()
+
+
+def _ssh_include(
+    tokens: Sequence[str],
+    base: Path,
+    host: Optional[str],
+    user: Optional[str],
+    state: _SshScan,
+    *,
+    depth: int,
+    seen: set,
+    follow: bool,
+) -> None:
+    import glob
+
+    if not tokens:
+        return
+    raw = os.path.expanduser(" ".join(tokens))
+    pattern = raw if os.path.isabs(raw) else str(base / raw)
+    matches = sorted(glob.glob(pattern))
+    if matches:
+        for item in matches:
+            _ssh_read(Path(item), host, user, state, depth=depth + 1, seen=seen, follow=follow)
+        return
+    if any(mark in raw for mark in "*?["):
+        return
+    _ssh_read(Path(pattern), host, user, state, depth=depth + 1, seen=seen, follow=follow)
+
+
+def _ssh_host_applies(patterns: Sequence[str], host: Optional[str]) -> Optional[bool]:
+    if host is None:
+        return None
+    return _ssh_patterns_match(patterns, host)
+
+
+def _ssh_patterns_match(patterns: Sequence[str], host: str) -> bool:
+    import fnmatch
+
+    positives: List[str] = []
+    negatives: List[str] = []
+    for token in patterns:
+        for part in token.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if part.startswith("!"):
+                negatives.append(part[1:])
+            else:
+                positives.append(part)
+    host_name = host.lower()
+    if any(fnmatch.fnmatch(host_name, item.lower()) for item in negatives):
+        return False
+    if not positives:
+        return bool(negatives)
+    return any(fnmatch.fnmatch(host_name, item.lower()) for item in positives)
+
+
+def _ssh_match_line(
+    tokens: Sequence[str], host: Optional[str], user: Optional[str],
+) -> Tuple[Optional[bool], List[str]]:
+    """Criteria left to right. A false test skips the rest of the line.
+
+    `exec` runs when it is reached. Its exit status is not known here, so
+    the block might still apply. An unknown criterion does not hide a later
+    `exec`.
+    """
+    import getpass
+
+    ran: List[str] = []
+    matched: Optional[bool] = True
+    index = 0
+    while index < len(tokens):
+        key = tokens[index].lower()
+        if key == "all":
+            index += 1
+            continue
+        if key in {"canonical", "final"}:
+            index += 1
+            if matched is not False:
+                matched = None
+            continue
+        if index + 1 >= len(tokens):
+            if matched is not False:
+                matched = None
+            break
+        arg = tokens[index + 1]
+        index += 2
+        if matched is False:
+            break
+        if key == "exec":
+            if arg.strip():
+                ran.append(arg.strip())
+            matched = None
+            continue
+        if key in {"host", "originalhost"}:
+            if host is None:
+                matched = None
+            elif not _ssh_patterns_match([arg], host):
+                matched = False
+            continue
+        if key == "user":
+            if user is None:
+                matched = None
+            elif user.lower() != arg.lower():
+                matched = False
+            continue
+        if key == "localuser":
+            if arg.lower() != getpass.getuser().lower():
+                matched = False
+            continue
+        if key not in _SSH_MATCH_ARG:
+            matched = None
+    return matched, ran
+
+
+def _ssh_tokens(line: str) -> List[str]:
+    """Words of one ssh_config line. `#` starts a comment outside quotes."""
+    tokens: List[str] = []
+    buf: List[str] = []
+    quote = ""
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and index + 1 < len(line):
+                buf.append(line[index + 1])
+                index += 2
+                continue
+            else:
+                buf.append(char)
+            index += 1
+            continue
+        if char == "#":
+            break
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if char.isspace():
+            if buf:
+                tokens.append("".join(buf))
+                buf = []
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(line):
+            buf.append(line[index + 1])
+            index += 2
+            continue
+        buf.append(char)
+        index += 1
+    if buf:
+        tokens.append("".join(buf))
+    return tokens
+
