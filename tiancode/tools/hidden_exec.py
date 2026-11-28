@@ -16,7 +16,11 @@ runs `PERL5DB`, and so does `prove` when `PERL5OPT=-d`. `go build
 -toolexec` and `go test`/`go run -exec` exec that program; `go build -n`
 still runs `-toolexec`, while `-n` and `go test -c` do not run `-exec`.
 `git config --edit`, `notes append`/`edit`, `merge`/`cherry-pick`/`revert
---edit`, and `filter-branch --*-filter` run a shell. A pipe whose program
+--edit`, and `filter-branch --*-filter` run a shell. Signing runs
+`gpg.program`, `gpg.ssh.program`, or `gpg.x509.program` for `commit`, `tag`,
+`cherry-pick`, `revert`, `merge`, `rebase`, and `am`. `trailer.<name>.cmd`
+runs for `commit --trailer` and `interpret-trailers`. `difftool.<tool>.cmd`
+runs when the prompt is off. A pipe whose program
 is not in the text (`sed e`, `.shell` with no command, `pic -U`) is unseen.
 The caller checks each returned string with the same danger rules. This is
 not a language parser.
@@ -961,15 +965,17 @@ def _bisect_run(words: Sequence[str]) -> str:
 
 
 def _difftool_extcmd(words: Sequence[str], config: Dict[str, str]) -> str:
-    """The shell `git difftool -y --extcmd` runs.
+    """The shell `git difftool` runs once the prompt is off.
 
-    Without `-y`, `--no-prompt`, or `difftool.prompt=false`, a non-tty does
-    not launch the tool. That was proved.
+    `--extcmd` / `-x` wins. Otherwise the command is `difftool.<tool>.cmd`,
+    and `--tool` replaces `diff.tool`. Without `-y`, `--no-prompt`, or
+    `difftool.prompt=false`, a non-tty does not launch the tool.
     """
     if _git_subcommand(words) != "difftool":
         return ""
     prompt = config.get("difftool.prompt", "").strip().lower() not in {"false", "no", "off", "0"}
     ext = ""
+    tool = ""
     index = 0
     args = _git_args(words)
     while index < len(args):
@@ -981,6 +987,18 @@ def _difftool_extcmd(words: Sequence[str], config: Dict[str, str]) -> str:
             prompt = False
         elif name == "--prompt":
             prompt = True
+        elif name in {"--tool", "-t"} or (
+            word.startswith("-t") and not word.startswith("--") and word != "-t"
+        ):
+            if name == "--tool" and eq:
+                tool = value
+            elif word.startswith("-t") and word != "-t" and not word.startswith("--"):
+                tool = word[2:]
+            elif index + 1 < len(args):
+                tool = args[index + 1]
+                index += 1
+            else:
+                tool = ""
         elif name == "--extcmd" or name == "-x" or (
             word.startswith("-x") and not word.startswith("--") and word != "-x"
         ):
@@ -996,40 +1014,188 @@ def _difftool_extcmd(words: Sequence[str], config: Dict[str, str]) -> str:
         index += 1
     if prompt:
         return ""
-    return _plain(ext).strip()
+    explicit = _plain(ext).strip()
+    if explicit:
+        return explicit
+    chosen = _plain(tool).strip() or config.get("diff.tool", "").strip()
+    if not chosen:
+        return ""
+    return config.get(f"difftool.{chosen.lower()}.cmd", "").strip()
+
+
+def _gpg_sign_requested(args: Sequence[str]) -> Optional[bool]:
+    """The last explicit sign flag, or None when the command did not say.
+
+    `commit --no-gpg-sign -S` signs. `commit -S --no-gpg-sign` does not.
+    """
+    choice: Optional[bool] = None
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"-S", "--gpg-sign"} or (
+            word.startswith("-S") and not word.startswith("--") and word != "-S"
+        ):
+            choice = True
+        elif name == "--no-gpg-sign":
+            choice = False
+    return choice
+
+
+def _commit_is_suppressed(args: Sequence[str]) -> bool:
+    """True when `-n` / `--no-commit` is the last word on creating a commit.
+
+    `cherry-pick -n -S` does not sign. `cherry-pick -n --commit` does, when
+    signing was otherwise requested. `--commit` turns `-n` back off.
+    """
+    suppressed = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"-n", "--no-commit"}:
+            suppressed = True
+        elif name == "--commit":
+            suppressed = False
+    return suppressed
+
+
+def _signs_from_commit_config(args: Sequence[str], config: Dict[str, str]) -> bool:
+    choice = _gpg_sign_requested(args)
+    if choice is not None:
+        return choice
+    return _git_bool(config.get("commit.gpgsign", ""))
+
+
+_REBASE_NO_SIGN = frozenset({
+    "--abort", "--quit", "--edit-todo", "--show-current-patch",
+})
 
 
 def _git_will_sign(words: Sequence[str], config: Dict[str, str]) -> bool:
-    """True when this commit or tag invokes gpg or ssh-keygen.
+    """True when this command invokes the configured signing program.
 
-    `commit -S` and `commit.gpgsign` were proved. `--no-gpg-sign` suppresses
-    both. `tag -s` was proved.
+    `commit -S`, `commit.gpgsign`, and `tag -s` were proved. The same program
+    runs for `cherry-pick`, `revert`, a merge that can create a commit,
+    `rebase` while it is replaying, and `am`. `--no-commit` does not sign.
+    `--ff-only` does not either. A fast-forward without `--ff-only` also
+    stays unsigned, but that depends on ancestry this check does not compute,
+    so a sign request is still reported unless `--ff-only` is set.
+    `rebase --abort`, `--quit`, and `--edit-todo` do not sign.
     """
     sub = _git_subcommand(words)
     args = _git_args(words)
     if sub == "commit":
-        if _flag_present(args, frozenset({"--no-gpg-sign"})):
-            return False
-        for word in args:
-            if word == "--":
-                break
-            name = word.split("=", 1)[0]
-            if name in {"-S", "--gpg-sign"} or (
-                word.startswith("-S") and not word.startswith("--") and word != "-S"
-            ):
-                return True
-        return _git_bool(config.get("commit.gpgsign", ""))
+        return _signs_from_commit_config(args, config)
     if sub == "tag":
         return _flag_present(args, frozenset({"-s", "--sign", "-u", "--local-user"}))
+    if sub in {"cherry-pick", "revert"}:
+        if _flag_present(args, frozenset({"--abort", "--quit"})) or _commit_is_suppressed(args):
+            return False
+        return _signs_from_commit_config(args, config)
+    if sub == "merge":
+        if _flag_present(args, frozenset({"--abort", "--quit", "--ff-only"})):
+            return False
+        return _signs_from_commit_config(args, config)
+    if sub == "rebase":
+        if _flag_present(args, _REBASE_NO_SIGN):
+            return False
+        return _signs_from_commit_config(args, config)
+    if sub == "am":
+        if _flag_present(args, frozenset({"--abort", "--quit"})):
+            return False
+        return _signs_from_commit_config(args, config)
     return False
 
 
 def _signing_program(words: Sequence[str], config: Dict[str, str]) -> str:
+    """The program named for this signature format. An empty value is the default tool.
+
+    `gpg.format=x509` runs `gpg.x509.program`, not `gpg.program`.
+    `gpg.format=ssh` runs `gpg.ssh.program`. Anything else runs `gpg.program`.
+    """
     if not _git_will_sign(words, config):
         return ""
-    if config.get("gpg.format", "").strip().lower() == "ssh":
+    fmt = config.get("gpg.format", "").strip().lower()
+    if fmt == "ssh":
         return config.get("gpg.ssh.program", "").strip()
+    if fmt == "x509":
+        return config.get("gpg.x509.program", "").strip()
     return config.get("gpg.program", "").strip()
+
+
+def _interpret_trailers_ignores_config(args: Sequence[str]) -> bool:
+    """`--parse` and `--only-input` skip trailer commands. The last flag wins."""
+    skip = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"--parse", "--only-input"}:
+            skip = True
+        elif name == "--no-only-input":
+            skip = False
+    return skip
+
+
+def _trailer_token(raw: str) -> str:
+    text = _plain(raw).strip()
+    for sep in (":", "="):
+        at = text.find(sep)
+        if at >= 0:
+            text = text[:at]
+            break
+    return text.strip()
+
+
+def _trailer_tokens(args: Sequence[str]) -> List[str]:
+    found: List[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name != "--trailer":
+            index += 1
+            continue
+        if eq:
+            raw = value
+        elif index + 1 < len(args):
+            raw = args[index + 1]
+            index += 1
+        else:
+            raw = ""
+        token = _trailer_token(raw)
+        if token:
+            found.append(token)
+        index += 1
+    return found
+
+
+def _trailer_commands(words: Sequence[str], config: Dict[str, str]) -> List[str]:
+    """Shell strings `commit --trailer` and `interpret-trailers --trailer` run.
+
+    `.cmd` replaces `.command`. An empty `.cmd` runs nothing. A token that is
+    not named on the command line does not run, and `--only-input` / `--parse`
+    do not either.
+    """
+    sub = _git_subcommand(words)
+    if sub not in {"commit", "interpret-trailers"}:
+        return []
+    args = _git_args(words)
+    if sub == "interpret-trailers" and _interpret_trailers_ignores_config(args):
+        return []
+    found: List[str] = []
+    for token in _trailer_tokens(args):
+        cmd_key = f"trailer.{token.lower()}.cmd"
+        if cmd_key in config:
+            body = config[cmd_key].strip()
+        else:
+            body = config.get(f"trailer.{token.lower()}.command", "").strip()
+        if body:
+            found.append(body)
+    return found
 
 
 def _triggered_git_commands(
@@ -1085,6 +1251,7 @@ def _triggered_git_commands(
     signing = _signing_program(words, config)
     if signing:
         found.append(signing)
+    found.extend(_trailer_commands(words, config))
     if sub not in _GIT_BUILTINS:
         alias = config.get(f"alias.{sub}", "")
         if alias.lstrip().startswith("!"):
