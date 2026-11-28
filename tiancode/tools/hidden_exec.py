@@ -4,8 +4,9 @@
 cases that stay hidden after that peel: `sed` executes the `e` flag,
 `sqlite3 .shell` runs a shell, `git -c` and `git config` plant a shell,
 `find -exec` and `xargs` run the utility they name, `ansible -a` is a
-command, and `pnpm exec` forwards its tail. A pipe whose program is not in
-the text (`sed e`, `.shell` with no command) is unseen. The caller checks
+command, `ssh -o ProxyCommand` runs on this machine, and `tar --to-command`
+and `-I` run a program. `pnpm exec` forwards its tail. A pipe whose program
+is not in the text (`sed e`, `.shell` with no command) is unseen. The caller checks
 each returned string with the same danger rules. This is not a language parser.
 """
 
@@ -193,6 +194,10 @@ def _commands_of(
         return _ansible_commands(command), False
     if program == "ansible-test":
         return _ansible_test_commands(command), False
+    if program in {"ssh", "scp", "sftp"}:
+        return _ssh_proxy_commands(command), False
+    if program == "tar":
+        return _tar_commands(command), False
     if program in {"npm", "pnpm", "yarn"}:
         tail = _package_exec_tail(program, command[1:])
         if tail:
@@ -823,6 +828,82 @@ def _ansible_test_commands(command: Sequence[str]) -> List[str]:
     if not tail:
         return []
     return [_shell_join(tail)]
+
+
+def _ssh_proxy_commands(command: Sequence[str]) -> List[str]:
+    """The first `ProxyCommand`, which is the one OpenSSH runs.
+
+    `ProxyCommand=none` disables the proxy. A later `-o ProxyCommand` does
+    not run. The value is a shell command, not an argument of ssh.
+    """
+    found = ""
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            break
+        option = ""
+        if word == "-o" and index + 1 < len(command):
+            option = command[index + 1]
+            index += 2
+        elif word.startswith("-o") and len(word) > 2:
+            option = word[2:]
+            index += 1
+        else:
+            index += 1
+            continue
+        name, eq, value = option.partition("=")
+        if not eq or name.lower() != "proxycommand" or found:
+            continue
+        found = _plain(value).strip()
+    if not found or found.lower() == "none":
+        return []
+    return [found]
+
+
+def _tar_commands(command: Sequence[str]) -> List[str]:
+    """Programs GNU tar runs for `--to-command` and the compress program.
+
+    `-z` selects gzip by itself and is not a shell string. `-I cmd` and
+    `--use-compress-program` are. Both forms run, so each one is returned.
+    """
+    found: List[str] = []
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        if name in {"--to-command", "--use-compress-program"}:
+            if eq:
+                payload = value
+                index += 1
+            elif index + 1 < len(command):
+                payload = command[index + 1]
+                index += 2
+            else:
+                return found
+            payload = _plain(payload).strip()
+            if payload:
+                found.append(payload)
+            continue
+        if word == "-I" or (word.startswith("-") and not word.startswith("--") and "I" in word[1:]):
+            attached = ""
+            if word != "-I":
+                flag_at = word.find("I")
+                attached = word[flag_at + 1 :]
+            if attached:
+                payload = attached
+                index += 1
+            elif index + 1 < len(command):
+                payload = command[index + 1]
+                index += 2
+            else:
+                return found
+            payload = _plain(payload).strip()
+            if payload:
+                found.append(payload)
+            continue
+        index += 1
+    return found
 
 
 def _package_exec_tail(program: str, args: Sequence[str]) -> List[str]:

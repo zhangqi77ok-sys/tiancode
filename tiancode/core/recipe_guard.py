@@ -2,8 +2,10 @@
 
 `make test` is not itself a dangerous string. The recipe, the `$(shell ...)`
 that runs while make reads the file, and the same idea for just and tox are
-checked with the shell rules. A symlink or hard link is not opened. A `-C`,
-`-f`, `--justfile`, or `-c` path that leaves the workspace is refused.
+checked with the shell rules. `MAKEFILES` is read first, including a file
+named by the command or the parent environment, but it does not become the
+default goal. A symlink or hard link is not opened. A `-C`, `-f`,
+`--justfile`, or `-c` path that leaves the workspace is refused.
 
 The check is a bounded reader, not a full make implementation. It does expand
 `$(call)`, `$(foreach)`, and `$(eval)` far enough to see a recipe those
@@ -547,7 +549,25 @@ def _parse_make_lines(lines: Sequence[str], parsed: _MakeFile) -> None:
             rule_targets = []
 
 
-def _load_make(path: Path, root: Path, seen: set, parsed: _MakeFile) -> Optional[str]:
+def _load_make(
+    path: Path, root: Path, seen: set, parsed: _MakeFile, *, keep_goal: bool = False,
+) -> Optional[str]:
+    """Read one makefile. `keep_goal` leaves the default target unchanged.
+
+    GNU make reads `MAKEFILES` first and never takes the default goal from
+    those files. Their rules still apply when a later target uses them.
+    """
+    goal = parsed.default_goal
+    try:
+        return _load_make_body(path, root, seen, parsed, keep_goal=keep_goal)
+    finally:
+        if keep_goal:
+            parsed.default_goal = goal
+
+
+def _load_make_body(
+    path: Path, root: Path, seen: set, parsed: _MakeFile, *, keep_goal: bool,
+) -> Optional[str]:
     if len(seen) >= _MAX_FILES:
         return "Makefile 引用过多，无法在执行前检查配方，已拒绝执行"
     key = str(path)
@@ -574,10 +594,35 @@ def _load_make(path: Path, root: Path, seen: set, parsed: _MakeFile) -> Optional
             return "Makefile 引入了工作区外的文件，已拒绝执行"
         if not dest.exists():
             continue
-        reason = _load_make(dest, root, seen, parsed)
+        reason = _load_make(dest, root, seen, parsed, keep_goal=keep_goal)
         if reason:
             return reason
     return None
+
+
+def _stated_path(root: Path, raw: str, base: Path) -> tuple:
+    """A makefile path that is not resolved through its final symlink."""
+    text = raw.strip().strip("'\"")
+    if not text or text.startswith("-"):
+        return None, "make 的 MAKEFILES 路径无法确认，已拒绝执行"
+    path = Path(text)
+    dest = path if path.is_absolute() else base / path
+    try:
+        parent = dest.parent.resolve()
+        parent.relative_to(root)
+    except (OSError, ValueError):
+        return None, "make 的 MAKEFILES 越出工作区，已拒绝执行"
+    final = parent / dest.name
+    if final.is_symlink():
+        try:
+            final.resolve().relative_to(root)
+        except (OSError, ValueError):
+            return None, "make 的 MAKEFILES 越出工作区，已拒绝执行"
+    try:
+        final.relative_to(root)
+    except ValueError:
+        return None, "make 的 MAKEFILES 越出工作区，已拒绝执行"
+    return final, None
 
 
 def _pattern_rule(parsed: _MakeFile, target: str) -> Optional[_Rule]:
@@ -795,12 +840,17 @@ def _assignment_word(word: str) -> bool:
     return bool(sep) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None and not word.startswith("-")
 
 
-def _make_block(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
+def _make_block(
+    words: Sequence[str], cwd: Path, root: Path, inherited: str = "",
+) -> Optional[str]:
     invoke, reason = _parse_make_argv(words, cwd, root)
     if reason:
         return reason
     if invoke is None:
         return None
+    # A command-line `make MAKEFILES=b.mk` replaces the environment value,
+    # including when the command-line value is empty.
+    extra = invoke.overrides["MAKEFILES"] if "MAKEFILES" in invoke.overrides else inherited
     chosen: List[Path] = []
     if invoke.files:
         for raw in invoke.files:
@@ -814,16 +864,38 @@ def _make_block(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
             if candidate.exists() or candidate.is_symlink():
                 chosen.append(candidate)
                 break
-    if not chosen:
-        return None
     parsed = _MakeFile()
     parsed.variables.update(invoke.overrides)
     if invoke.evals:
         _parse_make_lines(invoke.evals, parsed)
-    for path in chosen:
-        reason = _load_make(path, root, set(), parsed)
+    # Not the same set as the main makefile: `MAKEFILES=Makefile` is read
+    # again below, and that second read is what sets the default goal.
+    extra_seen: set = set()
+    for raw in extra.split():
+        if not raw:
+            continue
+        path, error = _stated_path(root, raw, invoke.directory)
+        if error:
+            return error
+        if path is None or (not path.exists() and not path.is_symlink()):
+            continue
+        reason = _load_make(path, root, extra_seen, parsed, keep_goal=True)
         if reason:
             return reason
+    # A recipe in the main makefile replaces one from MAKEFILES. Make runs
+    # the later recipe and warns about the earlier one.
+    prior = {name: len(rule.recipes) for name, rule in parsed.rules.items()}
+    seen: set = set()
+    for path in chosen:
+        reason = _load_make(path, root, seen, parsed)
+        if reason:
+            return reason
+    for name, rule in parsed.rules.items():
+        old = prior.get(name, 0)
+        if old and len(rule.recipes) > old:
+            rule.recipes = rule.recipes[old:]
+    if not chosen and not parsed.immediate_shells and not any(rule.recipes for rule in parsed.rules.values()):
+        return None
     targets = invoke.targets or ([parsed.default_goal] if parsed.default_goal else [])
     return _check_make_targets(
         parsed, targets, run_recipes=not invoke.dry_run, directory=invoke.directory,
@@ -1208,42 +1280,76 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
 
     `echo make test` does not match: the program word has to be make, just, or
     tox. `make -n` still refuses a `$(shell ...)` that runs while the file is
-    read, and does not refuse a recipe that dry-run would skip.
+    read, and does not refuse a recipe that dry-run would skip. A leading
+    `MAKEFILES=evil.mk`, `export MAKEFILES=evil.mk`, or `env MAKEFILES=evil.mk`
+    is the file make reads before the makefile. The parent environment is
+    used when this command does not set that name.
     """
     from tiancode.tools.execution import (
-        _SHELL_SPLIT,
         _directory_inside,
-        _expand_literal_assignments,
+        _expand_dollars,
+        _literal_assignment,
         _normalize_command,
-        _unwrap_leading_wrappers,
+        _peel_prefixes,
+        _quote_aware_segments,
+        get_sanitized_env,
     )
 
-    text = _normalize_command(_expand_literal_assignments(command))
+    text = _normalize_command(command)
     if not text:
         return None
     root = work_dir.resolve()
     cwd = root
-    for segment in _SHELL_SPLIT.split(text):
-        piece = _unwrap_leading_wrappers(segment.strip()).rstrip(")")
-        if not piece:
+    parent = get_sanitized_env()
+    values: Dict[str, str] = {}
+    exported: set = set()
+    for segment in _quote_aware_segments(text):
+        words = [word.rstrip(")") for word in segment.split() if word.rstrip(")")]
+        peeled = _peel_prefixes(words)
+        if peeled is None:
             continue
-        if piece == "cd" or piece.startswith("cd "):
-            target = "" if piece == "cd" else piece[3:].strip()
+        assignments, command_words = peeled
+        local = {key: values[key] for key in exported}
+        assigned: set = set()
+        for word in assignments:
+            parsed = _literal_assignment(word)
+            if parsed is None:
+                continue
+            name, value = parsed
+            local[name] = value
+            assigned.add(name)
+        command_words = [_expand_dollars(word, {**values, **local}) for word in command_words]
+        if not command_words:
+            values.update(local)
+            exported.update(assigned)
+            continue
+        program = _basename(command_words[0])
+        if program == "export":
+            for word in command_words[1:]:
+                parsed = _literal_assignment(word)
+                if parsed is None:
+                    continue
+                name, value = parsed
+                values[name] = value
+                exported.add(name)
+            continue
+        if program == "cd":
+            target = command_words[1] if len(command_words) > 1 else ""
             nxt = _directory_inside(cwd, target, root)
             cwd = nxt or cwd
             if nxt is None:
                 return "配方命令在越出工作区的目录中运行，已拒绝执行"
             continue
-        words = piece.split()
-        if not words:
-            continue
-        program = _basename(words[0])
+        if "MAKEFILES" in assigned or "MAKEFILES" in exported:
+            inherited = local.get("MAKEFILES", "")
+        else:
+            inherited = parent.get("MAKEFILES", "")
         if program in _MAKE_BINS:
-            reason = _make_block(words, cwd, root)
+            reason = _make_block(command_words, cwd, root, inherited)
         elif program == "just":
-            reason = _just_block(words, cwd, root)
+            reason = _just_block(command_words, cwd, root)
         elif program == "tox":
-            reason = _tox_block(words, cwd, root)
+            reason = _tox_block(command_words, cwd, root)
         else:
             reason = None
         if reason:

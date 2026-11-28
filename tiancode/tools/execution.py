@@ -80,8 +80,15 @@ _WRAPPER_NAMES = frozenset({"env", "nice", "nohup", "stdbuf", "time", "command"}
 _WRAPPER_VALUE_FLAGS = frozenset({"-n", "-o", "-e", "-u", "--unset"})
 # These run a later argv, or a shell string, so `timeout 5 sudo` is still sudo.
 # A pid query (`ionice -p 1`, `timeout --help`) does not run a command.
+# `setarch` only runs a command after a known architecture. `cmake` is here for
+# `cmake -E env`, `chdir`, `time`, and `remove_directory`; other cmake forms stay.
 _LAUNCHERS = frozenset({
     "timeout", "flock", "setsid", "ionice", "taskset", "watch", "chrt", "prlimit", "setpriv",
+    "unshare", "setarch", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon",
+    "x86_64", "uname26", "capsh", "script", "choom", "cmake",
+})
+_SETARCH_ARCH = frozenset({
+    "uname26", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon", "x86_64",
 })
 _DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", re.IGNORECASE)
 _NODE_LOAD = re.compile(
@@ -351,6 +358,244 @@ def _has_flag(words: List[str], names: frozenset) -> bool:
     return False
 
 
+def _unshare_command(words: List[str]) -> List[str]:
+    """The program `unshare` runs. Empty when this invocation only prints help.
+
+    Optional arguments (`--user`, `--kill-child`) apply only with `=`. A
+    following word is the command, which `unshare --user touch` proved.
+    """
+    if _has_flag(words, frozenset({"--help", "--version", "-h", "-V"})):
+        return []
+    values = frozenset({
+        "--map-user", "--map-group", "--map-users", "--map-groups",
+        "--propagation", "--setgroups", "--root", "-R", "--wd", "-w",
+        "--setuid", "-S", "--setgid", "-G", "--monotonic", "--boottime",
+    })
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            return words[index + 1 :]
+        if word.startswith("--"):
+            name, eq, _value = word.partition("=")
+            index += 1
+            if name in values and not eq:
+                index += 1
+            continue
+        if word.startswith("-") and word != "-":
+            rest = word[1:]
+            take_next = False
+            while rest:
+                flag = rest[0]
+                rest = rest[1:]
+                if flag in "wRSG":
+                    take_next = not rest
+                    break
+            index += 2 if take_next else 1
+            continue
+        return words[index:]
+    return []
+
+
+def _setarch_command(words: List[str]) -> List[str]:
+    """The program after a real architecture. `setarch sudo` runs nothing.
+
+    `setarch` without a name from `setarch --list` treats the next word as
+    the architecture and exits. `linux64` already is that architecture.
+    """
+    if _has_flag(words, frozenset({"--help", "--version", "-h", "-V", "--list", "--show"})):
+        return []
+    index = 1
+    while index < len(words) and words[index].startswith("-") and words[index] != "-":
+        if words[index] == "--":
+            index += 1
+            break
+        index += 1
+    if _command_basename(words[0]) == "setarch":
+        if index >= len(words) or words[index] not in _SETARCH_ARCH:
+            return []
+        index += 1
+    return words[index:]
+
+
+def _script_body(words: List[str], index: int, *, script_is_rest: bool) -> str:
+    """The shell string after `-c` / `--command`. Quotes already removed join the tail."""
+    if index >= len(words):
+        return ""
+    if script_is_rest:
+        return " ".join(_unquote_shell_word(part) for part in words[index:])
+    return _unquote_shell_word(words[index])
+
+
+def _script_command(words: List[str], *, script_is_rest: bool) -> List[str] | None:
+    """`sh -c` for `script -c`. None when script would start an interactive session."""
+    if _has_flag(words, frozenset({"--help", "--version", "-h", "-V"})):
+        return []
+    long_values = frozenset({
+        "--log-in", "--log-out", "--log-io", "--log-timing", "--timing",
+        "--logging-format", "--echo", "--output-limit",
+    })
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            return None
+        name, eq, value = word.partition("=")
+        if name == "--command":
+            if eq:
+                body = value if not script_is_rest else " ".join([value, *words[index + 1 :]])
+            else:
+                body = _script_body(words, index + 1, script_is_rest=script_is_rest)
+            body = _unquote_shell_word(body).strip()
+            return ["sh", "-c", body] if body else []
+        if name in long_values and not eq:
+            index += 2
+            continue
+        if word.startswith("--"):
+            index += 1
+            continue
+        if word.startswith("-") and word != "-":
+            cluster = word[1:]
+            cursor = 0
+            while cursor < len(cluster):
+                flag = cluster[cursor]
+                rest = cluster[cursor + 1 :]
+                if flag == "c":
+                    if rest and not script_is_rest:
+                        body = _unquote_shell_word(rest)
+                    elif script_is_rest:
+                        pieces = ([rest] if rest else []) + words[index + 1 :]
+                        body = " ".join(_unquote_shell_word(part) for part in pieces if part)
+                    elif index + 1 < len(words):
+                        body = _unquote_shell_word(words[index + 1])
+                    else:
+                        body = ""
+                    body = body.strip()
+                    return ["sh", "-c", body] if body else []
+                if flag in "IOTBtmEo" and not rest:
+                    index += 1
+                    break
+                cursor += 1
+            index += 1
+            continue
+        index += 1
+    return None
+
+
+def _capsh_command(words: List[str], *, script_is_rest: bool) -> List[str]:
+    """Arguments after `capsh --` or `-+` are a shell. Without them capsh exits."""
+    shell = "bash"
+    index = 1
+    while index < len(words):
+        word = words[index]
+        name, eq, value = word.partition("=")
+        if name in {"--help", "-h", "--license"}:
+            return []
+        if name == "--shell" and eq and value:
+            shell = _command_basename(value) or "bash"
+        if word in {"--", "-+"}:
+            rest = words[index + 1 :]
+            if not rest:
+                return []
+            head = rest[0]
+            if head in {"-c", "--command"} or (
+                head.startswith("-") and not head.startswith("--") and "c" in head[1:]
+            ):
+                attached = head[2:] if head.startswith("-c") and len(head) > 2 else ""
+                if attached and not script_is_rest:
+                    body = _unquote_shell_word(attached)
+                else:
+                    start = rest[1:] if not attached else [attached, *rest[1:]]
+                    body = _script_body(start, 0, script_is_rest=script_is_rest)
+                body = body.strip()
+                return ["sh", "-c", body] if body else []
+            return [shell, *[_unquote_shell_word(part) for part in rest]]
+        index += 1
+    return []
+
+
+def _skip_glued_or_next(index: int, word: str, eq: bool, bare: set) -> int:
+    """Index after this flag. A glued or `=` value does not consume another word."""
+    if eq or word not in bare:
+        return index + 1
+    return index + 2
+
+
+def _choom_flag(word: str, name: str, letter: str, long_name: str) -> bool:
+    """True for `-n`, `-n0`, or `--adjust`, including a value glued to the flag."""
+    if name in {f"-{letter}", long_name}:
+        return True
+    return word.startswith(f"-{letter}") and not word.startswith("--") and len(word) > 2
+
+
+def _choom_command(words: List[str]) -> List[str]:
+    """The command after `choom -n`. `-p` adjusts a pid and does not run one."""
+    if _has_flag(words, frozenset({"--help", "--version", "-h", "-V"})):
+        return []
+    has_pid = False
+    has_adjust = False
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            index += 1
+            break
+        name, eq, _value = word.partition("=")
+        # `-n0` and `--adjust=0` keep the number in this word. `-n 0` uses the next one.
+        if _choom_flag(word, name, "p", "--pid"):
+            has_pid = True
+            index = _skip_glued_or_next(index, word, eq, {"-p", "--pid"})
+            continue
+        if _choom_flag(word, name, "n", "--adjust"):
+            has_adjust = True
+            index = _skip_glued_or_next(index, word, eq, {"-n", "--adjust"})
+            continue
+        if word.startswith("-"):
+            index += 1
+            continue
+        break
+    if has_pid or not has_adjust or index >= len(words):
+        return []
+    return words[index:]
+
+
+def _cmake_e_command(words: List[str]) -> List[str] | None:
+    """The command `cmake -E env|chdir|time` runs, or `rm -rf` for remove_directory.
+
+    None means this is not one of those modes, so cmake itself stays in place.
+    `cmake -E echo` and `cmake -P` are not commands.
+    """
+    if len(words) < 3 or words[1] != "-E":
+        return None
+    mode = words[2]
+    if mode == "env":
+        index = 3
+        while index < len(words):
+            word = words[index]
+            if word == "--":
+                return words[index + 1 :]
+            if word.startswith("--unset="):
+                index += 1
+                continue
+            if _is_assignment_word(word):
+                index += 1
+                continue
+            if word.startswith("-"):
+                return []
+            return words[index:]
+        return []
+    if mode == "chdir":
+        return words[4:] if len(words) >= 5 else []
+    if mode == "time":
+        return words[3:]
+    if mode == "remove_directory":
+        paths = [word for word in words[3:] if word != "--"]
+        if not paths:
+            return []
+        return ["rm", "-rf", *paths]
+    return None
+
+
 def _launcher_replacement(words: List[str], *, script_is_rest: bool) -> List[str] | None:
     """The command a launcher runs, or None when `words` does not start with one.
 
@@ -476,6 +721,19 @@ def _launcher_replacement(words: List[str], *, script_is_rest: bool) -> List[str
             "--pdeathsig", "--selinux-label", "--apparmor-profile",
         })
         return _positionals_after(words, 1, values)
+
+    if program == "unshare":
+        return _unshare_command(words)
+    if program == "setarch" or program in _SETARCH_ARCH:
+        return _setarch_command(words)
+    if program == "script":
+        return _script_command(words, script_is_rest=script_is_rest)
+    if program == "capsh":
+        return _capsh_command(words, script_is_rest=script_is_rest)
+    if program == "choom":
+        return _choom_command(words)
+    if program == "cmake":
+        return _cmake_e_command(words)
 
     return None
 
@@ -970,10 +1228,13 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     A command substitution is refused when its body is dangerous, because the
     shell runs that body. `eval "$(pyenv init -)"` stays allowed.
     `python -c "print('hello')"` and `pytest -q` stay allowed.
-    `timeout 5 sudo` is sudo. A pipe into `python` or `node` with no script
-    runs that pipe as the program. `awk` `system`, `sed` `e`, `sqlite3 .shell`,
-    `find -exec`, `xargs`, an ansible ad-hoc command, and a git `-c` value that
-    runs a shell are scanned as the command they actually run.
+    `timeout 5 sudo` is sudo. `unshare`, `setarch`/`linux64`, `capsh -- -c`,
+    `script -c`, `choom -n`, and `cmake -E env`/`chdir`/`time` are the same
+    kind of launcher. A pipe into `python` or `node` with no script runs that
+    pipe as the program. `awk` `system`, `sed` `e`, `sqlite3 .shell`,
+    `find -exec`, `xargs`, an ansible ad-hoc command, a git `-c` value that
+    runs a shell, `ssh -o ProxyCommand`, and `tar --to-command` / `-I` are
+    scanned as the command they actually run.
     """
     if _depth > 6:
         return False

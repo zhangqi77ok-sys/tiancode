@@ -228,6 +228,78 @@ def test_node_options_require_runs_before_the_program(tmp_path: Path) -> None:
     _blocked("NODE_OPTIONS='--require ./evil.js' node -e 0", tmp_path)
 
 
+def test_unshare_setarch_capsh_script_and_choom(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    proved = _run(["unshare", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists()
+    marker.unlink()
+    _blocked("unshare sudo reboot", tmp_path)
+
+    proved = _run(["linux64", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists()
+    marker.unlink()
+    _blocked("linux64 sudo reboot", tmp_path)
+    refused = _run(["setarch", "sudo", "reboot"], tmp_path)
+    assert refused.returncode != 0 and not marker.exists()
+
+    proved = _run(["capsh", "--", "-c", "touch ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("capsh -- -c 'sudo reboot'", tmp_path)
+
+    proved = _run(["script", "-qc", "touch ran", "/dev/null"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("script -qc 'sudo reboot' /dev/null", tmp_path)
+
+    proved = _run(["choom", "-n", "0", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("choom -n 0 sudo reboot", tmp_path)
+
+
+def test_ssh_proxy_tar_program_and_cmake_env(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    (tmp_path / "file.txt").write_text("x\n", encoding="utf-8")
+    proved = _run(
+        [
+            "ssh", "-o", "ProxyCommand=touch ran", "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=1", "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null", "127.0.0.1",
+        ],
+        tmp_path,
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("ssh -o ProxyCommand='sudo reboot' 127.0.0.1", tmp_path)
+
+    archived = _run(["tar", "-cf", "a.tar", "file.txt"], tmp_path)
+    assert archived.returncode == 0, archived.stderr
+    proved = _run(["tar", "--to-command=touch ran", "-xf", "a.tar"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("tar --to-command='sudo reboot' -xf a.tar", tmp_path)
+    proved = _run(["tar", "-I", "touch ran; cat", "-cf", "b.tar", "file.txt"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("tar -I 'sudo reboot' -cf b.tar file.txt", tmp_path)
+
+    proved = _run(["cmake", "-E", "env", "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("cmake -E env sudo reboot", tmp_path)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    proved = _run(["cmake", "-E", "chdir", str(nested), "touch", "ran"], tmp_path)
+    assert proved.returncode == 0 and (nested / "ran").exists(), proved.stderr
+    _blocked("cmake -E chdir . sudo reboot", tmp_path)
+    folder = tmp_path / "build"
+    folder.mkdir()
+    removed = execute_shell_command("cmake -E remove_directory build", work_dir=tmp_path, timeout=5)
+    assert removed.exit_code == 0 and not folder.exists()
+    _blocked("cmake -E remove_directory /", tmp_path)
+
+
 def test_interpreter_stdin_is_the_program(tmp_path: Path) -> None:
     marker = tmp_path / "ran"
     proved = _run(["sh", "-c", "echo 'open(\"ran\",\"w\").close()' | python3"], tmp_path)
