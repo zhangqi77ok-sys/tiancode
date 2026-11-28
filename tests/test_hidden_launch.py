@@ -369,19 +369,24 @@ def test_tar_checkpoint_exec_and_sort_compress_program(tmp_path: Path) -> None:
 
 
 def test_editors_and_unsafe_roff_run_a_shell(tmp_path: Path) -> None:
+    import shutil
+
     marker = tmp_path / "ran"
-    proved = _run(["vim", "-u", "NONE", "-es", "-c", "!touch ran", "-c", "qa!"], tmp_path)
-    assert proved.returncode == 0 and marker.exists(), proved.stderr
-    marker.unlink()
-    proved = _run(["emacs", "--batch", "--eval", '(shell-command "touch ran")'], tmp_path)
-    assert proved.returncode == 0 and marker.exists(), proved.stderr
-    marker.unlink()
-    proved = _run(
-        ["sh", "-c", "printf '.sy touch ran\\n' | groff -U -Tascii >/dev/null"],
-        tmp_path,
-    )
-    assert proved.returncode == 0 and marker.exists(), proved.stderr
-    marker.unlink()
+    if shutil.which("vim"):
+        proved = _run(["vim", "-u", "NONE", "-es", "-c", "!touch ran", "-c", "qa!"], tmp_path)
+        assert proved.returncode == 0 and marker.exists(), proved.stderr
+        marker.unlink()
+    if shutil.which("emacs"):
+        proved = _run(["emacs", "--batch", "--eval", '(shell-command "touch ran")'], tmp_path)
+        assert proved.returncode == 0 and marker.exists(), proved.stderr
+        marker.unlink()
+    if shutil.which("groff"):
+        proved = _run(
+            ["sh", "-c", "printf '.sy touch ran\\n' | groff -U -Tascii >/dev/null"],
+            tmp_path,
+        )
+        assert proved.returncode == 0 and marker.exists(), proved.stderr
+        marker.unlink()
     _blocked("vim -u NONE -es -c '!sudo reboot' -c qa!", tmp_path)
     _blocked("emacs --batch --eval '(call-process \"sudo\" nil nil nil \"reboot\")'", tmp_path)
     _blocked("printf '.sy sudo reboot\\n' | groff -U -Tascii", tmp_path)
@@ -440,6 +445,37 @@ def test_ssh_config_match_exec_and_proxy_command(tmp_path: Path) -> None:
     assert marker.exists(), proved.stderr
     marker.unlink()
     _blocked("scp -S sudo host:a b.txt", tmp_path)
+
+    real = tmp_path / "real_config"
+    real.write_text("Host *\n  ProxyCommand echo\n", encoding="utf-8")
+    linked = tmp_path / "linked_config"
+    linked.symlink_to(real)
+    reason = launch_block_reason(f"ssh -F {linked} -G example.invalid", tmp_path)
+    assert reason is not None and "符号链接" in reason
+
+    # A distro include is a symlink from ssh_config.d to /usr/lib. The system
+    # reader follows it. A user `-F` file does not.
+    from tiancode.core.launch_guard import _SshScan, _ssh_read, _ssh_system_path
+
+    assert _ssh_system_path(Path("/etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf"))
+    assert not _ssh_system_path(linked)
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    target = lib / "20.conf"
+    target.write_text("Host *\n  ProxyCommand sudo reboot\n", encoding="utf-8")
+    dropin = tmp_path / "ssh_config.d"
+    dropin.mkdir()
+    (dropin / "20.conf").symlink_to(target)
+    main = tmp_path / "main_config"
+    main.write_text(f"Include {dropin}/*.conf\n", encoding="utf-8")
+    followed = _SshScan(command_sets_proxy=False)
+    _ssh_read(main, "example.invalid", None, followed, depth=0, seen=set(), follow=True)
+    assert followed.error == ""
+    assert followed.proxy.startswith("sudo")
+    refused = _SshScan(command_sets_proxy=False)
+    _ssh_read(main, "example.invalid", None, refused, depth=0, seen=set(), follow=False)
+    assert refused.error and "符号链接" in refused.error
 
 
 def test_git_external_diff_and_credential_helper(tmp_path: Path) -> None:

@@ -985,6 +985,38 @@ def _text_runs_danger(text: str) -> bool:
     return False
 
 
+def _ssh_system_path(path: Path) -> bool:
+    """True for a path whose own name is under `/etc/ssh`, without following it.
+
+    Ubuntu links `ssh_config.d/20-systemd-ssh-proxy.conf` to
+    `/usr/lib/systemd/...`. The name is still a system file. Resolving first
+    would treat that link as a user file and refuse every `ssh`.
+    """
+    candidate = path if path.is_absolute() else path.absolute()
+    try:
+        candidate.relative_to("/etc/ssh")
+    except ValueError:
+        return False
+    return True
+
+
+def _read_followed(path: Path) -> Tuple[Optional[str], Optional[str]]:
+    """Read a system ssh file, following a distro symlink or hard link."""
+    try:
+        landed = path.resolve(strict=True)
+    except OSError:
+        return None, None
+    if not landed.is_file():
+        return None, None
+    try:
+        text = landed.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, "unreadable"
+    if len(text) > _MAX_TEXT:
+        return None, "too-large"
+    return text, None
+
+
 def _read_trusted(path: Path) -> Tuple[Optional[str], Optional[str]]:
     """`(text, error)`. A missing file is `(None, None)`. A link is an error."""
     from tiancode.core.path_safety import is_shared_hardlink
@@ -1330,7 +1362,7 @@ def _ssh_walk(
     state = _SshScan(command_sets_proxy=command_sets_proxy)
     seen: set = set()
     for path in paths:
-        _ssh_read(path, host, user, state, depth=0, seen=seen)
+        _ssh_read(path, host, user, state, depth=0, seen=seen, follow=_ssh_system_path(path))
         if state.error:
             return [], "", state.error
     return state.execs, state.proxy, None
@@ -1354,6 +1386,7 @@ def _ssh_read(
     *,
     depth: int,
     seen: set,
+    follow: bool,
 ) -> None:
     if state.error:
         return
@@ -1363,7 +1396,8 @@ def _ssh_read(
     if depth > 4 or state.files >= _SSH_MAX_FILES:
         state.error = "ssh 配置 Include 层数过多，已拒绝执行"
         return
-    text, err = _read_trusted(path)
+    follow = follow or _ssh_system_path(path)
+    text, err = _read_followed(path) if follow else _read_trusted(path)
     if err == "link":
         state.error = "ssh 配置是符号链接或硬链接，已拒绝执行"
         return
@@ -1390,7 +1424,9 @@ def _ssh_read(
         if applies is False:
             continue
         if keyword == "include":
-            _ssh_include(tokens[1:], path.parent, host, user, state, depth=depth, seen=seen)
+            _ssh_include(
+                tokens[1:], path.parent, host, user, state, depth=depth, seen=seen, follow=follow,
+            )
             continue
         if keyword == "proxycommand" and not state.command_sets_proxy and not state.proxy_set:
             # The first obtained value wins. An unknown block might be that one.
@@ -1407,6 +1443,7 @@ def _ssh_include(
     *,
     depth: int,
     seen: set,
+    follow: bool,
 ) -> None:
     import glob
 
@@ -1417,11 +1454,11 @@ def _ssh_include(
     matches = sorted(glob.glob(pattern))
     if matches:
         for item in matches:
-            _ssh_read(Path(item), host, user, state, depth=depth + 1, seen=seen)
+            _ssh_read(Path(item), host, user, state, depth=depth + 1, seen=seen, follow=follow)
         return
     if any(mark in raw for mark in "*?["):
         return
-    _ssh_read(Path(pattern), host, user, state, depth=depth + 1, seen=seen)
+    _ssh_read(Path(pattern), host, user, state, depth=depth + 1, seen=seen, follow=follow)
 
 
 def _ssh_host_applies(patterns: Sequence[str], host: Optional[str]) -> Optional[bool]:
