@@ -8,9 +8,13 @@ command, `ssh -o ProxyCommand` runs on this machine, and `tar --to-command`,
 `-I`, and `--checkpoint-action=exec` run a program. `sort --compress-program`
 and `scp -S` exec a program. `env --split-string` runs its string.
 `vim -c`, `emacs --eval`, and a `groff -U` heredoc run a shell that is not
-the outer command. `pnpm exec` forwards its tail. A pipe whose program
-is not in the text (`sed e`, `.shell` with no command) is unseen. The caller checks
-each returned string with the same danger rules. This is not a language parser.
+the outer command. `pic -U` and `groff -U -p` run a `sh` request from a
+heredoc. `sftp -S` and `sftp -D` exec a program, `tar --rsh-command` does
+too when the archive is remote, `zip -T -TT` runs a shell, and
+`gcc -wrapper` execs its wrapper. `pnpm exec` forwards its tail. `perl -d`
+runs `PERL5DB`. A pipe whose program is not in the text (`sed e`, `.shell`
+with no command, `pic -U`) is unseen. The caller checks each returned
+string with the same danger rules. This is not a language parser.
 """
 
 from __future__ import annotations
@@ -137,13 +141,7 @@ def commands_git_will_run(
     """
     if not words or _basename(words[0]) != "git":
         return []
-    env = dict(parent_env or {})
-    for name, value in _assignment_pairs(assignments):
-        if name.startswith("GIT_CONFIG_"):
-            env[name] = value
-    config = {key.lower(): value for key, value in (file_config or {}).items()}
-    config.update(_slots_from_env(env))
-    config.update(_inline_git_config(words))
+    config = effective_git_config(words, assignments, file_config, parent_env)
     found = _triggered_git_commands(config, words, assignments, parent_env or {})
     found.extend(_credential_shells(words, list(credential_helpers or [])))
     found.extend(_planted_git_commands(words))
@@ -222,11 +220,21 @@ def _commands_of(
         return _ansible_test_commands(command), False
     if program in {"ssh", "scp", "sftp"}:
         found = _ssh_proxy_commands(command)
-        if program == "scp":
+        if program in {"scp", "sftp"}:
             found.extend(_scp_program(command))
+        if program == "sftp":
+            found.extend(_sftp_server(command))
         return found, False
     if program == "tar":
         return _tar_commands(command), False
+    if program == "zip":
+        return _zip_commands(command), False
+    if program in {"gcc", "g++"} or program.endswith("-gcc") or program.endswith("-g++"):
+        return _compiler_wrappers(command), False
+    if program == "pic":
+        return _pic_commands(command, heredocs), False
+    if program == "perl":
+        return _perl_debug_commands(command, assignments), False
     if program == "sort":
         return _sort_commands(command), False
     if program in {"vim", "vi", "ex", "view"}:
@@ -555,6 +563,27 @@ def _echo_literals(part: str) -> List[str]:
     return literals
 
 
+def effective_git_config(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    file_config: Optional[Dict[str, str]] = None,
+    parent_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Config git will see: on-disk, then `GIT_CONFIG_*`, then `-c`.
+
+    Later layers replace earlier ones. Repeated credential helpers are not
+    stored here; the credential path keeps every value.
+    """
+    env = dict(parent_env or {})
+    for name, value in _assignment_pairs(assignments):
+        if name.startswith("GIT_CONFIG_"):
+            env[name] = value
+    config = {key.lower(): value for key, value in (file_config or {}).items()}
+    config.update(_slots_from_env(env))
+    config.update(_inline_git_config(words))
+    return config
+
+
 def _inline_git_config(words: Sequence[str]) -> Dict[str, str]:
     config: Dict[str, str] = {}
     index = 1
@@ -631,6 +660,263 @@ def _git_args(words: Sequence[str]) -> List[str]:
     return []
 
 
+def _env_override(name: str, assignments: Sequence[str], parent_env: Dict[str, str]) -> Optional[str]:
+    """The assignment in this command, otherwise the parent environment.
+
+    None means the variable was not set. An empty string was set and wins
+    over a later fallback, the same way an empty `GIT_EXTERNAL_DIFF` does.
+    """
+    chosen: Optional[str] = None
+    for key, value in _assignment_pairs(assignments):
+        if key == name:
+            chosen = value
+    if chosen is None and name in parent_env:
+        chosen = parent_env[name]
+    return chosen
+
+
+def _resolved_editor(
+    config: Dict[str, str],
+    assignments: Sequence[str],
+    parent_env: Dict[str, str],
+) -> str:
+    """The editor git runs on a dumb terminal.
+
+    `GIT_EDITOR` beats `core.editor`, which beats `EDITOR`. `VISUAL` was not
+    used when the terminal was dumb, so it is not consulted here.
+    """
+    git_editor = _env_override("GIT_EDITOR", assignments, parent_env)
+    if git_editor is not None and git_editor.strip():
+        return git_editor.strip()
+    configured = config.get("core.editor", "").strip()
+    if configured:
+        return configured
+    editor = _env_override("EDITOR", assignments, parent_env)
+    if editor is not None and editor.strip():
+        return editor.strip()
+    return ""
+
+
+def _resolved_sequence_editor(
+    config: Dict[str, str],
+    assignments: Sequence[str],
+    parent_env: Dict[str, str],
+) -> str:
+    """The editor `git rebase -i` opens before it falls back to the commit editor."""
+    sequence = _env_override("GIT_SEQUENCE_EDITOR", assignments, parent_env)
+    if sequence is not None and sequence.strip():
+        return sequence.strip()
+    configured = config.get("sequence.editor", "").strip()
+    if configured:
+        return configured
+    return _resolved_editor(config, assignments, parent_env)
+
+
+def _git_bool(value: str) -> bool:
+    return value.strip().lower() in {"true", "yes", "on", "1"}
+
+
+def _flag_present(args: Sequence[str], names: frozenset) -> bool:
+    for word in args:
+        if word == "--":
+            return False
+        name = word.split("=", 1)[0]
+        if name in names:
+            return True
+        if (
+            len(name) == 2
+            and name.startswith("-")
+            and not name.startswith("--")
+            and name in names
+        ):
+            return True
+    return False
+
+
+def _rebase_is_interactive(words: Sequence[str]) -> bool:
+    if _git_subcommand(words) != "rebase":
+        return False
+    return _flag_present(_git_args(words), frozenset({"-i", "--interactive"}))
+
+
+def _tag_uses_editor(words: Sequence[str]) -> bool:
+    """Annotated or signed tags open the editor unless `-m` or `-F` gave a message.
+
+    `git tag -a` and `git tag -s` were proved. `git tag -a -m` was not.
+    """
+    if _git_subcommand(words) != "tag":
+        return False
+    annotated = False
+    has_message = False
+    index = 0
+    args = _git_args(words)
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, _value = word.partition("=")
+        if name in {"-a", "--annotate", "-s", "--sign"}:
+            annotated = True
+        if name in {"-u", "--local-user"}:
+            annotated = True
+            if not eq:
+                index += 2
+                continue
+        if name in {"-m", "--message", "-F", "--file"}:
+            has_message = True
+            if not eq:
+                index += 2
+                continue
+        index += 1
+    return annotated and not has_message
+
+
+def _notes_uses_editor(words: Sequence[str]) -> bool:
+    """`git notes add` opens the editor. `git notes add -m` does not."""
+    if _git_subcommand(words) != "notes":
+        return False
+    action = ""
+    has_message = False
+    index = 0
+    args = _git_args(words)
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, _value = word.partition("=")
+        if name in {"-m", "--message", "-F", "--file", "-c", "--reuse-message", "-C", "--reedit-message"}:
+            has_message = True
+            if not eq and name in {"-m", "--message", "-F", "--file", "-c", "--reuse-message", "-C"}:
+                index += 2
+                continue
+        if word.startswith("-"):
+            index += 1
+            continue
+        if not action:
+            action = _plain(word)
+        index += 1
+    return action == "add" and not has_message
+
+
+def _rebase_execs(words: Sequence[str]) -> List[str]:
+    """Shell commands from `git rebase --exec` / `-x`. Each one was proved to run."""
+    if _git_subcommand(words) != "rebase":
+        return []
+    found: List[str] = []
+    index = 0
+    args = _git_args(words)
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name == "--exec":
+            if eq:
+                body = value
+            elif index + 1 < len(args):
+                body = args[index + 1]
+                index += 1
+            else:
+                body = ""
+            body = _plain(body).strip()
+            if body:
+                found.append(body)
+        elif word == "-x" or (word.startswith("-x") and not word.startswith("--") and len(word) > 2):
+            if word == "-x":
+                body = args[index + 1] if index + 1 < len(args) else ""
+                if word == "-x" and index + 1 < len(args):
+                    index += 1
+            else:
+                body = word[2:]
+            body = _plain(body).strip()
+            if body:
+                found.append(body)
+        index += 1
+    return found
+
+
+def _bisect_run(words: Sequence[str]) -> str:
+    """The command after `git bisect run`. Git execs those arguments."""
+    if _git_subcommand(words) != "bisect":
+        return ""
+    args = [_plain(word) for word in _git_args(words)]
+    if not args or args[0] != "run" or len(args) < 2:
+        return ""
+    return " ".join(args[1:]).strip()
+
+
+def _difftool_extcmd(words: Sequence[str], config: Dict[str, str]) -> str:
+    """The shell `git difftool -y --extcmd` runs.
+
+    Without `-y`, `--no-prompt`, or `difftool.prompt=false`, a non-tty does
+    not launch the tool. That was proved.
+    """
+    if _git_subcommand(words) != "difftool":
+        return ""
+    prompt = config.get("difftool.prompt", "").strip().lower() not in {"false", "no", "off", "0"}
+    ext = ""
+    index = 0
+    args = _git_args(words)
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name in {"-y", "--no-prompt"}:
+            prompt = False
+        elif name == "--prompt":
+            prompt = True
+        elif name == "--extcmd" or name == "-x" or (
+            word.startswith("-x") and not word.startswith("--") and word != "-x"
+        ):
+            if name == "--extcmd" and eq:
+                ext = value
+            elif word.startswith("-x") and word != "-x" and not word.startswith("--"):
+                ext = word[2:]
+            elif index + 1 < len(args):
+                ext = args[index + 1]
+                index += 1
+            else:
+                ext = ""
+        index += 1
+    if prompt:
+        return ""
+    return _plain(ext).strip()
+
+
+def _git_will_sign(words: Sequence[str], config: Dict[str, str]) -> bool:
+    """True when this commit or tag invokes gpg or ssh-keygen.
+
+    `commit -S` and `commit.gpgsign` were proved. `--no-gpg-sign` suppresses
+    both. `tag -s` was proved.
+    """
+    sub = _git_subcommand(words)
+    args = _git_args(words)
+    if sub == "commit":
+        if _flag_present(args, frozenset({"--no-gpg-sign"})):
+            return False
+        for word in args:
+            if word == "--":
+                break
+            name = word.split("=", 1)[0]
+            if name in {"-S", "--gpg-sign"} or (
+                word.startswith("-S") and not word.startswith("--") and word != "-S"
+            ):
+                return True
+        return _git_bool(config.get("commit.gpgsign", ""))
+    if sub == "tag":
+        return _flag_present(args, frozenset({"-s", "--sign", "-u", "--local-user"}))
+    return False
+
+
+def _signing_program(words: Sequence[str], config: Dict[str, str]) -> str:
+    if not _git_will_sign(words, config):
+        return ""
+    if config.get("gpg.format", "").strip().lower() == "ssh":
+        return config.get("gpg.ssh.program", "").strip()
+    return config.get("gpg.program", "").strip()
+
+
 def _triggered_git_commands(
     config: Dict[str, str],
     words: Sequence[str],
@@ -647,13 +933,32 @@ def _triggered_git_commands(
     ssh = config.get("core.sshcommand", "")
     if ssh and sub in _GIT_SSH_COMMANDS:
         found.append(ssh)
-    editor = config.get("core.editor", "")
-    if editor and sub == "commit" and _commit_uses_editor(words):
-        found.append(editor)
+    if sub == "commit" and _commit_uses_editor(words):
+        editor = _resolved_editor(config, assignments, parent_env)
+        if editor:
+            found.append(editor)
+    if _tag_uses_editor(words) or _notes_uses_editor(words):
+        editor = _resolved_editor(config, assignments, parent_env)
+        if editor:
+            found.append(editor)
+    if _rebase_is_interactive(words):
+        editor = _resolved_sequence_editor(config, assignments, parent_env)
+        if editor:
+            found.append(editor)
     if sub == "diff":
         external = _git_external_diff(config, assignments, parent_env)
         if external:
             found.append(external)
+    found.extend(_rebase_execs(words))
+    bisect = _bisect_run(words)
+    if bisect:
+        found.append(bisect)
+    difftool = _difftool_extcmd(words, config)
+    if difftool:
+        found.append(difftool)
+    signing = _signing_program(words, config)
+    if signing:
+        found.append(signing)
     if sub not in _GIT_BUILTINS:
         alias = config.get(f"alias.{sub}", "")
         if alias.lstrip().startswith("!"):
@@ -985,12 +1290,17 @@ def _ssh_proxy_commands(command: Sequence[str]) -> List[str]:
 
 
 def _tar_commands(command: Sequence[str]) -> List[str]:
-    """Programs GNU tar runs for `--to-command` and the compress program.
+    """Programs GNU tar runs for `--to-command`, the compress program, and rsh.
 
     `-z` selects gzip by itself and is not a shell string. `-I cmd` and
     `--use-compress-program` are. Both forms run, so each one is returned.
+    `--rsh-command` execs only for a remote archive (`host:file`) and not
+    when `--force-local` is set. A local archive leaves the program unused.
     """
     found: List[str] = []
+    rsh = ""
+    force_local = False
+    archives: List[str] = []
     index = 1
     while index < len(command):
         word = command[index]
@@ -1041,7 +1351,45 @@ def _tar_commands(command: Sequence[str]) -> List[str]:
             if payload:
                 found.append(payload)
             continue
+        if name == "--rsh-command":
+            if eq:
+                rsh = _plain(value).strip()
+                index += 1
+            elif index + 1 < len(command):
+                rsh = _plain(command[index + 1]).strip()
+                index += 2
+            else:
+                return found
+            continue
+        if name == "--force-local":
+            force_local = True
+            index += 1
+            continue
+        if name == "--file":
+            if eq:
+                archives.append(_plain(value))
+                index += 1
+            elif index + 1 < len(command):
+                archives.append(_plain(command[index + 1]))
+                index += 2
+            else:
+                return found
+            continue
+        if word.startswith("-") and not word.startswith("--") and "f" in word[1:]:
+            flag_at = word.find("f")
+            attached = word[flag_at + 1 :]
+            if attached:
+                archives.append(_plain(attached))
+                index += 1
+            elif index + 1 < len(command):
+                archives.append(_plain(command[index + 1]))
+                index += 2
+            else:
+                return found
+            continue
         index += 1
+    if rsh and not force_local and any(":" in name for name in archives):
+        found.append(rsh)
     return found
 
 
@@ -1113,6 +1461,29 @@ def _scp_program(command: Sequence[str]) -> List[str]:
     return []
 
 
+def _sftp_server(command: Sequence[str]) -> List[str]:
+    """The local program `sftp -D` execs. It does not need a remote host."""
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        if word == "--":
+            break
+        if name == "-D" or (word.startswith("-D") and not word.startswith("--") and len(word) > 2):
+            if word.startswith("-D") and word not in {"-D"} and not word.startswith("--"):
+                payload = word[2:]
+            elif eq:
+                payload = value
+            elif index + 1 < len(command):
+                payload = command[index + 1]
+            else:
+                return []
+            payload = _plain(payload).strip()
+            return [payload] if payload else []
+        index += 1
+    return []
+
+
 def _sort_commands(command: Sequence[str]) -> List[str]:
     """The program GNU sort execs for `--compress-program`. It is not a shell.
 
@@ -1138,6 +1509,172 @@ def _sort_commands(command: Sequence[str]) -> List[str]:
             continue
         index += 1
     return found
+
+
+def _zip_commands(command: Sequence[str]) -> List[str]:
+    """The shell `zip -T -TT cmd` runs instead of `unzip -tqq`.
+
+    `-TT` without `-T` does not run. `-T` alone runs unzip, not `cmd`.
+    The command is a shell string: `touch ran; true` was proved.
+    """
+    testing = False
+    payload = ""
+    index = 1
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            break
+        if word == "-TT":
+            if index + 1 < len(command):
+                payload = _plain(command[index + 1]).strip()
+                index += 2
+                continue
+            return []
+        if word.startswith("-TT") and not word.startswith("--"):
+            payload = _plain(word[3:]).strip()
+            index += 1
+            continue
+        if word.startswith("-") and not word.startswith("--") and "T" in word[1:]:
+            testing = True
+        index += 1
+    if testing and payload:
+        return [payload]
+    return []
+
+
+def _compiler_wrappers(command: Sequence[str]) -> List[str]:
+    """The program `gcc -wrapper` / `g++ -wrapper` execs before each subcommand.
+
+    The value is a comma-separated argv, not a shell. `gcc -wrapper echo`
+    stays allowed. `gcc -wrapper sudo,reboot` is sudo. No input file means
+    gcc exits before the wrapper, which is an acceptable extra block.
+    """
+    found: List[str] = []
+    index = 1
+    while index < len(command):
+        word = command[index]
+        name, eq, value = word.partition("=")
+        if name != "-wrapper":
+            index += 1
+            continue
+        if eq:
+            payload = value
+            index += 1
+        elif index + 1 < len(command):
+            payload = command[index + 1]
+            index += 2
+        else:
+            return found
+        parts = [_plain(part).strip() for part in payload.split(",") if part.strip()]
+        if parts:
+            found.append(" ".join(parts))
+    return found
+
+
+_PIC_SH = re.compile(r"(?m)^[ \t]*sh[ \t]+(\S)(.*)\1[ \t]*$")
+
+
+def _pic_sh_commands(text: str) -> List[str]:
+    """Shell text of pic `sh X command X` lines inside a `.PS` / `.PE` picture.
+
+    The delimiter is the character after `sh`. A `sh` line outside a picture
+    is copied through and does not run, which was proved.
+    """
+    found: List[str] = []
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(".PS"):
+            inside = True
+            continue
+        if stripped.startswith(".PE"):
+            inside = False
+            continue
+        if not inside:
+            continue
+        match = _PIC_SH.match(line)
+        if match is None:
+            continue
+        shell = match.group(2).strip()
+        if shell:
+            found.append(shell)
+    return found
+
+
+def _pic_commands(
+    command: Sequence[str],
+    heredocs: Sequence[Tuple[Sequence[str], str]],
+) -> List[str]:
+    """`sh` lines in a heredoc fed to unsafe `pic`. A named file stays visible.
+
+    `pic -U` runs the request. `pic -U -S` does not: the last of `-S` and
+    `-U` wins. A pipe is refused separately because its document is not here.
+    """
+    execution = _execution()
+    if not execution._pic_state(list(command))[1]:
+        return []
+    found: List[str] = []
+    for words, body in heredocs:
+        if not words or _basename(words[0]) != "pic":
+            continue
+        if not execution._pic_state(list(words))[1]:
+            continue
+        found.extend(_pic_sh_commands(body))
+    return found
+
+
+def _perl_switch_enables_debug(plain: str) -> bool:
+    """True for `-d` / `-dt` and a cluster such as `-de`. `-d:Module` is another module.
+
+    `-I` takes the rest of the cluster as a directory, so `-Idir` is not the debugger.
+    """
+    if plain in {"-d", "-dt"}:
+        return True
+    if not plain.startswith("-") or plain.startswith("--") or plain == "-" or ":" in plain:
+        return False
+    body = plain[1:]
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == "d":
+            return True
+        # These switches consume the remainder as their argument.
+        if char in {"I", "D", "F", "M", "m", "x"}:
+            return False
+        index += 1
+    return False
+
+
+def _perl_debug_enabled(command: Sequence[str], assignments: Sequence[str]) -> bool:
+    """True for `perl -d` or `PERL5OPT=-d`. `perl -d:Module` loads that module instead."""
+    for word in command[1:]:
+        if _perl_switch_enables_debug(_plain(word)):
+            return True
+    for key, value in _assignment_pairs(assignments):
+        if key != "PERL5OPT":
+            continue
+        for part in value.split():
+            if _perl_switch_enables_debug(part):
+                return True
+    return False
+
+
+def _perl_debug_commands(command: Sequence[str], assignments: Sequence[str]) -> List[str]:
+    """Shell text inside `PERL5DB` when perl actually enters the debugger.
+
+    The default debugger file is not a shell. `system("sudo reboot")` is.
+    """
+    if not _perl_debug_enabled(command, assignments):
+        return []
+    payload = ""
+    for key, value in _assignment_pairs(assignments):
+        if key == "PERL5DB":
+            payload = value
+    if not payload.strip():
+        return []
+    from tiancode.tools.command_scan import executed_literals
+
+    return [piece.strip() for piece in executed_literals("perl", payload) if piece.strip()]
 
 
 _VIM_SYSTEM = re.compile(r"""\bsystem\s*\(\s*(['"])((?:\\.|(?!\1).)*)\1""")
@@ -1321,6 +1858,8 @@ def _roff_commands(
             shell = match.group(1).strip()
             if shell:
                 found.append(shell)
+        if execution._roff_runs_pic(list(words)):
+            found.extend(_pic_sh_commands(body))
     return found
 
 

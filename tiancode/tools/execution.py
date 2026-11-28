@@ -98,7 +98,7 @@ _LAUNCHERS = frozenset({
     "timeout", "flock", "setsid", "ionice", "taskset", "watch", "chrt", "prlimit", "setpriv",
     "unshare", "setarch", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon",
     "x86_64", "uname26", "capsh", "script", "choom", "cmake",
-    "dbus-run-session", "xvfb-run",
+    "dbus-run-session", "xvfb-run", "sg", "start-stop-daemon",
 })
 _SETARCH_ARCH = frozenset({
     "uname26", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon", "x86_64",
@@ -769,6 +769,11 @@ def _launcher_replacement(words: List[str], *, script_is_rest: bool) -> List[str
         })
         return _positionals_after(words, 1, values)
 
+    if program == "sg":
+        return _sg_command(words, script_is_rest=script_is_rest)
+    if program == "start-stop-daemon":
+        return _ssd_command(words)
+
     return None
 
 
@@ -864,11 +869,49 @@ def _normalize_command(command: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _reveal_launcher_segments(text: str) -> str:
+    """Replace each launcher segment with the command that segment actually runs.
+
+    `sg group rm -rf /` execs `rm` and drops the later words. The raw text still
+    contains `rm -rf /`, but that pattern must not fire for arguments `sg` never
+    passes. `sg group true; rm -rf /` keeps the second segment. A segment that
+    is not a launcher is left as written.
+    """
+    pieces: List[str] = []
+    changed = False
+    for segment in _quote_aware_segments(text):
+        raw_words = _shell_words(_split_words(segment.strip()))
+        peeled = _peel_prefixes(list(raw_words))
+        if peeled is None:
+            pieces.append(segment.strip())
+            continue
+        _assignments, words = peeled
+        words = _shell_words(words)
+        launched = _drop_launchers(words, script_is_rest=True) if words else []
+        if launched == raw_words:
+            pieces.append(segment.strip())
+            continue
+        changed = True
+        if len(launched) >= 3 and launched[0] == "sh" and launched[1] == "-c":
+            pieces.append(launched[2])
+        else:
+            pieces.append(" ".join(launched))
+    if not changed:
+        return text
+    return " ; ".join(piece for piece in pieces if piece.strip())
+
+
 def _match_candidates(raw: str) -> List[str]:
     prepared = _expand_literal_assignments(_expand_printf_literals(_decode_ansi_c_quotes(raw)))
     texts: List[str] = []
     for text in (raw, prepared):
         normal = _normalize_command(text)
+        revealed = _reveal_launcher_segments(normal)
+        if revealed != normal:
+            # The discarded launcher words are not a command. Matching them
+            # would refuse `sg group rm -rf /`, which runs `rm` alone.
+            text = revealed
+            normal = revealed
         unwrapped = _unwrap_leading_wrappers(normal)
         for candidate in (text, normal, unwrapped, _basename_words(normal), _basename_words(unwrapped)):
             if candidate and candidate not in texts:
@@ -1210,6 +1253,186 @@ def _roff_has_file(words: List[str]) -> bool:
     return False
 
 
+def _sg_command(words: List[str], *, script_is_rest: bool) -> List[str]:
+    """The command `sg group -c` runs, or the single program without `-c`.
+
+    `sg group -c 'touch ran'` is a shell. `sg group /path/to/tool extra` execs
+    only the tool: the extra words are not arguments, which was proved.
+    A group that does not exist never reaches the command.
+    """
+    if _has_flag(words, frozenset({"--help", "-h"})):
+        return []
+    index = 1
+    if index < len(words) and words[index] == "-":
+        index += 1
+    if index >= len(words):
+        return []
+    index += 1
+    if index >= len(words):
+        return []
+    word = words[index]
+    if word in {"-c", "--command"}:
+        body = _script_body(words, index + 1, script_is_rest=script_is_rest).strip()
+        return ["sh", "-c", body] if body else []
+    return [word]
+
+
+def _ssd_take(words: List[str], index: int, rest: str) -> tuple[str, int]:
+    """`(value, next index)` for a start-stop-daemon option that takes one value."""
+    if rest:
+        return rest, index + 1
+    if index + 1 < len(words):
+        return words[index + 1], index + 2
+    return "", index + 1
+
+
+def _ssd_command(words: List[str]) -> List[str]:
+    """The program `start-stop-daemon --start` execs. `--test` and `--stop` do not.
+
+    `--startas` is the program when both it and `--exec` are set. Arguments
+    after `--` are the program's own argv. The default `--chdir` is `/`, so a
+    relative path is not the marker this machine created.
+    """
+    if _has_flag(words, frozenset({"--help", "--version", "-H", "-V"})):
+        return []
+    start = False
+    stop = False
+    status = False
+    test = False
+    startas = ""
+    execute = ""
+    args: List[str] = []
+    valued = frozenset("pxnugcsardNPIkOR")
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            args = words[index + 1 :]
+            break
+        name, eq, value = word.partition("=")
+        if name in {"--start", "-S"}:
+            start = True
+            index += 1
+            continue
+        if name in {"--stop", "-K"}:
+            stop = True
+            index += 1
+            continue
+        if name in {"--status", "-T"}:
+            status = True
+            index += 1
+            continue
+        if name in {"--test", "-t"}:
+            test = True
+            index += 1
+            continue
+        if name in {"--startas", "-a"}:
+            if eq:
+                startas = value
+                index += 1
+            else:
+                startas, index = _ssd_take(words, index, "")
+            continue
+        if name in {"--exec", "-x"}:
+            if eq:
+                execute = value
+                index += 1
+            else:
+                execute, index = _ssd_take(words, index, "")
+            continue
+        if word.startswith("--"):
+            long_values = {
+                "--pid", "--ppid", "--pidfile", "--name", "--user", "--group",
+                "--chuid", "--signal", "--chroot", "--chdir", "--nicelevel",
+                "--procsched", "--iosched", "--umask", "--output", "--retry",
+                "--notify-timeout",
+            }
+            index += 1
+            if name in long_values and not eq and index < len(words) and not words[index].startswith("-"):
+                index += 1
+            continue
+        if word.startswith("-") and word != "-":
+            cluster = word[1:]
+            cursor = 0
+            while cursor < len(cluster):
+                flag = cluster[cursor]
+                rest = cluster[cursor + 1 :]
+                if flag == "S":
+                    start = True
+                elif flag == "K":
+                    stop = True
+                elif flag == "T":
+                    status = True
+                elif flag == "t":
+                    test = True
+                elif flag == "H" or flag == "V":
+                    return []
+                elif flag in valued:
+                    taken, index = _ssd_take(words, index, rest)
+                    if flag == "a":
+                        startas = taken
+                    elif flag == "x":
+                        execute = taken
+                    break
+                cursor += 1
+            else:
+                index += 1
+            continue
+        index += 1
+    if not start or stop or status or test:
+        return []
+    program = startas or execute
+    if not program:
+        return []
+    return [program, *args]
+
+
+def _pic_state(words: List[str]) -> tuple[bool, bool]:
+    """`(unsafe, reads_stdin)` for `pic`. The last of `-S` and `-U` wins.
+
+    `pic -U` runs `sh`. `pic -U -S` does not. A named file is the document,
+    so stdin is not the program. `pic -U -` still reads stdin.
+    """
+    unsafe = False
+    named = False
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            named = any(item != "-" for item in words[index + 1 :])
+            break
+        if word.startswith("<<"):
+            # A heredoc is the document. Words after it are the body, not a filename.
+            break
+        if word.startswith("--"):
+            index += 1
+            continue
+        if word.startswith("-") and word != "-":
+            for letter in word[1:]:
+                if letter == "U":
+                    unsafe = True
+                elif letter == "S":
+                    unsafe = False
+            index += 1
+            continue
+        if word != "-":
+            named = True
+        index += 1
+    return unsafe, unsafe and not named
+
+
+def _roff_runs_pic(words: List[str]) -> bool:
+    """True when `groff -p` will run pic. `-P` is a value, not the preprocessor."""
+    if not words or _command_basename(words[0]) not in _ROFF_BINS:
+        return False
+    for word in words[1:]:
+        if word == "--":
+            return False
+        if word.startswith("-") and not word.startswith("--") and "p" in word[1:]:
+            return True
+    return False
+
+
 def _roff_reads_stdin(words: List[str]) -> bool:
     """True when unsafe roff would execute requests from a pipe, not from a named file.
 
@@ -1284,6 +1507,10 @@ def _command_hides_its_body(raw: str, depth: int = 0) -> bool:
                 return True
             if part_index > 0 and _roff_reads_stdin(command):
                 return True
+            if part_index > 0 and _command_basename(command[0]) == "pic":
+                _unsafe, reads_stdin = _pic_state(command)
+                if reads_stdin:
+                    return True
             if part_index > 0:
                 from tiancode.tools.command_scan import reads_program_on_stdin
 
@@ -1333,13 +1560,15 @@ def is_dangerous_command(command: str | List[str], *, _depth: int = 0) -> bool:
     `python -c "print('hello')"` and `pytest -q` stay allowed.
     `timeout 5 sudo` is sudo. `unshare`, `setarch`/`linux64`, `capsh -- -c`,
     `script -c`, `choom -n`, `cmake -E env`/`chdir`/`time`, `dbus-run-session`,
-    and `xvfb-run` are the same kind of launcher. `env -C` and
-    `stdbuf --output` take a value, then the command. A pipe into `python` or
-    `node` with no script runs that pipe as the program, and so does a pipe
-    into `groff -U`. `awk` `system`, `sed` `e`, `sqlite3 .shell`,
-    `find -exec`, `xargs`, an ansible ad-hoc command, a git `-c` value that
-    runs a shell, `ssh -o ProxyCommand`, and `tar --to-command` / `-I` /
-    `--checkpoint-action=exec` are scanned as the command they actually run.
+    `xvfb-run`, `sg -c`, and `start-stop-daemon --start` are the same kind of
+    launcher. `env -C` and `stdbuf --output` take a value, then the command.
+    A pipe into `python` or `node` with no script runs that pipe as the
+    program, and so does a pipe into `groff -U` or `pic -U`. `awk` `system`,
+    `sed` `e`, `sqlite3 .shell`, `find -exec`, `xargs`, an ansible ad-hoc
+    command, a git `-c` value that runs a shell, `ssh -o ProxyCommand`,
+    `sftp -S` / `-D`, `tar --to-command` / `-I` / `--checkpoint-action=exec` /
+    `--rsh-command`, `zip -T -TT`, and `gcc -wrapper` are scanned as the
+    command they actually run.
     """
     if _depth > 6:
         return False

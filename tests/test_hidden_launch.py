@@ -519,3 +519,430 @@ def test_git_external_diff_and_credential_helper(tmp_path: Path) -> None:
     assert reason is not None
     assert launch_block_reason("git -c credential.helper= credential fill", repo) is None
     assert launch_block_reason("git status --short", repo) is None
+
+
+def _git(repo: Path, args: list[str], **extra: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+    env.update(extra)
+    return _run(["git", *args], repo, env)
+
+
+def test_pic_sh_and_groff_preprocessor(tmp_path: Path) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("pic"):
+        proved = _run(
+            ["sh", "-c", "printf '.PS\\nsh X touch ran X\\n.PE\\n' | pic -U"],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("printf '.PS\\nsh X sudo reboot X\\n.PE\\n' | pic -U", tmp_path)
+    _blocked("pic -U <<'EOF'\n.PS\nsh X rm -rf / X\n.PE\nEOF", tmp_path)
+    echoed = execute_shell_command(
+        "pic -U <<'EOF'\nbox\nEOF", work_dir=tmp_path, timeout=5
+    )
+    assert echoed.exit_code != 126
+    assert launch_block_reason("pic -U doc.pic", tmp_path) is None
+    assert launch_block_reason("printf 'sh X sudo reboot X\\n' | pic -U -S", tmp_path) is None
+
+    if shutil.which("groff"):
+        proved = _run(
+            ["sh", "-c", "printf '.PS\\nsh X touch ran X\\n.PE\\n' | groff -U -p -Tascii >/dev/null"],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("groff -U -p -Tascii <<'EOF'\n.PS\nsh X chmod 777 / X\n.PE\nEOF", tmp_path)
+    named = tmp_path / "doc.roff"
+    named.write_text(".PS\nsh X sudo reboot X\n.PE\n", encoding="utf-8")
+    assert launch_block_reason(f"groff -U -p -Tascii {named}", tmp_path) is None
+    assert launch_block_reason(
+        "groff -U -Tascii <<'EOF'\n.PS\nsh X sudo reboot X\n.PE\nEOF", tmp_path
+    ) is None
+
+
+def test_sftp_tar_rsh_zip_and_gcc_wrapper(tmp_path: Path) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/sh\ntouch ran\nexit 1\n", encoding="utf-8")
+    script.chmod(0o755)
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    if shutil.which("sftp"):
+        proved = _run(
+            ["sftp", "-S", str(script), "-o", "BatchMode=yes", "127.0.0.1"],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+        proved = _run(["sftp", "-D", str(script)], tmp_path)
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("sftp -S sudo 127.0.0.1", tmp_path)
+    _blocked("sftp -D sudo", tmp_path)
+    assert launch_block_reason("sftp -S /usr/bin/ssh 127.0.0.1", tmp_path) is None
+
+    if shutil.which("tar"):
+        proved = _run(
+            ["tar", f"--rsh-command={script}", "-cf", "localhost:out.tar", "a.txt"],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("tar --rsh-command=sudo -cf host:a.tar a.txt", tmp_path)
+    assert launch_block_reason("tar --rsh-command=ssh -cf host:a.tar a.txt", tmp_path) is None
+    assert launch_block_reason(
+        "tar --rsh-command=sudo --force-local -cf host:a.tar a.txt", tmp_path
+    ) is None
+    assert launch_block_reason("tar --rsh-command=sudo -cf local.tar a.txt", tmp_path) is None
+
+    if shutil.which("zip"):
+        proved = _run(["zip", "-T", "-TT", "touch ran", "out.zip", "a.txt"], tmp_path)
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("zip -T -TT 'sudo reboot' out.zip a.txt", tmp_path)
+    _blocked("zip -T -TT 'rm -rf /' out.zip a.txt", tmp_path)
+    assert launch_block_reason("zip -TT 'sudo reboot' out.zip a.txt", tmp_path) is None
+    assert launch_block_reason("zip -T -TT 'unzip -tqq' out.zip a.txt", tmp_path) is None
+
+    if shutil.which("gcc"):
+        wrap = tmp_path / "wrap.sh"
+        wrap.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+        wrap.chmod(0o755)
+        (tmp_path / "t.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+        proved = _run(["gcc", "-wrapper", str(wrap), "-c", "t.c"], tmp_path)
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("gcc -wrapper sudo,reboot -c t.c", tmp_path)
+    _blocked("g++ -wrapper chmod,777,/ -c t.cpp", tmp_path)
+    assert launch_block_reason("gcc -wrapper echo -c t.c", tmp_path) is None
+
+
+def test_sg_and_start_stop_daemon(tmp_path: Path) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("sg"):
+        group = _run(["id", "-gn"], tmp_path).stdout.strip()
+        proved = _run(["sg", group, "-c", "touch ran"], tmp_path)
+        assert marker.exists(), proved.stderr + proved.stdout
+        marker.unlink()
+    _blocked("sg users -c 'sudo reboot'", tmp_path)
+    _blocked("sg users -c 'chmod 777 /'", tmp_path)
+    assert launch_block_reason("sg users -c 'pytest -q'", tmp_path) is None
+    assert launch_block_reason("sg users rm -rf /", tmp_path) is None
+
+    if shutil.which("start-stop-daemon"):
+        proved = _run(
+            [
+                "start-stop-daemon", "--start", "--oknodo",
+                "--exec", "/usr/bin/touch", "--", str(marker),
+            ],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("start-stop-daemon --start --exec sudo -- reboot", tmp_path)
+    _blocked("start-stop-daemon --start --exec rm -- -rf /", tmp_path)
+    assert launch_block_reason(
+        "start-stop-daemon --stop --exec sudo -- reboot", tmp_path
+    ) is None
+    assert launch_block_reason(
+        "start-stop-daemon --test --exec sudo -- reboot", tmp_path
+    ) is None
+
+
+def test_perl_debugger_and_python_startup(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+
+    marker = tmp_path / "ran"
+    if shutil.which("perl"):
+        proved = _run(
+            ["perl", "-d", "-e", "1"],
+            tmp_path,
+            env={"PERL5DB": 'system("touch ran");'},
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked('PERL5DB=\'system("sudo reboot");\' perl -d -e 1', tmp_path)
+    _blocked('PERL5OPT=-d PERL5DB=\'system("chmod 777 /");\' perl -e 1', tmp_path)
+    assert launch_block_reason("perl -d -e 1", tmp_path) is None
+    assert launch_block_reason('PERL5DB=\'system("sudo reboot");\' perl -e 1', tmp_path) is None
+    monkeypatch.setenv("PERL5DB", 'system("rm -rf /");')
+    reason = launch_block_reason("perl -d -e 1", tmp_path)
+    assert reason is not None and "PERL5DB" in reason
+    monkeypatch.delenv("PERL5DB", raising=False)
+    assert launch_block_reason("perl -d -e 1", tmp_path) is None
+
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text("open('ran','w').close()\n", encoding="utf-8")
+    proved = _run(
+        ["python3", "-c", "print(1)"],
+        tmp_path,
+        env={"PYTHONPATH": str(site), "PYTHONSAFEPATH": "1"},
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    skipped = _run(
+        ["python3", "-S", "-c", "print(1)"],
+        tmp_path,
+        env={"PYTHONPATH": str(site)},
+    )
+    assert not marker.exists(), skipped.stderr
+    (site / "sitecustomize.py").write_text(
+        'import os\nos.system("sudo reboot")\n', encoding="utf-8"
+    )
+    _blocked(f"PYTHONPATH={site} python3 -c 'print(1)'", tmp_path)
+    assert launch_block_reason(f"PYTHONPATH={site} python3 -S -c 'print(1)'", tmp_path) is None
+    assert launch_block_reason(f"PYTHONPATH={site} python3 -E -c 'print(1)'", tmp_path) is None
+    assert launch_block_reason(f"PYTHONPATH={site} python3 -I -c 'print(1)'", tmp_path) is None
+
+    (site / "sitecustomize.py").write_text("print('hi')\n", encoding="utf-8")
+    (site / "usercustomize.py").write_text("open('ran','w').close()\n", encoding="utf-8")
+    proved = _run(["python3", "-c", "print(1)"], tmp_path, env={"PYTHONPATH": str(site)})
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    skipped = _run(["python3", "-s", "-c", "print(1)"], tmp_path, env={"PYTHONPATH": str(site)})
+    assert not marker.exists(), skipped.stderr
+    (site / "usercustomize.py").write_text(
+        'import os\nos.system("rm -rf /")\n', encoding="utf-8"
+    )
+    _blocked(f"PYTHONPATH={site} python3 -c 'print(1)'", tmp_path)
+    assert launch_block_reason(f"PYTHONPATH={site} python3 -s -c 'print(1)'", tmp_path) is None
+    monkeypatch.setenv("PYTHONPATH", "/tmp/outside-pythonpath")
+    assert launch_block_reason("python3 -c 'print(1)'", tmp_path) is None
+    assert launch_block_reason("cd /tmp && python3 -c 'print(1)'", tmp_path) is None
+
+
+def test_make_stdin_and_ctest_add_test(tmp_path: Path) -> None:
+    import shutil
+
+    from tiancode.core.recipe_guard import recipe_block_reason
+
+    marker = tmp_path / "ran"
+    if shutil.which("make"):
+        proved = _run(
+            ["sh", "-c", "printf 'all:\\n\\ttouch ran\\n' | make -f /dev/stdin"],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+        proved = _run(
+            ["sh", "-c", "printf 'all:\\n\\ttouch ran\\n' | make -f /dev/fd/0"],
+            tmp_path,
+        )
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    _blocked("printf 'all:\\n\\ttouch ran\\n' | make -f /dev/stdin", tmp_path)
+    _blocked("printf 'all:\\n\\tsudo reboot\\n' | make -f /dev/fd/0", tmp_path)
+    _blocked("make --file=/proc/self/fd/0", tmp_path)
+    (tmp_path / "Makefile").write_text("all:\n\ttrue\n", encoding="utf-8")
+    assert recipe_block_reason("make -f Makefile", tmp_path) is None
+
+    listing = "add_test([=[t]=] [=[/usr/bin/touch]=] [=[ran]=])\n"
+    (tmp_path / "CTestTestfile.cmake").write_text(listing, encoding="utf-8")
+    if shutil.which("ctest"):
+        proved = _run(["ctest", "--output-on-failure"], tmp_path)
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    (tmp_path / "CTestTestfile.cmake").write_text("add_test(t sudo reboot)\n", encoding="utf-8")
+    reason = launch_block_reason("ctest", tmp_path)
+    assert reason is not None and "CTest" in reason
+    assert launch_block_reason("ctest -N", tmp_path) is None
+    (tmp_path / "CTestTestfile.cmake").write_text("add_test(t /bin/true)\n", encoding="utf-8")
+    assert launch_block_reason("ctest", tmp_path) is None
+    assert launch_block_reason("cd /tmp && ctest", tmp_path) is not None
+
+    child = tmp_path / "child"
+    child.mkdir()
+    (child / "CTestTestfile.cmake").write_text(
+        f"add_test(t /usr/bin/touch {marker})\n", encoding="utf-8"
+    )
+    (tmp_path / "CTestTestfile.cmake").write_text("subdirs(child)\n", encoding="utf-8")
+    if shutil.which("ctest"):
+        proved = _run(["ctest", "--output-on-failure"], tmp_path)
+        assert marker.exists(), proved.stderr
+        marker.unlink()
+    (child / "CTestTestfile.cmake").write_text(
+        "add_test(t chmod 777 /)\n", encoding="utf-8"
+    )
+    assert launch_block_reason("ctest", tmp_path) is not None
+
+
+def test_git_editors_rebase_bisect_difftool_and_signing(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = repo / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    editor = repo / "ed.sh"
+    editor.write_text(
+        "#!/bin/sh\ntouch ran\nif [ -n \"$1\" ]; then printf 'm\\n' > \"$1\"; fi\nexit 0\n",
+        encoding="utf-8",
+    )
+    editor.chmod(0o755)
+    sequence = repo / "seq.sh"
+    sequence.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+    sequence.chmod(0o755)
+
+    proved = _git(repo, ["commit"], GIT_EDITOR=str(editor))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("GIT_EDITOR='sudo reboot' git commit", repo)
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git commit -m m", repo) is None
+    assert launch_block_reason("export GIT_EDITOR='rm -rf /'; git commit", repo) is not None
+    assert launch_block_reason("VISUAL='sudo reboot' git commit", repo) is None
+
+    proved = _git(repo, ["tag", "-a", "v1"], GIT_EDITOR=str(editor))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("GIT_EDITOR='chmod 777 /' git tag -a v2", repo)
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git tag -a v2 -m m", repo) is None
+
+    proved = _git(repo, ["notes", "add"], GIT_EDITOR=str(editor))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("EDITOR='sudo reboot' git notes add", repo)
+    assert launch_block_reason("GIT_EDITOR='sudo reboot' git notes add -m hi", repo) is None
+
+    assert _git(repo, ["commit", "--allow-empty", "-m", "second"], GIT_EDITOR="true").returncode == 0
+    proved = _git(repo, ["rebase", "-i", "HEAD~1"], GIT_SEQUENCE_EDITOR=str(sequence))
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["rebase", "--abort"])
+    _blocked("GIT_SEQUENCE_EDITOR='sudo reboot' git rebase -i HEAD", repo)
+    assert launch_block_reason("git rebase --exec 'pytest -q' HEAD~1", repo) is None
+    proved = _git(repo, ["rebase", "--exec", "touch ran", "HEAD~1"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("git rebase --exec 'sudo reboot' HEAD~1", repo)
+    _blocked("git rebase -x 'rm -rf /' HEAD~1", repo)
+
+    started = _git(repo, ["bisect", "start", "HEAD", "HEAD~1"])
+    assert started.returncode == 0, started.stderr
+    proved = _git(repo, ["bisect", "run", "touch", "ran"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["bisect", "reset"])
+    _blocked("git bisect run sudo reboot", repo)
+    assert launch_block_reason("git bisect run pytest -q", repo) is None
+
+    (repo / "a.txt").write_text("b\n", encoding="utf-8")
+    proved = _git(repo, ["difftool", "-y", "--extcmd", "touch ran"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("git difftool -y -x 'chmod 777 /'", repo)
+    assert launch_block_reason("git difftool -x 'sudo reboot'", repo) is None
+    proved = _git(
+        repo,
+        ["-c", "difftool.prompt=false", "difftool", "-x", "touch ran"],
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("git -c difftool.prompt=false difftool -x 'sudo reboot'", repo)
+
+    signer = repo / "gpg.sh"
+    signer.write_text("#!/bin/sh\ntouch ran\nexit 0\n", encoding="utf-8")
+    signer.chmod(0o755)
+    proved = _git(
+        repo,
+        ["-c", f"gpg.program={signer}", "commit", "-S", "--allow-empty", "-m", "signed"],
+    )
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("git -c gpg.program=sudo commit -S -m m", repo)
+    assert launch_block_reason("git -c gpg.program=sudo commit -m m", repo) is None
+    assert launch_block_reason(
+        "git -c gpg.program=sudo commit -S --no-gpg-sign -m m", repo
+    ) is None
+    assert launch_block_reason(
+        "git -c gpg.format=ssh -c gpg.program=sudo commit -S -m m", repo
+    ) is None
+    proved = _git(repo, ["-c", f"gpg.program={signer}", "tag", "-s", "-m", "t", "vsigned"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _blocked("git -c gpg.program='rm -rf /' tag -s -m m v3", repo)
+
+
+def test_git_attribute_drivers(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = repo / "ran"
+    assert _git(repo, ["init"]).returncode == 0
+    script = repo / "filt.sh"
+    script.write_text("#!/bin/sh\ntouch ran\ncat\n", encoding="utf-8")
+    script.chmod(0o755)
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "m"], GIT_EDITOR="true").returncode == 0
+
+    assert _git(repo, ["config", "filter.mine.clean", str(script)]).returncode == 0
+    (repo / "a.txt").write_text("b\n", encoding="utf-8")
+    without = _git(repo, ["add", "a.txt"])
+    assert not marker.exists(), without.stderr
+    assert launch_block_reason("git add a.txt", repo) is None
+    (repo / ".gitattributes").write_text("* filter=mine\n", encoding="utf-8")
+    proved = _git(repo, ["add", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / "a.txt").write_text("c\n", encoding="utf-8")
+    proved = _git(repo, ["status"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "filter.mine.clean", "sudo reboot"])
+    reason = launch_block_reason("git add a.txt", repo)
+    assert reason is not None and "属性" in reason
+    (repo / ".gitattributes").unlink()
+    assert launch_block_reason("git status", repo) is None
+
+    (repo / ".gitattributes").write_text("* filter=mine\n", encoding="utf-8")
+    assert _git(repo, ["config", "filter.mine.clean", "cat"]).returncode == 0
+    assert _git(repo, ["config", "filter.mine.smudge", str(script)]).returncode == 0
+    assert _git(repo, ["add", "a.txt"]).returncode == 0
+    assert _git(repo, ["commit", "-m", "filt"], GIT_EDITOR="true").returncode == 0
+    (repo / "a.txt").unlink()
+    proved = _git(repo, ["checkout", "--", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    (repo / "a.txt").unlink()
+    proved = _git(repo, ["restore", "--", "a.txt"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "filter.mine.smudge", "sudo reboot"])
+    assert launch_block_reason("git checkout -- a.txt", repo) is not None
+    assert launch_block_reason("git restore -- a.txt", repo) is not None
+
+    (repo / ".gitattributes").write_text("* diff=mine\n", encoding="utf-8")
+    assert _git(repo, ["config", "diff.mine.textconv", str(script)]).returncode == 0
+    (repo / "a.txt").write_text("changed\n", encoding="utf-8")
+    proved = _git(repo, ["diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "diff.mine.textconv", "sudo reboot"])
+    assert launch_block_reason("git diff", repo) is not None
+    assert launch_block_reason("git log", repo) is None
+    assert launch_block_reason("git log -p", repo) is not None
+    (repo / ".gitattributes").unlink()
+    assert launch_block_reason("git diff", repo) is None
+
+    (repo / ".gitattributes").write_text("* diff=mine\n", encoding="utf-8")
+    assert _git(repo, ["config", "--unset", "diff.mine.textconv"]).returncode == 0
+    assert _git(repo, ["config", "diff.mine.command", str(script)]).returncode == 0
+    proved = _git(repo, ["diff"])
+    assert marker.exists(), proved.stderr
+    marker.unlink()
+    _git(repo, ["config", "diff.mine.command", "chmod 777 /"])
+    assert launch_block_reason("git diff", repo) is not None
+    assert launch_block_reason("git status", repo) is None

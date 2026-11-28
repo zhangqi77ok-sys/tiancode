@@ -3,9 +3,10 @@
 `git status` and `cmake -E echo` stay allowed. The checks below read the
 file the tool would execute: a git config or hook, a `//go:generate` line,
 a CMake `execute_process`, a Cargo `rustc-wrapper` or `runner`, a
-`PERL5OPT` module under a relative `-I`, and an ssh config `Match exec` or
-`ProxyCommand`. A symlink is not followed. This is not a language parser,
-and it does not start the tool to ask it.
+`PERL5OPT` module under a relative `-I`, a `PERL5DB` string, a Python
+`sitecustomize` on `PYTHONPATH`, a `CTestTestfile.cmake` `add_test`, and an
+ssh config `Match exec` or `ProxyCommand`. A symlink is not followed. This
+is not a language parser, and it does not start the tool to ask it.
 """
 
 from __future__ import annotations
@@ -48,7 +49,11 @@ _CARGO_VALUES = frozenset({
     "--lockfile-path", "--ignore-rust-version", "--timings", "--explain",
 })
 _GO_VALUES = frozenset({"-C", "-modfile", "-overlay", "-run"})
-_INSPECTED = frozenset({"git", "go", "cmake", "cargo", "perl"})
+_INSPECTED = frozenset({"git", "go", "cmake", "cargo", "perl", "ctest"})
+_EXPORTED_ENV = frozenset({
+    "GIT_EXTERNAL_DIFF", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR",
+    "PERL5DB", "PERL5OPT", "PYTHONPATH",
+})
 _HOOKS = {
     "commit": ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"),
     "merge": ("pre-merge-commit", "commit-msg", "post-merge"),
@@ -84,9 +89,9 @@ def launch_block_reason(command: str, work_dir: Path) -> Optional[str]:
     root = work_dir.resolve()
     cwd: Optional[Path] = root
     parent = get_sanitized_env()
-    # `export GIT_EXTERNAL_DIFF=...; git diff` is one shell. The export is not
-    # a prefix of the git segment, but git still inherits it.
-    exported_diff: Optional[str] = None
+    # `export GIT_EDITOR=...; git commit` is one shell. The export is not a
+    # prefix of the git segment, but the child still inherits it.
+    exported: Dict[str, str] = {}
     for segment in _quote_aware_segments(command):
         peeled = _peel_prefixes(_split_words(segment.strip()))
         if peeled is None:
@@ -108,12 +113,11 @@ def launch_block_reason(command: str, work_dir: Path) -> Optional[str]:
         if program == "export":
             for word in plain[1:]:
                 name, sep, value = word.partition("=")
-                if sep and name == "GIT_EXTERNAL_DIFF":
-                    exported_diff = value.strip("'\"")
+                if sep and name in _EXPORTED_ENV:
+                    exported[name] = value.strip("'\"")
             continue
         parent_here = dict(parent)
-        if exported_diff is not None:
-            parent_here["GIT_EXTERNAL_DIFF"] = exported_diff
+        parent_here.update(exported)
         if cwd is None and program in {"ssh", "scp", "sftp"}:
             reason = _ssh_reason(plain, root, root)
             if reason:
@@ -147,6 +151,10 @@ def _reason_for(
         return _cargo_reason(words, cwd, root)
     if program == "perl":
         return _perl_reason(words, assignments, cwd, root, parent)
+    if program in {"python", "python2", "python3"} or program.startswith("python3."):
+        return _python_reason(words, assignments, cwd, root, parent)
+    if program == "ctest":
+        return _ctest_reason(words, cwd, root)
     if program in {"ssh", "scp", "sftp"}:
         return _ssh_reason(words, cwd, root)
     return None
@@ -175,7 +183,129 @@ def _git_reason(
     ):
         if is_dangerous_command(extra):
             return "git 的配置会执行高危命令，已拒绝执行"
+    attribute = _git_attribute_reason(words, assignments, loaded, parent, cwd, root)
+    if attribute:
+        return attribute
     return _hook_reason(words, cwd, root, loaded, assignments, parent)
+
+
+_ATTR_DRIVER = re.compile(r"(?:^|\s)(filter|diff)=([A-Za-z0-9_.-]+)")
+_MAX_ATTR_FILES = 32
+
+
+def _git_attribute_reason(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    file_config: Dict[str, str],
+    parent: Dict[str, str],
+    cwd: Path,
+    root: Path,
+) -> Optional[str]:
+    """Block a clean, smudge, or textconv command when an attribute selects it.
+
+    Without a matching attribute the command does not run, which was proved
+    for `filter.clean`. `git status` does run `clean`. `checkout` and
+    `restore` run `smudge`. `diff`, `show`, and `log -p` run `textconv`.
+    `diff.<name>.command` runs for `git diff`.
+    """
+    from tiancode.tools.execution import is_dangerous_command
+    from tiancode.tools.hidden_exec import _git_args, _git_subcommand, effective_git_config
+
+    config = effective_git_config(words, assignments, file_config, parent)
+    sub = _git_subcommand(words)
+    if not sub:
+        return None
+    wanted: List[Tuple[str, str, str]] = []
+    clean = sub in {"add", "status", "commit"}
+    smudge = sub in {"checkout", "restore"}
+    show_patch = sub in {"diff", "show"} or (sub == "log" and _log_shows_patch(_git_args(words)))
+    external = sub == "diff"
+    for key, value in config.items():
+        text = value.strip()
+        if not text or not is_dangerous_command(text):
+            continue
+        if clean and key.startswith("filter.") and key.endswith(".clean"):
+            name = key[len("filter.") : -len(".clean")]
+            if name:
+                wanted.append(("filter", name, text))
+        elif smudge and key.startswith("filter.") and key.endswith(".smudge"):
+            name = key[len("filter.") : -len(".smudge")]
+            if name:
+                wanted.append(("filter", name, text))
+        elif show_patch and key.startswith("diff.") and key.endswith(".textconv"):
+            name = key[len("diff.") : -len(".textconv")]
+            if name:
+                wanted.append(("diff", name, text))
+        elif external and key.startswith("diff.") and key.endswith(".command"):
+            name = key[len("diff.") : -len(".command")]
+            if name and name != "external":
+                wanted.append(("diff", name, text))
+    if not wanted:
+        return None
+    paths, error = _attribute_files(cwd, root)
+    if error:
+        return error
+    selected = _attribute_drivers(paths)
+    if isinstance(selected, str):
+        return selected
+    for kind, name, _text in wanted:
+        if (kind, name) in selected:
+            return "git 的属性过滤器会执行高危命令，已拒绝执行"
+    return None
+
+
+def _log_shows_patch(args: Sequence[str]) -> bool:
+    for word in args:
+        if word == "--":
+            return False
+        name = word.split("=", 1)[0]
+        if name in {"-p", "--patch", "-u"}:
+            return True
+        if word.startswith("-") and not word.startswith("--") and "p" in word[1:]:
+            return True
+    return False
+
+
+def _attribute_files(cwd: Path, root: Path) -> Tuple[List[Path], Optional[str]]:
+    git_dir, dir_error = _git_dir(cwd)
+    if dir_error:
+        return [], dir_error
+    found: List[Path] = []
+    if git_dir is not None:
+        info = git_dir / "info" / "attributes"
+        if info.exists() or info.is_symlink():
+            found.append(info)
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(cwd):
+        dirnames[:] = [name for name in dirnames if name != ".git"]
+        if ".gitattributes" not in filenames:
+            continue
+        found.append(Path(dirpath) / ".gitattributes")
+        seen += 1
+        if seen > _MAX_ATTR_FILES:
+            return [], "git 属性文件过多，无法确认过滤器，已拒绝执行"
+        if not _within(root, Path(dirpath)):
+            return [], "git 属性文件越出工作区，已拒绝执行"
+    return found, None
+
+
+def _attribute_drivers(paths: Sequence[Path]) -> set | str:
+    selected: set = set()
+    for path in paths:
+        text, error = _read_trusted(path)
+        if error == "link":
+            return "git 属性文件是符号链接，已拒绝执行"
+        if error:
+            return "git 属性文件无法作为普通文件读取，已拒绝执行"
+        if text is None:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for match in _ATTR_DRIVER.finditer(stripped):
+                selected.add((match.group(1), match.group(2)))
+    return selected
 
 
 def _git_file_config(cwd: Path) -> Tuple[Dict[str, str], List[str], Optional[str]]:
@@ -809,6 +939,9 @@ def _perl_reason(
 ) -> Optional[str]:
     if any(word in {"-h", "--help"} for word in words[1:]):
         return None
+    debug = _perl_debug_reason(words, assignments, parent)
+    if debug:
+        return debug
     env = dict(parent)
     for word in assignments:
         name, sep, value = word.partition("=")
@@ -850,6 +983,265 @@ def _perl_reason(
                 return reason
             break
     return None
+
+
+def _perl_debug_reason(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    parent: Dict[str, str],
+) -> Optional[str]:
+    """`PERL5DB` from the command or the parent, when perl will enter the debugger.
+
+    The command text is also scanned directly. This covers a parent value the
+    command itself does not repeat.
+    """
+    from tiancode.tools.command_scan import executed_literals
+    from tiancode.tools.execution import is_dangerous_command
+    from tiancode.tools.hidden_exec import _assignment_pairs, _perl_debug_enabled
+
+    merged = list(assignments)
+    if "PERL5OPT" not in {name for name, _value in _assignment_pairs(assignments)}:
+        option = parent.get("PERL5OPT", "")
+        if option:
+            merged.append(f"PERL5OPT={option}")
+    if not _perl_debug_enabled(words, merged):
+        return None
+    payload = None
+    for name, value in _assignment_pairs(assignments):
+        if name == "PERL5DB":
+            payload = value
+    if payload is None:
+        payload = parent.get("PERL5DB", "")
+    if not payload.strip():
+        return None
+    for piece in executed_literals("perl", payload):
+        if piece.strip() and is_dangerous_command(piece):
+            return "PERL5DB 会执行高危命令，已拒绝执行"
+    return None
+
+
+def _python_reason(
+    words: Sequence[str],
+    assignments: Sequence[str],
+    cwd: Path,
+    root: Path,
+    parent: Dict[str, str],
+) -> Optional[str]:
+    """`sitecustomize.py` and `usercustomize.py` on a workspace `PYTHONPATH`.
+
+    `python3 -S`, `-I`, and `-E` do not import them. `-s` skips only
+    `usercustomize`. A directory outside the workspace is left alone.
+    """
+    letters = _python_letters(words)
+    if letters & set("SEI"):
+        return None
+    entries = _pythonpath_entries(assignments, parent)
+    for raw in entries:
+        if not raw or raw in {".", ""}:
+            continue
+        directory = _resolve(cwd, raw)
+        if not _within(root, directory):
+            continue
+        reason = _python_startup_file(directory / "sitecustomize.py", "sitecustomize.py")
+        if reason:
+            return reason
+        if "s" not in letters:
+            reason = _python_startup_file(directory / "usercustomize.py", "usercustomize.py")
+            if reason:
+                return reason
+    return None
+
+
+def _python_letters(words: Sequence[str]) -> set:
+    found: set = set()
+    for word in words[1:]:
+        if word == "--" or word in {"-h", "--help", "-V", "--version"}:
+            break
+        if word.startswith("--"):
+            continue
+        if not word.startswith("-"):
+            break
+        cluster = word[1:]
+        index = 0
+        while index < len(cluster):
+            char = cluster[index]
+            found.add(char)
+            if char in {"c", "m"}:
+                return found
+            if char in {"W", "X", "Q"}:
+                break
+            index += 1
+    return found
+
+
+def _pythonpath_entries(assignments: Sequence[str], parent: Dict[str, str]) -> List[str]:
+    raw = None
+    for word in assignments:
+        name, sep, value = word.partition("=")
+        if sep and name == "PYTHONPATH":
+            raw = value.strip("'\"")
+    if raw is None:
+        raw = parent.get("PYTHONPATH", "")
+    if not raw:
+        return []
+    return [part for part in raw.split(os.pathsep) if part]
+
+
+def _python_startup_file(path: Path, label: str) -> Optional[str]:
+    from tiancode.tools.command_scan import executed_literals
+    from tiancode.tools.execution import is_dangerous_command
+
+    if not path.exists() and not path.is_symlink():
+        return None
+    text, error = _read_trusted(path)
+    if error == "link":
+        return f"Python 的 {label} 是符号链接，已拒绝执行"
+    if error or text is None:
+        return f"Python 的 {label} 无法作为普通文件读取，已拒绝执行"
+    if is_dangerous_command(text):
+        return f"Python 的 {label} 含高危命令，已拒绝执行"
+    for piece in executed_literals("python", text):
+        if piece.strip() and is_dangerous_command(piece):
+            return f"Python 的 {label} 含高危命令，已拒绝执行"
+    return None
+
+
+def _ctest_reason(words: Sequence[str], cwd: Path, root: Path) -> Optional[str]:
+    """Commands in `CTestTestfile.cmake`. `-N` lists tests and does not run them.
+
+    ctest on this machine runs the second `add_test` argument as the program,
+    including a cmake bracket argument. `add_test(NAME t COMMAND touch)`
+    therefore tries to execute `t`, not `touch`. `subdirs()` pulls in another
+    file inside the workspace.
+    """
+    from tiancode.tools.execution import is_dangerous_command
+
+    skipped = {"-N", "--show-only", "--help", "-help", "--version", "-version"}
+    if any(word.split("=", 1)[0] in skipped for word in words[1:]):
+        return None
+    pending = [cwd / "CTestTestfile.cmake"]
+    seen: set = set()
+    while pending and len(seen) < 16:
+        path = pending.pop()
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.exists() and not path.is_symlink():
+            continue
+        if not _within(root, path):
+            return "CTest 脚本越出工作区，已拒绝执行"
+        text, error = _read_trusted(path)
+        if error == "link":
+            return "CTest 脚本是符号链接，已拒绝执行"
+        if error or text is None:
+            return "CTest 脚本无法作为普通文件读取，已拒绝执行"
+        commands, nested = _ctest_entries(text)
+        for argv in commands:
+            rendered = " ".join(argv)
+            if rendered.strip() and is_dangerous_command(rendered):
+                return "CTest add_test 含高危命令，已拒绝执行"
+        for raw in nested:
+            child = _resolve(path.parent, raw) / "CTestTestfile.cmake"
+            pending.append(child)
+    return None
+
+
+def _ctest_entries(text: str) -> Tuple[List[List[str]], List[str]]:
+    cleaned = _strip_cmake_comments(text)
+    commands: List[List[str]] = []
+    nested: List[str] = []
+    for kind, body in _cmake_calls(cleaned, ("add_test", "subdirs")):
+        args = _cmake_call_args(body)
+        if kind == "subdirs":
+            nested.extend(arg for arg in args if arg)
+            continue
+        if len(args) >= 2:
+            commands.append(args[1:])
+    return commands, nested
+
+
+def _cmake_calls(text: str, names: Sequence[str]) -> List[Tuple[str, str]]:
+    found: List[Tuple[str, str]] = []
+    lowered = {name.lower(): name.lower() for name in names}
+    index = 0
+    while index < len(text):
+        if not text[index].isalpha() and text[index] != "_":
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+            end += 1
+        name = text[index:end].lower()
+        cursor = end
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if name in lowered and cursor < len(text) and text[cursor] == "(":
+            body = _balanced(text, cursor + 1)
+            if body is None:
+                break
+            found.append((name, body))
+            index = cursor + 1 + len(body) + 1
+            continue
+        index = end
+    return found
+
+
+def _cmake_call_args(body: str) -> List[str]:
+    args: List[str] = []
+    index = 0
+    limit = len(body)
+    while index < limit:
+        if body[index].isspace():
+            index += 1
+            continue
+        if body[index] == "[":
+            parsed = _cmake_bracket_arg(body, index)
+            if parsed is None:
+                index += 1
+                continue
+            text, index = parsed
+            args.append(text)
+            continue
+        if body[index] == '"':
+            end = index + 1
+            buf: List[str] = []
+            while end < limit:
+                if body[end] == "\\" and end + 1 < limit:
+                    buf.append(body[end + 1])
+                    end += 2
+                    continue
+                if body[end] == '"':
+                    break
+                buf.append(body[end])
+                end += 1
+            args.append("".join(buf))
+            index = end + 1
+            continue
+        start = index
+        while index < limit and not body[index].isspace() and body[index] not in "()":
+            index += 1
+        args.append(body[start:index])
+    return args
+
+
+def _cmake_bracket_arg(text: str, index: int) -> Optional[Tuple[str, int]]:
+    """`(contents, next index)` for a cmake `[=[ ... ]=]` argument."""
+    if index >= len(text) or text[index] != "[":
+        return None
+    cursor = index + 1
+    equals = 0
+    while cursor < len(text) and text[cursor] == "=":
+        equals += 1
+        cursor += 1
+    if cursor >= len(text) or text[cursor] != "[":
+        return None
+    cursor += 1
+    close = "]" + ("=" * equals) + "]"
+    end = text.find(close, cursor)
+    if end < 0:
+        return None
+    return text[cursor:end], end + len(close)
 
 
 def _perl5opt_parts(value: str) -> Tuple[List[str], List[str]]:

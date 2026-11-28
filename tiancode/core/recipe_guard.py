@@ -8,7 +8,9 @@ default goal. `MAKEFLAGS` and `GNUMAKEFLAGS` are extra arguments, so
 `--eval=$(shell ...)` in either one runs while make starts. A command-line
 `:=`, `::=`, or `!=` assignment runs then too, and so does `make -E`. A
 symlink or hard link is not opened. A `-C`, `-f`, `--justfile`, or `-c`
-path that leaves the workspace is refused.
+path that leaves the workspace is refused. A makefile read from `-`,
+`/dev/stdin`, `/dev/fd/N`, or `/proc/self/fd/N` is refused: those are this
+process, not a file in the workspace.
 
 The check is a bounded reader, not a full make implementation. It does expand
 `$(call)`, `$(foreach)`, and `$(eval)` far enough to see a recipe those
@@ -762,6 +764,18 @@ class _MakeInvoke:
     overrides: Dict[str, str]
 
 
+_STDIN_MAKEFILE = re.compile(r"^(?:-|/dev/stdin|/dev/fd/\d+|/proc/self/fd/\d+)$")
+
+
+def _makefile_from_stdin(path: str) -> bool:
+    """True when make will read the makefile from this process, not from a workspace file.
+
+    `make -f -` was already refused. `make -f /dev/stdin` and `make -f /dev/fd/0`
+    run the same way, which was proved with a recipe that created a marker.
+    """
+    return _STDIN_MAKEFILE.fullmatch(path) is not None
+
+
 def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
     directory = cwd
     files: List[str] = []
@@ -802,7 +816,7 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
                     return None, "make 的 -C 或 -f 越出工作区，已拒绝执行"
                 directory = dest
             elif name in {"--file", "--makefile"}:
-                if arg == "-":
+                if _makefile_from_stdin(arg):
                     return None, "Makefile 来自标准输入，已拒绝执行"
                 files.append(arg)
             elif name == "--eval":
@@ -829,7 +843,7 @@ def _parse_make_argv(words: Sequence[str], cwd: Path, root: Path) -> tuple:
                             return None, "make 的 -C 或 -f 越出工作区，已拒绝执行"
                         directory = dest
                     elif flag == "f":
-                        if arg == "-":
+                        if _makefile_from_stdin(arg):
                             return None, "Makefile 来自标准输入，已拒绝执行"
                         files.append(arg)
                     elif flag == "E":
@@ -1466,6 +1480,7 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
         _expand_dollars,
         _literal_assignment,
         _peel_prefixes,
+        _pipe_parts,
         _quote_aware_segments,
         _split_words,
         _unquote_shell_word,
@@ -1481,68 +1496,74 @@ def recipe_block_reason(command: str, work_dir: Path) -> Optional[str]:
     values: Dict[str, str] = {}
     exported: set = set()
     for segment in _quote_aware_segments(text):
-        words = [_unquote_shell_word(word) for word in _split_words(segment)]
-        peeled = _peel_prefixes(words)
-        if peeled is None:
-            continue
-        assignments, command_words = peeled
-        local = {key: values[key] for key in exported}
-        assigned: set = set()
-        for word in assignments:
-            parsed = _make_env_assignment(word, _literal_assignment)
-            if parsed is None:
+        # `printf 'recipe' | make -f /dev/stdin` is one segment. make is the
+        # program after the pipe, and it still reads the recipe.
+        for part in _pipe_parts(segment):
+            if not part.strip():
                 continue
-            name, value = parsed
-            local[name] = value
-            assigned.add(name)
-        command_words = [_expand_dollars(word, {**values, **local}) for word in command_words]
-        if not command_words:
-            values.update(local)
-            exported.update(assigned)
-            continue
-        program = _basename(command_words[0])
-        if program == "export":
-            for word in command_words[1:]:
+            words = [_unquote_shell_word(word) for word in _split_words(part)]
+            peeled = _peel_prefixes(words)
+            if peeled is None:
+                continue
+            assignments, command_words = peeled
+            local = {key: values[key] for key in exported}
+            assigned: set = set()
+            for word in assignments:
                 parsed = _make_env_assignment(word, _literal_assignment)
                 if parsed is None:
                     continue
                 name, value = parsed
-                values[name] = value
-                exported.add(name)
-            continue
-        if program == "cd":
-            target = command_words[1] if len(command_words) > 1 else ""
-            nxt = _directory_inside(cwd, target, root)
-            cwd = nxt or cwd
-            if nxt is None:
-                return "配方命令在越出工作区的目录中运行，已拒绝执行"
-            continue
-        def _taken(name: str) -> str:
-            if name in assigned or name in exported:
-                return local.get(name, "")
-            return parent.get(name, "")
+                local[name] = value
+                assigned.add(name)
+            command_words = [_expand_dollars(word, {**values, **local}) for word in command_words]
+            if not command_words:
+                values.update(local)
+                exported.update(assigned)
+                continue
+            program = _basename(command_words[0])
+            if program == "export":
+                for word in command_words[1:]:
+                    parsed = _make_env_assignment(word, _literal_assignment)
+                    if parsed is None:
+                        continue
+                    name, value = parsed
+                    values[name] = value
+                    exported.add(name)
+                continue
+            if program == "cd":
+                target = command_words[1] if len(command_words) > 1 else ""
+                nxt = _directory_inside(cwd, target, root)
+                cwd = nxt or cwd
+                if nxt is None:
+                    return "配方命令在越出工作区的目录中运行，已拒绝执行"
+                continue
 
-        inherited = _taken("MAKEFILES")
-        run_cwd = cwd
-        if program in _MAKE_BINS or program in {"just", "tox"}:
-            run_cwd, chdir_error = _env_workdir(words, cwd, root)
-            if chdir_error:
-                return chdir_error
-        if program in _MAKE_BINS:
-            reason = _make_block(
-                command_words,
-                run_cwd,
-                root,
-                inherited,
-                _taken("MAKEFLAGS"),
-                _taken("GNUMAKEFLAGS"),
-            )
-        elif program == "just":
-            reason = _just_block(command_words, run_cwd, root)
-        elif program == "tox":
-            reason = _tox_block(command_words, run_cwd, root)
-        else:
-            reason = None
-        if reason:
-            return reason
+            def _taken(name: str) -> str:
+                if name in assigned or name in exported:
+                    return local.get(name, "")
+                return parent.get(name, "")
+
+            inherited = _taken("MAKEFILES")
+            run_cwd = cwd
+            if program in _MAKE_BINS or program in {"just", "tox"}:
+                run_cwd, chdir_error = _env_workdir(words, cwd, root)
+                if chdir_error:
+                    return chdir_error
+            if program in _MAKE_BINS:
+                reason = _make_block(
+                    command_words,
+                    run_cwd,
+                    root,
+                    inherited,
+                    _taken("MAKEFLAGS"),
+                    _taken("GNUMAKEFLAGS"),
+                )
+            elif program == "just":
+                reason = _just_block(command_words, run_cwd, root)
+            elif program == "tox":
+                reason = _tox_block(command_words, run_cwd, root)
+            else:
+                reason = None
+            if reason:
+                return reason
     return None
