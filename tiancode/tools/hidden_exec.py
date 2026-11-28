@@ -20,7 +20,12 @@ still runs `-toolexec`, while `-n` and `go test -c` do not run `-exec`.
 `gpg.program`, `gpg.ssh.program`, or `gpg.x509.program` for `commit`, `tag`,
 `cherry-pick`, `revert`, `merge`, `rebase`, and `am`. `trailer.<name>.cmd`
 runs for `commit --trailer` and `interpret-trailers`. `difftool.<tool>.cmd`
-runs when the prompt is off. A pipe whose program
+runs when the prompt is off. `git archive` runs `tar.<format>.command`
+for `tar.gz`, `tgz`, and `zip`. Verifying a signature runs `gpg.program`.
+`mergetool.<tool>.cmd` runs when its prompt is off. `credential fill` runs
+`GIT_ASKPASS` or `core.askPass`. `web--browse` runs `browser.<tool>.cmd`.
+`log`/`show`/`format-patch`/`whatchanged`/`stash show` run an external diff
+when `--ext-diff` is set. A pipe whose program
 is not in the text (`sed e`, `.shell` with no command, `pic -U`) is unseen.
 The caller checks each returned string with the same danger rules. This is
 not a language parser.
@@ -61,6 +66,7 @@ _GIT_BUILTINS = frozenset({
 # Proved to invoke core.fsmonitor. A later git command is not assumed.
 _GIT_FS_COMMANDS = frozenset({
     "status", "diff", "checkout", "ls-files", "stash", "merge", "commit",
+    "add", "reset", "restore", "rebase",
 })
 # The value is only refused when it is itself dangerous, so a local fetch
 # that would not have called ssh is an acceptable extra block.
@@ -78,7 +84,28 @@ _GIT_GLOBAL_VALUES = frozenset({
     "--super-prefix", "--list-cmds", "-c", "--config-env",
 })
 _GIT_CONFIG_VALUES = frozenset({"-f", "--file", "--blob", "--default", "--type", "--comment"})
-_SHELL_KEYS = frozenset({"core.fsmonitor", "core.sshcommand", "core.editor"})
+_SHELL_KEYS = frozenset({
+    "core.fsmonitor", "core.sshcommand", "core.editor", "core.askpass",
+    "tar.tar.gz.command", "tar.tgz.command", "tar.zip.command",
+})
+_SOURCE_HOOKS = {
+    "commit": ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"),
+    "merge": ("pre-merge-commit", "commit-msg", "post-merge"),
+    "checkout": ("post-checkout",),
+    "switch": ("post-checkout",),
+    "rebase": ("pre-rebase", "post-checkout", "post-rewrite"),
+    "push": ("pre-push",),
+    "am": ("applypatch-msg", "pre-applypatch", "post-applypatch"),
+}
+# Hooks in the repository that receives a push. The source repo's pre-push
+# hook is separate and lives in `_SOURCE_HOOKS`.
+RECEIVE_HOOKS = ("pre-receive", "update", "post-receive", "post-update", "push-to-checkout")
+_INDEX_HOOK_COMMANDS = frozenset({"add", "status", "commit", "checkout", "reset", "switch"})
+_KNOWN_BROWSERS = frozenset({
+    "firefox", "iceweasel", "seamonkey", "iceape", "chrome", "google-chrome",
+    "chromium", "chromium-browser", "konqueror", "opera", "w3m", "elinks",
+    "links", "lynx", "dillo", "open", "start", "cygstart", "xdg-open",
+})
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 _FIND_END = frozenset({";", "+", r"\;"})
 _ANSIBLE_MODULES = frozenset({"command", "shell", "raw"})
@@ -751,7 +778,8 @@ def _flag_present(args: Sequence[str], names: frozenset) -> bool:
 def _rebase_is_interactive(words: Sequence[str]) -> bool:
     if _git_subcommand(words) != "rebase":
         return False
-    return _flag_present(_git_args(words), frozenset({"-i", "--interactive"}))
+    # `--edit-todo` opens the sequence editor on a rebase that is already going.
+    return _flag_present(_git_args(words), frozenset({"-i", "--interactive", "--edit-todo"}))
 
 
 def _tag_uses_editor(words: Sequence[str]) -> bool:
@@ -1023,6 +1051,361 @@ def _difftool_extcmd(words: Sequence[str], config: Dict[str, str]) -> str:
     return config.get(f"difftool.{chosen.lower()}.cmd", "").strip()
 
 
+def _ext_diff_on(args: Sequence[str]) -> bool:
+    """The last of `--ext-diff` / `--no-ext-diff`. Default is off for this helper."""
+    enabled = False
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name == "--ext-diff":
+            enabled = True
+        elif name == "--no-ext-diff":
+            enabled = False
+    return enabled
+
+
+def _patch_requested(args: Sequence[str]) -> bool:
+    """True when a short or long patch flag is present. `--stat` alone is not one."""
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name in {"-p", "--patch", "-u"}:
+            return True
+        if word.startswith("-") and not word.startswith("--") and "p" in word[1:]:
+            return True
+    return False
+
+
+def _stash_shows_patch(args: Sequence[str]) -> bool:
+    action = ""
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, _value = word.partition("=")
+        if word.startswith("-") and word != "-":
+            if name in {"-m", "--message", "--pathspec-from-file"} and not eq:
+                index += 2
+                continue
+            index += 1
+            continue
+        action = _plain(word)
+        break
+    if not action:
+        action = "push"
+    return action == "show" and _patch_requested(args)
+
+
+def runs_configured_external_diff(words: Sequence[str]) -> bool:
+    """True when git will run `diff.external`.
+
+    `git diff` does. `log`, `whatchanged`, and `stash show` do only with
+    `--ext-diff` and a patch. `show` and `format-patch` do with `--ext-diff`.
+    Without that flag they keep the internal diff. `diff.<name>.command` is
+    a separate path and was proved only for `git diff`.
+    """
+    sub = _git_subcommand(words)
+    if sub == "diff":
+        return True
+    args = _git_args(words)
+    if not _ext_diff_on(args):
+        return False
+    if sub in {"show", "format-patch"}:
+        return True
+    if sub in {"log", "whatchanged"}:
+        return _patch_requested(args)
+    if sub == "stash":
+        return _stash_shows_patch(args)
+    return False
+
+
+def _archive_format(args: Sequence[str]) -> str:
+    """The archive format whose compressor git will run, or empty when none runs.
+
+    Plain `tar` and `--list` do not. `--remote` builds the archive elsewhere.
+    `--format` wins over the `-o` suffix. `tar.gz` and `tgz` are different keys.
+    """
+    if _flag_present(args, frozenset({"--list", "-l"})):
+        return ""
+    fmt = ""
+    output = ""
+    remote = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name == "--remote":
+            remote = True
+        if name == "--format":
+            fmt = value if eq else (args[index + 1] if index + 1 < len(args) else "")
+        elif name in {"-o", "--output"}:
+            output = value if eq else (args[index + 1] if index + 1 < len(args) else "")
+        takes = name in {
+            "--prefix", "--add-file", "--add-virtual-file", "--output", "-o",
+            "--remote", "--exec", "--mtime", "--format",
+        } and not eq
+        index += 2 if takes and index + 1 < len(args) else 1
+    if remote or _flag_present(args, frozenset({"--list", "-l"})):
+        return ""
+    if fmt:
+        return fmt.strip().lower()
+    lower = output.strip().lower()
+    if lower.endswith(".tar.gz"):
+        return "tar.gz"
+    if lower.endswith(".tgz"):
+        return "tgz"
+    if lower.endswith(".zip"):
+        return "zip"
+    return ""
+
+
+def _archive_command(words: Sequence[str], config: Dict[str, str]) -> str:
+    """The shell `git archive` pipes a compressed archive through.
+
+    An empty value keeps git's built-in compressor, which is not a configured command.
+    """
+    if _git_subcommand(words) != "archive":
+        return ""
+    fmt = _archive_format(_git_args(words))
+    key = {
+        "tar.gz": "tar.tar.gz.command",
+        "tgz": "tar.tgz.command",
+        "zip": "tar.zip.command",
+    }.get(fmt, "")
+    if not key:
+        return ""
+    return config.get(key, "").strip()
+
+
+def _signature_display(args: Sequence[str], config: Dict[str, str]) -> bool:
+    """Whether log/show will ask gpg to check a signature. The last flag wins."""
+    show = _git_bool(config.get("log.showsignature", ""))
+    for word in args:
+        if word == "--":
+            break
+        name = word.split("=", 1)[0]
+        if name == "--show-signature":
+            show = True
+        elif name == "--no-show-signature":
+            show = False
+    return show
+
+
+def _git_will_verify(words: Sequence[str], config: Dict[str, str]) -> bool:
+    """True when this command calls the openpgp verification program.
+
+    `verify-commit`, `verify-tag`, and `tag -v` ask for that. `log` and `show`
+    do when `--show-signature` or `log.showSignature` is on. An unsigned object
+    makes git exit before gpg, but this does not read the object.
+    """
+    sub = _git_subcommand(words)
+    args = _git_args(words)
+    if sub in {"verify-commit", "verify-tag"}:
+        return True
+    if sub == "tag" and _flag_present(args, frozenset({"-v", "--verify"})):
+        return True
+    if sub in {"log", "show"}:
+        return _signature_display(args, config)
+    return False
+
+
+def _verify_program(words: Sequence[str], config: Dict[str, str]) -> str:
+    """`gpg.program` for verification. Empty means the default gpg binary.
+
+    `gpg.format=ssh` does not switch this: an openpgp signature still uses
+    `gpg.program`, which was the program a forged signature actually started.
+    """
+    if not _git_will_verify(words, config):
+        return ""
+    return config.get("gpg.program", "").strip()
+
+
+def _mergetool_cmd(words: Sequence[str], config: Dict[str, str]) -> str:
+    """The shell `git mergetool` runs once the prompt is off.
+
+    Unlike difftool, an unset `mergetool.prompt` does not ask, so the command
+    runs. `--prompt` on a non-tty returns before the tool starts. `--tool`
+    replaces `merge.tool`. A guessed tool (no name configured) is not this cmd.
+    """
+    if _git_subcommand(words) != "mergetool":
+        return ""
+    raw = config.get("mergetool.prompt", "").strip().lower()
+    prompt = raw in {"true", "yes", "on", "1"}
+    tool = ""
+    gui = False
+    args = _git_args(words)
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name in {"--tool-help"}:
+            return ""
+        if name in {"-y", "--no-prompt"}:
+            prompt = False
+        elif name == "--prompt":
+            prompt = True
+        elif name in {"-g", "--gui"}:
+            gui = True
+        elif name == "--no-gui":
+            gui = False
+        elif name in {"--tool", "-t"} or (
+            word.startswith("-t") and not word.startswith("--") and word != "-t"
+        ):
+            if name == "--tool" and eq:
+                tool = value
+            elif word.startswith("-t") and word != "-t" and not word.startswith("--"):
+                tool = word[2:]
+            elif index + 1 < len(args):
+                tool = args[index + 1]
+                index += 1
+            else:
+                tool = ""
+        index += 1
+    if prompt or gui:
+        return ""
+    chosen = _plain(tool).strip() or config.get("merge.tool", "").strip()
+    if not chosen:
+        return ""
+    return config.get(f"mergetool.{chosen.lower()}.cmd", "").strip()
+
+
+def _askpass_program(
+    words: Sequence[str],
+    config: Dict[str, str],
+    assignments: Sequence[str],
+    parent_env: Dict[str, str],
+) -> str:
+    """The program `git credential fill` asks. `approve` and `reject` do not ask.
+
+    `GIT_ASKPASS` replaces `core.askPass`. An empty environment value leaves
+    the config in place.
+    """
+    if _git_subcommand(words) != "credential":
+        return ""
+    action = ""
+    for word in _git_args(words):
+        if word == "--":
+            break
+        if word.startswith("-"):
+            continue
+        action = _plain(word)
+        break
+    if action != "fill":
+        return ""
+    chosen = _env_override("GIT_ASKPASS", assignments, parent_env)
+    if chosen is not None and chosen.strip():
+        return chosen.strip()
+    return config.get("core.askpass", "").strip()
+
+
+def _browser_command(words: Sequence[str], config: Dict[str, str]) -> str:
+    """`browser.<tool>.cmd` when `git web--browse` is pointed at a custom tool.
+
+    A built-in name such as `firefox` runs that browser, not the cmd. With no
+    name, web--browse searches a built-in list and does not eval a cmd.
+    """
+    if _git_subcommand(words) != "web--browse":
+        return ""
+    browser = ""
+    conf_key = ""
+    args = _git_args(words)
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, value = word.partition("=")
+        if name in {"-b", "--browser", "-t", "--tool"}:
+            if eq:
+                browser = value
+            elif index + 1 < len(args):
+                browser = args[index + 1]
+                index += 1
+        elif name in {"-c", "--config"}:
+            if eq:
+                conf_key = value
+            elif index + 1 < len(args):
+                conf_key = args[index + 1]
+                index += 1
+        index += 1
+    chosen = _plain(browser).strip()
+    if not chosen and conf_key:
+        chosen = config.get(conf_key.strip().lower(), "").strip()
+    if not chosen:
+        chosen = config.get("web.browser", "").strip()
+    if not chosen or chosen.lower() in _KNOWN_BROWSERS:
+        return ""
+    return config.get(f"browser.{chosen.lower()}.cmd", "").strip()
+
+
+def _worktree_add_checks_out(args: Sequence[str]) -> bool:
+    """`git worktree add` checks out unless `--no-checkout` is the last word."""
+    action = ""
+    checkout = True
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            break
+        name, eq, _value = word.partition("=")
+        if name in {"-b", "-B", "--reason"} and not eq:
+            index += 2
+            continue
+        if word.startswith("-") and word != "-":
+            if name == "--no-checkout":
+                checkout = False
+            elif name == "--checkout":
+                checkout = True
+            index += 1
+            continue
+        if not action:
+            action = _plain(word)
+        index += 1
+    return action == "add" and checkout
+
+
+def source_hook_names(words: Sequence[str]) -> List[str]:
+    """Hook files in this repository that this git command can execute.
+
+    `post-index-change` runs when the index is written. `pull` runs
+    `post-merge` even with `--rebase` or `pull.rebase`. `cherry-pick -n` and
+    `revert -n` do not create the commit those hooks follow. `commit --amend`
+    also runs `post-rewrite`.
+    """
+    sub = _git_subcommand(words)
+    if not sub:
+        return []
+    args = _git_args(words)
+    names = list(_SOURCE_HOOKS.get(sub, ()))
+    if sub == "commit" and _flag_present(args, frozenset({"--amend"})):
+        names.append("post-rewrite")
+    if sub == "commit":
+        names.append("reference-transaction")
+    if sub in _INDEX_HOOK_COMMANDS:
+        names.append("post-index-change")
+    if sub == "worktree" and _worktree_add_checks_out(args):
+        names.append("post-checkout")
+    if sub == "pull":
+        names.append("post-merge")
+    suppressed = _commit_is_suppressed(args) or _flag_present(args, frozenset({"--abort", "--quit"}))
+    if sub == "cherry-pick" and not suppressed:
+        names.append("post-commit")
+    if sub == "revert" and not suppressed:
+        names.extend(["prepare-commit-msg", "post-commit"])
+    found: List[str] = []
+    for name in names:
+        if name not in found:
+            found.append(name)
+    return found
+
+
 def _gpg_sign_requested(args: Sequence[str]) -> Optional[bool]:
     """The last explicit sign flag, or None when the command did not say.
 
@@ -1226,7 +1609,7 @@ def _triggered_git_commands(
         editor = _resolved_sequence_editor(config, assignments, parent_env)
         if editor:
             found.append(editor)
-    if sub == "diff":
+    if runs_configured_external_diff(words):
         external = _git_external_diff(config, assignments, parent_env)
         if external:
             found.append(external)
@@ -1252,6 +1635,21 @@ def _triggered_git_commands(
     if signing:
         found.append(signing)
     found.extend(_trailer_commands(words, config))
+    verify = _verify_program(words, config)
+    if verify:
+        found.append(verify)
+    archive = _archive_command(words, config)
+    if archive:
+        found.append(archive)
+    mergetool = _mergetool_cmd(words, config)
+    if mergetool:
+        found.append(mergetool)
+    askpass = _askpass_program(words, config, assignments, parent_env)
+    if askpass:
+        found.append(askpass)
+    browser = _browser_command(words, config)
+    if browser:
+        found.append(browser)
     if sub not in _GIT_BUILTINS:
         alias = config.get(f"alias.{sub}", "")
         if alias.lstrip().startswith("!"):
@@ -1406,6 +1804,10 @@ def _shell_from_config_key(key: str, value: str) -> str:
         return text
     if lowered.startswith("alias.") and text.startswith("!"):
         return text[1:].strip()
+    if lowered.startswith("mergetool.") and lowered.endswith(".cmd"):
+        return text
+    if lowered.startswith("browser.") and lowered.endswith(".cmd"):
+        return text
     return ""
 
 
